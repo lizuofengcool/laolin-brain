@@ -31,7 +31,7 @@ interface FilePreviewProps {
 }
 
 export function FilePreview({ file, open, onClose }: FilePreviewProps) {
-  const { setAiChatFile, storageMode, openLightbox, files } = useAppStore();
+  const { setAiChatFile, openLightbox, files } = useAppStore();
   const [downloading, setDownloading] = useState(false);
 
   if (!file) return null;
@@ -39,42 +39,9 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
   const handleDownload = async () => {
     if (!file) return;
     setDownloading(true);
-
     try {
-      if (storageMode === "cloud") {
-        const res = await fetch(`/api/files/${file.id}/download`);
-        if (res.ok) {
-          const blob = await res.blob();
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = file.fileName;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        }
-      } else {
-        const { openDB } = await import("idb");
-        const db = await openDB("knowledge-base-db", 1);
-        const record = await db.get("files", file.id);
-        if (record && record.data) {
-          const binaryStr = atob(record.data);
-          const bytes = new Uint8Array(binaryStr.length);
-          for (let i = 0; i < binaryStr.length; i++) {
-            bytes[i] = binaryStr.charCodeAt(i);
-          }
-          const blob = new Blob([bytes]);
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = file.fileName;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        }
-      }
+      const { downloadFile } = await import("@/lib/file-helpers");
+      await downloadFile(file);
     } catch (err) {
       console.error("Download failed:", err);
     } finally {

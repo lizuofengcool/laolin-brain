@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import type { FileData } from "@/lib/storage/base";
 import { useAppStore } from "@/stores/app-store";
 import { getStorageAdapter } from "@/lib/storage/factory";
+import { toast } from "@/hooks/use-toast";
 
 /**
  * Shared hook for file card actions (rename, tags, folder, delete, lightbox)
@@ -66,8 +67,9 @@ export function useFileActions(file: FileData) {
       const adapter = getStorageAdapter(storageMode);
       adapter.updateFile(file.id, { tags: newTags }, user.id).catch(console.error);
     }
+    toast({ title: "标签已更新", description: `已为 ${file.fileName} 更新标签` });
     setTagDialogOpen(false);
-  }, [file.id, tagInput, updateFile]);
+  }, [file.id, file.fileName, tagInput, updateFile]);
 
   const handleMoveToFolder = useCallback((e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -83,6 +85,7 @@ export function useFileActions(file: FileData) {
       const adapter = getStorageAdapter(storageMode);
       adapter.updateFile(file.id, { folderId: selectedFolderId || null } as Partial<FileData>, user.id).catch(console.error);
     }
+    toast({ title: "已移动", description: `文件已移至${selectedFolderId ? "文件夹" : "根目录"}` });
     setFolderDialogOpen(false);
   }, [file.id, selectedFolderId, updateFile]);
 
@@ -98,6 +101,7 @@ export function useFileActions(file: FileData) {
     const nameWithoutExt = renameInput.trim().replace(/\.[^.]+$/, "");
     const newName = nameWithoutExt + ext;
     await renameFile(file.id, newName);
+    toast({ title: "重命名成功", description: `${file.fileName} → ${newName}` });
     setRenameDialogOpen(false);
   }, [file.id, file.fileName, renameInput, renameFile]);
 

@@ -5,6 +5,7 @@ import { useDropzone } from "react-dropzone";
 import { Upload, Cloud, HardDrive, Sparkles, Loader2 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
+import { toast } from "@/hooks/use-toast";
 
 interface UploadZoneProps {
   className?: string;
@@ -40,6 +41,11 @@ export function UploadZone({ className }: UploadZoneProps) {
 
       for (const file of acceptedFiles) {
         if (file.size > 50 * 1024 * 1024) {
+          toast({
+            title: "文件过大",
+            description: `${file.name} 超过 50MB 限制，已跳过`,
+            variant: "destructive",
+          });
           completed++;
           continue;
         }

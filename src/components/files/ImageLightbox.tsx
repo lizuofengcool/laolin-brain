@@ -6,7 +6,6 @@ import { X, ZoomIn, ZoomOut, RotateCw, ChevronLeft, ChevronRight, Download, Maxi
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { FileData } from "@/lib/storage/base";
-import { useAppStore } from "@/stores/app-store";
 
 interface ImageLightboxProps {
   images: FileData[];
@@ -24,6 +23,7 @@ export function ImageLightbox({ images, currentIndex, open, onClose }: ImageLigh
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [imgLoaded, setImgLoaded] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Wait for client-side mount for portal
@@ -38,6 +38,7 @@ export function ImageLightbox({ images, currentIndex, open, onClose }: ImageLigh
       setScale(1);
       setRotation(0);
       setTranslate({ x: 0, y: 0 });
+      setImgLoaded(false);
       document.body.style.overflow = "hidden";
     } else {
       document.body.style.overflow = "";
@@ -129,18 +130,21 @@ export function ImageLightbox({ images, currentIndex, open, onClose }: ImageLigh
     }
   }, []);
 
-  // Mouse wheel zoom
-  const handleWheel = useCallback(
-    (e: React.WheelEvent) => {
+  // Non-passive wheel event listener for zoom (React's onWheel is passive and can't preventDefault)
+  useEffect(() => {
+    if (!open || !containerRef.current) return;
+    const container = containerRef.current;
+    const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
       if (e.deltaY < 0) {
         setScale((prev) => Math.min(prev * 1.15, 10));
       } else {
         setScale((prev) => Math.max(prev / 1.15, 0.1));
       }
-    },
-    []
-  );
+    };
+    container.addEventListener("wheel", handleWheel, { passive: false });
+    return () => container.removeEventListener("wheel", handleWheel);
+  }, [open]);
 
   // Pan support
   const handleMouseDown = useCallback(
@@ -214,42 +218,9 @@ export function ImageLightbox({ images, currentIndex, open, onClose }: ImageLigh
   // Download current image
   const handleDownload = useCallback(async () => {
     if (!currentImage) return;
-    const { storageMode } = useAppStore.getState();
     try {
-      if (storageMode === "cloud") {
-        const res = await fetch(`/api/files/${currentImage.id}/download`);
-        if (res.ok) {
-          const blob = await res.blob();
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = currentImage.fileName;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        }
-      } else {
-        const { openDB } = await import("idb");
-        const db = await openDB("knowledge-base-db", 1);
-        const record = await db.get("files", currentImage.id);
-        if (record && record.data) {
-          const binaryStr = atob(record.data);
-          const bytes = new Uint8Array(binaryStr.length);
-          for (let i = 0; i < binaryStr.length; i++) {
-            bytes[i] = binaryStr.charCodeAt(i);
-          }
-          const blob = new Blob([bytes]);
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = currentImage.fileName;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        }
-      }
+      const { downloadFile } = await import("@/lib/file-helpers");
+      await downloadFile(currentImage);
     } catch (err) {
       console.error("Download failed:", err);
     }
@@ -369,7 +340,6 @@ export function ImageLightbox({ images, currentIndex, open, onClose }: ImageLigh
       <div
         className="relative z-[99999] flex items-center justify-center w-full h-full overflow-hidden cursor-grab active:cursor-grabbing select-none"
         style={{ cursor: scale > 1 ? (isDragging ? "grabbing" : "grab") : "default" }}
-        onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -379,6 +349,11 @@ export function ImageLightbox({ images, currentIndex, open, onClose }: ImageLigh
         onTouchEnd={handleTouchEnd}
         onDoubleClick={zoomIn}
       >
+        {!imgLoaded && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="h-8 w-8 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+          </div>
+        )}
         <img
           src={currentImage.thumbnailUrl || currentImage.filePath}
           alt={currentImage.fileName}
@@ -386,8 +361,10 @@ export function ImageLightbox({ images, currentIndex, open, onClose }: ImageLigh
           style={{
             transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale}) rotate(${rotation}deg)`,
             transition: isDragging ? "none" : "transform 0.15s ease",
+            opacity: imgLoaded ? 1 : 0,
           }}
           draggable={false}
+          onLoad={() => setImgLoaded(true)}
         />
       </div>
 

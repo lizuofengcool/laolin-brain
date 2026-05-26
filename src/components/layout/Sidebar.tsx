@@ -38,7 +38,9 @@ export function Sidebar() {
     useAppStore();
 
   // Get last 5 recently viewed files for sidebar
-  const recentFiles = files.filter((f) => !f.isDeleted).slice(0, 5);
+  const recentFiles = [...files.filter((f) => !f.isDeleted)]
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, 5);
 
   // Compute dynamic badge counts
   const favCount = files.filter((f) => f.isFavorite && !f.isDeleted).length;
@@ -169,7 +171,7 @@ export function Sidebar() {
       <Button
         variant="ghost"
         size="icon"
-        className="absolute -right-3 top-18 h-6 w-6 rounded-full border bg-background shadow-sm hover:bg-accent"
+        className="absolute -right-3 top-[72px] h-6 w-6 rounded-full border bg-background shadow-sm hover:bg-accent"
         onClick={() => setSidebarOpen(!sidebarOpen)}
       >
         {sidebarOpen ? (

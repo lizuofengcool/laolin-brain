@@ -240,9 +240,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Empty recycle bin
   emptyRecycleBin: async () => {
     const deletedFiles = get().files.filter((f) => f.isDeleted);
-    for (const file of deletedFiles) {
-      await get().permanentDeleteFile(file.id);
-    }
+    await Promise.all(deletedFiles.map((file) => get().permanentDeleteFile(file.id)));
   },
 
   // Rename file
@@ -299,7 +297,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (err) {
       console.error("Batch delete failed:", err);
     }
-    get().clearBatchSelection();
     get().toggleBatchMode();
   },
 

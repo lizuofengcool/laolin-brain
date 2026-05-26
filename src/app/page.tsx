@@ -29,6 +29,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import {
   FileText,
   Image as ImageIcon,
@@ -46,6 +47,7 @@ import {
   Download,
   StarOff,
   FolderInput,
+  ArrowUpDown,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -91,6 +93,30 @@ function DashboardSkeleton() {
       </div>
       <Skeleton className="h-64 rounded-lg" />
     </div>
+  );
+}
+
+// ─── Confirm Dialog ─────────────────────────────────────
+function ConfirmDialog({ open, title, description, onConfirm, onCancel }: {
+  open: boolean;
+  title: string;
+  description: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onCancel(); }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel}>取消</Button>
+          <Button variant="destructive" onClick={onConfirm}>确认</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -231,6 +257,7 @@ function FilesView() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(20);
+  const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false);
 
   const handlePreview = (file: FileData) => {
     setPreviewFile(file);
@@ -377,11 +404,7 @@ function FilesView() {
                 variant="destructive"
                 size="sm"
                 disabled={batchSelectedIds.length === 0}
-                onClick={() => {
-                  if (confirm(`确定要删除选中的 ${batchSelectedIds.length} 个文件吗？文件将移入回收站。`)) {
-                    batchDeleteFiles(batchSelectedIds);
-                  }
-                }}
+                onClick={() => setBatchDeleteConfirm(true)}
               >
                 <Trash2 className="h-4 w-4 mr-1" />
                 删除
@@ -484,6 +507,14 @@ function FilesView() {
         open={previewOpen}
         onClose={() => setPreviewOpen(false)}
       />
+
+      <ConfirmDialog
+        open={batchDeleteConfirm}
+        title="批量删除文件"
+        description={`确定要删除选中的 ${batchSelectedIds.length} 个文件吗？文件将移入回收站。`}
+        onConfirm={() => { batchDeleteFiles(batchSelectedIds); setBatchDeleteConfirm(false); }}
+        onCancel={() => setBatchDeleteConfirm(false)}
+      />
     </div>
   );
 }
@@ -491,11 +522,16 @@ function FilesView() {
 // ─── Search View ─────────────────────────────────────────────
 function SearchView() {
   const { searchQuery, setSearchQuery, aiChatFile, setAiChatFile } = useAppStore();
-  const [localQuery, setLocalQuery] = useState(searchQuery);
+  const [localQuery, setLocalQuery] = useState("");
   const [searchTrigger, setSearchTrigger] = useState(0);
   const [previewFile, setPreviewFile] = useState<FileData | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Sync from store (e.g. when navigating from header search)
+  useEffect(() => {
+    if (searchQuery) setLocalQuery(searchQuery);
+  }, [searchQuery]);
 
   const handleSearch = () => {
     setSearchQuery(localQuery);
@@ -552,8 +588,18 @@ function FavoritesView() {
   const [previewFile, setPreviewFile] = useState<FileData | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [visibleCount, setVisibleCount] = useState(20);
+  const [sortBy, setSortBy] = useState<"date" | "name">("date");
 
-  const favFiles = files.filter((f) => f.isFavorite && !f.isDeleted);
+  const favFiles = useMemo(() => {
+    const sorted = files.filter((f) => f.isFavorite && !f.isDeleted);
+    if (sortBy === "name") {
+      sorted.sort((a, b) => a.fileName.localeCompare(b.fileName, "zh-CN"));
+    } else {
+      sorted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
+    return sorted;
+  }, [files, sortBy]);
+
   const visibleFiles = favFiles.slice(0, visibleCount);
   const hasMore = visibleCount < favFiles.length;
 
@@ -564,11 +610,26 @@ function FavoritesView() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">收藏夹</h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          你标记为重要和收藏的文件
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">收藏夹</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            你标记为重要和收藏的文件
+          </p>
+        </div>
+        {favFiles.length > 0 && (
+          <div className="flex items-center gap-2">
+            <ArrowUpDown className="h-4 w-4 text-muted-foreground" />
+            <select
+              className="text-sm border rounded-md px-2 py-1 bg-background"
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as "date" | "name")}
+            >
+              <option value="date">按日期</option>
+              <option value="name">按名称</option>
+            </select>
+          </div>
+        )}
       </div>
 
       {favFiles.length === 0 ? (
@@ -605,10 +666,26 @@ function FavoritesView() {
 // ─── Recycle Bin View ────────────────────────────────────────
 function RecycleBinView() {
   const { files, restoreFile, permanentDeleteFile, emptyRecycleBin } = useAppStore();
-  const deletedFiles = files.filter((f) => f.isDeleted);
   const [visibleCount, setVisibleCount] = useState(20);
   const [previewFile, setPreviewFile] = useState<FileData | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [sortBy, setSortBy] = useState<"deletedAt" | "name">("deletedAt");
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [emptyConfirm, setEmptyConfirm] = useState(false);
+
+  const deletedFiles = useMemo(() => {
+    const sorted = files.filter((f) => f.isDeleted);
+    if (sortBy === "name") {
+      sorted.sort((a, b) => a.fileName.localeCompare(b.fileName, "zh-CN"));
+    } else {
+      sorted.sort((a, b) => {
+        const dateA = a.deletedAt ? new Date(a.deletedAt).getTime() : 0;
+        const dateB = b.deletedAt ? new Date(b.deletedAt).getTime() : 0;
+        return dateB - dateA;
+      });
+    }
+    return sorted;
+  }, [files, sortBy]);
 
   const visibleFiles = deletedFiles.slice(0, visibleCount);
   const hasMore = visibleCount < deletedFiles.length;
@@ -623,15 +700,13 @@ function RecycleBinView() {
   };
 
   const handlePermanentDelete = async (id: string) => {
-    if (confirm("确定要永久删除此文件吗？此操作不可恢复。")) {
-      await permanentDeleteFile(id);
-    }
+    await permanentDeleteFile(id);
+    setDeleteConfirmId(null);
   };
 
   const handleEmptyRecycleBin = async () => {
-    if (confirm(`确定要永久删除回收站中的 ${deletedFiles.length} 个文件吗？此操作不可恢复。`)) {
-      await emptyRecycleBin();
-    }
+    await emptyRecycleBin();
+    setEmptyConfirm(false);
   };
 
   const formatDeletedAt = (dateStr?: string) => {
@@ -653,16 +728,31 @@ function RecycleBinView() {
             已删除的文件可以恢复或永久删除
           </p>
         </div>
-        {deletedFiles.length > 0 && (
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={handleEmptyRecycleBin}
-          >
-            <Trash2 className="h-4 w-4 mr-1" />
-            清空回收站
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          {deletedFiles.length > 0 && (
+            <div className="flex items-center gap-2">
+              <ArrowUpDown className="h-4 w-4 text-muted-foreground" />
+              <select
+                className="text-sm border rounded-md px-2 py-1 bg-background"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as "deletedAt" | "name")}
+              >
+                <option value="deletedAt">按删除时间</option>
+                <option value="name">按名称</option>
+              </select>
+            </div>
+          )}
+          {deletedFiles.length > 0 && (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setEmptyConfirm(true)}
+            >
+              <Trash2 className="h-4 w-4 mr-1" />
+              清空回收站
+            </Button>
+          )}
+        </div>
       </div>
 
       {deletedFiles.length === 0 ? (
@@ -706,7 +796,7 @@ function RecycleBinView() {
                 <Button
                   variant="destructive"
                   size="sm"
-                  onClick={() => handlePermanentDelete(file.id)}
+                  onClick={() => setDeleteConfirmId(file.id)}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
@@ -730,6 +820,22 @@ function RecycleBinView() {
         file={previewFile}
         open={previewOpen}
         onClose={() => setPreviewOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={!!deleteConfirmId}
+        title="永久删除文件"
+        description="确定要永久删除此文件吗？此操作不可恢复。"
+        onConfirm={() => deleteConfirmId && handlePermanentDelete(deleteConfirmId)}
+        onCancel={() => setDeleteConfirmId(null)}
+      />
+
+      <ConfirmDialog
+        open={emptyConfirm}
+        title="清空回收站"
+        description={`确定要永久删除回收站中的 ${deletedFiles.length} 个文件吗？此操作不可恢复。`}
+        onConfirm={handleEmptyRecycleBin}
+        onCancel={() => setEmptyConfirm(false)}
       />
     </div>
   );

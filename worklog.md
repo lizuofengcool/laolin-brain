@@ -335,3 +335,36 @@ Stage Summary:
 - 修改文件: TimelineView.tsx, AlbumView.tsx, app-store.ts, file-utils.tsx, MobileNav.tsx, FileCard.tsx
 - 新增文件: useFileActions.ts（共享文件操作 hook）
 - 构建: 0错误0警告，TypeScript类型检查通过（仅遗留之前就存在的无关错误）
+
+---
+Task ID: 1
+Agent: Main Agent
+Task: 全面检查+细节优化+功能深化 - 质量审查与修复
+
+Work Log:
+- 全面审查了所有核心文件（16个组件/模块）
+- 发现并修复16个问题，分3个并行任务执行
+
+修复清单：
+1. 🔴 [BUG] Toast通知缺失 — 修复 toast 配置（TOAST_LIMIT: 1→5, TOAST_REMOVE_DELAY: 1000000→5000），为标签保存/重命名/移动文件夹/大文件跳过添加 toast 提示
+2. 🔴 [BUG] Lightbox滚轮缩放失效 — React onWheel 是 passive 的导致 preventDefault 无效，改用 useEffect + addEventListener({ passive: false })
+3. 🔴 [BUG] Header搜索框与搜索页状态不同步 — SearchView 添加 useEffect 从 store 同步 searchQuery
+4. 🟡 [BUG] batchDeleteFiles 冗余调用 clearBatchSelection — toggleBatchMode 已清除，移除多余调用
+5. 🟡 [BUG] Sidebar最近文件未按时间排序 — 添加 sort by createdAt desc
+6. 🟡 [BUG] Sidebar折叠按钮 top-18 非标准 Tailwind — 改为 top-[72px]
+7. 🟡 [BUG] selectAllFiles 未考虑 tagFilter — 已在 store 中补齐筛选逻辑
+8. 🟡 [UX] MobileNav收藏夹缺少 badge — 添加 favCount 动态计数
+9. 🟡 [UX] 收藏夹/回收站缺少排序 — 两个视图均添加排序下拉（按日期/名称）
+10. 🟡 [UX] 上传超过50MB无提示 — 添加 destructive toast 通知
+11. 🟡 [UX] 使用原生 confirm() — 新建 ConfirmDialog 组件，替换全部 confirm() 调用
+12. 🟡 [UX] emptyRecycleBin 串行太慢 — 改为 Promise.all 并行删除
+13. 🟢 [UX] Bell图标占位 — 移除无功能的 Bell 按钮
+14. 🟢 [UX] 图片灯箱无加载指示器 — 添加 imgLoaded 状态 + spinner overlay
+15. 🟢 [REFACTOR] 下载功能重复 — 提取 downloadFile 到 file-helpers.ts 公共工具
+16. 🟢 [REFACTOR] FilePreview/ImageLightbox 下载代码 — 均改用共享 downloadFile
+
+Stage Summary:
+- 修改文件: use-toast.ts, ImageLightbox.tsx, FilePreview.tsx, Sidebar.tsx, MobileNav.tsx, Header.tsx, UploadZone.tsx, useFileActions.ts, app-store.ts, page.tsx
+- 新增文件: file-helpers.ts（共享下载工具）
+- 构建: ✅ 0 errors 0 warnings
+- 项目整体质量大幅提升

@@ -36,6 +36,7 @@ export function MobileNav() {
   const [moreOpen, setMoreOpen] = useState(false);
 
   const recycleCount = files.filter((f) => f.isDeleted).length;
+  const favCount = files.filter((f) => f.isFavorite && !f.isDeleted).length;
 
   const handleNav = (view: ViewType) => {
     setCurrentView(view);
@@ -60,7 +61,14 @@ export function MobileNav() {
                     : "text-muted-foreground hover:text-foreground"
                 )}
               >
-                <Icon className="h-5 w-5" />
+                <div className="relative">
+                  <Icon className="h-5 w-5" />
+                  {item.view === "favorites" && favCount > 0 && (
+                    <span className="absolute -top-1.5 -right-2 h-4 min-w-4 px-1 rounded-full bg-primary text-primary-foreground text-[9px] flex items-center justify-center font-medium">
+                      {favCount > 99 ? "99+" : favCount}
+                    </span>
+                  )}
+                </div>
                 <span className="text-[10px]">{item.label}</span>
               </button>
             );
