@@ -162,6 +162,7 @@ export async function GET(request: NextRequest) {
     const where: Record<string, unknown> = {
       userId,
       storageMode: "cloud",
+      isDeleted: false,
     };
 
     if (folderId === "null" || !folderId) {

@@ -15,6 +15,7 @@ import {
   ImageIcon,
   Tag,
 } from "lucide-react";
+import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { useAppStore, type ViewType } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
@@ -38,13 +39,16 @@ export function Sidebar() {
     useAppStore();
 
   // Get last 5 recently viewed files for sidebar
-  const recentFiles = [...files.filter((f) => !f.isDeleted)]
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-    .slice(0, 5);
+  const recentFiles = useMemo(() =>
+    [...files.filter((f) => !f.isDeleted)]
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 5),
+    [files]
+  );
 
   // Compute dynamic badge counts
-  const favCount = files.filter((f) => f.isFavorite && !f.isDeleted).length;
-  const recycleCount = files.filter((f) => f.isDeleted).length;
+  const favCount = useMemo(() => files.filter((f) => f.isFavorite && !f.isDeleted).length, [files]);
+  const recycleCount = useMemo(() => files.filter((f) => f.isDeleted).length, [files]);
 
   const getBadgeCount = (view: ViewType) => {
     if (view === "favorites") return favCount;

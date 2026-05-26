@@ -15,6 +15,7 @@ export async function GET(request: NextRequest) {
       where: {
         userId,
         storageMode: "cloud",
+        isDeleted: false,
         OR: [
           { fileName: { contains: q } },
           { textContent: { contains: q } },

@@ -47,7 +47,7 @@ export function UploadZone({ className }: UploadZoneProps) {
   const [aiStatus, setAiStatus] = useState("");
   const [uploadedCount, setUploadedCount] = useState(0);
   const [failedFiles, setFailedFiles] = useState<string[]>([]);
-  const { user, storageMode, addFile, refreshFiles, files } = useAppStore();
+  const { user, storageMode, addFile, refreshFiles } = useAppStore();
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
@@ -79,7 +79,7 @@ export function UploadZone({ className }: UploadZoneProps) {
         try {
           const { computeFileHash } = await import("@/lib/file-hash");
           fileHash = await computeFileHash(file);
-          const existingFiles = files.filter((f) => !f.isDeleted);
+          const existingFiles = useAppStore.getState().files.filter((f) => !f.isDeleted);
           const dup = existingFiles.find((f) => f.fileHash === fileHash);
           if (dup) {
             toast({
@@ -264,7 +264,7 @@ export function UploadZone({ className }: UploadZoneProps) {
         setFailedFiles([]);
       }, 3000);
     },
-    [user, storageMode, addFile, refreshFiles, files]
+    [user, storageMode, addFile, refreshFiles]
   );
 
   const { getRootProps, getInputProps, isDragActive, fileRejections } = useDropzone({

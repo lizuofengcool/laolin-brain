@@ -73,7 +73,7 @@ export default function TagManagement() {
     const { user, storageMode } = useAppStore.getState();
     const adapter = getStorageAdapter(storageMode);
     updateFile(fileId, { tags: newTags });
-    adapter.updateFile(fileId, { tags: newTags }, user!.id);
+    adapter.updateFile(fileId, { tags: newTags }, user!.id).catch(console.error);
   };
 
   // ── Rename ──

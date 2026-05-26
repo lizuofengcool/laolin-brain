@@ -62,9 +62,10 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
           const lower = q.toLowerCase();
           const filtered = files.filter(
             (f) =>
-              f.fileName.toLowerCase().includes(lower) ||
+              !f.isDeleted &&
+              (f.fileName.toLowerCase().includes(lower) ||
               f.textContent?.toLowerCase().includes(lower) ||
-              f.tags.some((t) => t.toLowerCase().includes(lower))
+              f.tags.some((t) => t.toLowerCase().includes(lower)))
           );
           setResults(filtered);
         }

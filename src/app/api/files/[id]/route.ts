@@ -29,9 +29,13 @@ export async function PUT(
     const data: Record<string, unknown> = {};
     if (body.tags !== undefined) data.tags = JSON.stringify(body.tags);
     if (body.isFavorite !== undefined) data.isFavorite = body.isFavorite;
+    if (body.isDeleted !== undefined) data.isDeleted = body.isDeleted;
+    if (body.deletedAt !== undefined) data.deletedAt = body.deletedAt === null ? null : new Date(body.deletedAt);
+    if (body.fileHash !== undefined) data.fileHash = body.fileHash;
     if (body.folderId !== undefined)
       data.folderId = body.folderId === "null" ? null : body.folderId;
     if (body.fileName !== undefined) data.fileName = body.fileName;
+    if (body.textContent !== undefined) data.textContent = body.textContent;
 
     const file = await db.file.update({
       where: { id },

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
+import { formatSize } from "@/lib/file-utils";
 import type { FileData } from "@/lib/storage/base";
 
 interface MonthGroup {
@@ -19,12 +20,6 @@ function formatMonthGroup(date: Date): string {
   const year = date.getFullYear();
   const month = date.getMonth() + 1;
   return `${year}年${month}月`;
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export default function AlbumView() {
@@ -167,7 +162,7 @@ export default function AlbumView() {
                           {image.fileName}
                         </p>
                         <p className="text-[10px] text-white/60 mt-0.5">
-                          {formatFileSize(image.fileSize)}
+                          {formatSize(image.fileSize)}
                         </p>
                       </div>
                     </div>
@@ -212,7 +207,7 @@ export default function AlbumView() {
                             {image.fileName}
                           </p>
                           <p className="text-xs text-muted-foreground mt-1">
-                            {formatFileSize(image.fileSize)}
+                            {formatSize(image.fileSize)}
                           </p>
                           <div className="flex items-center gap-1 mt-1.5">
                             <Badge variant="outline" className="text-[10px] px-1.5 py-0">

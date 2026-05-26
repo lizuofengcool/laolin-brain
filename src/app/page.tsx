@@ -148,16 +148,11 @@ function LoginView() {
 function DashboardView() {
   const { files, user, setCurrentView, setFileTypeFilter } = useAppStore();
 
-  const activeFiles = files.filter((f) => !f.isDeleted);
-  const docCount = activeFiles.filter((f) => f.fileType === "word" || f.fileType === "pdf" || f.fileType === "pptx").length;
-  const imageCount = activeFiles.filter((f) => f.fileType === "image").length;
-  const favCount = activeFiles.filter((f) => f.isFavorite).length;
-  const totalSize = activeFiles.reduce((acc, f) => acc + f.fileSize, 0);
-
-  const formatSize = (bytes: number) => {
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-  };
+  const activeFiles = useMemo(() => files.filter((f) => !f.isDeleted), [files]);
+  const docCount = useMemo(() => activeFiles.filter((f) => f.fileType === "word" || f.fileType === "pdf" || f.fileType === "pptx").length, [activeFiles]);
+  const imageCount = useMemo(() => activeFiles.filter((f) => f.fileType === "image").length, [activeFiles]);
+  const favCount = useMemo(() => activeFiles.filter((f) => f.isFavorite).length, [activeFiles]);
+  const totalSize = useMemo(() => activeFiles.reduce((acc, f) => acc + f.fileSize, 0), [activeFiles]);
 
   const handleStatClick = (filterType: string | null) => {
     setFileTypeFilter(filterType);
@@ -528,7 +523,7 @@ function SearchView() {
   const [searchTrigger, setSearchTrigger] = useState(0);
   const [previewFile, setPreviewFile] = useState<FileData | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
-  const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Sync from store (e.g. when navigating from header search)
   useEffect(() => {

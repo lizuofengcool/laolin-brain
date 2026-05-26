@@ -1,5 +1,6 @@
 "use client";
 
+import React, { memo } from "react";
 import type { FileData } from "@/lib/storage/base";
 import {
   Star,
@@ -40,7 +41,19 @@ interface FileCardProps {
   onPreview: (file: FileData) => void;
 }
 
-export function FileCard({ file, onPreview }: FileCardProps) {
+const areFileCardPropsEqual = (prev: FileCardProps, next: FileCardProps) => {
+  const f1 = prev.file, f2 = next.file;
+  if (f1.id !== f2.id || f1.fileName !== f2.fileName || f1.fileType !== f2.fileType ||
+      f1.fileSize !== f2.fileSize || f1.thumbnailUrl !== f2.thumbnailUrl ||
+      f1.isFavorite !== f2.isFavorite || prev.onPreview !== next.onPreview) return false;
+  if (f1.tags.length !== f2.tags.length) return false;
+  for (let i = 0; i < f1.tags.length; i++) {
+    if (f1.tags[i] !== f2.tags[i]) return false;
+  }
+  return true;
+};
+
+export const FileCard = memo(function FileCard({ file, onPreview }: FileCardProps) {
   const {
     tagDialogOpen, setTagDialogOpen, tagInput, setTagInput,
     folderDialogOpen, setFolderDialogOpen, selectedFolderId, setSelectedFolderId,
@@ -84,7 +97,7 @@ export function FileCard({ file, onPreview }: FileCardProps) {
                   "h-6 w-6 rounded-md border-2 flex items-center justify-center transition-colors",
                   isSelected
                     ? "bg-primary border-primary text-primary-foreground"
-                    : "bg-white/80 border-muted-foreground/40"
+                    : "bg-background/80 border-muted-foreground/40"
                 )}
               >
                 {isSelected && <Check className="h-4 w-4" />}
@@ -249,7 +262,7 @@ export function FileCard({ file, onPreview }: FileCardProps) {
       />
     </>
   );
-}
+}, areFileCardPropsEqual);
 
 // Shared dialog components
 function FileActionDialogs({
@@ -382,7 +395,7 @@ function FileActionDialogs({
 }
 
 // List item variant
-export function FileListItem({ file, onPreview }: FileCardProps) {
+export const FileListItem = memo(function FileListItem({ file, onPreview }: FileCardProps) {
   const {
     tagDialogOpen, setTagDialogOpen, tagInput, setTagInput,
     folderDialogOpen, setFolderDialogOpen, selectedFolderId, setSelectedFolderId,
@@ -504,4 +517,4 @@ export function FileListItem({ file, onPreview }: FileCardProps) {
       />
     </>
   );
-}
+}, areFileCardPropsEqual);

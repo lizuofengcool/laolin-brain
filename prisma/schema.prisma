@@ -32,6 +32,9 @@ model File {
   folderId     String?
   tags         String   @default("")
   isFavorite   Boolean  @default(false)
+  isDeleted    Boolean  @default(false)
+  deletedAt    DateTime?
+  fileHash     String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)

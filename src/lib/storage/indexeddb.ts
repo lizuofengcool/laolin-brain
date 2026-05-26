@@ -229,7 +229,8 @@ export class IndexedDBAdapter implements StorageAdapter {
   private async generateThumbnail(file: File): Promise<string> {
     try {
       return await compressImageViaCanvas(file, 300, 300, 0.7);
-    } catch {
+    } catch (err) {
+      console.error("Thumbnail generation failed, falling back to original file:", err);
       // Fallback: use original file as thumbnail (not ideal but works)
       try {
         return URL.createObjectURL(file);

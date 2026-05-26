@@ -1,5 +1,6 @@
 "use client";
 
+import React, { memo } from "react";
 import {
   Card,
   CardContent,
@@ -19,7 +20,7 @@ interface StatsCardProps {
   onClick?: () => void;
 }
 
-export function StatsCard({
+export const StatsCard = memo(function StatsCard({
   title,
   value,
   icon: Icon,
@@ -52,4 +53,4 @@ export function StatsCard({
       </CardContent>
     </Card>
   );
-}
+});
