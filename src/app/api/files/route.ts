@@ -1,10 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { writeFile, mkdir } from "fs/promises";
+import { writeFile, mkdir, readFile } from "fs/promises";
 import path from "path";
 import { parseWord } from "@/lib/parser/word";
 import { parsePdf } from "@/lib/parser/pdf";
 import { generateThumbnail } from "@/lib/parser/image";
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -39,10 +48,7 @@ export async function POST(request: NextRequest) {
       file.name.endsWith(".docx")
     )
       fileType = "word";
-    else if (
-      file.type === "application/pdf" ||
-      file.name.endsWith(".pdf")
-    )
+    else if (file.type === "application/pdf" || file.name.endsWith(".pdf"))
       fileType = "pdf";
 
     const buffer = Buffer.from(await file.arrayBuffer());
@@ -52,6 +58,8 @@ export async function POST(request: NextRequest) {
 
     // Extract text content
     let textContent: string | undefined;
+    let tags: string[] = [];
+
     try {
       if (fileType === "word") {
         textContent = await parseWord(buffer);
@@ -66,6 +74,28 @@ export async function POST(request: NextRequest) {
     let thumbnailUrl: string | undefined;
     if (fileType === "image") {
       thumbnailUrl = await generateThumbnail(buffer, file.name);
+
+      // AI processing for images (OCR + description) - fire and forget
+      try {
+        const base64 = arrayBufferToBase64(buffer);
+        const aiRes = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || ""}/api/ai/process-image`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageBase64: base64 }),
+        });
+
+        if (aiRes.ok) {
+          const aiData = await aiRes.json();
+          if (aiData.ocrText) {
+            textContent = aiData.ocrText;
+          }
+          if (aiData.tags && aiData.tags.length > 0) {
+            tags = aiData.tags;
+          }
+        }
+      } catch (e) {
+        console.error("AI image processing failed:", e);
+      }
     }
 
     const fileRecord = await db.file.create({
@@ -78,6 +108,7 @@ export async function POST(request: NextRequest) {
         textContent,
         thumbnailUrl,
         storageMode: "cloud",
+        tags: JSON.stringify(tags),
       },
     });
 
@@ -89,6 +120,7 @@ export async function POST(request: NextRequest) {
       filePath: fileRecord.filePath,
       textContent: fileRecord.textContent,
       thumbnailUrl: fileRecord.thumbnailUrl,
+      tags: tags,
     });
   } catch (error) {
     console.error("Upload error:", error);

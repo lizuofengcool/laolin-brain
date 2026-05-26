@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
-import { Upload, Cloud, HardDrive } from "lucide-react";
+import { Upload, Cloud, HardDrive, Sparkles, Loader2 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
 
@@ -10,9 +10,23 @@ interface UploadZoneProps {
   className?: string;
 }
 
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      const base64 = result.split(",")[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 export function UploadZone({ className }: UploadZoneProps) {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [aiStatus, setAiStatus] = useState("");
   const { user, storageMode, addFile, refreshFiles } = useAppStore();
 
   const onDrop = useCallback(
@@ -36,7 +50,7 @@ export function UploadZone({ className }: UploadZoneProps) {
             formData.append("file", file);
             formData.append("userId", user.id);
 
-            const res = await fetch("/api/files/upload", {
+            const res = await fetch("/api/files", {
               method: "POST",
               body: formData,
             });
@@ -53,7 +67,7 @@ export function UploadZone({ className }: UploadZoneProps) {
                 thumbnailUrl: data.thumbnailUrl,
                 storageMode: "cloud",
                 folderId: undefined,
-                tags: [],
+                tags: data.tags || [],
                 isFavorite: false,
                 createdAt: new Date(),
               });
@@ -66,20 +80,61 @@ export function UploadZone({ className }: UploadZoneProps) {
             resetAdapter();
             const adapter = getStorageAdapter("local");
             const result = await adapter.uploadFile(file, user.id);
-            addFile({
+
+            // AI processing for images in local mode
+            let aiTags: string[] = [];
+            let aiTextContent = result.textContent;
+
+            if (result.fileType === "image") {
+              try {
+                setAiStatus("AI 正在分析图片...");
+                const base64 = await fileToBase64(file);
+                const aiRes = await fetch("/api/ai/process-image", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ imageBase64: base64 }),
+                });
+
+                if (aiRes.ok) {
+                  const aiData = await aiRes.json();
+                  if (aiData.ocrText) {
+                    aiTextContent = aiData.ocrText;
+                  }
+                  if (aiData.tags && aiData.tags.length > 0) {
+                    aiTags = aiData.tags;
+                  }
+                }
+              } catch {
+                // AI processing failed, continue without AI data
+              }
+              setAiStatus("");
+            }
+
+            const fileData = {
               id: result.id,
               fileName: result.fileName,
               fileType: result.fileType,
               fileSize: result.fileSize,
               filePath: result.filePath,
-              textContent: result.textContent,
+              textContent: aiTextContent,
               thumbnailUrl: result.thumbnailUrl,
               storageMode: "local",
               folderId: undefined,
-              tags: [],
+              tags: aiTags,
               isFavorite: false,
-              createdAt: new Date(),
-            });
+              createdAt: new Date() as Date,
+            };
+
+            addFile(fileData);
+
+            // Persist AI results to IndexedDB
+            if (aiTags.length > 0 || aiTextContent) {
+              try {
+                await adapter.updateFile(result.id, { tags: aiTags, textContent: aiTextContent }, user.id);
+              } catch {
+                // ignore
+              }
+            }
           }
         } catch (err) {
           console.error("Upload failed:", err);
@@ -91,6 +146,7 @@ export function UploadZone({ className }: UploadZoneProps) {
 
       setUploading(false);
       setProgress(0);
+      setAiStatus("");
       refreshFiles();
     },
     [user, storageMode, addFile, refreshFiles]
@@ -130,6 +186,13 @@ export function UploadZone({ className }: UploadZoneProps) {
               />
             </div>
           </div>
+          {aiStatus && (
+            <div className="flex items-center justify-center gap-2 text-xs text-primary">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              <Sparkles className="h-3 w-3" />
+              {aiStatus}
+            </div>
+          )}
         </div>
       ) : (
         <div className="space-y-3">

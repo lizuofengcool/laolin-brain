@@ -16,6 +16,7 @@ import { FilePreview } from "@/components/files/FilePreview";
 import { SearchBar } from "@/components/search/SearchBar";
 import { SearchResults } from "@/components/search/SearchResults";
 import { StorageSwitch } from "@/components/settings/StorageSwitch";
+import { AIChatPanel } from "@/components/ai/AIChatPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -207,7 +208,7 @@ function FilesView() {
 
 // ─── Search View ─────────────────────────────────────────────
 function SearchView() {
-  const { searchQuery, setSearchQuery } = useAppStore();
+  const { searchQuery, setSearchQuery, aiChatFile, setAiChatFile } = useAppStore();
   const [localQuery, setLocalQuery] = useState(searchQuery);
   const [searchTrigger, setSearchTrigger] = useState(0);
   const [previewFile, setPreviewFile] = useState<FileData | null>(null);
@@ -245,6 +246,8 @@ function SearchView() {
         open={previewOpen}
         onClose={() => setPreviewOpen(false)}
       />
+
+      <AIChatPanel open={!!aiChatFile} onOpenChange={(open) => { if (!open) setAiChatFile(null); }} />
     </div>
   );
 }
@@ -328,6 +331,8 @@ export default function Home() {
     currentView,
     isAuthenticated,
     hydrateAuth,
+    aiChatFile,
+    setAiChatFile,
   } = useAppStore();
   const [mounted, setMounted] = useState(false);
 
@@ -337,6 +342,9 @@ export default function Home() {
     const id = requestAnimationFrame(() => setMounted(true));
     return () => cancelAnimationFrame(id);
   }, [hydrateAuth]);
+
+  // AI chat panel open state derived from aiChatFile
+  const aiChatOpen = !!aiChatFile;
 
   if (!mounted) {
     return (
@@ -351,7 +359,6 @@ export default function Home() {
     return <LoginView />;
   }
 
-  // Authenticated - show main app
   const viewMap: Record<ViewType, React.ReactNode> = {
     dashboard: <DashboardView />,
     files: <FilesView />,
@@ -376,6 +383,9 @@ export default function Home() {
 
       {/* Mobile nav */}
       <MobileNav />
+
+      {/* Global AI Chat Panel */}
+      <AIChatPanel open={aiChatOpen} onOpenChange={(open) => { if (!open) setAiChatFile(null); }} />
     </div>
   );
 }

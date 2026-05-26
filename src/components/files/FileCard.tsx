@@ -10,6 +10,7 @@ import {
   Trash2,
   Tag,
   FolderInput,
+  Sparkles,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -47,7 +48,13 @@ const formatSize = (bytes: number): string => {
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 };
 
-function FileIconDisplay({ fileType, className }: { fileType: string; className?: string }) {
+function FileIconDisplay({
+  fileType,
+  className,
+}: {
+  fileType: string;
+  className?: string;
+}) {
   if (fileType === "word") return <FileText className={className} />;
   if (fileType === "image") return <ImageIcon className={className} />;
   if (fileType === "pdf") return <File className={className} />;
@@ -55,7 +62,7 @@ function FileIconDisplay({ fileType, className }: { fileType: string; className?
 }
 
 export function FileCard({ file, onPreview }: FileCardProps) {
-  const { toggleFavorite, deleteFile } = useAppStore();
+  const { toggleFavorite, deleteFile, setAiChatFile } = useAppStore();
   const colorClass = getFileColor(file.fileType);
 
   const handleFavorite = (e: React.MouseEvent) => {
@@ -68,6 +75,15 @@ export function FileCard({ file, onPreview }: FileCardProps) {
       await deleteFile(file.id);
     }
   };
+
+  const handleAIChat = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setAiChatFile(file);
+  };
+
+  const hasAITags = file.tags && file.tags.length > 0;
+  const hasAITextContent =
+    file.textContent && file.fileType === "image" && file.textContent.trim().length > 0;
 
   return (
     <Card
@@ -90,8 +106,26 @@ export function FileCard({ file, onPreview }: FileCardProps) {
             className="w-full h-full object-cover"
           />
         ) : (
-          <div className={cn("h-14 w-14 rounded-xl flex items-center justify-center", colorClass)}>
+          <div
+            className={cn(
+              "h-14 w-14 rounded-xl flex items-center justify-center",
+              colorClass
+            )}
+          >
             <FileIconDisplay fileType={file.fileType} className="h-7 w-7" />
+          </div>
+        )}
+
+        {/* AI badge */}
+        {hasAITags && (
+          <div className="absolute top-2 left-2">
+            <Badge
+              variant="secondary"
+              className="text-[10px] bg-primary/90 text-primary-foreground hover:bg-primary/90 gap-1"
+            >
+              <Sparkles className="h-2.5 w-2.5" />
+              AI
+            </Badge>
           </div>
         )}
 
@@ -131,6 +165,10 @@ export function FileCard({ file, onPreview }: FileCardProps) {
             <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onPreview(file); }}>
               预览
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={handleAIChat}>
+              <Sparkles className="h-4 w-4 mr-2" />
+              AI 解读
+            </DropdownMenuItem>
             <DropdownMenuItem>
               <Tag className="h-4 w-4 mr-2" />
               编辑标签
@@ -162,23 +200,30 @@ export function FileCard({ file, onPreview }: FileCardProps) {
           </span>
           <div className="flex gap-1">
             {file.tags.slice(0, 2).map((tag) => (
-              <Badge key={tag} variant="secondary" className="text-[10px] px-1.5 py-0">
+              <Badge
+                key={tag}
+                variant="secondary"
+                className="text-[10px] px-1.5 py-0"
+              >
                 {tag}
               </Badge>
             ))}
           </div>
         </div>
+        {/* AI OCR text preview */}
+        {hasAITextContent && (
+          <p className="text-[10px] text-muted-foreground mt-1 line-clamp-1">
+            {file.textContent!.slice(0, 50)}
+          </p>
+        )}
       </div>
     </Card>
   );
 }
 
 // List item variant
-export function FileListItem({
-  file,
-  onPreview,
-}: FileCardProps) {
-  const { toggleFavorite, deleteFile } = useAppStore();
+export function FileListItem({ file, onPreview }: FileCardProps) {
+  const { toggleFavorite, deleteFile, setAiChatFile } = useAppStore();
   const colorClass = getFileColor(file.fileType);
 
   const handleFavorite = (e: React.MouseEvent) => {
@@ -192,6 +237,13 @@ export function FileListItem({
     }
   };
 
+  const handleAIChat = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setAiChatFile(file);
+  };
+
+  const hasAITags = file.tags && file.tags.length > 0;
+
   return (
     <div
       className="flex items-center gap-3 p-3 rounded-lg hover:bg-muted/50 cursor-pointer transition-colors group"
@@ -204,13 +256,23 @@ export function FileListItem({
           className="h-10 w-10 rounded-md object-cover shrink-0"
         />
       ) : (
-        <div className={cn("h-10 w-10 rounded-lg flex items-center justify-center shrink-0", colorClass)}>
+        <div
+          className={cn(
+            "h-10 w-10 rounded-lg flex items-center justify-center shrink-0",
+            colorClass
+          )}
+        >
           <FileIconDisplay fileType={file.fileType} className="h-5 w-5" />
         </div>
       )}
 
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium truncate">{file.fileName}</p>
+        <div className="flex items-center gap-1.5">
+          <p className="text-sm font-medium truncate">{file.fileName}</p>
+          {hasAITags && (
+            <Sparkles className="h-3 w-3 text-primary shrink-0" />
+          )}
+        </div>
         <p className="text-xs text-muted-foreground">
           {formatSize(file.fileSize)} ·{" "}
           {new Date(file.createdAt).toLocaleDateString("zh-CN")}
@@ -219,7 +281,11 @@ export function FileListItem({
 
       <div className="flex items-center gap-2 shrink-0">
         {file.tags.slice(0, 2).map((tag) => (
-          <Badge key={tag} variant="secondary" className="text-[10px] px-1.5 py-0">
+          <Badge
+            key={tag}
+            variant="secondary"
+            className="text-[10px] px-1.5 py-0 hidden sm:inline-flex"
+          >
             {tag}
           </Badge>
         ))}
@@ -238,14 +304,32 @@ export function FileListItem({
             )}
           />
         </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 hidden sm:flex"
+          onClick={handleAIChat}
+        >
+          <Sparkles className="h-3.5 w-3.5 text-primary" />
+        </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 opacity-0 group-hover:opacity-100"
+            >
               <MoreVertical className="h-3.5 w-3.5" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => onPreview(file)}>预览</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onPreview(file)}>
+              预览
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={handleAIChat}>
+              <Sparkles className="h-4 w-4 mr-2" />
+              AI 解读
+            </DropdownMenuItem>
             <DropdownMenuItem
               className="text-destructive"
               onClick={handleDelete}

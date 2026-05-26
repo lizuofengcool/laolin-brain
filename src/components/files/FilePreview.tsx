@@ -17,9 +17,11 @@ import {
   Calendar,
   HardDrive,
   X,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useAppStore } from "@/stores/app-store";
 
 interface FilePreviewProps {
   file: FileData | null;
@@ -41,6 +43,8 @@ function FileIconDisplay({ fileType, className }: { fileType: string; className?
 }
 
 export function FilePreview({ file, open, onClose }: FilePreviewProps) {
+  const { setAiChatFile } = useAppStore();
+
   if (!file) return null;
 
   return (
@@ -122,6 +126,16 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
 
           {/* Actions */}
           <div className="flex gap-2 pt-2">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => {
+                setAiChatFile(file);
+              }}
+            >
+              <Sparkles className="h-4 w-4 mr-2" />
+              AI 解读
+            </Button>
             <Button variant="outline" className="flex-1" disabled>
               <Download className="h-4 w-4 mr-2" />
               下载

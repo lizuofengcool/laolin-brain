@@ -54,6 +54,12 @@ interface AppState {
   folders: FolderItem[];
   setFolders: (folders: FolderItem[]) => void;
   refreshFolders: () => Promise<void>;
+
+  // AI
+  aiProcessing: boolean;
+  setAiProcessing: (v: boolean) => void;
+  aiChatFile: FileData | null;
+  setAiChatFile: (file: FileData | null) => void;
 }
 
 export interface FolderItem {
@@ -168,6 +174,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const adapter = getStorageAdapter(storageMode);
     adapter.updateFile(id, { isFavorite: newVal }, user.id).catch(console.error);
   },
+
+  // AI
+  aiProcessing: false,
+  setAiProcessing: (v) => set({ aiProcessing: v }),
+  aiChatFile: null,
+  setAiChatFile: (file) => set({ aiChatFile: file }),
 
   // UI
   sidebarOpen: true,
