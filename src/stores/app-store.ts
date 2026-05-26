@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { FileData } from "@/lib/storage/base";
 import { getStorageAdapter, resetAdapter } from "@/lib/storage/factory";
 
-export type ViewType = "login" | "dashboard" | "files" | "search" | "settings" | "timeline" | "favorites" | "recycleBin";
+export type ViewType = "login" | "dashboard" | "files" | "search" | "settings" | "timeline" | "favorites" | "recycleBin" | "albums" | "tags";
 
 export interface UserInfo {
   id: string;
@@ -53,6 +53,11 @@ interface AppState {
   // File type filter (for dashboard stat click navigation)
   fileTypeFilter: string | null;
   setFileTypeFilter: (filter: string | null) => void;
+
+  // Sort state
+  sortBy: string;
+  sortOrder: "asc" | "desc";
+  setSort: (sortBy: string, sortOrder: "asc" | "desc") => void;
 
   // Batch operations
   batchMode: boolean;
@@ -301,6 +306,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   // File type filter
   fileTypeFilter: null,
   setFileTypeFilter: (filter) => set({ fileTypeFilter: filter }),
+
+  // Sort
+  sortBy: "date",
+  sortOrder: "desc" as const,
+  setSort: (sortBy, sortOrder) => set({ sortBy, sortOrder }),
 
   // Batch operations
   batchMode: false,

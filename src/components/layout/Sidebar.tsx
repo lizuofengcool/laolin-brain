@@ -12,6 +12,8 @@ import {
   CalendarDays,
   Star,
   Trash2,
+  ImageIcon,
+  Tag,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAppStore, type ViewType } from "@/stores/app-store";
@@ -22,8 +24,10 @@ import { Badge } from "@/components/ui/badge";
 const navItems: { icon: typeof LayoutDashboard; label: string; view: ViewType; badge?: () => number }[] = [
   { icon: LayoutDashboard, label: "仪表盘", view: "dashboard" },
   { icon: FolderOpen, label: "文件管理", view: "files" },
+  { icon: ImageIcon, label: "智能相册", view: "albums" },
   { icon: CalendarDays, label: "时间线", view: "timeline" },
   { icon: Star, label: "收藏夹", view: "favorites", badge: () => 0 },
+  { icon: Tag, label: "标签管理", view: "tags" },
   { icon: Trash2, label: "回收站", view: "recycleBin", badge: () => 0 },
   { icon: Search, label: "搜索", view: "search" },
   { icon: Settings, label: "设置", view: "settings" },

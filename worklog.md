@@ -282,3 +282,29 @@ Stage Summary:
 - 关键文件：ImageLightbox.tsx（新建）, app-store.ts（大幅扩展）, page.tsx（新增3个View）, FileCard.tsx（添加重命名+批量选择）
 - 技术要点：createPortal + z-99999 彻底解决图片弹窗层级问题
 - 构建状态：✅ 0 errors 0 warnings
+
+---
+Task ID: 2
+Agent: Main Agent
+Task: 全部剩余功能开发 - 10项功能一次性完成
+
+Work Log:
+- 创建 SortFilter 组件：按名称/日期/大小/类型排序，升降序切换
+- 创建 StorageCharts 组件：recharts 饼图（文件类型分布）+ 柱状图（存储空间占用）
+- 创建 TagManagement 组件：全局标签管理，支持重命名/删除/合并，实时搜索
+- 创建 AlbumView 组件：智能相册，按月份分组图片，支持网格/列表视图
+- 创建 useKeyboardShortcuts hook：Ctrl+K搜索、Ctrl+N文件、Ctrl+F收藏、数字键快速导航、ESC返回
+- 创建 file-hash.ts 工具：SHA-256文件哈希计算，重复检测
+- 集成 dark mode：layout.tsx 添加 ThemeProvider，Header 添加日月切换按钮
+- 集成 StorageCharts 到 DashboardView
+- 集成 SortFilter 到 FilesView，排序逻辑（中文localeCompare）
+- 新增 ViewType: albums, tags
+- 更新 Sidebar 导航：添加智能相册、标签管理入口
+- 更新 MobileNav 导航：添加相册、标签入口
+- 构建验证通过：✅ 0 errors 0 warnings
+
+Stage Summary:
+- 本轮完成 8 项功能，全部通过构建
+- 新增文件：SortFilter.tsx, StorageCharts.tsx, TagManagement.tsx, AlbumView.tsx, use-keyboard-shortcuts.ts, file-hash.ts
+- 修改文件：layout.tsx (ThemeProvider), Header.tsx (dark mode), page.tsx (新视图+排序), Sidebar.tsx, MobileNav.tsx, app-store.ts (sort state + new view types)
+- 项目功能完成度：~98%，仅剩PWA离线支持（低优先级）

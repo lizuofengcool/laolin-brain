@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { useAppStore, type ViewType } from "@/stores/app-store";
 import type { FileData } from "@/lib/storage/base";
 import { Sidebar } from "@/components/layout/Sidebar";
@@ -19,6 +19,11 @@ import { SearchResults } from "@/components/search/SearchResults";
 import { StorageSwitch } from "@/components/settings/StorageSwitch";
 import { AIChatPanel } from "@/components/ai/AIChatPanel";
 import { TimelineView } from "@/components/timeline/TimelineView";
+import { SortFilter } from "@/components/files/SortFilter";
+import StorageCharts from "@/components/dashboard/StorageCharts";
+import AlbumView from "@/components/album/AlbumView";
+import TagManagement from "@/components/tags/TagManagement";
+import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -40,6 +45,7 @@ import {
   X,
   Download,
   StarOff,
+  FolderInput,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -190,6 +196,9 @@ function DashboardView() {
         />
       </div>
 
+      {/* Charts */}
+      <StorageCharts files={activeFiles} />
+
       {/* Recent files */}
       <RecentFiles />
     </div>
@@ -212,6 +221,11 @@ function FilesView() {
     clearBatchSelection,
     batchToggleFavorite,
     batchDeleteFiles,
+    sortBy,
+    sortOrder,
+    setSort,
+    folders,
+    updateFile,
   } = useAppStore();
   const [previewFile, setPreviewFile] = useState<FileData | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -252,9 +266,31 @@ function FilesView() {
     filteredFiles = filteredFiles.filter((f) => f.tags.includes(tagFilter));
   }
 
+  // Sort files
+  const sortedFiles = useMemo(() => {
+    const sorted = [...filteredFiles];
+    const order = sortOrder === "asc" ? 1 : -1;
+    switch (sortBy) {
+      case "name":
+        sorted.sort((a, b) => order * a.fileName.localeCompare(b.fileName, "zh-CN"));
+        break;
+      case "size":
+        sorted.sort((a, b) => order * (a.fileSize - b.fileSize));
+        break;
+      case "type":
+        sorted.sort((a, b) => order * a.fileType.localeCompare(b.fileType));
+        break;
+      case "date":
+      default:
+        sorted.sort((a, b) => order * (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()));
+        break;
+    }
+    return sorted;
+  }, [filteredFiles, sortBy, sortOrder]);
+
   // Pagination
-  const visibleFiles = filteredFiles.slice(0, visibleCount);
-  const hasMore = visibleCount < filteredFiles.length;
+  const visibleFiles = sortedFiles.slice(0, visibleCount);
+  const hasMore = visibleCount < sortedFiles.length;
 
   // Collect all tags
   const allTags = [...new Set(files.filter((f) => !f.isDeleted).flatMap((f) => f.tags))];
@@ -418,7 +454,16 @@ function FilesView() {
 
         {/* File grid */}
         <div className="flex-1 min-w-0">
-          <FileGrid files={visibleFiles} onPreview={handlePreview} />
+          <SortFilter
+            sortBy={sortBy}
+            sortOrder={sortOrder}
+            onSortChange={setSort}
+            totalFiles={files.filter((f) => !f.isDeleted).length}
+            filteredCount={sortedFiles.length}
+          />
+          <div className="mt-3">
+            <FileGrid files={visibleFiles} onPreview={handlePreview} />
+          </div>
 
           {hasMore && (
             <div className="flex justify-center mt-6">
@@ -426,7 +471,7 @@ function FilesView() {
                 variant="outline"
                 onClick={() => setVisibleCount((prev) => prev + 20)}
               >
-                加载更多（剩余 {filteredFiles.length - visibleCount} 个文件）
+                加载更多（剩余 {sortedFiles.length - visibleCount} 个文件）
               </Button>
             </div>
           )}
@@ -829,6 +874,9 @@ export default function Home() {
   } = useAppStore();
   const [mounted, setMounted] = useState(false);
 
+  // Register global keyboard shortcuts
+  useKeyboardShortcuts();
+
   useEffect(() => {
     hydrateAuth();
     const id = requestAnimationFrame(() => setMounted(true));
@@ -893,6 +941,18 @@ export default function Home() {
         return (
           <motion.div key="recycleBin" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
             <RecycleBinView />
+          </motion.div>
+        );
+      case "albums":
+        return (
+          <motion.div key="albums" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
+            <AlbumView />
+          </motion.div>
+        );
+      case "tags":
+        return (
+          <motion.div key="tags" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
+            <TagManagement />
           </motion.div>
         );
       default:
