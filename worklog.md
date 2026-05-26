@@ -250,3 +250,35 @@
 - framer-motion `AnimatePresence mode="wait"` 实现页面切换动画
 - 文件夹操作同时更新 Zustand store 和后端存储，保持数据同步
 - 侧边栏最近文件在 sidebarOpen 时展示，折叠时隐藏
+
+---
+Task ID: 1
+Agent: Main Agent
+Task: 本轮开发 - 修复图片弹窗z-index + 首页统计跳转 + 新增6大功能模块
+
+Work Log:
+- 创建 ImageLightbox.tsx 组件，使用 createPortal 渲染到 document.body，z-index: 99999
+  - 支持鼠标滚轮缩放、拖拽平移、双击放大、旋转、全屏切换
+  - 支持键盘快捷键（ESC关闭、左右箭头切换、+/-缩放）
+  - 支持触屏双指缩放、滑动平移
+  - 多图导航（上一张/下一张）+ 底部缩略图条
+  - 下载当前图片功能
+- 更新 StatsCard 添加 onClick 可点击跳转
+- DashboardView 统计卡片点击后导航到文件管理页并按类型筛选（文档/图片/收藏）
+- 新增文件重命名功能（FileCard 下拉菜单 + Rename Dialog）
+- 新增批量操作模式（全选/取消全选/批量收藏/批量删除）
+- 新增回收站功能（软删除 isDeleted + 恢复 + 永久删除 + 清空回收站）
+- 新增收藏夹页面（独立的 FavoritesView）
+- 新增数据导出功能（设置页导出 JSON 格式的文件元数据）
+- 更新侧边栏和移动端导航（添加收藏夹、回收站入口）
+- 更新 Zustand store 添加所有新状态和 actions
+- 更新 FileData 接口添加 isDeleted、deletedAt 字段
+- 图片点击直接进入全屏灯箱模式（不再先弹小对话框）
+- FilePreview 中图片添加"放大查看"按钮和点击放大提示
+- 构建验证通过：0 errors 0 warnings
+
+Stage Summary:
+- 本轮实现 7 个主要功能模块，修复 2 个长期问题
+- 关键文件：ImageLightbox.tsx（新建）, app-store.ts（大幅扩展）, page.tsx（新增3个View）, FileCard.tsx（添加重命名+批量选择）
+- 技术要点：createPortal + z-99999 彻底解决图片弹窗层级问题
+- 构建状态：✅ 0 errors 0 warnings

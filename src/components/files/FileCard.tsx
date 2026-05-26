@@ -9,6 +9,9 @@ import {
   Tag,
   FolderInput,
   Sparkles,
+  Pencil,
+  Check,
+  Maximize2,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -44,7 +47,7 @@ interface FileCardProps {
 }
 
 export function FileCard({ file, onPreview }: FileCardProps) {
-  const { toggleFavorite, deleteFile, setAiChatFile, updateFile, folders, refreshFolders } = useAppStore();
+  const { toggleFavorite, softDeleteFile, setAiChatFile, updateFile, folders, refreshFolders, renameFile, batchMode, batchSelectedIds, toggleBatchSelect, openLightbox, files } = useAppStore();
   const colorClass = getFileColor(file.fileType);
 
   // Edit tags dialog
@@ -55,14 +58,18 @@ export function FileCard({ file, onPreview }: FileCardProps) {
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(file.folderId || null);
 
+  // Rename dialog
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  const [renameInput, setRenameInput] = useState(file.fileName);
+
   const handleFavorite = (e: React.MouseEvent) => {
     e.stopPropagation();
     toggleFavorite(file.id);
   };
 
   const handleDelete = async () => {
-    if (confirm("确定要删除这个文件吗？")) {
-      await deleteFile(file.id);
+    if (confirm("确定要删除这个文件吗？文件将移入回收站。")) {
+      await softDeleteFile(file.id);
     }
   };
 
@@ -83,7 +90,6 @@ export function FileCard({ file, onPreview }: FileCardProps) {
       .map((t) => t.trim())
       .filter((t) => t.length > 0);
     updateFile(file.id, { tags: newTags });
-    // Persist
     const { user, storageMode } = useAppStore.getState();
     if (user) {
       const adapter = getStorageAdapter(storageMode);
@@ -95,14 +101,12 @@ export function FileCard({ file, onPreview }: FileCardProps) {
   const handleMoveToFolder = (e: React.MouseEvent) => {
     e.stopPropagation();
     setSelectedFolderId(file.folderId || null);
-    // Refresh folders
     refreshFolders();
     setFolderDialogOpen(true);
   };
 
   const handleSaveFolder = () => {
     updateFile(file.id, { folderId: selectedFolderId || undefined });
-    // Persist
     const { user, storageMode } = useAppStore.getState();
     if (user) {
       const adapter = getStorageAdapter(storageMode);
@@ -111,9 +115,43 @@ export function FileCard({ file, onPreview }: FileCardProps) {
     setFolderDialogOpen(false);
   };
 
+  const handleRename = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRenameInput(file.fileName);
+    setRenameDialogOpen(true);
+  };
+
+  const handleSaveRename = async () => {
+    if (!renameInput.trim()) return;
+    // Keep the same extension
+    const ext = file.fileName.includes(".") ? "." + file.fileName.split(".").pop() : "";
+    const nameWithoutExt = renameInput.trim().replace(/\.[^.]+$/, "");
+    const newName = nameWithoutExt + ext;
+    await renameFile(file.id, newName);
+    setRenameDialogOpen(false);
+  };
+
+  const handleOpenLightbox = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const allImages = files.filter((f) => f.fileType === "image" && !f.isDeleted && f.thumbnailUrl);
+    const currentIndex = allImages.findIndex((f) => f.id === file.id);
+    openLightbox(allImages, currentIndex >= 0 ? currentIndex : 0);
+  };
+
+  const handleCardClick = () => {
+    if (batchMode) {
+      toggleBatchSelect(file.id);
+    } else if (file.fileType === "image" && file.thumbnailUrl) {
+      handleOpenLightbox({ stopPropagation: () => {} } as React.MouseEvent);
+    } else {
+      onPreview(file);
+    }
+  };
+
   const hasAITags = file.tags && file.tags.length > 0;
   const hasAITextContent =
     file.textContent && file.fileType === "image" && file.textContent.trim().length > 0;
+  const isSelected = batchSelectedIds.includes(file.id);
 
   return (
     <>
@@ -122,9 +160,28 @@ export function FileCard({ file, onPreview }: FileCardProps) {
         transition={{ duration: 0.2 }}
       >
         <Card
-          className="group cursor-pointer hover:shadow-md transition-all duration-200 overflow-hidden"
-          onClick={() => onPreview(file)}
+          className={cn(
+            "group cursor-pointer hover:shadow-md transition-all duration-200 overflow-hidden relative",
+            batchMode && isSelected && "ring-2 ring-primary ring-offset-2"
+          )}
+          onClick={handleCardClick}
         >
+          {/* Batch checkbox overlay */}
+          {batchMode && (
+            <div className="absolute top-2 left-2 z-10">
+              <div
+                className={cn(
+                  "h-6 w-6 rounded-md border-2 flex items-center justify-center transition-colors",
+                  isSelected
+                    ? "bg-primary border-primary text-primary-foreground"
+                    : "bg-white/80 border-muted-foreground/40"
+                )}
+              >
+                {isSelected && <Check className="h-4 w-4" />}
+              </div>
+            </div>
+          )}
+
           {/* Preview area */}
           <div
             className={cn(
@@ -165,65 +222,79 @@ export function FileCard({ file, onPreview }: FileCardProps) {
             )}
 
             {/* Favorite button */}
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn(
-                "absolute top-2 right-2 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity bg-background/80",
-                file.isFavorite && "opacity-100"
-              )}
-              onClick={handleFavorite}
-            >
-              <Star
+            {!batchMode && (
+              <Button
+                variant="ghost"
+                size="icon"
                 className={cn(
-                  "h-4 w-4",
-                  file.isFavorite
-                    ? "fill-yellow-400 text-yellow-400"
-                    : "text-muted-foreground"
+                  "absolute top-2 right-2 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity bg-background/80",
+                  file.isFavorite && "opacity-100"
                 )}
-              />
-            </Button>
+                onClick={handleFavorite}
+              >
+                <Star
+                  className={cn(
+                    "h-4 w-4",
+                    file.isFavorite
+                      ? "fill-yellow-400 text-yellow-400"
+                      : "text-muted-foreground"
+                  )}
+                />
+              </Button>
+            )}
 
             {/* More actions */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute top-2 right-10 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity bg-background/80"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <MoreVertical className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onPreview(file); }}>
-                  预览
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleAIChat}>
-                  <Sparkles className="h-4 w-4 mr-2" />
-                  AI 解读
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleEditTags}>
-                  <Tag className="h-4 w-4 mr-2" />
-                  编辑标签
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleMoveToFolder}>
-                  <FolderInput className="h-4 w-4 mr-2" />
-                  移动到文件夹
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="text-destructive"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDelete();
-                  }}
-                >
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  删除
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            {!batchMode && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="absolute top-2 right-10 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity bg-background/80"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <MoreVertical className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onPreview(file); }}>
+                    预览
+                  </DropdownMenuItem>
+                  {file.fileType === "image" && file.thumbnailUrl && (
+                    <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleOpenLightbox(e); }}>
+                      <Maximize2 className="h-4 w-4 mr-2" />
+                      放大查看
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem onClick={handleAIChat}>
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    AI 解读
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleEditTags}>
+                    <Tag className="h-4 w-4 mr-2" />
+                    编辑标签
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleRename}>
+                    <Pencil className="h-4 w-4 mr-2" />
+                    重命名
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleMoveToFolder}>
+                    <FolderInput className="h-4 w-4 mr-2" />
+                    移动到文件夹
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    className="text-destructive"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelete();
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    删除
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
 
           {/* Info area */}
@@ -289,6 +360,32 @@ export function FileCard({ file, onPreview }: FileCardProps) {
         </DialogContent>
       </Dialog>
 
+      {/* Rename Dialog */}
+      <Dialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>重命名文件</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <Label>新文件名</Label>
+            <Input
+              value={renameInput}
+              onChange={(e) => setRenameInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSaveRename();
+              }}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRenameDialogOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={handleSaveRename}>确认</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Move to Folder Dialog */}
       <Dialog open={folderDialogOpen} onOpenChange={setFolderDialogOpen}>
         <DialogContent className="sm:max-w-md">
@@ -342,7 +439,7 @@ export function FileCard({ file, onPreview }: FileCardProps) {
 
 // List item variant
 export function FileListItem({ file, onPreview }: FileCardProps) {
-  const { toggleFavorite, deleteFile, setAiChatFile, updateFile, folders, refreshFolders } = useAppStore();
+  const { toggleFavorite, softDeleteFile, setAiChatFile, updateFile, folders, refreshFolders, renameFile, batchMode, batchSelectedIds, toggleBatchSelect, openLightbox, files } = useAppStore();
   const colorClass = getFileColor(file.fileType);
 
   // Edit tags dialog
@@ -353,14 +450,18 @@ export function FileListItem({ file, onPreview }: FileCardProps) {
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(file.folderId || null);
 
+  // Rename dialog
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  const [renameInput, setRenameInput] = useState(file.fileName);
+
   const handleFavorite = (e: React.MouseEvent) => {
     e.stopPropagation();
     toggleFavorite(file.id);
   };
 
   const handleDelete = async () => {
-    if (confirm("确定要删除这个文件吗？")) {
-      await deleteFile(file.id);
+    if (confirm("确定要删除这个文件吗？文件将移入回收站。")) {
+      await softDeleteFile(file.id);
     }
   };
 
@@ -404,14 +505,64 @@ export function FileListItem({ file, onPreview }: FileCardProps) {
     setFolderDialogOpen(false);
   };
 
+  const handleRename = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRenameInput(file.fileName);
+    setRenameDialogOpen(true);
+  };
+
+  const handleSaveRename = async () => {
+    if (!renameInput.trim()) return;
+    const ext = file.fileName.includes(".") ? "." + file.fileName.split(".").pop() : "";
+    const nameWithoutExt = renameInput.trim().replace(/\.[^.]+$/, "");
+    const newName = nameWithoutExt + ext;
+    await renameFile(file.id, newName);
+    setRenameDialogOpen(false);
+  };
+
+  const handleOpenLightbox = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const allImages = files.filter((f) => f.fileType === "image" && !f.isDeleted && f.thumbnailUrl);
+    const currentIndex = allImages.findIndex((f) => f.id === file.id);
+    openLightbox(allImages, currentIndex >= 0 ? currentIndex : 0);
+  };
+
+  const handleItemClick = () => {
+    if (batchMode) {
+      toggleBatchSelect(file.id);
+    } else if (file.fileType === "image" && file.thumbnailUrl) {
+      handleOpenLightbox({ stopPropagation: () => {} } as React.MouseEvent);
+    } else {
+      onPreview(file);
+    }
+  };
+
   const hasAITags = file.tags && file.tags.length > 0;
+  const isSelected = batchSelectedIds.includes(file.id);
 
   return (
     <>
       <div
-        className="flex items-center gap-3 p-3 rounded-lg hover:bg-muted/50 cursor-pointer transition-colors group"
-        onClick={() => onPreview(file)}
+        className={cn(
+          "flex items-center gap-3 p-3 rounded-lg hover:bg-muted/50 cursor-pointer transition-colors group",
+          batchMode && isSelected && "bg-primary/5 ring-1 ring-primary"
+        )}
+        onClick={handleItemClick}
       >
+        {/* Batch checkbox */}
+        {batchMode && (
+          <div
+            className={cn(
+              "h-5 w-5 rounded border-2 flex items-center justify-center shrink-0 transition-colors",
+              isSelected
+                ? "bg-primary border-primary text-primary-foreground"
+                : "border-muted-foreground/40"
+            )}
+          >
+            {isSelected && <Check className="h-3 w-3" />}
+          </div>
+        )}
+
         {file.fileType === "image" && file.thumbnailUrl ? (
           <img
             src={file.thumbnailUrl}
@@ -452,64 +603,77 @@ export function FileListItem({ file, onPreview }: FileCardProps) {
               {tag}
             </Badge>
           ))}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            onClick={handleFavorite}
-          >
-            <Star
-              className={cn(
-                "h-3.5 w-3.5",
-                file.isFavorite
-                  ? "fill-yellow-400 text-yellow-400"
-                  : "text-muted-foreground"
-              )}
-            />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 hidden sm:flex"
-            onClick={handleAIChat}
-          >
-            <Sparkles className="h-3.5 w-3.5 text-primary" />
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
+          {!batchMode && (
+            <>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7 opacity-0 group-hover:opacity-100"
+                className="h-7 w-7"
+                onClick={handleFavorite}
               >
-                <MoreVertical className="h-3.5 w-3.5" />
+                <Star
+                  className={cn(
+                    "h-3.5 w-3.5",
+                    file.isFavorite
+                      ? "fill-yellow-400 text-yellow-400"
+                      : "text-muted-foreground"
+                  )}
+                />
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => onPreview(file)}>
-                预览
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleAIChat}>
-                <Sparkles className="h-4 w-4 mr-2" />
-                AI 解读
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleEditTags}>
-                <Tag className="h-4 w-4 mr-2" />
-                编辑标签
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleMoveToFolder}>
-                <FolderInput className="h-4 w-4 mr-2" />
-                移动到文件夹
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                className="text-destructive"
-                onClick={handleDelete}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 hidden sm:flex"
+                onClick={handleAIChat}
               >
-                <Trash2 className="h-4 w-4 mr-2" />
-                删除
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+                <Sparkles className="h-3.5 w-3.5 text-primary" />
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 opacity-0 group-hover:opacity-100"
+                  >
+                    <MoreVertical className="h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => onPreview(file)}>
+                    预览
+                  </DropdownMenuItem>
+                  {file.fileType === "image" && file.thumbnailUrl && (
+                    <DropdownMenuItem onClick={handleOpenLightbox}>
+                      放大查看
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem onClick={handleAIChat}>
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    AI 解读
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleEditTags}>
+                    <Tag className="h-4 w-4 mr-2" />
+                    编辑标签
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleRename}>
+                    <Pencil className="h-4 w-4 mr-2" />
+                    重命名
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleMoveToFolder}>
+                    <FolderInput className="h-4 w-4 mr-2" />
+                    移动到文件夹
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    className="text-destructive"
+                    onClick={handleDelete}
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    删除
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </>
+          )}
         </div>
       </div>
 
@@ -543,6 +707,32 @@ export function FileListItem({ file, onPreview }: FileCardProps) {
               取消
             </Button>
             <Button onClick={handleSaveTags}>保存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Rename Dialog */}
+      <Dialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>重命名文件</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <Label>新文件名</Label>
+            <Input
+              value={renameInput}
+              onChange={(e) => setRenameInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSaveRename();
+              }}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRenameDialogOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={handleSaveRename}>确认</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

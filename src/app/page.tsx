@@ -13,6 +13,7 @@ import { FileGrid } from "@/components/files/FileGrid";
 import { FolderTree } from "@/components/files/FolderTree";
 import { UploadZone } from "@/components/files/UploadZone";
 import { FilePreview } from "@/components/files/FilePreview";
+import { ImageLightbox } from "@/components/files/ImageLightbox";
 import { SearchBar } from "@/components/search/SearchBar";
 import { SearchResults } from "@/components/search/SearchResults";
 import { StorageSwitch } from "@/components/settings/StorageSwitch";
@@ -32,6 +33,13 @@ import {
   User,
   Mail,
   Shield,
+  Trash2,
+  RotateCcw,
+  CheckSquare,
+  Square,
+  X,
+  Download,
+  StarOff,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -104,19 +112,25 @@ function LoginView() {
 
 // ─── Dashboard View ──────────────────────────────────────────
 function DashboardView() {
-  const { files, user } = useAppStore();
+  const { files, user, setCurrentView, setFileTypeFilter } = useAppStore();
 
-  const docCount = files.filter((f) => f.fileType === "word" || f.fileType === "pdf" || f.fileType === "pptx").length;
-  const imageCount = files.filter((f) => f.fileType === "image").length;
-  const favCount = files.filter((f) => f.isFavorite).length;
-  const totalSize = files.reduce((acc, f) => acc + f.fileSize, 0);
+  const activeFiles = files.filter((f) => !f.isDeleted);
+  const docCount = activeFiles.filter((f) => f.fileType === "word" || f.fileType === "pdf" || f.fileType === "pptx").length;
+  const imageCount = activeFiles.filter((f) => f.fileType === "image").length;
+  const favCount = activeFiles.filter((f) => f.isFavorite).length;
+  const totalSize = activeFiles.reduce((acc, f) => acc + f.fileSize, 0);
 
   const formatSize = (bytes: number) => {
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
     return (bytes / (1024 * 1024)).toFixed(1) + " MB";
   };
 
-  if (files.length === 0) {
+  const handleStatClick = (filterType: string | null) => {
+    setFileTypeFilter(filterType);
+    setCurrentView("files");
+  };
+
+  if (activeFiles.length === 0) {
     return (
       <div className="space-y-6">
         <div>
@@ -144,31 +158,35 @@ function DashboardView() {
         </p>
       </div>
 
-      {/* Stats */}
+      {/* Stats - clickable */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatsCard
           title="文档"
           value={docCount}
           icon={FileText}
           description="Word & PDF & PPT"
+          onClick={() => handleStatClick("document")}
         />
         <StatsCard
           title="图片"
           value={imageCount}
           icon={ImageIcon}
           description="照片 & 图片"
+          onClick={() => handleStatClick("image")}
         />
         <StatsCard
           title="收藏"
           value={favCount}
           icon={Star}
           description="标记的重要文件"
+          onClick={() => handleStatClick("favorite")}
         />
         <StatsCard
           title="存储"
           value={formatSize(totalSize)}
           icon={HardDrive}
-          description={`${files.length} 个文件`}
+          description={`${activeFiles.length} 个文件`}
+          onClick={() => handleStatClick(null)}
         />
       </div>
 
@@ -180,8 +198,21 @@ function DashboardView() {
 
 // ─── Files View ──────────────────────────────────────────────
 function FilesView() {
-  const { files, selectedFolderId, setSelectedFolderId, storageMode } =
-    useAppStore();
+  const {
+    files,
+    selectedFolderId,
+    setSelectedFolderId,
+    storageMode,
+    fileTypeFilter,
+    setFileTypeFilter,
+    batchMode,
+    toggleBatchMode,
+    batchSelectedIds,
+    selectAllFiles,
+    clearBatchSelection,
+    batchToggleFavorite,
+    batchDeleteFiles,
+  } = useAppStore();
   const [previewFile, setPreviewFile] = useState<FileData | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
@@ -197,13 +228,26 @@ function FilesView() {
     setVisibleCount(20);
   };
 
-  // Filter files
-  let filteredFiles = files;
+  // Filter active (non-deleted) files
+  let filteredFiles = files.filter((f) => !f.isDeleted);
+
+  // Apply file type filter (from dashboard stats click)
+  if (fileTypeFilter === "document") {
+    filteredFiles = filteredFiles.filter((f) => f.fileType === "word" || f.fileType === "pdf" || f.fileType === "pptx");
+  } else if (fileTypeFilter === "image") {
+    filteredFiles = filteredFiles.filter((f) => f.fileType === "image");
+  } else if (fileTypeFilter === "favorite") {
+    filteredFiles = filteredFiles.filter((f) => f.isFavorite);
+  }
+
+  // Filter by folder
   if (selectedFolderId) {
     filteredFiles = filteredFiles.filter((f) => f.folderId === selectedFolderId);
-  } else {
+  } else if (!fileTypeFilter) {
     filteredFiles = filteredFiles.filter((f) => !f.folderId);
   }
+
+  // Filter by tag
   if (tagFilter) {
     filteredFiles = filteredFiles.filter((f) => f.tags.includes(tagFilter));
   }
@@ -213,7 +257,22 @@ function FilesView() {
   const hasMore = visibleCount < filteredFiles.length;
 
   // Collect all tags
-  const allTags = [...new Set(files.flatMap((f) => f.tags))];
+  const allTags = [...new Set(files.filter((f) => !f.isDeleted).flatMap((f) => f.tags))];
+
+  // Clear file type filter when entering files view directly
+  useEffect(() => {
+    return () => {
+      setFileTypeFilter(null);
+    };
+  }, [setFileTypeFilter]);
+
+  const filterLabel = fileTypeFilter === "document"
+    ? "📄 文档"
+    : fileTypeFilter === "image"
+    ? "🖼️ 图片"
+    : fileTypeFilter === "favorite"
+    ? "⭐ 收藏"
+    : null;
 
   return (
     <div className="space-y-6">
@@ -224,19 +283,100 @@ function FilesView() {
             管理、上传和浏览你的文件
           </p>
         </div>
-        <Badge variant="outline" className="text-xs">
-          {storageMode === "cloud" ? "☁️ 云端模式" : "💾 本地模式"}
-        </Badge>
+        <div className="flex items-center gap-2">
+          {filterLabel && (
+            <Badge variant="secondary" className="text-xs gap-1">
+              {filterLabel}
+              <button onClick={() => setFileTypeFilter(null)} className="ml-1 hover:text-destructive">
+                <X className="h-3 w-3" />
+              </button>
+            </Badge>
+          )}
+          <Badge variant="outline" className="text-xs">
+            {storageMode === "cloud" ? "☁️ 云端模式" : "💾 本地模式"}
+          </Badge>
+        </div>
       </div>
 
       {/* Upload zone */}
-      <UploadZone />
+      {!batchMode && <UploadZone />}
+
+      {/* Batch operations toolbar */}
+      {batchMode && (
+        <Card className="shadow-sm border-primary/30 bg-primary/5">
+          <CardContent className="p-3 flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={selectAllFiles}>
+                <CheckSquare className="h-4 w-4 mr-1" />
+                全选
+              </Button>
+              <Button variant="outline" size="sm" onClick={clearBatchSelection}>
+                <Square className="h-4 w-4 mr-1" />
+                取消全选
+              </Button>
+              <span className="text-sm text-muted-foreground">
+                已选择 {batchSelectedIds.length} 个文件
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={batchSelectedIds.length === 0}
+                onClick={() => batchToggleFavorite(batchSelectedIds, true)}
+              >
+                <Star className="h-4 w-4 mr-1" />
+                收藏
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={batchSelectedIds.length === 0}
+                onClick={() => batchToggleFavorite(batchSelectedIds, false)}
+              >
+                <StarOff className="h-4 w-4 mr-1" />
+                取消收藏
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={batchSelectedIds.length === 0}
+                onClick={() => {
+                  if (confirm(`确定要删除选中的 ${batchSelectedIds.length} 个文件吗？文件将移入回收站。`)) {
+                    batchDeleteFiles(batchSelectedIds);
+                  }
+                }}
+              >
+                <Trash2 className="h-4 w-4 mr-1" />
+                删除
+              </Button>
+              <Button variant="outline" size="sm" onClick={toggleBatchMode}>
+                <X className="h-4 w-4 mr-1" />
+                退出批量
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="flex flex-col lg:flex-row gap-6">
         {/* Sidebar - Folders & Tags */}
         <div className="lg:w-56 shrink-0 space-y-4">
           <Card className="shadow-sm">
             <CardContent className="p-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">文件夹</span>
+                {!batchMode && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={toggleBatchMode}
+                  >
+                    批量管理
+                  </Button>
+                )}
+              </div>
               <FolderTree
                 onSelectFolder={handleFolderSelect}
                 selectedFolderId={selectedFolderId}
@@ -317,7 +457,6 @@ function SearchView() {
     setSearchTrigger((prev) => prev + 1);
   };
 
-  // Debounced search on input change
   const handleChange = (value: string) => {
     setLocalQuery(value);
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -362,9 +501,219 @@ function SearchView() {
   );
 }
 
+// ─── Favorites View ──────────────────────────────────────────
+function FavoritesView() {
+  const { files } = useAppStore();
+  const [previewFile, setPreviewFile] = useState<FileData | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(20);
+
+  const favFiles = files.filter((f) => f.isFavorite && !f.isDeleted);
+  const visibleFiles = favFiles.slice(0, visibleCount);
+  const hasMore = visibleCount < favFiles.length;
+
+  const handlePreview = (file: FileData) => {
+    setPreviewFile(file);
+    setPreviewOpen(true);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">收藏夹</h1>
+        <p className="text-muted-foreground text-sm mt-1">
+          你标记为重要和收藏的文件
+        </p>
+      </div>
+
+      {favFiles.length === 0 ? (
+        <div className="text-center py-16 text-muted-foreground">
+          <Star className="h-12 w-12 mx-auto mb-3 opacity-30" />
+          <p className="text-sm font-medium">暂无收藏</p>
+          <p className="text-xs mt-1">点击文件卡片上的星标来收藏文件</p>
+        </div>
+      ) : (
+        <>
+          <FileGrid files={visibleFiles} onPreview={handlePreview} />
+          {hasMore && (
+            <div className="flex justify-center mt-6">
+              <Button
+                variant="outline"
+                onClick={() => setVisibleCount((prev) => prev + 20)}
+              >
+                加载更多（剩余 {favFiles.length - visibleCount} 个文件）
+              </Button>
+            </div>
+          )}
+        </>
+      )}
+
+      <FilePreview
+        file={previewFile}
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+      />
+    </div>
+  );
+}
+
+// ─── Recycle Bin View ────────────────────────────────────────
+function RecycleBinView() {
+  const { files, restoreFile, permanentDeleteFile, emptyRecycleBin } = useAppStore();
+  const deletedFiles = files.filter((f) => f.isDeleted);
+  const [visibleCount, setVisibleCount] = useState(20);
+  const [previewFile, setPreviewFile] = useState<FileData | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+
+  const visibleFiles = deletedFiles.slice(0, visibleCount);
+  const hasMore = visibleCount < deletedFiles.length;
+
+  const handlePreview = (file: FileData) => {
+    setPreviewFile(file);
+    setPreviewOpen(true);
+  };
+
+  const handleRestore = async (id: string) => {
+    await restoreFile(id);
+  };
+
+  const handlePermanentDelete = async (id: string) => {
+    if (confirm("确定要永久删除此文件吗？此操作不可恢复。")) {
+      await permanentDeleteFile(id);
+    }
+  };
+
+  const handleEmptyRecycleBin = async () => {
+    if (confirm(`确定要永久删除回收站中的 ${deletedFiles.length} 个文件吗？此操作不可恢复。`)) {
+      await emptyRecycleBin();
+    }
+  };
+
+  const formatDeletedAt = (dateStr?: string) => {
+    if (!dateStr) return "";
+    return new Date(dateStr).toLocaleDateString("zh-CN", {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">回收站</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            已删除的文件可以恢复或永久删除
+          </p>
+        </div>
+        {deletedFiles.length > 0 && (
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={handleEmptyRecycleBin}
+          >
+            <Trash2 className="h-4 w-4 mr-1" />
+            清空回收站
+          </Button>
+        )}
+      </div>
+
+      {deletedFiles.length === 0 ? (
+        <div className="text-center py-16 text-muted-foreground">
+          <Trash2 className="h-12 w-12 mx-auto mb-3 opacity-30" />
+          <p className="text-sm font-medium">回收站为空</p>
+          <p className="text-xs mt-1">删除的文件会出现在这里</p>
+        </div>
+      ) : (
+        <div className="border rounded-lg divide-y">
+          {visibleFiles.map((file) => (
+            <div
+              key={file.id}
+              className="flex items-center gap-3 p-3 hover:bg-muted/50 transition-colors"
+            >
+              <div className="h-10 w-10 rounded-lg bg-muted flex items-center justify-center shrink-0 text-lg">
+                {file.fileType === "image" ? "🖼️" : file.fileType === "word" ? "📝" : file.fileType === "pdf" ? "📄" : "📁"}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium truncate">{file.fileName}</p>
+                <p className="text-xs text-muted-foreground">
+                  {file.deletedAt ? formatDeletedAt(file.deletedAt) : "已删除"}
+                </p>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handlePreview(file)}
+                >
+                  预览
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleRestore(file.id)}
+                >
+                  <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                  恢复
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => handlePermanentDelete(file.id)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          ))}
+          {hasMore && (
+            <div className="flex justify-center py-4">
+              <Button
+                variant="outline"
+                onClick={() => setVisibleCount((prev) => prev + 20)}
+              >
+                加载更多（剩余 {deletedFiles.length - visibleCount} 个文件）
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
+      <FilePreview
+        file={previewFile}
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+      />
+    </div>
+  );
+}
+
 // ─── Settings View ───────────────────────────────────────────
 function SettingsView() {
-  const { user } = useAppStore();
+  const { user, exportData } = useAppStore();
+  const [exporting, setExporting] = useState(false);
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const jsonStr = await exportData();
+      const blob = new Blob([jsonStr], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `knowledge-base-export-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Export failed:", err);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -417,6 +766,29 @@ function SettingsView() {
       {/* Storage mode */}
       <StorageSwitch />
 
+      {/* Data Export */}
+      <Card className="shadow-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base font-semibold flex items-center gap-2">
+            <Download className="h-4 w-4" />
+            数据备份与导出
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            导出所有文件元数据（文件名、标签、收藏状态等）为 JSON 格式，方便备份和迁移。注意：文件内容不会导出，仅导出元数据信息。
+          </p>
+          <Button
+            variant="outline"
+            onClick={handleExport}
+            disabled={exporting}
+          >
+            <Download className="h-4 w-4 mr-2" />
+            {exporting ? "导出中..." : "导出数据 (JSON)"}
+          </Button>
+        </CardContent>
+      </Card>
+
       {/* About */}
       <Card className="shadow-sm">
         <CardHeader className="pb-3">
@@ -426,6 +798,7 @@ function SettingsView() {
           <p>智能文档知识库 - v2.0</p>
           <p>支持 Word、PDF、PPTX、图片文件管理</p>
           <p>提供全文搜索、AI 解读、时间线浏览功能</p>
+          <p>新增：图片全屏查看、批量操作、回收站、文件重命名、数据导出</p>
           <p className="text-xs mt-2 pt-2 border-t">
             Built with Next.js 16 + shadcn/ui + Prisma + Zustand
           </p>
@@ -449,13 +822,15 @@ export default function Home() {
     hydrateAuth,
     aiChatFile,
     setAiChatFile,
-    files,
+    lightboxOpen,
+    lightboxImages,
+    lightboxIndex,
+    closeLightbox,
   } = useAppStore();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     hydrateAuth();
-    // Deferred setState to avoid cascading renders warning
     const id = requestAnimationFrame(() => setMounted(true));
     return () => cancelAnimationFrame(id);
   }, [hydrateAuth]);
@@ -479,11 +854,7 @@ export default function Home() {
   const renderView = (view: ViewType) => {
     switch (view) {
       case "dashboard":
-        return files.length === 0 ? (
-          <motion.div key="dashboard" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
-            <DashboardView />
-          </motion.div>
-        ) : (
+        return (
           <motion.div key="dashboard" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
             <DashboardView />
           </motion.div>
@@ -512,6 +883,18 @@ export default function Home() {
             <TimelineView />
           </motion.div>
         );
+      case "favorites":
+        return (
+          <motion.div key="favorites" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
+            <FavoritesView />
+          </motion.div>
+        );
+      case "recycleBin":
+        return (
+          <motion.div key="recycleBin" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
+            <RecycleBinView />
+          </motion.div>
+        );
       default:
         return <LoginView />;
     }
@@ -538,6 +921,14 @@ export default function Home() {
 
       {/* Global AI Chat Panel */}
       <AIChatPanel open={aiChatOpen} onOpenChange={(open) => { if (!open) setAiChatFile(null); }} />
+
+      {/* Global Image Lightbox */}
+      <ImageLightbox
+        images={lightboxImages}
+        currentIndex={lightboxIndex}
+        open={lightboxOpen}
+        onClose={closeLightbox}
+      />
     </div>
   );
 }

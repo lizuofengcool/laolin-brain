@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { FileData } from "@/lib/storage/base";
 import { getStorageAdapter, resetAdapter } from "@/lib/storage/factory";
 
-export type ViewType = "login" | "dashboard" | "files" | "search" | "settings" | "timeline";
+export type ViewType = "login" | "dashboard" | "files" | "search" | "settings" | "timeline" | "favorites" | "recycleBin";
 
 export interface UserInfo {
   id: string;
@@ -41,7 +41,26 @@ interface AppState {
   updateFile: (id: string, data: Partial<FileData>) => void;
   refreshFiles: () => Promise<void>;
   deleteFile: (id: string) => Promise<void>;
+  softDeleteFile: (id: string) => Promise<void>;
+  restoreFile: (id: string) => Promise<void>;
+  permanentDeleteFile: (id: string) => Promise<void>;
+  emptyRecycleBin: () => Promise<void>;
+  renameFile: (id: string, newName: string) => Promise<void>;
   toggleFavorite: (id: string) => void;
+  batchToggleFavorite: (ids: string[], value: boolean) => Promise<void>;
+  batchDeleteFiles: (ids: string[]) => Promise<void>;
+
+  // File type filter (for dashboard stat click navigation)
+  fileTypeFilter: string | null;
+  setFileTypeFilter: (filter: string | null) => void;
+
+  // Batch operations
+  batchMode: boolean;
+  toggleBatchMode: () => void;
+  batchSelectedIds: string[];
+  toggleBatchSelect: (id: string) => void;
+  selectAllFiles: () => void;
+  clearBatchSelection: () => void;
 
   // UI
   sidebarOpen: boolean;
@@ -69,6 +88,16 @@ interface AppState {
   setAiProcessing: (v: boolean) => void;
   aiChatFile: FileData | null;
   setAiChatFile: (file: FileData | null) => void;
+
+  // Image Lightbox
+  lightboxOpen: boolean;
+  lightboxImages: FileData[];
+  lightboxIndex: number;
+  openLightbox: (images: FileData[], index: number) => void;
+  closeLightbox: () => void;
+
+  // Data export
+  exportData: () => Promise<string>;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -120,7 +149,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           currentView: "dashboard",
           storageMode: user.storageMode || "local",
         });
-        // Refresh data in background
         get().refreshFiles();
         get().refreshFolders();
       } catch {
@@ -164,24 +192,148 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  // Soft delete - move to recycle bin
+  softDeleteFile: async (id) => {
+    const { user, storageMode } = get();
+    if (!user) return;
+    const now = new Date().toISOString();
+    get().updateFile(id, { isDeleted: true, deletedAt: now });
+    try {
+      const adapter = getStorageAdapter(storageMode);
+      await adapter.updateFile(id, { isDeleted: true, deletedAt: now }, user.id);
+    } catch (err) {
+      console.error("Failed to soft delete file:", err);
+    }
+  },
+
+  // Restore file from recycle bin
+  restoreFile: async (id) => {
+    const { user, storageMode } = get();
+    if (!user) return;
+    get().updateFile(id, { isDeleted: false, deletedAt: undefined });
+    try {
+      const adapter = getStorageAdapter(storageMode);
+      await adapter.updateFile(id, { isDeleted: false, deletedAt: undefined }, user.id);
+    } catch (err) {
+      console.error("Failed to restore file:", err);
+    }
+  },
+
+  // Permanent delete
+  permanentDeleteFile: async (id) => {
+    const { user, storageMode } = get();
+    if (!user) return;
+    try {
+      const adapter = getStorageAdapter(storageMode);
+      await adapter.deleteFile(id, user.id);
+      get().removeFile(id);
+    } catch (err) {
+      console.error("Failed to permanently delete file:", err);
+    }
+  },
+
+  // Empty recycle bin
+  emptyRecycleBin: async () => {
+    const deletedFiles = get().files.filter((f) => f.isDeleted);
+    for (const file of deletedFiles) {
+      await get().permanentDeleteFile(file.id);
+    }
+  },
+
+  // Rename file
+  renameFile: async (id, newName) => {
+    const { user, storageMode } = get();
+    if (!user) return;
+    get().updateFile(id, { fileName: newName });
+    try {
+      const adapter = getStorageAdapter(storageMode);
+      await adapter.updateFile(id, { fileName: newName }, user.id);
+    } catch (err) {
+      console.error("Failed to rename file:", err);
+    }
+  },
+
   toggleFavorite: (id) => {
     const file = get().files.find((f) => f.id === id);
     if (!file) return;
     const newVal = !file.isFavorite;
     get().updateFile(id, { isFavorite: newVal });
 
-    // Persist to server/local
     const { user, storageMode } = get();
     if (!user) return;
     const adapter = getStorageAdapter(storageMode);
     adapter.updateFile(id, { isFavorite: newVal }, user.id).catch(console.error);
   },
 
+  // Batch favorite toggle
+  batchToggleFavorite: async (ids, value) => {
+    const { user, storageMode } = get();
+    if (!user) return;
+    for (const id of ids) {
+      get().updateFile(id, { isFavorite: value });
+    }
+    try {
+      const adapter = getStorageAdapter(storageMode);
+      await Promise.all(ids.map((id) => adapter.updateFile(id, { isFavorite: value }, user.id)));
+    } catch (err) {
+      console.error("Batch favorite failed:", err);
+    }
+  },
+
+  // Batch soft delete
+  batchDeleteFiles: async (ids) => {
+    const { user, storageMode } = get();
+    if (!user) return;
+    const now = new Date().toISOString();
+    for (const id of ids) {
+      get().updateFile(id, { isDeleted: true, deletedAt: now });
+    }
+    try {
+      const adapter = getStorageAdapter(storageMode);
+      await Promise.all(ids.map((id) => adapter.updateFile(id, { isDeleted: true, deletedAt: now }, user.id)));
+    } catch (err) {
+      console.error("Batch delete failed:", err);
+    }
+    get().clearBatchSelection();
+    get().toggleBatchMode();
+  },
+
+  // File type filter
+  fileTypeFilter: null,
+  setFileTypeFilter: (filter) => set({ fileTypeFilter: filter }),
+
+  // Batch operations
+  batchMode: false,
+  toggleBatchMode: () => set((s) => ({ batchMode: !s.batchMode, batchSelectedIds: [] })),
+  batchSelectedIds: [],
+  toggleBatchSelect: (id) =>
+    set((s) => ({
+      batchSelectedIds: s.batchSelectedIds.includes(id)
+        ? s.batchSelectedIds.filter((i) => i !== id)
+        : [...s.batchSelectedIds, id],
+    })),
+  selectAllFiles: () => {
+    const { files, fileTypeFilter } = get();
+    const activeFiles = files.filter((f) => !f.isDeleted);
+    const filtered = fileTypeFilter
+      ? activeFiles.filter((f) => f.fileType === fileTypeFilter)
+      : activeFiles;
+    set({ batchSelectedIds: filtered.map((f) => f.id) });
+  },
+  clearBatchSelection: () => set({ batchSelectedIds: [] }),
+
   // AI
   aiProcessing: false,
   setAiProcessing: (v) => set({ aiProcessing: v }),
   aiChatFile: null,
   setAiChatFile: (file) => set({ aiChatFile: file }),
+
+  // Image Lightbox
+  lightboxOpen: false,
+  lightboxImages: [],
+  lightboxIndex: 0,
+  openLightbox: (images, index) => set({ lightboxOpen: true, lightboxImages: images, lightboxIndex: index }),
+  closeLightbox: () => set({ lightboxOpen: false, lightboxImages: [], lightboxIndex: 0 }),
 
   // UI
   sidebarOpen: true,
@@ -200,7 +352,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!user) return;
     resetAdapter();
 
-    // Update server if cloud mode
     if (mode === "cloud" && user) {
       try {
         const res = await fetch("/api/settings", {
@@ -243,7 +394,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!user) return;
 
     if (storageMode === "local") {
-      // Local mode: fetch from IndexedDB
       try {
         const { openDB } = await import("idb");
         const db = await openDB("knowledge-base-db", 1);
@@ -258,11 +408,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           }));
         set({ folders: userFolders });
       } catch {
-        // If "folders" store doesn't exist, return empty
         set({ folders: [] });
       }
     } else {
-      // Cloud mode: fetch from server
       try {
         const res = await fetch(`/api/folders?userId=${user.id}`);
         if (res.ok) {
@@ -273,5 +421,28 @@ export const useAppStore = create<AppState>((set, get) => ({
         // ignore
       }
     }
+  },
+
+  // Data export
+  exportData: async () => {
+    const { files, folders, user } = get();
+    const exportObj = {
+      exportDate: new Date().toISOString(),
+      version: "2.0",
+      user: user ? { name: user.name, email: user.email } : null,
+      files: files.map((f) => ({
+        id: f.id,
+        fileName: f.fileName,
+        fileType: f.fileType,
+        fileSize: f.fileSize,
+        textContent: f.textContent,
+        folderId: f.folderId,
+        tags: f.tags,
+        isFavorite: f.isFavorite,
+        createdAt: typeof f.createdAt === "string" ? f.createdAt : new Date(f.createdAt).toISOString(),
+      })),
+      folders,
+    };
+    return JSON.stringify(exportObj, null, 2);
   },
 }));

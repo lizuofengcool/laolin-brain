@@ -16,6 +16,7 @@ interface StatsCardProps {
   description?: string;
   trend?: "up" | "down" | "neutral";
   className?: string;
+  onClick?: () => void;
 }
 
 export function StatsCard({
@@ -24,9 +25,17 @@ export function StatsCard({
   icon: Icon,
   description,
   className,
+  onClick,
 }: StatsCardProps) {
   return (
-    <Card className={cn("shadow-sm hover:shadow-md transition-shadow", className)}>
+    <Card
+      className={cn(
+        "shadow-sm hover:shadow-md transition-all duration-200",
+        onClick && "cursor-pointer hover:border-primary/30 active:scale-[0.98]",
+        className
+      )}
+      onClick={onClick}
+    >
       <CardHeader className="flex flex-row items-center justify-between pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">
           {title}

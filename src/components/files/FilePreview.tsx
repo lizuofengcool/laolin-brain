@@ -17,6 +17,7 @@ import {
   X,
   Sparkles,
   Loader2,
+  Maximize2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -30,7 +31,7 @@ interface FilePreviewProps {
 }
 
 export function FilePreview({ file, open, onClose }: FilePreviewProps) {
-  const { setAiChatFile, storageMode } = useAppStore();
+  const { setAiChatFile, storageMode, openLightbox, files } = useAppStore();
   const [downloading, setDownloading] = useState(false);
 
   if (!file) return null;
@@ -41,7 +42,6 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
 
     try {
       if (storageMode === "cloud") {
-        // Cloud mode: fetch from download route
         const res = await fetch(`/api/files/${file.id}/download`);
         if (res.ok) {
           const blob = await res.blob();
@@ -55,7 +55,6 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
           URL.revokeObjectURL(url);
         }
       } else {
-        // Local mode: fetch from IndexedDB
         const { openDB } = await import("idb");
         const db = await openDB("knowledge-base-db", 1);
         const record = await db.get("files", file.id);
@@ -83,6 +82,14 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
     }
   };
 
+  const handleOpenLightbox = () => {
+    // Get all images from current files list
+    const allImages = files.filter((f) => f.fileType === "image" && !f.isDeleted && f.thumbnailUrl);
+    const currentIndex = allImages.findIndex((f) => f.id === file.id);
+    openLightbox(allImages, currentIndex >= 0 ? currentIndex : 0);
+    onClose();
+  };
+
   return (
     <Dialog open={open} onOpenChange={() => onClose()}>
       <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-y-auto">
@@ -95,13 +102,24 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
 
         <div className="space-y-4">
           {/* Preview area */}
-          <div className="rounded-lg bg-muted/50 border flex items-center justify-center min-h-[200px] overflow-hidden">
+          <div className="rounded-lg bg-muted/50 border flex items-center justify-center min-h-[200px] overflow-hidden relative group">
             {file.fileType === "image" && file.thumbnailUrl ? (
-              <img
-                src={file.thumbnailUrl}
-                alt={file.fileName}
-                className="max-w-full max-h-[400px] object-contain"
-              />
+              <>
+                <img
+                  src={file.thumbnailUrl}
+                  alt={file.fileName}
+                  className="max-w-full max-h-[400px] object-contain cursor-zoom-in"
+                  onClick={handleOpenLightbox}
+                />
+                {/* Enlarge overlay button */}
+                <button
+                  className="absolute top-3 right-3 h-8 w-8 flex items-center justify-center rounded-full bg-black/40 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/60"
+                  onClick={handleOpenLightbox}
+                  title="放大查看"
+                >
+                  <Maximize2 className="h-4 w-4" />
+                </button>
+              </>
             ) : file.textContent ? (
               <div className="p-4 w-full max-h-[400px] overflow-y-auto">
                 <pre className="text-sm whitespace-pre-wrap font-mono">
@@ -162,6 +180,16 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
 
           {/* Actions */}
           <div className="flex gap-2 pt-2">
+            {file.fileType === "image" && file.thumbnailUrl && (
+              <Button
+                variant="default"
+                className="flex-1"
+                onClick={handleOpenLightbox}
+              >
+                <Maximize2 className="h-4 w-4 mr-2" />
+                放大查看
+              </Button>
+            )}
             <Button
               variant="outline"
               className="flex-1"

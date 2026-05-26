@@ -34,5 +34,7 @@ export interface FileData {
   folderId?: string;
   tags: string[];
   isFavorite: boolean;
+  isDeleted?: boolean;
+  deletedAt?: string;
   createdAt: Date;
 }

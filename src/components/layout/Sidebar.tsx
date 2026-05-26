@@ -10,16 +10,21 @@ import {
   LogOut,
   Upload,
   CalendarDays,
+  Star,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAppStore, type ViewType } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
 
-const navItems: { icon: typeof LayoutDashboard; label: string; view: ViewType }[] = [
+const navItems: { icon: typeof LayoutDashboard; label: string; view: ViewType; badge?: () => number }[] = [
   { icon: LayoutDashboard, label: "仪表盘", view: "dashboard" },
   { icon: FolderOpen, label: "文件管理", view: "files" },
   { icon: CalendarDays, label: "时间线", view: "timeline" },
+  { icon: Star, label: "收藏夹", view: "favorites", badge: () => 0 },
+  { icon: Trash2, label: "回收站", view: "recycleBin", badge: () => 0 },
   { icon: Search, label: "搜索", view: "search" },
   { icon: Settings, label: "设置", view: "settings" },
 ];
@@ -29,7 +34,17 @@ export function Sidebar() {
     useAppStore();
 
   // Get last 5 recently viewed files for sidebar
-  const recentFiles = files.slice(0, 5);
+  const recentFiles = files.filter((f) => !f.isDeleted).slice(0, 5);
+
+  // Compute dynamic badge counts
+  const favCount = files.filter((f) => f.isFavorite && !f.isDeleted).length;
+  const recycleCount = files.filter((f) => f.isDeleted).length;
+
+  const getBadgeCount = (view: ViewType) => {
+    if (view === "favorites") return favCount;
+    if (view === "recycleBin") return recycleCount;
+    return 0;
+  };
 
   return (
     <aside
@@ -55,6 +70,7 @@ export function Sidebar() {
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = currentView === item.view;
+          const badgeCount = getBadgeCount(item.view);
           return (
             <Button
               key={item.view}
@@ -65,8 +81,20 @@ export function Sidebar() {
               )}
               onClick={() => setCurrentView(item.view)}
             >
-              <Icon className="h-4 w-4 shrink-0" />
-              {sidebarOpen && <span className="text-sm">{item.label}</span>}
+              <Icon className={cn(
+                "h-4 w-4 shrink-0",
+                item.view === "recycleBin" && recycleCount > 0 && "text-destructive"
+              )} />
+              {sidebarOpen && (
+                <>
+                  <span className="text-sm flex-1 text-left">{item.label}</span>
+                  {badgeCount > 0 && (
+                    <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                      {badgeCount}
+                    </Badge>
+                  )}
+                </>
+              )}
             </Button>
           );
         })}
