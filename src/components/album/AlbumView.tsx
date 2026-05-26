@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { ImageLightbox } from "@/components/files/ImageLightbox";
 import { Calendar, Image as ImageIcon, Grid3X3, Rows3 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -31,10 +30,6 @@ function formatFileSize(bytes: number): string {
 export default function AlbumView() {
   const files = useAppStore((s) => s.files);
   const openLightbox = useAppStore((s) => s.openLightbox);
-  const lightboxOpen = useAppStore((s) => s.lightboxOpen);
-  const lightboxImages = useAppStore((s) => s.lightboxImages);
-  const lightboxIndex = useAppStore((s) => s.lightboxIndex);
-  const closeLightbox = useAppStore((s) => s.closeLightbox);
 
   const [viewMode, setViewMode] = useState<"grid" | "mosaic">("grid");
 
@@ -249,13 +244,6 @@ export default function AlbumView() {
         ))}
       </div>
 
-      {/* Lightbox */}
-      <ImageLightbox
-        images={lightboxImages}
-        currentIndex={lightboxIndex}
-        open={lightboxOpen}
-        onClose={closeLightbox}
-      />
     </div>
   );
 }

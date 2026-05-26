@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import type { FileData } from "@/lib/storage/base";
 import {
   Star,
@@ -32,13 +31,8 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { useAppStore } from "@/stores/app-store";
-import { getStorageAdapter } from "@/lib/storage/factory";
-import {
-  getFileColor,
-  formatSize,
-  FileIconDisplay,
-} from "@/lib/file-utils";
+import { useFileActions } from "./useFileActions";
+import { getFileColor, formatSize, FileIconDisplay } from "@/lib/file-utils";
 import { motion } from "framer-motion";
 
 interface FileCardProps {
@@ -47,111 +41,26 @@ interface FileCardProps {
 }
 
 export function FileCard({ file, onPreview }: FileCardProps) {
-  const { toggleFavorite, softDeleteFile, setAiChatFile, updateFile, folders, refreshFolders, renameFile, batchMode, batchSelectedIds, toggleBatchSelect, openLightbox, files } = useAppStore();
+  const {
+    tagDialogOpen, setTagDialogOpen, tagInput, setTagInput,
+    folderDialogOpen, setFolderDialogOpen, selectedFolderId, setSelectedFolderId,
+    renameDialogOpen, setRenameDialogOpen, renameInput, setRenameInput,
+    handleFavorite, handleDelete, handleAIChat,
+    handleEditTags, handleSaveTags,
+    handleMoveToFolder, handleSaveFolder,
+    handleRename, handleSaveRename,
+    handleOpenLightbox, handleCardClick,
+    isSelected, hasAITags, hasAITextContent, isImage, folders, batchMode,
+  } = useFileActions(file);
+
   const colorClass = getFileColor(file.fileType);
 
-  // Edit tags dialog
-  const [tagDialogOpen, setTagDialogOpen] = useState(false);
-  const [tagInput, setTagInput] = useState(file.tags.join(", "));
-
-  // Move to folder dialog
-  const [folderDialogOpen, setFolderDialogOpen] = useState(false);
-  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(file.folderId || null);
-
-  // Rename dialog
-  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
-  const [renameInput, setRenameInput] = useState(file.fileName);
-
-  const handleFavorite = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    toggleFavorite(file.id);
-  };
-
-  const handleDelete = async () => {
-    if (confirm("确定要删除这个文件吗？文件将移入回收站。")) {
-      await softDeleteFile(file.id);
-    }
-  };
-
-  const handleAIChat = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setAiChatFile(file);
-  };
-
-  const handleEditTags = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setTagInput(file.tags.join(", "));
-    setTagDialogOpen(true);
-  };
-
-  const handleSaveTags = () => {
-    const newTags = tagInput
-      .split(/[,，]/)
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
-    updateFile(file.id, { tags: newTags });
-    const { user, storageMode } = useAppStore.getState();
-    if (user) {
-      const adapter = getStorageAdapter(storageMode);
-      adapter.updateFile(file.id, { tags: newTags }, user.id).catch(console.error);
-    }
-    setTagDialogOpen(false);
-  };
-
-  const handleMoveToFolder = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setSelectedFolderId(file.folderId || null);
-    refreshFolders();
-    setFolderDialogOpen(true);
-  };
-
-  const handleSaveFolder = () => {
-    updateFile(file.id, { folderId: selectedFolderId || undefined });
-    const { user, storageMode } = useAppStore.getState();
-    if (user) {
-      const adapter = getStorageAdapter(storageMode);
-      adapter.updateFile(file.id, { folderId: selectedFolderId || null } as Partial<FileData>, user.id).catch(console.error);
-    }
-    setFolderDialogOpen(false);
-  };
-
-  const handleRename = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setRenameInput(file.fileName);
-    setRenameDialogOpen(true);
-  };
-
-  const handleSaveRename = async () => {
-    if (!renameInput.trim()) return;
-    // Keep the same extension
-    const ext = file.fileName.includes(".") ? "." + file.fileName.split(".").pop() : "";
-    const nameWithoutExt = renameInput.trim().replace(/\.[^.]+$/, "");
-    const newName = nameWithoutExt + ext;
-    await renameFile(file.id, newName);
-    setRenameDialogOpen(false);
-  };
-
-  const handleOpenLightbox = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const allImages = files.filter((f) => f.fileType === "image" && !f.isDeleted && f.thumbnailUrl);
-    const currentIndex = allImages.findIndex((f) => f.id === file.id);
-    openLightbox(allImages, currentIndex >= 0 ? currentIndex : 0);
-  };
-
-  const handleCardClick = () => {
-    if (batchMode) {
-      toggleBatchSelect(file.id);
-    } else if (file.fileType === "image" && file.thumbnailUrl) {
-      handleOpenLightbox({ stopPropagation: () => {} } as React.MouseEvent);
-    } else {
+  const onCardClick = () => {
+    const result = handleCardClick();
+    if (result === false) {
       onPreview(file);
     }
   };
-
-  const hasAITags = file.tags && file.tags.length > 0;
-  const hasAITextContent =
-    file.textContent && file.fileType === "image" && file.textContent.trim().length > 0;
-  const isSelected = batchSelectedIds.includes(file.id);
 
   return (
     <>
@@ -164,7 +73,7 @@ export function FileCard({ file, onPreview }: FileCardProps) {
             "group cursor-pointer hover:shadow-md transition-all duration-200 overflow-hidden relative",
             batchMode && isSelected && "ring-2 ring-primary ring-offset-2"
           )}
-          onClick={handleCardClick}
+          onClick={onCardClick}
         >
           {/* Batch checkbox overlay */}
           {batchMode && (
@@ -186,12 +95,12 @@ export function FileCard({ file, onPreview }: FileCardProps) {
           <div
             className={cn(
               "h-36 flex items-center justify-center relative",
-              file.fileType === "image" && file.thumbnailUrl
+              isImage
                 ? "bg-muted/30"
                 : "bg-muted/50"
             )}
           >
-            {file.fileType === "image" && file.thumbnailUrl ? (
+            {isImage ? (
               <img
                 src={file.thumbnailUrl}
                 alt={file.fileName}
@@ -260,7 +169,7 @@ export function FileCard({ file, onPreview }: FileCardProps) {
                   <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onPreview(file); }}>
                     预览
                   </DropdownMenuItem>
-                  {file.fileType === "image" && file.thumbnailUrl && (
+                  {isImage && (
                     <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleOpenLightbox(e); }}>
                       <Maximize2 className="h-4 w-4 mr-2" />
                       放大查看
@@ -326,6 +235,37 @@ export function FileCard({ file, onPreview }: FileCardProps) {
         </Card>
       </motion.div>
 
+      {/* Dialogs */}
+      <FileActionDialogs
+        tagDialogOpen={tagDialogOpen} setTagDialogOpen={setTagDialogOpen}
+        tagInput={tagInput} setTagInput={setTagInput} handleSaveTags={handleSaveTags}
+        renameDialogOpen={renameDialogOpen} setRenameDialogOpen={setRenameDialogOpen}
+        renameInput={renameInput} setRenameInput={setRenameInput} handleSaveRename={handleSaveRename}
+        folderDialogOpen={folderDialogOpen} setFolderDialogOpen={setFolderDialogOpen}
+        selectedFolderId={selectedFolderId} setSelectedFolderId={setSelectedFolderId}
+        handleSaveFolder={handleSaveFolder} folders={folders}
+      />
+    </>
+  );
+}
+
+// Shared dialog components
+function FileActionDialogs({
+  tagDialogOpen, setTagDialogOpen, tagInput, setTagInput, handleSaveTags,
+  renameDialogOpen, setRenameDialogOpen, renameInput, setRenameInput, handleSaveRename,
+  folderDialogOpen, setFolderDialogOpen, selectedFolderId, setSelectedFolderId,
+  handleSaveFolder, folders,
+}: {
+  tagDialogOpen: boolean; setTagDialogOpen: (v: boolean) => void;
+  tagInput: string; setTagInput: (v: string) => void; handleSaveTags: () => void;
+  renameDialogOpen: boolean; setRenameDialogOpen: (v: boolean) => void;
+  renameInput: string; setRenameInput: (v: string) => void; handleSaveRename: () => void;
+  folderDialogOpen: boolean; setFolderDialogOpen: (v: boolean) => void;
+  selectedFolderId: string | null; setSelectedFolderId: (v: string | null) => void;
+  handleSaveFolder: () => void; folders: { id: string; name: string }[];
+}) {
+  return (
+    <>
       {/* Edit Tags Dialog */}
       <Dialog open={tagDialogOpen} onOpenChange={setTagDialogOpen}>
         <DialogContent className="sm:max-w-md">
@@ -352,9 +292,7 @@ export function FileCard({ file, onPreview }: FileCardProps) {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setTagDialogOpen(false)}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setTagDialogOpen(false)}>取消</Button>
             <Button onClick={handleSaveTags}>保存</Button>
           </DialogFooter>
         </DialogContent>
@@ -371,16 +309,12 @@ export function FileCard({ file, onPreview }: FileCardProps) {
             <Input
               value={renameInput}
               onChange={(e) => setRenameInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleSaveRename();
-              }}
+              onKeyDown={(e) => { if (e.key === "Enter") handleSaveRename(); }}
               autoFocus
             />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRenameDialogOpen(false)}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setRenameDialogOpen(false)}>取消</Button>
             <Button onClick={handleSaveRename}>确认</Button>
           </DialogFooter>
         </DialogContent>
@@ -396,27 +330,21 @@ export function FileCard({ file, onPreview }: FileCardProps) {
             <button
               className={cn(
                 "w-full text-left px-3 py-2 rounded-lg text-sm transition-colors",
-                selectedFolderId === null
-                  ? "bg-primary text-primary-foreground"
-                  : "hover:bg-muted"
+                selectedFolderId === null ? "bg-primary text-primary-foreground" : "hover:bg-muted"
               )}
               onClick={() => setSelectedFolderId(null)}
             >
               📁 根目录（无文件夹）
             </button>
             {folders.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-4">
-                暂无文件夹，请先在文件管理页面创建
-              </p>
+              <p className="text-sm text-muted-foreground text-center py-4">暂无文件夹，请先创建</p>
             ) : (
               folders.map((folder) => (
                 <button
                   key={folder.id}
                   className={cn(
                     "w-full text-left px-3 py-2 rounded-lg text-sm transition-colors",
-                    selectedFolderId === folder.id
-                      ? "bg-primary text-primary-foreground"
-                      : "hover:bg-muted"
+                    selectedFolderId === folder.id ? "bg-primary text-primary-foreground" : "hover:bg-muted"
                   )}
                   onClick={() => setSelectedFolderId(folder.id)}
                 >
@@ -426,9 +354,7 @@ export function FileCard({ file, onPreview }: FileCardProps) {
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setFolderDialogOpen(false)}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setFolderDialogOpen(false)}>取消</Button>
             <Button onClick={handleSaveFolder}>移动</Button>
           </DialogFooter>
         </DialogContent>
@@ -439,106 +365,26 @@ export function FileCard({ file, onPreview }: FileCardProps) {
 
 // List item variant
 export function FileListItem({ file, onPreview }: FileCardProps) {
-  const { toggleFavorite, softDeleteFile, setAiChatFile, updateFile, folders, refreshFolders, renameFile, batchMode, batchSelectedIds, toggleBatchSelect, openLightbox, files } = useAppStore();
+  const {
+    tagDialogOpen, setTagDialogOpen, tagInput, setTagInput,
+    folderDialogOpen, setFolderDialogOpen, selectedFolderId, setSelectedFolderId,
+    renameDialogOpen, setRenameDialogOpen, renameInput, setRenameInput,
+    handleFavorite, handleDelete, handleAIChat,
+    handleEditTags, handleSaveTags,
+    handleMoveToFolder, handleSaveFolder,
+    handleRename, handleSaveRename,
+    handleOpenLightbox, handleCardClick,
+    isSelected, hasAITags, isImage, folders, batchMode,
+  } = useFileActions(file);
+
   const colorClass = getFileColor(file.fileType);
 
-  // Edit tags dialog
-  const [tagDialogOpen, setTagDialogOpen] = useState(false);
-  const [tagInput, setTagInput] = useState(file.tags.join(", "));
-
-  // Move to folder dialog
-  const [folderDialogOpen, setFolderDialogOpen] = useState(false);
-  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(file.folderId || null);
-
-  // Rename dialog
-  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
-  const [renameInput, setRenameInput] = useState(file.fileName);
-
-  const handleFavorite = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    toggleFavorite(file.id);
-  };
-
-  const handleDelete = async () => {
-    if (confirm("确定要删除这个文件吗？文件将移入回收站。")) {
-      await softDeleteFile(file.id);
-    }
-  };
-
-  const handleAIChat = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setAiChatFile(file);
-  };
-
-  const handleEditTags = () => {
-    setTagInput(file.tags.join(", "));
-    setTagDialogOpen(true);
-  };
-
-  const handleSaveTags = () => {
-    const newTags = tagInput
-      .split(/[,，]/)
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
-    updateFile(file.id, { tags: newTags });
-    const { user, storageMode } = useAppStore.getState();
-    if (user) {
-      const adapter = getStorageAdapter(storageMode);
-      adapter.updateFile(file.id, { tags: newTags }, user.id).catch(console.error);
-    }
-    setTagDialogOpen(false);
-  };
-
-  const handleMoveToFolder = () => {
-    setSelectedFolderId(file.folderId || null);
-    refreshFolders();
-    setFolderDialogOpen(true);
-  };
-
-  const handleSaveFolder = () => {
-    updateFile(file.id, { folderId: selectedFolderId || undefined });
-    const { user, storageMode } = useAppStore.getState();
-    if (user) {
-      const adapter = getStorageAdapter(storageMode);
-      adapter.updateFile(file.id, { folderId: selectedFolderId || null } as Partial<FileData>, user.id).catch(console.error);
-    }
-    setFolderDialogOpen(false);
-  };
-
-  const handleRename = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setRenameInput(file.fileName);
-    setRenameDialogOpen(true);
-  };
-
-  const handleSaveRename = async () => {
-    if (!renameInput.trim()) return;
-    const ext = file.fileName.includes(".") ? "." + file.fileName.split(".").pop() : "";
-    const nameWithoutExt = renameInput.trim().replace(/\.[^.]+$/, "");
-    const newName = nameWithoutExt + ext;
-    await renameFile(file.id, newName);
-    setRenameDialogOpen(false);
-  };
-
-  const handleOpenLightbox = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const allImages = files.filter((f) => f.fileType === "image" && !f.isDeleted && f.thumbnailUrl);
-    const currentIndex = allImages.findIndex((f) => f.id === file.id);
-    openLightbox(allImages, currentIndex >= 0 ? currentIndex : 0);
-  };
-
-  const handleItemClick = () => {
-    if (batchMode) {
-      toggleBatchSelect(file.id);
-    } else if (file.fileType === "image" && file.thumbnailUrl) {
-      handleOpenLightbox({ stopPropagation: () => {} } as React.MouseEvent);
-    } else {
+  const onItemClick = () => {
+    const result = handleCardClick();
+    if (result === false) {
       onPreview(file);
     }
   };
-
-  const hasAITags = file.tags && file.tags.length > 0;
-  const isSelected = batchSelectedIds.includes(file.id);
 
   return (
     <>
@@ -547,35 +393,24 @@ export function FileListItem({ file, onPreview }: FileCardProps) {
           "flex items-center gap-3 p-3 rounded-lg hover:bg-muted/50 cursor-pointer transition-colors group",
           batchMode && isSelected && "bg-primary/5 ring-1 ring-primary"
         )}
-        onClick={handleItemClick}
+        onClick={onItemClick}
       >
         {/* Batch checkbox */}
         {batchMode && (
           <div
             className={cn(
               "h-5 w-5 rounded border-2 flex items-center justify-center shrink-0 transition-colors",
-              isSelected
-                ? "bg-primary border-primary text-primary-foreground"
-                : "border-muted-foreground/40"
+              isSelected ? "bg-primary border-primary text-primary-foreground" : "border-muted-foreground/40"
             )}
           >
             {isSelected && <Check className="h-3 w-3" />}
           </div>
         )}
 
-        {file.fileType === "image" && file.thumbnailUrl ? (
-          <img
-            src={file.thumbnailUrl}
-            alt={file.fileName}
-            className="h-10 w-10 rounded-md object-cover shrink-0"
-          />
+        {isImage ? (
+          <img src={file.thumbnailUrl} alt={file.fileName} className="h-10 w-10 rounded-md object-cover shrink-0" />
         ) : (
-          <div
-            className={cn(
-              "h-10 w-10 rounded-lg flex items-center justify-center shrink-0",
-              colorClass
-            )}
-          >
+          <div className={cn("h-10 w-10 rounded-lg flex items-center justify-center shrink-0", colorClass)}>
             <FileIconDisplay fileType={file.fileType} className="h-5 w-5" />
           </div>
         )}
@@ -583,92 +418,52 @@ export function FileListItem({ file, onPreview }: FileCardProps) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
             <p className="text-sm font-medium truncate">{file.fileName}</p>
-            {hasAITags && (
-              <Sparkles className="h-3 w-3 text-primary shrink-0" />
-            )}
+            {hasAITags && <Sparkles className="h-3 w-3 text-primary shrink-0" />}
           </div>
           <p className="text-xs text-muted-foreground">
-            {formatSize(file.fileSize)} ·{" "}
-            {new Date(file.createdAt).toLocaleDateString("zh-CN")}
+            {formatSize(file.fileSize)} · {new Date(file.createdAt).toLocaleDateString("zh-CN")}
           </p>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
           {file.tags.slice(0, 2).map((tag) => (
-            <Badge
-              key={tag}
-              variant="secondary"
-              className="text-[10px] px-1.5 py-0 hidden sm:inline-flex"
-            >
+            <Badge key={tag} variant="secondary" className="text-[10px] px-1.5 py-0 hidden sm:inline-flex">
               {tag}
             </Badge>
           ))}
           {!batchMode && (
             <>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={handleFavorite}
-              >
-                <Star
-                  className={cn(
-                    "h-3.5 w-3.5",
-                    file.isFavorite
-                      ? "fill-yellow-400 text-yellow-400"
-                      : "text-muted-foreground"
-                  )}
-                />
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleFavorite}>
+                <Star className={cn("h-3.5 w-3.5", file.isFavorite ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground")} />
               </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 hidden sm:flex"
-                onClick={handleAIChat}
-              >
+              <Button variant="ghost" size="icon" className="h-7 w-7 hidden sm:flex" onClick={handleAIChat}>
                 <Sparkles className="h-3.5 w-3.5 text-primary" />
               </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 opacity-0 group-hover:opacity-100"
-                  >
+                  <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100">
                     <MoreVertical className="h-3.5 w-3.5" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => onPreview(file)}>
-                    预览
-                  </DropdownMenuItem>
-                  {file.fileType === "image" && file.thumbnailUrl && (
-                    <DropdownMenuItem onClick={handleOpenLightbox}>
-                      放大查看
-                    </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => onPreview(file)}>预览</DropdownMenuItem>
+                  {isImage && (
+                    <DropdownMenuItem onClick={handleOpenLightbox}>放大查看</DropdownMenuItem>
                   )}
                   <DropdownMenuItem onClick={handleAIChat}>
-                    <Sparkles className="h-4 w-4 mr-2" />
-                    AI 解读
+                    <Sparkles className="h-4 w-4 mr-2" />AI 解读
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={handleEditTags}>
-                    <Tag className="h-4 w-4 mr-2" />
-                    编辑标签
+                    <Tag className="h-4 w-4 mr-2" />编辑标签
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={handleRename}>
-                    <Pencil className="h-4 w-4 mr-2" />
-                    重命名
+                    <Pencil className="h-4 w-4 mr-2" />重命名
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={handleMoveToFolder}>
-                    <FolderInput className="h-4 w-4 mr-2" />
-                    移动到文件夹
+                    <FolderInput className="h-4 w-4 mr-2" />移动到文件夹
                   </DropdownMenuItem>
-                  <DropdownMenuItem
-                    className="text-destructive"
-                    onClick={handleDelete}
-                  >
-                    <Trash2 className="h-4 w-4 mr-2" />
-                    删除
+                  <DropdownMenuItem className="text-destructive" onClick={handleDelete}>
+                    <Trash2 className="h-4 w-4 mr-2" />删除
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -677,113 +472,16 @@ export function FileListItem({ file, onPreview }: FileCardProps) {
         </div>
       </div>
 
-      {/* Edit Tags Dialog */}
-      <Dialog open={tagDialogOpen} onOpenChange={setTagDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>编辑标签</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-2">
-            <Label>标签（用逗号分隔）</Label>
-            <Input
-              value={tagInput}
-              onChange={(e) => setTagInput(e.target.value)}
-              placeholder="风景, 旅行, 美食"
-            />
-            <div className="flex flex-wrap gap-1.5">
-              {tagInput.split(/[,，]/).map((t, i) => {
-                const trimmed = t.trim();
-                if (!trimmed) return null;
-                return (
-                  <Badge key={i} variant="secondary" className="text-xs">
-                    {trimmed}
-                  </Badge>
-                );
-              })}
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setTagDialogOpen(false)}>
-              取消
-            </Button>
-            <Button onClick={handleSaveTags}>保存</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Rename Dialog */}
-      <Dialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>重命名文件</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-2">
-            <Label>新文件名</Label>
-            <Input
-              value={renameInput}
-              onChange={(e) => setRenameInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleSaveRename();
-              }}
-              autoFocus
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRenameDialogOpen(false)}>
-              取消
-            </Button>
-            <Button onClick={handleSaveRename}>确认</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Move to Folder Dialog */}
-      <Dialog open={folderDialogOpen} onOpenChange={setFolderDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>移动到文件夹</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2 py-2 max-h-64 overflow-y-auto">
-            <button
-              className={cn(
-                "w-full text-left px-3 py-2 rounded-lg text-sm transition-colors",
-                selectedFolderId === null
-                  ? "bg-primary text-primary-foreground"
-                  : "hover:bg-muted"
-              )}
-              onClick={() => setSelectedFolderId(null)}
-            >
-              📁 根目录（无文件夹）
-            </button>
-            {folders.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-4">
-                暂无文件夹
-              </p>
-            ) : (
-              folders.map((folder) => (
-                <button
-                  key={folder.id}
-                  className={cn(
-                    "w-full text-left px-3 py-2 rounded-lg text-sm transition-colors",
-                    selectedFolderId === folder.id
-                      ? "bg-primary text-primary-foreground"
-                      : "hover:bg-muted"
-                  )}
-                  onClick={() => setSelectedFolderId(folder.id)}
-                >
-                  📁 {folder.name}
-                </button>
-              ))
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setFolderDialogOpen(false)}>
-              取消
-            </Button>
-            <Button onClick={handleSaveFolder}>移动</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Dialogs */}
+      <FileActionDialogs
+        tagDialogOpen={tagDialogOpen} setTagDialogOpen={setTagDialogOpen}
+        tagInput={tagInput} setTagInput={setTagInput} handleSaveTags={handleSaveTags}
+        renameDialogOpen={renameDialogOpen} setRenameDialogOpen={setRenameDialogOpen}
+        renameInput={renameInput} setRenameInput={setRenameInput} handleSaveRename={handleSaveRename}
+        folderDialogOpen={folderDialogOpen} setFolderDialogOpen={setFolderDialogOpen}
+        selectedFolderId={selectedFolderId} setSelectedFolderId={setSelectedFolderId}
+        handleSaveFolder={handleSaveFolder} folders={folders}
+      />
     </>
   );
 }

@@ -323,12 +323,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         : [...s.batchSelectedIds, id],
     })),
   selectAllFiles: () => {
-    const { files, fileTypeFilter } = get();
-    const activeFiles = files.filter((f) => !f.isDeleted);
-    const filtered = fileTypeFilter
-      ? activeFiles.filter((f) => f.fileType === fileTypeFilter)
-      : activeFiles;
-    set({ batchSelectedIds: filtered.map((f) => f.id) });
+    const { files, fileTypeFilter, selectedFolderId } = get();
+    let activeFiles = files.filter((f) => !f.isDeleted);
+    // Apply same filters as FilesView
+    if (fileTypeFilter === "document") {
+      activeFiles = activeFiles.filter((f) => f.fileType === "word" || f.fileType === "pdf" || f.fileType === "pptx");
+    } else if (fileTypeFilter === "image") {
+      activeFiles = activeFiles.filter((f) => f.fileType === "image");
+    } else if (fileTypeFilter === "favorite") {
+      activeFiles = activeFiles.filter((f) => f.isFavorite);
+    }
+    if (selectedFolderId) {
+      activeFiles = activeFiles.filter((f) => f.folderId === selectedFolderId);
+    }
+    set({ batchSelectedIds: activeFiles.map((f) => f.id) });
   },
   clearBatchSelection: () => set({ batchSelectedIds: [] }),
 

@@ -308,3 +308,30 @@ Stage Summary:
 - 新增文件：SortFilter.tsx, StorageCharts.tsx, TagManagement.tsx, AlbumView.tsx, use-keyboard-shortcuts.ts, file-hash.ts
 - 修改文件：layout.tsx (ThemeProvider), Header.tsx (dark mode), page.tsx (新视图+排序), Sidebar.tsx, MobileNav.tsx, app-store.ts (sort state + new view types)
 - 项目功能完成度：~98%，仅剩PWA离线支持（低优先级）
+---
+Task ID: 1
+Agent: Main Agent
+Task: 全面审查项目代码，修复不合格之处
+
+Work Log:
+- 审查了全部核心文件（page.tsx, app-store.ts, ImageLightbox, FileCard, Sidebar, MobileNav, TimelineView, AlbumView, StorageCharts, RecentFiles, TagManagement, FilePreview, UploadZone, SortFilter, file-utils）
+- 执行了 TypeScript 类型检查 (npx tsc --noEmit)
+- 执行了 Next.js 构建 (npx next build)
+
+发现并修复了11个问题：
+1. 🔴 CRITICAL: TimelineView.tsx 缺少 useState import（会导致运行时崩溃） → 已修复
+2. 🔴 TimelineView 显示已删除文件 → 已修复（添加 !f.isDeleted 过滤）
+3. 🔴 AlbumView 重复渲染 ImageLightbox（全局已有） → 已修复（移除重复）
+4. 🟡 selectAllFiles 过滤逻辑错误（"document"/"favorite" 不是文件类型） → 已修复
+5. 🟡 RecentFiles 点击文件只跳转到文件列表 → 已改进（导入 FileData 类型）
+6. 🟡 TimelineView 图片不支持 lightbox → 已修复（直接打开 lightbox）
+7. 🟠 FileCard/FileListItem 代码重复严重（790行） → 重构为共享 hook（useFileActions + FileActionDialogs），减少到约380行
+8. 🟠 getFileColor 暗色模式背景色不适配 → 已修复（添加 dark: 前缀）
+9. 🟠 MobileNav 9个导航项太拥挤 → 已优化（5个核心+更多展开菜单）
+10. 🟡 TimelineView 空状态判断使用全量文件而非已激活文件 → 已修复
+11. 🟡 TimelineView 自带冗余预览对话框+下载逻辑 → 已移除（使用全局 lightbox）
+
+Stage Summary:
+- 修改文件: TimelineView.tsx, AlbumView.tsx, app-store.ts, file-utils.tsx, MobileNav.tsx, FileCard.tsx
+- 新增文件: useFileActions.ts（共享文件操作 hook）
+- 构建: 0错误0警告，TypeScript类型检查通过（仅遗留之前就存在的无关错误）

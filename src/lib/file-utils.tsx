@@ -33,15 +33,15 @@ export function getFileIcon(fileType: string): LucideIcon {
 export function getFileColor(fileType: string): string {
   switch (fileType) {
     case "word":
-      return "text-blue-600 bg-blue-50";
+      return "text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/15";
     case "pdf":
-      return "text-red-600 bg-red-50";
+      return "text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-500/15";
     case "image":
-      return "text-green-600 bg-green-50";
+      return "text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-500/15";
     case "pptx":
-      return "text-orange-600 bg-orange-50";
+      return "text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-500/15";
     default:
-      return "text-gray-600 bg-gray-50";
+      return "text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-500/15";
   }
 }
 

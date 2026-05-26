@@ -1,6 +1,7 @@
 "use client";
 
 import { useAppStore } from "@/stores/app-store";
+import type { FileData } from "@/lib/storage/base";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { File, Clock } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -13,7 +14,7 @@ import {
 
 export function RecentFiles() {
   const { files, setCurrentView } = useAppStore();
-  const recentFiles = files.slice(0, 8);
+  const recentFiles = files.filter((f) => !f.isDeleted).slice(0, 8);
 
   return (
     <Card className="shadow-sm">
