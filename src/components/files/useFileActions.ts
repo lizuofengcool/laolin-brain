@@ -33,16 +33,21 @@ export function useFileActions(file: FileData) {
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(file.folderId || null);
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [renameInput, setRenameInput] = useState(file.fileName);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   const handleFavorite = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     toggleFavorite(file.id);
   }, [toggleFavorite, file.id]);
 
-  const handleDelete = useCallback(async () => {
-    if (confirm("确定要删除这个文件吗？文件将移入回收站。")) {
-      await softDeleteFile(file.id);
-    }
+  const handleDelete = useCallback((e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setDeleteConfirmOpen(true);
+  }, []);
+
+  const confirmDelete = useCallback(async () => {
+    await softDeleteFile(file.id);
+    setDeleteConfirmOpen(false);
   }, [softDeleteFile, file.id]);
 
   const handleAIChat = useCallback((e: React.MouseEvent) => {
@@ -134,8 +139,9 @@ export function useFileActions(file: FileData) {
     tagDialogOpen, setTagDialogOpen, tagInput, setTagInput,
     folderDialogOpen, setFolderDialogOpen, selectedFolderId, setSelectedFolderId,
     renameDialogOpen, setRenameDialogOpen, renameInput, setRenameInput,
+    deleteConfirmOpen, setDeleteConfirmOpen,
     // Handlers
-    handleFavorite, handleDelete, handleAIChat,
+    handleFavorite, handleDelete, confirmDelete, handleAIChat,
     handleEditTags, handleSaveTags,
     handleMoveToFolder, handleSaveFolder,
     handleRename, handleSaveRename,

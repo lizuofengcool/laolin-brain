@@ -2,10 +2,27 @@
 
 import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
-import { Upload, Cloud, HardDrive, Sparkles, Loader2, CheckCircle2 } from "lucide-react";
+import { Upload, Cloud, HardDrive, Sparkles, Loader2, CheckCircle2, FileWarning } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
+
+// Guess MIME type from file extension (fallback when browser reports empty file.type)
+function guessMimeType(fileName: string): string {
+  const ext = fileName.split(".").pop()?.toLowerCase() || "";
+  const map: Record<string, string> = {
+    jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+    webp: "image/webp", gif: "image/gif", bmp: "image/bmp",
+    svg: "image/svg+xml", tiff: "image/tiff", tif: "image/tiff",
+    ico: "image/x-icon", avif: "image/avif",
+    pdf: "application/pdf",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    md: "text/markdown", markdown: "text/markdown",
+    txt: "text/plain",
+  };
+  return map[ext] || "application/octet-stream";
+}
 
 interface UploadZoneProps {
   className?: string;
@@ -30,11 +47,12 @@ export function UploadZone({ className }: UploadZoneProps) {
   const [aiStatus, setAiStatus] = useState("");
   const [uploadedCount, setUploadedCount] = useState(0);
   const [failedFiles, setFailedFiles] = useState<string[]>([]);
-  const { user, storageMode, addFile, refreshFiles } = useAppStore();
+  const { user, storageMode, addFile, refreshFiles, files } = useAppStore();
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
       if (!user || acceptedFiles.length === 0) return;
+      console.log("[UploadZone] onDrop triggered, files:", acceptedFiles.map(f => `${f.name} (${f.type}, ${f.size} bytes)`));
       setUploading(true);
       setProgress(0);
       setUploadedCount(0);
@@ -56,7 +74,33 @@ export function UploadZone({ className }: UploadZoneProps) {
           continue;
         }
 
+        // ─── Duplicate detection ─────────────────────────────
+        let fileHash = "";
         try {
+          const { computeFileHash } = await import("@/lib/file-hash");
+          fileHash = await computeFileHash(file);
+          const existingFiles = files.filter((f) => !f.isDeleted);
+          const dup = existingFiles.find((f) => f.fileHash === fileHash);
+          if (dup) {
+            toast({
+              title: "重复文件",
+              description: `${file.name} 与已有文件「${dup.fileName}」内容相同，已跳过`,
+              variant: "destructive",
+            });
+            setFailedFiles((prev) => [...prev, file.name]);
+            completed++;
+            setProgress(Math.round((completed / total) * 100));
+            continue;
+          }
+        } catch {
+          // Duplicate check failed — continue with upload
+        }
+
+        try {
+          // Detect file type more robustly — fall back to extension when MIME is empty
+          const detectedType = file.type || guessMimeType(file.name);
+          console.log(`[UploadZone] Processing ${file.name}, MIME: ${file.type}, detected: ${detectedType}, size: ${file.size}`);
+
           if (storageMode === "cloud") {
             // ─── Cloud Mode ─────────────────────────────
             const formData = new FormData();
@@ -97,12 +141,21 @@ export function UploadZone({ className }: UploadZoneProps) {
             }
           } else {
             // ─── Local Mode ─────────────────────────────
-            const { getStorageAdapter, resetAdapter } = await import(
-              "@/lib/storage/factory"
-            );
-            resetAdapter();
-            const adapter = getStorageAdapter("local");
+            console.log("[UploadZone] Using local (IndexedDB) mode");
+            let adapter;
+            try {
+              const { getStorageAdapter, resetAdapter } = await import(
+                "@/lib/storage/factory"
+              );
+              resetAdapter();
+              adapter = getStorageAdapter("local");
+            } catch (adapterErr) {
+              console.error("[UploadZone] Failed to get local adapter:", adapterErr);
+              throw new Error("无法初始化本地存储");
+            }
+            console.log("[UploadZone] Local adapter ready, calling uploadFile");
             const result = await adapter.uploadFile(file, user.id);
+            console.log("[UploadZone] uploadFile result:", result.id, result.fileName, result.fileType);
 
             // AI processing for images in local mode
             let aiTags: string[] = [];
@@ -146,22 +199,31 @@ export function UploadZone({ className }: UploadZoneProps) {
               tags: aiTags,
               isFavorite: false,
               createdAt: new Date() as Date,
+              fileHash: fileHash || undefined,
             };
 
             addFile(fileData);
             succeeded++;
 
-            // Persist AI results to IndexedDB
+            // Persist AI results + hash to IndexedDB
+            const persistData: Record<string, unknown> = {};
             if (aiTags.length > 0 || aiTextContent) {
+              persistData.tags = aiTags;
+              persistData.textContent = aiTextContent;
+            }
+            if (fileHash) {
+              persistData.fileHash = fileHash;
+            }
+            if (Object.keys(persistData).length > 0) {
               try {
-                await adapter.updateFile(result.id, { tags: aiTags, textContent: aiTextContent }, user.id);
+                await adapter.updateFile(result.id, persistData, user.id);
               } catch {
                 // ignore
               }
             }
           }
         } catch (err) {
-          console.error("Upload failed:", err);
+          console.error("[UploadZone] Upload failed for", file.name, ":", err);
           toast({
             title: "上传出错",
             description: `${file.name}: ${(err as Error).message || "未知错误"}`,
@@ -202,20 +264,32 @@ export function UploadZone({ className }: UploadZoneProps) {
         setFailedFiles([]);
       }, 3000);
     },
-    [user, storageMode, addFile, refreshFiles]
+    [user, storageMode, addFile, refreshFiles, files]
   );
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+  const { getRootProps, getInputProps, isDragActive, fileRejections } = useDropzone({
     onDrop,
     noClick: false,
     multiple: true,
+    // Use a permissive accept config — MIME + extension fallback for desktop compatibility
     accept: {
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
       "application/pdf": [".pdf"],
-      "image/*": [".jpg", ".jpeg", ".png", ".webp", ".gif"],
+      "image/*": [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg", ".tiff", ".ico"],
       "application/vnd.openxmlformats-officedocument.presentationml.presentation": [".pptx"],
+      "text/markdown": [".md", ".markdown"],
+      "text/plain": [".txt"],
     },
   });
+
+  // Show rejection reasons
+  const rejectionMsg = fileRejections.length > 0
+    ? fileRejections.map(r => `${r.file.name}: ${r.errors.map(e => e.message).join(", ")}`).join("; ")
+    : "";
+
+  if (rejectionMsg) {
+    console.warn("[UploadZone] Rejected files:", rejectionMsg);
+  }
 
   return (
     <div
@@ -278,8 +352,14 @@ export function UploadZone({ className }: UploadZoneProps) {
               {isDragActive ? "松开以上传文件" : "拖拽文件到此处，或点击上传"}
             </p>
             <p className="text-xs text-muted-foreground mt-1">
-              支持 Word、PDF、PPT、图片，单文件最大 50MB
+              支持 Word、PDF、PPT、图片、Markdown、TXT，单文件最大 50MB
             </p>
+            {rejectionMsg && (
+              <p className="text-xs text-destructive mt-1 flex items-center gap-1 justify-center">
+                <FileWarning className="h-3 w-3" />
+                {rejectionMsg}
+              </p>
+            )}
           </div>
           <p className="text-xs text-muted-foreground">
             {storageMode === "cloud" ? "☁️ 云端存储" : "💾 本地存储"}

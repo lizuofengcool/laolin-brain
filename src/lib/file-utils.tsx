@@ -6,6 +6,7 @@ import {
   Image as ImageIcon,
   File,
   Presentation,
+  FileCode,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -25,6 +26,9 @@ export function getFileIcon(fileType: string): LucideIcon {
       return ImageIcon;
     case "pptx":
       return Presentation;
+    case "markdown":
+    case "txt":
+      return FileCode;
     default:
       return File;
   }
@@ -40,6 +44,9 @@ export function getFileColor(fileType: string): string {
       return "text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-500/15";
     case "pptx":
       return "text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-500/15";
+    case "markdown":
+    case "txt":
+      return "text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-500/15";
     default:
       return "text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-500/15";
   }
@@ -56,6 +63,7 @@ export function FileIconDisplay({
   if (fileType === "word") return <FileText className={className} />;
   if (fileType === "image") return <ImageIcon className={className} />;
   if (fileType === "pptx") return <Presentation className={className} />;
+  if (fileType === "markdown" || fileType === "txt") return <FileCode className={className} />;
   return <File className={className} />;
 }
 

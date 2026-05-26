@@ -4,28 +4,40 @@ import { useState } from "react";
 import { useAppStore } from "@/stores/app-store";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { Cloud, HardDrive, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function StorageSwitch() {
   const { storageMode, setStorageMode } = useAppStore();
   const [switching, setSwitching] = useState(false);
+  const [pendingMode, setPendingMode] = useState<string | null>(null);
 
-  const handleSwitch = async (mode: string) => {
+  const handleSwitchClick = (mode: string) => {
     if (mode === storageMode) return;
+    setPendingMode(mode);
+  };
 
-    if (mode === "local") {
-      if (!confirm("切换到本地存储后，云端文件将不可见。确定要切换吗？")) return;
-    } else {
-      if (!confirm("切换到云端存储后，本地文件将不可见。确定要切换吗？")) return;
-    }
-
+  const confirmSwitch = async () => {
+    if (!pendingMode) return;
     setSwitching(true);
     try {
-      await setStorageMode(mode);
+      await setStorageMode(pendingMode);
     } finally {
       setSwitching(false);
+      setPendingMode(null);
     }
+  };
+
+  const cancelSwitch = () => {
+    setPendingMode(null);
   };
 
   return (
@@ -34,6 +46,7 @@ export function StorageSwitch() {
         <CardTitle className="text-base font-semibold">存储模式</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Local storage option */}
         <div
           className={cn(
             "flex items-center gap-4 p-4 rounded-lg border-2 cursor-pointer transition-all",
@@ -41,10 +54,10 @@ export function StorageSwitch() {
               ? "border-primary bg-primary/5"
               : "border-muted hover:border-muted-foreground/30"
           )}
-          onClick={() => handleSwitch("local")}
+          onClick={() => handleSwitchClick("local")}
         >
-          <div className="h-10 w-10 rounded-lg bg-green-100 flex items-center justify-center shrink-0">
-            <HardDrive className="h-5 w-5 text-green-600" />
+          <div className="h-10 w-10 rounded-lg bg-green-500/10 dark:bg-green-500/20 flex items-center justify-center shrink-0">
+            <HardDrive className="h-5 w-5 text-green-600 dark:text-green-400" />
           </div>
           <div className="flex-1">
             <Label className="text-sm font-medium">本地存储 (IndexedDB)</Label>
@@ -66,6 +79,7 @@ export function StorageSwitch() {
           </div>
         </div>
 
+        {/* Cloud storage option */}
         <div
           className={cn(
             "flex items-center gap-4 p-4 rounded-lg border-2 cursor-pointer transition-all",
@@ -73,10 +87,10 @@ export function StorageSwitch() {
               ? "border-primary bg-primary/5"
               : "border-muted hover:border-muted-foreground/30"
           )}
-          onClick={() => handleSwitch("cloud")}
+          onClick={() => handleSwitchClick("cloud")}
         >
-          <div className="h-10 w-10 rounded-lg bg-blue-100 flex items-center justify-center shrink-0">
-            <Cloud className="h-5 w-5 text-blue-600" />
+          <div className="h-10 w-10 rounded-lg bg-blue-500/10 dark:bg-blue-500/20 flex items-center justify-center shrink-0">
+            <Cloud className="h-5 w-5 text-blue-600 dark:text-blue-400" />
           </div>
           <div className="flex-1">
             <Label className="text-sm font-medium">云端存储 (服务端)</Label>
@@ -105,6 +119,24 @@ export function StorageSwitch() {
           </div>
         )}
       </CardContent>
+
+      {/* Switch confirmation dialog */}
+      <Dialog open={!!pendingMode} onOpenChange={(v) => { if (!v) cancelSwitch(); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>切换存储模式</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {pendingMode === "local"
+              ? "切换到本地存储后，云端文件将不可见。确定要切换吗？"
+              : "切换到云端存储后，本地文件将不可见。确定要切换吗？"}
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={cancelSwitch}>取消</Button>
+            <Button onClick={confirmSwitch}>确认切换</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

@@ -45,12 +45,13 @@ export function FileCard({ file, onPreview }: FileCardProps) {
     tagDialogOpen, setTagDialogOpen, tagInput, setTagInput,
     folderDialogOpen, setFolderDialogOpen, selectedFolderId, setSelectedFolderId,
     renameDialogOpen, setRenameDialogOpen, renameInput, setRenameInput,
-    handleFavorite, handleDelete, handleAIChat,
+    handleFavorite, handleDelete, confirmDelete, handleAIChat,
     handleEditTags, handleSaveTags,
     handleMoveToFolder, handleSaveFolder,
     handleRename, handleSaveRename,
     handleOpenLightbox, handleCardClick,
     isSelected, hasAITags, hasAITextContent, isImage, folders, batchMode,
+    deleteConfirmOpen, setDeleteConfirmOpen,
   } = useFileActions(file);
 
   const colorClass = getFileColor(file.fileType);
@@ -208,7 +209,7 @@ export function FileCard({ file, onPreview }: FileCardProps) {
 
           {/* Info area */}
           <div className="p-3">
-            <p className="text-sm font-medium truncate">{file.fileName}</p>
+            <p className="text-sm font-medium truncate" title={file.fileName}>{file.fileName}</p>
             <div className="flex items-center justify-between mt-1.5">
               <span className="text-xs text-muted-foreground">
                 {formatSize(file.fileSize)}
@@ -244,6 +245,7 @@ export function FileCard({ file, onPreview }: FileCardProps) {
         folderDialogOpen={folderDialogOpen} setFolderDialogOpen={setFolderDialogOpen}
         selectedFolderId={selectedFolderId} setSelectedFolderId={setSelectedFolderId}
         handleSaveFolder={handleSaveFolder} folders={folders}
+        deleteConfirmOpen={deleteConfirmOpen} setDeleteConfirmOpen={setDeleteConfirmOpen} confirmDelete={confirmDelete} fileName={file.fileName}
       />
     </>
   );
@@ -255,6 +257,7 @@ function FileActionDialogs({
   renameDialogOpen, setRenameDialogOpen, renameInput, setRenameInput, handleSaveRename,
   folderDialogOpen, setFolderDialogOpen, selectedFolderId, setSelectedFolderId,
   handleSaveFolder, folders,
+  deleteConfirmOpen, setDeleteConfirmOpen, confirmDelete, fileName,
 }: {
   tagDialogOpen: boolean; setTagDialogOpen: (v: boolean) => void;
   tagInput: string; setTagInput: (v: string) => void; handleSaveTags: () => void;
@@ -263,6 +266,7 @@ function FileActionDialogs({
   folderDialogOpen: boolean; setFolderDialogOpen: (v: boolean) => void;
   selectedFolderId: string | null; setSelectedFolderId: (v: string | null) => void;
   handleSaveFolder: () => void; folders: { id: string; name: string }[];
+  deleteConfirmOpen: boolean; setDeleteConfirmOpen: (v: boolean) => void; confirmDelete: () => void; fileName: string;
 }) {
   return (
     <>
@@ -359,6 +363,20 @@ function FileActionDialogs({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Confirm Dialog */}
+      <Dialog open={deleteConfirmOpen} onOpenChange={(v) => { if (!v) setDeleteConfirmOpen(false); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>删除文件</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">确定要删除「{fileName}」吗？文件将移入回收站。</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteConfirmOpen(false)}>取消</Button>
+            <Button variant="destructive" onClick={confirmDelete}>确认删除</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
@@ -369,12 +387,13 @@ export function FileListItem({ file, onPreview }: FileCardProps) {
     tagDialogOpen, setTagDialogOpen, tagInput, setTagInput,
     folderDialogOpen, setFolderDialogOpen, selectedFolderId, setSelectedFolderId,
     renameDialogOpen, setRenameDialogOpen, renameInput, setRenameInput,
-    handleFavorite, handleDelete, handleAIChat,
+    handleFavorite, handleDelete, confirmDelete, handleAIChat,
     handleEditTags, handleSaveTags,
     handleMoveToFolder, handleSaveFolder,
     handleRename, handleSaveRename,
     handleOpenLightbox, handleCardClick,
     isSelected, hasAITags, isImage, folders, batchMode,
+    deleteConfirmOpen, setDeleteConfirmOpen,
   } = useFileActions(file);
 
   const colorClass = getFileColor(file.fileType);
@@ -417,7 +436,7 @@ export function FileListItem({ file, onPreview }: FileCardProps) {
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
-            <p className="text-sm font-medium truncate">{file.fileName}</p>
+            <p className="text-sm font-medium truncate" title={file.fileName}>{file.fileName}</p>
             {hasAITags && <Sparkles className="h-3 w-3 text-primary shrink-0" />}
           </div>
           <p className="text-xs text-muted-foreground">
@@ -481,6 +500,7 @@ export function FileListItem({ file, onPreview }: FileCardProps) {
         folderDialogOpen={folderDialogOpen} setFolderDialogOpen={setFolderDialogOpen}
         selectedFolderId={selectedFolderId} setSelectedFolderId={setSelectedFolderId}
         handleSaveFolder={handleSaveFolder} folders={folders}
+        deleteConfirmOpen={deleteConfirmOpen} setDeleteConfirmOpen={setDeleteConfirmOpen} confirmDelete={confirmDelete} fileName={file.fileName}
       />
     </>
   );

@@ -9,6 +9,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogFooter,
   DialogTrigger,
 } from "@/components/ui/dialog";
 import {
@@ -30,6 +31,7 @@ export function FolderTree({ onSelectFolder, selectedFolderId }: FolderTreeProps
   const [newFolderName, setNewFolderName] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const rootFolders = folders.filter((f) => !f.parentId);
   const getChildFolders = (parentId: string) =>
@@ -68,7 +70,6 @@ export function FolderTree({ onSelectFolder, selectedFolderId }: FolderTreeProps
   };
 
   const deleteFolder = async (id: string) => {
-    if (!confirm("确定删除此文件夹？文件夹内的文件不会被删除。")) return;
     try {
       const res = await fetch(`/api/folders/${id}`, { method: "DELETE" });
       if (res.ok) {
@@ -81,6 +82,7 @@ export function FolderTree({ onSelectFolder, selectedFolderId }: FolderTreeProps
     } catch {
       // ignore
     }
+    setDeleteConfirmId(null);
   };
 
   const renderFolder = (folder: FolderItem, depth: number = 0) => {
@@ -124,7 +126,7 @@ export function FolderTree({ onSelectFolder, selectedFolderId }: FolderTreeProps
             className="h-5 w-5 opacity-0 group-hover:opacity-100 shrink-0"
             onClick={(e) => {
               e.stopPropagation();
-              deleteFolder(folder.id);
+              setDeleteConfirmId(folder.id);
             }}
           >
             <Trash2 className="h-3 w-3 text-muted-foreground" />
@@ -184,6 +186,20 @@ export function FolderTree({ onSelectFolder, selectedFolderId }: FolderTreeProps
 
       {/* Folder tree */}
       {rootFolders.map((folder) => renderFolder(folder))}
+
+      {/* Delete confirm dialog */}
+      <Dialog open={!!deleteConfirmId} onOpenChange={(v) => { if (!v) setDeleteConfirmId(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>删除文件夹</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">确定要删除此文件夹吗？文件夹内的文件不会被删除。</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteConfirmId(null)}>取消</Button>
+            <Button variant="destructive" onClick={() => deleteConfirmId && deleteFolder(deleteConfirmId)}>确认删除</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

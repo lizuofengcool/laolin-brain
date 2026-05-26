@@ -4,7 +4,7 @@ import type { StorageAdapter, FileData } from "./base";
 interface KBDBSchema extends DBSchema {
   files: {
     key: string;
-    value: FileData & { data?: string; thumbnailData?: string };
+    value: FileData & { data?: string; thumbnailData?: string; userId?: string };
     indexes: { "by-user": string; "by-folder": string };
   };
 }
@@ -110,21 +110,26 @@ export class IndexedDBAdapter implements StorageAdapter {
     const id = `local_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
     let fileType = "other";
-    if (file.type.includes("image")) fileType = "image";
+    const ext = file.name.split(".").pop()?.toLowerCase() || "";
+    if (file.type.includes("image") || ["jpg","jpeg","png","webp","gif","bmp","svg","tiff","tif","ico","avif"].includes(ext)) fileType = "image";
     else if (
       file.type ===
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-      file.name.endsWith(".docx")
+      ext === "docx"
     )
       fileType = "word";
-    else if (file.type === "application/pdf" || file.name.endsWith(".pdf"))
+    else if (file.type === "application/pdf" || ext === "pdf")
       fileType = "pdf";
     else if (
       file.type ===
         "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
-      file.name.endsWith(".pptx")
+      ext === "pptx"
     )
       fileType = "pptx";
+    else if (ext === "md" || ext === "markdown")
+      fileType = "markdown";
+    else if (ext === "txt")
+      fileType = "txt";
 
     let textContent: string | undefined;
     let thumbnailUrl: string | undefined;

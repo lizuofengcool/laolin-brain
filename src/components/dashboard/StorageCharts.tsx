@@ -89,7 +89,7 @@ function CustomBarTooltip({ active, payload, label }: { active?: boolean; payloa
   const value = payload[0].value;
   return (
     <div className="rounded-md border bg-background px-3 py-2 text-sm shadow-md">
-      <p className="font-medium">{getFileTypeLabel(label)}</p>
+      <p className="font-medium">{getFileTypeLabel(label ?? "")}</p>
       <p className="text-muted-foreground">
         {value} MB
       </p>

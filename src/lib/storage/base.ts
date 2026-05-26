@@ -38,4 +38,5 @@ export interface FileData {
   isDeleted?: boolean;
   deletedAt?: string;
   createdAt: Date;
+  fileHash?: string;
 }

@@ -28,7 +28,7 @@ export async function describeImage(imageBase64: string): Promise<string> {
               type: 'image_url',
               image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
             },
-          ],
+          ] as unknown as string,
         },
       ],
     });
@@ -60,7 +60,7 @@ export async function extractTextFromImage(
               type: 'image_url',
               image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
             },
-          ],
+          ] as unknown as string,
         },
       ],
     });
@@ -120,7 +120,7 @@ export async function askAboutImage(
               type: 'image_url',
               image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
             },
-          ],
+          ] as unknown as string,
         },
       ],
     });

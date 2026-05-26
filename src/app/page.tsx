@@ -49,6 +49,8 @@ import {
   FolderInput,
   ArrowUpDown,
 } from "lucide-react";
+import { getFileColor, formatSize, FileIconDisplay } from "@/lib/file-utils";
+import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 
 // ─── Empty State SVGs ─────────────────────────────────────
@@ -768,13 +770,22 @@ function RecycleBinView() {
               key={file.id}
               className="flex items-center gap-3 p-3 hover:bg-muted/50 transition-colors"
             >
-              <div className="h-10 w-10 rounded-lg bg-muted flex items-center justify-center shrink-0 text-lg">
-                {file.fileType === "image" ? "🖼️" : file.fileType === "word" ? "📝" : file.fileType === "pdf" ? "📄" : "📁"}
-              </div>
+              {/* Thumbnail / Icon */}
+              {file.fileType === "image" && (file.thumbnailUrl || file.previewUrl) ? (
+                <img
+                  src={file.thumbnailUrl || file.previewUrl}
+                  alt={file.fileName}
+                  className="h-10 w-10 rounded-lg object-cover shrink-0"
+                />
+              ) : (
+                <div className={cn("h-10 w-10 rounded-lg flex items-center justify-center shrink-0", getFileColor(file.fileType))}>
+                  <FileIconDisplay fileType={file.fileType} className="h-5 w-5" />
+                </div>
+              )}
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{file.fileName}</p>
+                <p className="text-sm font-medium truncate" title={file.fileName}>{file.fileName}</p>
                 <p className="text-xs text-muted-foreground">
-                  {file.deletedAt ? formatDeletedAt(file.deletedAt) : "已删除"}
+                  {formatSize(file.fileSize)} · {file.deletedAt ? formatDeletedAt(file.deletedAt) : "已删除"}
                 </p>
               </div>
               <div className="flex items-center gap-1 shrink-0">

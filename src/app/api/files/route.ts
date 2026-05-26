@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
 
       // AI processing for images (OCR + description) - fire and forget
       try {
-        const base64 = arrayBufferToBase64(buffer);
+        const base64 = arrayBufferToBase64(new Uint8Array(buffer).buffer as ArrayBuffer);
         const aiRes = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || ""}/api/ai/process-image`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
