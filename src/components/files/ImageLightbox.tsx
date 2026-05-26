@@ -355,7 +355,7 @@ export function ImageLightbox({ images, currentIndex, open, onClose }: ImageLigh
           </div>
         )}
         <img
-          src={currentImage.thumbnailUrl || currentImage.filePath}
+          src={currentImage.thumbnailUrl || currentImage.previewUrl}
           alt={currentImage.fileName}
           className="max-w-[90vw] max-h-[85vh] object-contain transition-transform duration-150 pointer-events-none"
           style={{
@@ -400,7 +400,7 @@ export function ImageLightbox({ images, currentIndex, open, onClose }: ImageLigh
                 }}
               >
                 <img
-                  src={img.thumbnailUrl || img.filePath}
+                  src={img.thumbnailUrl || img.previewUrl}
                   alt={img.fileName}
                   className="w-full h-full object-cover"
                 />

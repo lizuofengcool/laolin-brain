@@ -30,6 +30,7 @@ export interface FileData {
   filePath?: string;
   textContent?: string;
   thumbnailUrl?: string;
+  previewUrl?: string;
   storageMode: string;
   folderId?: string;
   tags: string[];

@@ -102,7 +102,7 @@ export function FileCard({ file, onPreview }: FileCardProps) {
           >
             {isImage ? (
               <img
-                src={file.thumbnailUrl}
+                src={file.thumbnailUrl || file.previewUrl}
                 alt={file.fileName}
                 className="w-full h-full object-cover"
               />
@@ -408,7 +408,7 @@ export function FileListItem({ file, onPreview }: FileCardProps) {
         )}
 
         {isImage ? (
-          <img src={file.thumbnailUrl} alt={file.fileName} className="h-10 w-10 rounded-md object-cover shrink-0" />
+          <img src={file.thumbnailUrl || file.previewUrl} alt={file.fileName} className="h-10 w-10 rounded-md object-cover shrink-0" />
         ) : (
           <div className={cn("h-10 w-10 rounded-lg flex items-center justify-center shrink-0", colorClass)}>
             <FileIconDisplay fileType={file.fileType} className="h-5 w-5" />

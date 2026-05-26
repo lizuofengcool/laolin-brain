@@ -107,7 +107,7 @@ export function useFileActions(file: FileData) {
 
   const handleOpenLightbox = useCallback((e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    const allImages = files.filter((f) => f.fileType === "image" && !f.isDeleted && f.thumbnailUrl);
+    const allImages = files.filter((f) => f.fileType === "image" && !f.isDeleted && (f.thumbnailUrl || f.previewUrl));
     const currentIndex = allImages.findIndex((f) => f.id === file.id);
     openLightbox(allImages, currentIndex >= 0 ? currentIndex : 0);
   }, [files, file.id, openLightbox]);
@@ -115,7 +115,7 @@ export function useFileActions(file: FileData) {
   const handleCardClick = useCallback(() => {
     if (batchMode) {
       toggleBatchSelect(file.id);
-    } else if (file.fileType === "image" && file.thumbnailUrl) {
+    } else if (file.fileType === "image" && (file.thumbnailUrl || file.previewUrl)) {
       handleOpenLightbox();
     } else {
       // Return false to let parent handle preview
@@ -127,7 +127,7 @@ export function useFileActions(file: FileData) {
   const hasAITags = file.tags && file.tags.length > 0;
   const hasAITextContent =
     file.textContent && file.fileType === "image" && file.textContent.trim().length > 0;
-  const isImage = file.fileType === "image" && !!file.thumbnailUrl;
+  const isImage = file.fileType === "image" && !!(file.thumbnailUrl || file.previewUrl);
 
   return {
     // Dialog states

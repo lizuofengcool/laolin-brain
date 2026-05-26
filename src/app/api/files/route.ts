@@ -121,6 +121,11 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    // For images, generate a preview URL (inline serving, not download)
+    const previewUrl = fileType === "image"
+      ? `/api/files/${fileRecord.id}/preview`
+      : undefined;
+
     return NextResponse.json({
       id: fileRecord.id,
       fileName: fileRecord.fileName,
@@ -128,7 +133,8 @@ export async function POST(request: NextRequest) {
       fileSize: fileRecord.fileSize,
       filePath: fileRecord.filePath,
       textContent: fileRecord.textContent,
-      thumbnailUrl: fileRecord.thumbnailUrl,
+      thumbnailUrl: fileRecord.thumbnailUrl || previewUrl,
+      previewUrl,
       tags: tags,
     });
   } catch (error) {
@@ -170,10 +176,18 @@ export async function GET(request: NextRequest) {
     });
 
     return NextResponse.json(
-      files.map((f) => ({
-        ...f,
-        tags: JSON.parse(f.tags || "[]"),
-      }))
+      files.map((f) => {
+        const parsed = {
+          ...f,
+          tags: JSON.parse(f.tags || "[]"),
+        };
+        // For image files, convert thumbnailUrl to full API URL
+        // and generate a preview URL for the original image
+        if (f.fileType === "image" && f.thumbnailUrl) {
+          parsed.thumbnailUrl = f.thumbnailUrl; // already a relative URL like /api/files/thumbnail/...
+        }
+        return parsed;
+      })
     );
   } catch {
     return NextResponse.json(

@@ -155,7 +155,7 @@ export default function AlbumView() {
                     onClick={() => handleImageClick(image)}
                   >
                     <img
-                      src={image.thumbnailUrl || image.filePath}
+                      src={image.thumbnailUrl || image.previewUrl || image.filePath}
                       alt={image.fileName}
                       className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                       loading="lazy"

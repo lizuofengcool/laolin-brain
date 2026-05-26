@@ -4,7 +4,7 @@ import type { StorageAdapter, FileData } from "./base";
 interface KBDBSchema extends DBSchema {
   files: {
     key: string;
-    value: FileData & { data?: string };
+    value: FileData & { data?: string; thumbnailData?: string };
     indexes: { "by-user": string; "by-folder": string };
   };
 }
@@ -19,6 +19,77 @@ async function getDB(): Promise<IDBPDatabase<KBDBSchema>> {
       store.createIndex("by-user", "userId");
       store.createIndex("by-folder", "folderId");
     },
+  });
+}
+
+/**
+ * Compress an image using Canvas API (no external dependencies)
+ * Returns a blob URL that is stable within the same session
+ */
+async function compressImageViaCanvas(
+  file: File,
+  maxWidth: number = 300,
+  maxHeight: number = 300,
+  quality: number = 0.7
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement("canvas");
+      let { width, height } = img;
+
+      // Scale down
+      if (width > maxWidth || height > maxHeight) {
+        const ratio = Math.min(maxWidth / width, maxHeight / height);
+        width = Math.round(width * ratio);
+        height = Math.round(height * ratio);
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        reject(new Error("Cannot get canvas context"));
+        return;
+      }
+      ctx.drawImage(img, 0, 0, width, height);
+
+      canvas.toBlob(
+        (blob) => {
+          if (blob) {
+            resolve(URL.createObjectURL(blob));
+          } else {
+            reject(new Error("Canvas toBlob failed"));
+          }
+        },
+        "image/jpeg",
+        quality
+      );
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Failed to load image"));
+    };
+    img.src = url;
+  });
+}
+
+/**
+ * Read file as base64 in chunks to avoid memory issues with large files
+ */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // Remove data URL prefix
+      const base64 = result.split(",")[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
   });
 }
 
@@ -48,12 +119,27 @@ export class IndexedDBAdapter implements StorageAdapter {
       fileType = "word";
     else if (file.type === "application/pdf" || file.name.endsWith(".pdf"))
       fileType = "pdf";
+    else if (
+      file.type ===
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+      file.name.endsWith(".pptx")
+    )
+      fileType = "pptx";
 
     let textContent: string | undefined;
     let thumbnailUrl: string | undefined;
 
     if (fileType === "image") {
       thumbnailUrl = await this.generateThumbnail(file);
+    }
+
+    // Store file data as base64
+    let data: string | undefined;
+    try {
+      data = await fileToBase64(file);
+    } catch (e) {
+      console.error("Failed to read file:", e);
+      throw new Error("Failed to read file data");
     }
 
     const fileData: FileData & { data?: string; userId?: string } = {
@@ -69,14 +155,12 @@ export class IndexedDBAdapter implements StorageAdapter {
       isFavorite: false,
       createdAt: new Date(),
       userId,
+      data,
     };
-
-    // Store file data as base64
-    const arrayBuffer = await file.arrayBuffer();
-    fileData.data = this.arrayBufferToBase64(arrayBuffer);
 
     await db.put("files", fileData);
 
+    // Return without internal fields
     const { data: _, userId: __, ...result } = fileData;
     return result;
   }
@@ -133,28 +217,20 @@ export class IndexedDBAdapter implements StorageAdapter {
       );
   }
 
+  /**
+   * Generate thumbnail using Canvas API (browser-native, no dependencies)
+   * Falls back to original file blob URL if canvas fails
+   */
   private async generateThumbnail(file: File): Promise<string> {
     try {
-      const { default: imageCompression } = await import(
-        "browser-image-compression"
-      );
-      const compressed = await imageCompression(file, {
-        maxSizeMB: 0.05,
-        maxWidthOrHeight: 200,
-        useWebWorker: true,
-      });
-      return URL.createObjectURL(compressed);
+      return await compressImageViaCanvas(file, 300, 300, 0.7);
     } catch {
-      return URL.createObjectURL(file);
+      // Fallback: use original file as thumbnail (not ideal but works)
+      try {
+        return URL.createObjectURL(file);
+      } catch {
+        return "";
+      }
     }
-  }
-
-  private arrayBufferToBase64(buffer: ArrayBuffer): string {
-    const bytes = new Uint8Array(buffer);
-    let binary = "";
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
   }
 }

@@ -51,7 +51,7 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
 
   const handleOpenLightbox = () => {
     // Get all images from current files list
-    const allImages = files.filter((f) => f.fileType === "image" && !f.isDeleted && f.thumbnailUrl);
+    const allImages = files.filter((f) => f.fileType === "image" && !f.isDeleted && (f.thumbnailUrl || f.previewUrl));
     const currentIndex = allImages.findIndex((f) => f.id === file.id);
     openLightbox(allImages, currentIndex >= 0 ? currentIndex : 0);
     onClose();
@@ -70,10 +70,10 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
         <div className="space-y-4">
           {/* Preview area */}
           <div className="rounded-lg bg-muted/50 border flex items-center justify-center min-h-[200px] overflow-hidden relative group">
-            {file.fileType === "image" && file.thumbnailUrl ? (
+            {file.fileType === "image" && (file.thumbnailUrl || file.previewUrl) ? (
               <>
                 <img
-                  src={file.thumbnailUrl}
+                  src={file.thumbnailUrl || file.previewUrl}
                   alt={file.fileName}
                   className="max-w-full max-h-[400px] object-contain cursor-zoom-in"
                   onClick={handleOpenLightbox}
@@ -147,7 +147,7 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
 
           {/* Actions */}
           <div className="flex gap-2 pt-2">
-            {file.fileType === "image" && file.thumbnailUrl && (
+            {file.fileType === "image" && (file.thumbnailUrl || file.previewUrl) && (
               <Button
                 variant="default"
                 className="flex-1"

@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
-import { Upload, Cloud, HardDrive, Sparkles, Loader2 } from "lucide-react";
+import { Upload, Cloud, HardDrive, Sparkles, Loader2, CheckCircle2 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
@@ -28,6 +28,8 @@ export function UploadZone({ className }: UploadZoneProps) {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [aiStatus, setAiStatus] = useState("");
+  const [uploadedCount, setUploadedCount] = useState(0);
+  const [failedFiles, setFailedFiles] = useState<string[]>([]);
   const { user, storageMode, addFile, refreshFiles } = useAppStore();
 
   const onDrop = useCallback(
@@ -35,9 +37,12 @@ export function UploadZone({ className }: UploadZoneProps) {
       if (!user || acceptedFiles.length === 0) return;
       setUploading(true);
       setProgress(0);
+      setUploadedCount(0);
+      setFailedFiles([]);
 
       const total = acceptedFiles.length;
       let completed = 0;
+      let succeeded = 0;
 
       for (const file of acceptedFiles) {
         if (file.size > 50 * 1024 * 1024) {
@@ -46,12 +51,14 @@ export function UploadZone({ className }: UploadZoneProps) {
             description: `${file.name} 超过 50MB 限制，已跳过`,
             variant: "destructive",
           });
+          setFailedFiles((prev) => [...prev, file.name]);
           completed++;
           continue;
         }
 
         try {
           if (storageMode === "cloud") {
+            // ─── Cloud Mode ─────────────────────────────
             const formData = new FormData();
             formData.append("file", file);
             formData.append("userId", user.id);
@@ -71,15 +78,25 @@ export function UploadZone({ className }: UploadZoneProps) {
                 filePath: data.filePath,
                 textContent: data.textContent,
                 thumbnailUrl: data.thumbnailUrl,
+                previewUrl: data.previewUrl,
                 storageMode: "cloud",
                 folderId: undefined,
                 tags: data.tags || [],
                 isFavorite: false,
                 createdAt: new Date(),
               });
+              succeeded++;
+            } else {
+              const errData = await res.json().catch(() => ({}));
+              toast({
+                title: "上传失败",
+                description: `${file.name}: ${errData.error || "服务器错误 (${res.status})"}`,
+                variant: "destructive",
+              });
+              setFailedFiles((prev) => [...prev, file.name]);
             }
           } else {
-            // Local mode - use IndexedDB adapter directly
+            // ─── Local Mode ─────────────────────────────
             const { getStorageAdapter, resetAdapter } = await import(
               "@/lib/storage/factory"
             );
@@ -132,6 +149,7 @@ export function UploadZone({ className }: UploadZoneProps) {
             };
 
             addFile(fileData);
+            succeeded++;
 
             // Persist AI results to IndexedDB
             if (aiTags.length > 0 || aiTextContent) {
@@ -144,16 +162,45 @@ export function UploadZone({ className }: UploadZoneProps) {
           }
         } catch (err) {
           console.error("Upload failed:", err);
+          toast({
+            title: "上传出错",
+            description: `${file.name}: ${(err as Error).message || "未知错误"}`,
+            variant: "destructive",
+          });
+          setFailedFiles((prev) => [...prev, file.name]);
         }
 
         completed++;
+        setUploadedCount(succeeded);
         setProgress(Math.round((completed / total) * 100));
       }
 
       setUploading(false);
       setProgress(0);
       setAiStatus("");
+
+      // Show summary
+      if (succeeded > 0) {
+        toast({
+          title: "上传完成",
+          description: failedFiles.length > 0
+            ? `成功 ${succeeded} 个，失败 ${failedFiles.length} 个`
+            : `成功上传 ${succeeded} 个文件`,
+        });
+      } else if (failedFiles.length > 0) {
+        toast({
+          title: "上传失败",
+          description: `全部 ${failedFiles.length} 个文件上传失败`,
+          variant: "destructive",
+        });
+      }
+
       refreshFiles();
+      // Clear status after a delay
+      setTimeout(() => {
+        setUploadedCount(0);
+        setFailedFiles([]);
+      }, 3000);
     },
     [user, storageMode, addFile, refreshFiles]
   );
@@ -198,6 +245,17 @@ export function UploadZone({ className }: UploadZoneProps) {
               />
             </div>
           </div>
+          {uploadedCount > 0 && (
+            <div className="flex items-center justify-center gap-1.5 text-xs text-green-600">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              已成功 {uploadedCount} 个
+            </div>
+          )}
+          {failedFiles.length > 0 && (
+            <div className="text-xs text-destructive">
+              失败: {failedFiles.join(", ")}
+            </div>
+          )}
           {aiStatus && (
             <div className="flex items-center justify-center gap-2 text-xs text-primary">
               <Loader2 className="h-3 w-3 animate-spin" />

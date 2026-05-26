@@ -53,8 +53,8 @@ export function TimelineView() {
 
   const handleCardClick = (file: FileData) => {
     // Images with thumbnail → open in lightbox
-    if (file.fileType === "image" && file.thumbnailUrl) {
-      const allImages = activeFiles.filter((f) => f.fileType === "image" && f.thumbnailUrl);
+    if (file.fileType === "image" && (file.thumbnailUrl || file.previewUrl)) {
+      const allImages = activeFiles.filter((f) => f.fileType === "image" && (f.thumbnailUrl || f.previewUrl));
       const currentIndex = allImages.findIndex((f) => f.id === file.id);
       openLightbox(allImages, currentIndex >= 0 ? currentIndex : 0);
     } else {
@@ -119,7 +119,7 @@ export function TimelineView() {
               {group.files.map((file) => {
                 const colorClass = getFileColor(file.fileType);
                 const hasAITags = file.tags && file.tags.length > 0;
-                const isImage = file.fileType === "image" && file.thumbnailUrl;
+                const isImage = file.fileType === "image" && (file.thumbnailUrl || file.previewUrl);
 
                 return (
                   <motion.div
@@ -139,7 +139,7 @@ export function TimelineView() {
                       >
                         {isImage ? (
                           <img
-                            src={file.thumbnailUrl}
+                            src={file.thumbnailUrl || file.previewUrl}
                             alt={file.fileName}
                             className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                           />
