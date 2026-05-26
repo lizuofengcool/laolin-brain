@@ -2,59 +2,14 @@
 
 import { useAppStore } from "@/stores/app-store";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  FileText,
-  Image as ImageIcon,
-  File,
-  Clock,
-} from "lucide-react";
+import { File, Clock } from "lucide-react";
 import { cn } from "@/lib/utils";
-
-const getFileIcon = (fileType: string) => {
-  switch (fileType) {
-    case "word":
-      return FileText;
-    case "pdf":
-      return File;
-    case "image":
-      return ImageIcon;
-    default:
-      return File;
-  }
-};
-
-const getFileColor = (fileType: string) => {
-  switch (fileType) {
-    case "word":
-      return "text-blue-600 bg-blue-50";
-    case "pdf":
-      return "text-red-600 bg-red-50";
-    case "image":
-      return "text-green-600 bg-green-50";
-    default:
-      return "text-gray-600 bg-gray-50";
-  }
-};
-
-const formatSize = (bytes: number): string => {
-  if (bytes < 1024) return bytes + " B";
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-};
-
-const formatTime = (date: Date): string => {
-  const now = new Date();
-  const diff = now.getTime() - new Date(date).getTime();
-  const minutes = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  const days = Math.floor(diff / 86400000);
-
-  if (minutes < 1) return "刚刚";
-  if (minutes < 60) return `${minutes} 分钟前`;
-  if (hours < 24) return `${hours} 小时前`;
-  if (days < 7) return `${days} 天前`;
-  return new Date(date).toLocaleDateString("zh-CN");
-};
+import {
+  getFileIcon,
+  getFileColor,
+  formatSize,
+  formatTime,
+} from "@/lib/file-utils";
 
 export function RecentFiles() {
   const { files, setCurrentView } = useAppStore();

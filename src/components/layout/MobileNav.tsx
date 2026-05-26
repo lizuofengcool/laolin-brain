@@ -5,6 +5,7 @@ import {
   FolderOpen,
   Search,
   Settings,
+  CalendarDays,
 } from "lucide-react";
 import { useAppStore, type ViewType } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
@@ -12,6 +13,7 @@ import { cn } from "@/lib/utils";
 const navItems: { icon: typeof LayoutDashboard; label: string; view: ViewType }[] = [
   { icon: LayoutDashboard, label: "首页", view: "dashboard" },
   { icon: FolderOpen, label: "文件", view: "files" },
+  { icon: CalendarDays, label: "时间线", view: "timeline" },
   { icon: Search, label: "搜索", view: "search" },
   { icon: Settings, label: "设置", view: "settings" },
 ];
@@ -30,7 +32,7 @@ export function MobileNav() {
               key={item.view}
               onClick={() => setCurrentView(item.view)}
               className={cn(
-                "flex flex-col items-center justify-center gap-0.5 w-16 h-full transition-colors",
+                "flex flex-col items-center justify-center gap-0.5 w-14 h-full transition-colors",
                 isActive
                   ? "text-primary"
                   : "text-muted-foreground hover:text-foreground"

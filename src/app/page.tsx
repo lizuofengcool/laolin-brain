@@ -17,10 +17,11 @@ import { SearchBar } from "@/components/search/SearchBar";
 import { SearchResults } from "@/components/search/SearchResults";
 import { StorageSwitch } from "@/components/settings/StorageSwitch";
 import { AIChatPanel } from "@/components/ai/AIChatPanel";
+import { TimelineView } from "@/components/timeline/TimelineView";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import {
   FileText,
@@ -32,6 +33,69 @@ import {
   Mail,
   Shield,
 } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+
+// ─── Empty State SVGs ─────────────────────────────────────
+function EmptyDashboard() {
+  return (
+    <div className="text-center py-16 text-muted-foreground">
+      <svg className="h-20 w-20 mx-auto mb-4 opacity-20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        <polyline points="9 22 9 12 15 12 15 22" />
+      </svg>
+      <p className="text-sm font-medium">欢迎使用知识库</p>
+      <p className="text-xs mt-1">上传你的第一个文件开始使用</p>
+    </div>
+  );
+}
+
+function EmptySearch() {
+  return (
+    <div className="text-center py-20 text-muted-foreground">
+      <svg className="h-20 w-20 mx-auto mb-4 opacity-20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="11" cy="11" r="8" />
+        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+      </svg>
+      <p className="text-sm font-medium">搜索你的文件</p>
+      <p className="text-xs mt-1">输入关键词搜索文件名、文档内容或标签</p>
+    </div>
+  );
+}
+
+// ─── Skeleton Loading ─────────────────────────────────────
+function DashboardSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div>
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-4 w-64 mt-2" />
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {[1, 2, 3, 4].map((i) => (
+          <Skeleton key={i} className="h-24 rounded-lg" />
+        ))}
+      </div>
+      <Skeleton className="h-64 rounded-lg" />
+    </div>
+  );
+}
+
+function FilesSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div>
+        <Skeleton className="h-8 w-32" />
+        <Skeleton className="h-4 w-48 mt-2" />
+      </div>
+      <Skeleton className="h-32 rounded-xl" />
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+        {[1, 2, 3, 4, 5, 6].map((i) => (
+          <Skeleton key={i} className="h-48 rounded-lg" />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ─── Login View ──────────────────────────────────────────────
 function LoginView() {
@@ -42,7 +106,7 @@ function LoginView() {
 function DashboardView() {
   const { files, user } = useAppStore();
 
-  const docCount = files.filter((f) => f.fileType === "word" || f.fileType === "pdf").length;
+  const docCount = files.filter((f) => f.fileType === "word" || f.fileType === "pdf" || f.fileType === "pptx").length;
   const imageCount = files.filter((f) => f.fileType === "image").length;
   const favCount = files.filter((f) => f.isFavorite).length;
   const totalSize = files.reduce((acc, f) => acc + f.fileSize, 0);
@@ -51,6 +115,22 @@ function DashboardView() {
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
     return (bytes / (1024 * 1024)).toFixed(1) + " MB";
   };
+
+  if (files.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold">
+            欢迎回来，{user?.name || "用户"} 👋
+          </h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            这是你的知识库概览，快速了解文件情况
+          </p>
+        </div>
+        <EmptyDashboard />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -70,7 +150,7 @@ function DashboardView() {
           title="文档"
           value={docCount}
           icon={FileText}
-          description="Word & PDF"
+          description="Word & PDF & PPT"
         />
         <StatsCard
           title="图片"
@@ -105,6 +185,7 @@ function FilesView() {
   const [previewFile, setPreviewFile] = useState<FileData | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(20);
 
   const handlePreview = (file: FileData) => {
     setPreviewFile(file);
@@ -113,6 +194,7 @@ function FilesView() {
 
   const handleFolderSelect = (folderId: string | null) => {
     setSelectedFolderId(folderId);
+    setVisibleCount(20);
   };
 
   // Filter files
@@ -125,6 +207,10 @@ function FilesView() {
   if (tagFilter) {
     filteredFiles = filteredFiles.filter((f) => f.tags.includes(tagFilter));
   }
+
+  // Pagination
+  const visibleFiles = filteredFiles.slice(0, visibleCount);
+  const hasMore = visibleCount < filteredFiles.length;
 
   // Collect all tags
   const allTags = [...new Set(files.flatMap((f) => f.tags))];
@@ -192,7 +278,18 @@ function FilesView() {
 
         {/* File grid */}
         <div className="flex-1 min-w-0">
-          <FileGrid files={filteredFiles} onPreview={handlePreview} />
+          <FileGrid files={visibleFiles} onPreview={handlePreview} />
+
+          {hasMore && (
+            <div className="flex justify-center mt-6">
+              <Button
+                variant="outline"
+                onClick={() => setVisibleCount((prev) => prev + 20)}
+              >
+                加载更多（剩余 {filteredFiles.length - visibleCount} 个文件）
+              </Button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -213,10 +310,23 @@ function SearchView() {
   const [searchTrigger, setSearchTrigger] = useState(0);
   const [previewFile, setPreviewFile] = useState<FileData | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
   const handleSearch = () => {
     setSearchQuery(localQuery);
     setSearchTrigger((prev) => prev + 1);
+  };
+
+  // Debounced search on input change
+  const handleChange = (value: string) => {
+    setLocalQuery(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (value.trim()) {
+      debounceRef.current = setTimeout(() => {
+        setSearchQuery(value);
+        setSearchTrigger((prev) => prev + 1);
+      }, 300);
+    }
   };
 
   const handlePreview = (file: FileData) => {
@@ -230,7 +340,7 @@ function SearchView() {
         <h1 className="text-2xl font-bold mb-6">搜索文件</h1>
         <SearchBar
           value={localQuery}
-          onChange={(v) => setLocalQuery(v)}
+          onChange={handleChange}
           onSearch={handleSearch}
         />
       </div>
@@ -313,9 +423,9 @@ function SettingsView() {
           <CardTitle className="text-base font-semibold">关于</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-muted-foreground">
-          <p>智能文档知识库 - MVP v1.0</p>
-          <p>支持 Word、PDF、图片文件管理</p>
-          <p>提供全文搜索和文件夹管理功能</p>
+          <p>智能文档知识库 - v2.0</p>
+          <p>支持 Word、PDF、PPTX、图片文件管理</p>
+          <p>提供全文搜索、AI 解读、时间线浏览功能</p>
           <p className="text-xs mt-2 pt-2 border-t">
             Built with Next.js 16 + shadcn/ui + Prisma + Zustand
           </p>
@@ -326,6 +436,12 @@ function SettingsView() {
 }
 
 // ─── Main App ────────────────────────────────────────────────
+const viewVariants = {
+  initial: { opacity: 0, x: 20 },
+  animate: { opacity: 1, x: 0 },
+  exit: { opacity: 0, x: -20 },
+};
+
 export default function Home() {
   const {
     currentView,
@@ -333,6 +449,7 @@ export default function Home() {
     hydrateAuth,
     aiChatFile,
     setAiChatFile,
+    files,
   } = useAppStore();
   const [mounted, setMounted] = useState(false);
 
@@ -359,12 +476,45 @@ export default function Home() {
     return <LoginView />;
   }
 
-  const viewMap: Record<ViewType, React.ReactNode> = {
-    dashboard: <DashboardView />,
-    files: <FilesView />,
-    search: <SearchView />,
-    settings: <SettingsView />,
-    login: <LoginView />,
+  const renderView = (view: ViewType) => {
+    switch (view) {
+      case "dashboard":
+        return files.length === 0 ? (
+          <motion.div key="dashboard" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
+            <DashboardView />
+          </motion.div>
+        ) : (
+          <motion.div key="dashboard" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
+            <DashboardView />
+          </motion.div>
+        );
+      case "files":
+        return (
+          <motion.div key="files" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
+            <FilesView />
+          </motion.div>
+        );
+      case "search":
+        return (
+          <motion.div key="search" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
+            <SearchView />
+          </motion.div>
+        );
+      case "settings":
+        return (
+          <motion.div key="settings" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
+            <SettingsView />
+          </motion.div>
+        );
+      case "timeline":
+        return (
+          <motion.div key="timeline" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
+            <TimelineView />
+          </motion.div>
+        );
+      default:
+        return <LoginView />;
+    }
   };
 
   return (
@@ -377,7 +527,9 @@ export default function Home() {
         <Header />
 
         <main className="flex-1 p-4 md:p-6 lg:p-8 pb-20 md:pb-6">
-          {viewMap[currentView] || <DashboardView />}
+          <AnimatePresence mode="wait">
+            {renderView(currentView)}
+          </AnimatePresence>
         </main>
       </div>
 

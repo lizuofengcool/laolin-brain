@@ -2,13 +2,20 @@ import { create } from "zustand";
 import type { FileData } from "@/lib/storage/base";
 import { getStorageAdapter, resetAdapter } from "@/lib/storage/factory";
 
-export type ViewType = "login" | "dashboard" | "files" | "search" | "settings";
+export type ViewType = "login" | "dashboard" | "files" | "search" | "settings" | "timeline";
 
 export interface UserInfo {
   id: string;
   name: string;
   email: string;
   storageMode: string;
+}
+
+export interface FolderItem {
+  id: string;
+  name: string;
+  parentId: string | null;
+  createdAt: string;
 }
 
 interface AppState {
@@ -53,6 +60,8 @@ interface AppState {
   // Folders
   folders: FolderItem[];
   setFolders: (folders: FolderItem[]) => void;
+  addFolder: (folder: FolderItem) => void;
+  removeFolder: (id: string) => void;
   refreshFolders: () => Promise<void>;
 
   // AI
@@ -60,13 +69,6 @@ interface AppState {
   setAiProcessing: (v: boolean) => void;
   aiChatFile: FileData | null;
   setAiChatFile: (file: FileData | null) => void;
-}
-
-export interface FolderItem {
-  id: string;
-  name: string;
-  parentId: string | null;
-  createdAt: string;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -207,13 +209,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           body: JSON.stringify({ userId: user.id, storageMode: mode }),
         });
         if (res.ok) {
-          const updatedUser = await res.json();
           const newUserInfo = { ...user, storageMode: mode };
           set({ storageMode: mode, user: newUserInfo });
           if (typeof window !== "undefined") {
             localStorage.setItem("kb_user", JSON.stringify(newUserInfo));
           }
           get().refreshFiles();
+          get().refreshFolders();
           return;
         }
       } catch {
@@ -227,22 +229,49 @@ export const useAppStore = create<AppState>((set, get) => ({
       localStorage.setItem("kb_user", JSON.stringify(newUserInfo));
     }
     get().refreshFiles();
+    get().refreshFolders();
   },
 
   // Folders
   folders: [],
   setFolders: (folders) => set({ folders }),
+  addFolder: (folder) => set((s) => ({ folders: [...s.folders, folder] })),
+  removeFolder: (id) => set((s) => ({ folders: s.folders.filter((f) => f.id !== id) })),
+
   refreshFolders: async () => {
     const { user, storageMode } = get();
-    if (!user || storageMode === "local") return;
-    try {
-      const res = await fetch(`/api/folders?userId=${user.id}`);
-      if (res.ok) {
-        const folders = await res.json();
-        set({ folders });
+    if (!user) return;
+
+    if (storageMode === "local") {
+      // Local mode: fetch from IndexedDB
+      try {
+        const { openDB } = await import("idb");
+        const db = await openDB("knowledge-base-db", 1);
+        const allFolders = await db.getAll("folders");
+        const userFolders = allFolders
+          .filter((f: { userId?: string }) => f.userId === user.id)
+          .map((f: { id: string; name: string; parentId?: string; createdAt: Date }) => ({
+            id: f.id,
+            name: f.name,
+            parentId: f.parentId || null,
+            createdAt: typeof f.createdAt === "string" ? f.createdAt : new Date(f.createdAt).toISOString(),
+          }));
+        set({ folders: userFolders });
+      } catch {
+        // If "folders" store doesn't exist, return empty
+        set({ folders: [] });
       }
-    } catch {
-      // ignore
+    } else {
+      // Cloud mode: fetch from server
+      try {
+        const res = await fetch(`/api/folders?userId=${user.id}`);
+        if (res.ok) {
+          const folders = await res.json();
+          set({ folders });
+        }
+      } catch {
+        // ignore
+      }
     }
   },
 }));

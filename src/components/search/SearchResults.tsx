@@ -1,53 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { FileData } from "@/lib/storage/base";
 import { useAppStore } from "@/stores/app-store";
-import {
-  FileText,
-  Image as ImageIcon,
-  File,
-  Loader2,
-} from "lucide-react";
+import { Loader2, File } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getFileColor, formatSize } from "@/lib/file-utils";
+import { FileIconDisplay } from "@/lib/file-utils";
 
 interface SearchResultsProps {
   query: string;
-  triggerSearch: boolean;
+  triggerSearch: number;
   onPreview: (file: FileData) => void;
 }
-
-const getFileIcon = (fileType: string) => {
-  switch (fileType) {
-    case "word":
-      return FileText;
-    case "pdf":
-      return File;
-    case "image":
-      return ImageIcon;
-    default:
-      return File;
-  }
-};
-
-const getFileColor = (fileType: string) => {
-  switch (fileType) {
-    case "word":
-      return "text-blue-600 bg-blue-50";
-    case "pdf":
-      return "text-red-600 bg-red-50";
-    case "image":
-      return "text-green-600 bg-green-50";
-    default:
-      return "text-gray-600 bg-gray-50";
-  }
-};
-
-const formatSize = (bytes: number): string => {
-  if (bytes < 1024) return bytes + " B";
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-};
 
 const highlightText = (text: string, query: string) => {
   if (!query) return text;
@@ -70,44 +35,48 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
   const [results, setResults] = useState<FileData[]>([]);
   const [searching, setSearching] = useState(false);
   const [searched, setSearched] = useState(false);
+  const lastTriggerRef = useRef(0);
 
-  const performSearch = async (q: string) => {
-    if (!q.trim()) return;
-    setSearching(true);
-    setSearched(true);
+  useEffect(() => {
+    if (triggerSearch === lastTriggerRef.current) return;
+    if (!query.trim()) return;
 
-    try {
-      if (storageMode === "cloud" && user) {
-        const res = await fetch(
-          `/api/search?q=${encodeURIComponent(q)}&userId=${user.id}`
-        );
-        if (res.ok) {
-          const data = await res.json();
-          setResults(data);
+    lastTriggerRef.current = triggerSearch;
+
+    const performSearch = async (q: string) => {
+      setSearching(true);
+      setSearched(true);
+
+      try {
+        if (storageMode === "cloud" && user) {
+          const res = await fetch(
+            `/api/search?q=${encodeURIComponent(q)}&userId=${user.id}`
+          );
+          if (res.ok) {
+            const data = await res.json();
+            setResults(data);
+          } else {
+            setResults([]);
+          }
         } else {
-          setResults([]);
+          const lower = q.toLowerCase();
+          const filtered = files.filter(
+            (f) =>
+              f.fileName.toLowerCase().includes(lower) ||
+              f.textContent?.toLowerCase().includes(lower) ||
+              f.tags.some((t) => t.toLowerCase().includes(lower))
+          );
+          setResults(filtered);
         }
-      } else {
-        const lower = q.toLowerCase();
-        const filtered = files.filter(
-          (f) =>
-            f.fileName.toLowerCase().includes(lower) ||
-            f.textContent?.toLowerCase().includes(lower) ||
-            f.tags.some((t) => t.toLowerCase().includes(lower))
-        );
-        setResults(filtered);
+      } catch {
+        setResults([]);
+      } finally {
+        setSearching(false);
       }
-    } catch {
-      setResults([]);
-    } finally {
-      setSearching(false);
-    }
-  };
+    };
 
-  // Trigger search when triggerSearch changes
-  if (triggerSearch && query.trim()) {
     performSearch(query);
-  }
+  }, [triggerSearch, query, storageMode, user, files]);
 
   if (!searched) return null;
 
@@ -131,7 +100,6 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
           </p>
           <div className="space-y-2">
             {results.map((file) => {
-              const Icon = getFileIcon(file.fileType);
               const colorClass = getFileColor(file.fileType);
 
               return (
@@ -153,7 +121,7 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
                         colorClass
                       )}
                     >
-                      <Icon className="h-6 w-6" />
+                      <FileIconDisplay fileType={file.fileType} className="h-6 w-6" />
                     </div>
                   )}
                   <div className="flex-1 min-w-0">

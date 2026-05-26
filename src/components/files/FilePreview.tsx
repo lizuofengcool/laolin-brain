@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import type { FileData } from "@/lib/storage/base";
 import {
   Dialog,
@@ -9,19 +10,18 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import {
-  FileText,
-  Image as ImageIcon,
-  File,
   Download,
   Star,
   Calendar,
   HardDrive,
   X,
   Sparkles,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
+import { formatSize, FileIconDisplay } from "@/lib/file-utils";
 
 interface FilePreviewProps {
   file: FileData | null;
@@ -29,23 +29,59 @@ interface FilePreviewProps {
   onClose: () => void;
 }
 
-const formatSize = (bytes: number): string => {
-  if (bytes < 1024) return bytes + " B";
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-};
-
-function FileIconDisplay({ fileType, className }: { fileType: string; className?: string }) {
-  if (fileType === "word") return <FileText className={className} />;
-  if (fileType === "image") return <ImageIcon className={className} />;
-  if (fileType === "pdf") return <File className={className} />;
-  return <File className={className} />;
-}
-
 export function FilePreview({ file, open, onClose }: FilePreviewProps) {
-  const { setAiChatFile } = useAppStore();
+  const { setAiChatFile, storageMode } = useAppStore();
+  const [downloading, setDownloading] = useState(false);
 
   if (!file) return null;
+
+  const handleDownload = async () => {
+    if (!file) return;
+    setDownloading(true);
+
+    try {
+      if (storageMode === "cloud") {
+        // Cloud mode: fetch from download route
+        const res = await fetch(`/api/files/${file.id}/download`);
+        if (res.ok) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = file.fileName;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }
+      } else {
+        // Local mode: fetch from IndexedDB
+        const { openDB } = await import("idb");
+        const db = await openDB("knowledge-base-db", 1);
+        const record = await db.get("files", file.id);
+        if (record && record.data) {
+          const binaryStr = atob(record.data);
+          const bytes = new Uint8Array(binaryStr.length);
+          for (let i = 0; i < binaryStr.length; i++) {
+            bytes[i] = binaryStr.charCodeAt(i);
+          }
+          const blob = new Blob([bytes]);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = file.fileName;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }
+      }
+    } catch (err) {
+      console.error("Download failed:", err);
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   return (
     <Dialog open={open} onOpenChange={() => onClose()}>
@@ -107,7 +143,7 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
               {file.isFavorite ? "已收藏" : "未收藏"}
             </div>
             <div className="flex items-center gap-2 text-muted-foreground">
-              <FileText className="h-4 w-4" />
+              <HardDrive className="h-4 w-4" />
               {file.fileType.toUpperCase()}
             </div>
           </div>
@@ -136,8 +172,17 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
               <Sparkles className="h-4 w-4 mr-2" />
               AI 解读
             </Button>
-            <Button variant="outline" className="flex-1" disabled>
-              <Download className="h-4 w-4 mr-2" />
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={handleDownload}
+              disabled={downloading}
+            >
+              {downloading ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4 mr-2" />
+              )}
               下载
             </Button>
             <Button variant="outline" onClick={onClose}>

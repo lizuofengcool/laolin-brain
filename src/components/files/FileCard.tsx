@@ -1,10 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import type { FileData } from "@/lib/storage/base";
 import {
-  FileText,
-  Image as ImageIcon,
-  File,
   Star,
   MoreVertical,
   Trash2,
@@ -21,49 +19,41 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
+import { getStorageAdapter } from "@/lib/storage/factory";
+import {
+  getFileColor,
+  formatSize,
+  FileIconDisplay,
+} from "@/lib/file-utils";
+import { motion } from "framer-motion";
 
 interface FileCardProps {
   file: FileData;
   onPreview: (file: FileData) => void;
 }
 
-const getFileColor = (fileType: string) => {
-  switch (fileType) {
-    case "word":
-      return "text-blue-600 bg-blue-50";
-    case "pdf":
-      return "text-red-600 bg-red-50";
-    case "image":
-      return "text-green-600 bg-green-50";
-    default:
-      return "text-gray-600 bg-gray-50";
-  }
-};
-
-const formatSize = (bytes: number): string => {
-  if (bytes < 1024) return bytes + " B";
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-};
-
-function FileIconDisplay({
-  fileType,
-  className,
-}: {
-  fileType: string;
-  className?: string;
-}) {
-  if (fileType === "word") return <FileText className={className} />;
-  if (fileType === "image") return <ImageIcon className={className} />;
-  if (fileType === "pdf") return <File className={className} />;
-  return <File className={className} />;
-}
-
 export function FileCard({ file, onPreview }: FileCardProps) {
-  const { toggleFavorite, deleteFile, setAiChatFile } = useAppStore();
+  const { toggleFavorite, deleteFile, setAiChatFile, updateFile, folders, refreshFolders } = useAppStore();
   const colorClass = getFileColor(file.fileType);
+
+  // Edit tags dialog
+  const [tagDialogOpen, setTagDialogOpen] = useState(false);
+  const [tagInput, setTagInput] = useState(file.tags.join(", "));
+
+  // Move to folder dialog
+  const [folderDialogOpen, setFolderDialogOpen] = useState(false);
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(file.folderId || null);
 
   const handleFavorite = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -79,6 +69,46 @@ export function FileCard({ file, onPreview }: FileCardProps) {
   const handleAIChat = (e: React.MouseEvent) => {
     e.stopPropagation();
     setAiChatFile(file);
+  };
+
+  const handleEditTags = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setTagInput(file.tags.join(", "));
+    setTagDialogOpen(true);
+  };
+
+  const handleSaveTags = () => {
+    const newTags = tagInput
+      .split(/[,，]/)
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+    updateFile(file.id, { tags: newTags });
+    // Persist
+    const { user, storageMode } = useAppStore.getState();
+    if (user) {
+      const adapter = getStorageAdapter(storageMode);
+      adapter.updateFile(file.id, { tags: newTags }, user.id).catch(console.error);
+    }
+    setTagDialogOpen(false);
+  };
+
+  const handleMoveToFolder = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedFolderId(file.folderId || null);
+    // Refresh folders
+    refreshFolders();
+    setFolderDialogOpen(true);
+  };
+
+  const handleSaveFolder = () => {
+    updateFile(file.id, { folderId: selectedFolderId || undefined });
+    // Persist
+    const { user, storageMode } = useAppStore.getState();
+    if (user) {
+      const adapter = getStorageAdapter(storageMode);
+      adapter.updateFile(file.id, { folderId: selectedFolderId || null } as Partial<FileData>, user.id).catch(console.error);
+    }
+    setFolderDialogOpen(false);
   };
 
   const hasAITags = file.tags && file.tags.length > 0;
@@ -86,145 +116,242 @@ export function FileCard({ file, onPreview }: FileCardProps) {
     file.textContent && file.fileType === "image" && file.textContent.trim().length > 0;
 
   return (
-    <Card
-      className="group cursor-pointer hover:shadow-md transition-all duration-200 overflow-hidden"
-      onClick={() => onPreview(file)}
-    >
-      {/* Preview area */}
-      <div
-        className={cn(
-          "h-36 flex items-center justify-center relative",
-          file.fileType === "image" && file.thumbnailUrl
-            ? "bg-muted/30"
-            : "bg-muted/50"
-        )}
+    <>
+      <motion.div
+        whileHover={{ y: -2 }}
+        transition={{ duration: 0.2 }}
       >
-        {file.fileType === "image" && file.thumbnailUrl ? (
-          <img
-            src={file.thumbnailUrl}
-            alt={file.fileName}
-            className="w-full h-full object-cover"
-          />
-        ) : (
+        <Card
+          className="group cursor-pointer hover:shadow-md transition-all duration-200 overflow-hidden"
+          onClick={() => onPreview(file)}
+        >
+          {/* Preview area */}
           <div
             className={cn(
-              "h-14 w-14 rounded-xl flex items-center justify-center",
-              colorClass
+              "h-36 flex items-center justify-center relative",
+              file.fileType === "image" && file.thumbnailUrl
+                ? "bg-muted/30"
+                : "bg-muted/50"
             )}
           >
-            <FileIconDisplay fileType={file.fileType} className="h-7 w-7" />
-          </div>
-        )}
-
-        {/* AI badge */}
-        {hasAITags && (
-          <div className="absolute top-2 left-2">
-            <Badge
-              variant="secondary"
-              className="text-[10px] bg-primary/90 text-primary-foreground hover:bg-primary/90 gap-1"
-            >
-              <Sparkles className="h-2.5 w-2.5" />
-              AI
-            </Badge>
-          </div>
-        )}
-
-        {/* Favorite button */}
-        <Button
-          variant="ghost"
-          size="icon"
-          className={cn(
-            "absolute top-2 right-2 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity bg-background/80",
-            file.isFavorite && "opacity-100"
-          )}
-          onClick={handleFavorite}
-        >
-          <Star
-            className={cn(
-              "h-4 w-4",
-              file.isFavorite
-                ? "fill-yellow-400 text-yellow-400"
-                : "text-muted-foreground"
+            {file.fileType === "image" && file.thumbnailUrl ? (
+              <img
+                src={file.thumbnailUrl}
+                alt={file.fileName}
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div
+                className={cn(
+                  "h-14 w-14 rounded-xl flex items-center justify-center",
+                  colorClass
+                )}
+              >
+                <FileIconDisplay fileType={file.fileType} className="h-7 w-7" />
+              </div>
             )}
-          />
-        </Button>
 
-        {/* More actions */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
+            {/* AI badge */}
+            {hasAITags && (
+              <div className="absolute top-2 left-2">
+                <Badge
+                  variant="secondary"
+                  className="text-[10px] bg-primary/90 text-primary-foreground hover:bg-primary/90 gap-1"
+                >
+                  <Sparkles className="h-2.5 w-2.5" />
+                  AI
+                </Badge>
+              </div>
+            )}
+
+            {/* Favorite button */}
             <Button
               variant="ghost"
               size="icon"
-              className="absolute top-2 right-10 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity bg-background/80"
-              onClick={(e) => e.stopPropagation()}
+              className={cn(
+                "absolute top-2 right-2 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity bg-background/80",
+                file.isFavorite && "opacity-100"
+              )}
+              onClick={handleFavorite}
             >
-              <MoreVertical className="h-4 w-4" />
+              <Star
+                className={cn(
+                  "h-4 w-4",
+                  file.isFavorite
+                    ? "fill-yellow-400 text-yellow-400"
+                    : "text-muted-foreground"
+                )}
+              />
             </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onPreview(file); }}>
-              预览
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={handleAIChat}>
-              <Sparkles className="h-4 w-4 mr-2" />
-              AI 解读
-            </DropdownMenuItem>
-            <DropdownMenuItem>
-              <Tag className="h-4 w-4 mr-2" />
-              编辑标签
-            </DropdownMenuItem>
-            <DropdownMenuItem>
-              <FolderInput className="h-4 w-4 mr-2" />
-              移动到文件夹
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="text-destructive"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleDelete();
-              }}
-            >
-              <Trash2 className="h-4 w-4 mr-2" />
-              删除
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
 
-      {/* Info area */}
-      <div className="p-3">
-        <p className="text-sm font-medium truncate">{file.fileName}</p>
-        <div className="flex items-center justify-between mt-1.5">
-          <span className="text-xs text-muted-foreground">
-            {formatSize(file.fileSize)}
-          </span>
-          <div className="flex gap-1">
-            {file.tags.slice(0, 2).map((tag) => (
-              <Badge
-                key={tag}
-                variant="secondary"
-                className="text-[10px] px-1.5 py-0"
-              >
-                {tag}
-              </Badge>
-            ))}
+            {/* More actions */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute top-2 right-10 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity bg-background/80"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <MoreVertical className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onPreview(file); }}>
+                  预览
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleAIChat}>
+                  <Sparkles className="h-4 w-4 mr-2" />
+                  AI 解读
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleEditTags}>
+                  <Tag className="h-4 w-4 mr-2" />
+                  编辑标签
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleMoveToFolder}>
+                  <FolderInput className="h-4 w-4 mr-2" />
+                  移动到文件夹
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="text-destructive"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDelete();
+                  }}
+                >
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  删除
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
-        </div>
-        {/* AI OCR text preview */}
-        {hasAITextContent && (
-          <p className="text-[10px] text-muted-foreground mt-1 line-clamp-1">
-            {file.textContent!.slice(0, 50)}
-          </p>
-        )}
-      </div>
-    </Card>
+
+          {/* Info area */}
+          <div className="p-3">
+            <p className="text-sm font-medium truncate">{file.fileName}</p>
+            <div className="flex items-center justify-between mt-1.5">
+              <span className="text-xs text-muted-foreground">
+                {formatSize(file.fileSize)}
+              </span>
+              <div className="flex gap-1">
+                {file.tags.slice(0, 2).map((tag) => (
+                  <Badge
+                    key={tag}
+                    variant="secondary"
+                    className="text-[10px] px-1.5 py-0"
+                  >
+                    {tag}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+            {/* AI OCR text preview */}
+            {hasAITextContent && (
+              <p className="text-[10px] text-muted-foreground mt-1 line-clamp-1">
+                {file.textContent!.slice(0, 50)}
+              </p>
+            )}
+          </div>
+        </Card>
+      </motion.div>
+
+      {/* Edit Tags Dialog */}
+      <Dialog open={tagDialogOpen} onOpenChange={setTagDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>编辑标签</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <Label>标签（用逗号分隔）</Label>
+            <Input
+              value={tagInput}
+              onChange={(e) => setTagInput(e.target.value)}
+              placeholder="风景, 旅行, 美食"
+            />
+            <div className="flex flex-wrap gap-1.5">
+              {tagInput.split(/[,，]/).map((t, i) => {
+                const trimmed = t.trim();
+                if (!trimmed) return null;
+                return (
+                  <Badge key={i} variant="secondary" className="text-xs">
+                    {trimmed}
+                  </Badge>
+                );
+              })}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTagDialogOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={handleSaveTags}>保存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Move to Folder Dialog */}
+      <Dialog open={folderDialogOpen} onOpenChange={setFolderDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>移动到文件夹</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 py-2 max-h-64 overflow-y-auto">
+            <button
+              className={cn(
+                "w-full text-left px-3 py-2 rounded-lg text-sm transition-colors",
+                selectedFolderId === null
+                  ? "bg-primary text-primary-foreground"
+                  : "hover:bg-muted"
+              )}
+              onClick={() => setSelectedFolderId(null)}
+            >
+              📁 根目录（无文件夹）
+            </button>
+            {folders.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">
+                暂无文件夹，请先在文件管理页面创建
+              </p>
+            ) : (
+              folders.map((folder) => (
+                <button
+                  key={folder.id}
+                  className={cn(
+                    "w-full text-left px-3 py-2 rounded-lg text-sm transition-colors",
+                    selectedFolderId === folder.id
+                      ? "bg-primary text-primary-foreground"
+                      : "hover:bg-muted"
+                  )}
+                  onClick={() => setSelectedFolderId(folder.id)}
+                >
+                  📁 {folder.name}
+                </button>
+              ))
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFolderDialogOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={handleSaveFolder}>移动</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
 // List item variant
 export function FileListItem({ file, onPreview }: FileCardProps) {
-  const { toggleFavorite, deleteFile, setAiChatFile } = useAppStore();
+  const { toggleFavorite, deleteFile, setAiChatFile, updateFile, folders, refreshFolders } = useAppStore();
   const colorClass = getFileColor(file.fileType);
+
+  // Edit tags dialog
+  const [tagDialogOpen, setTagDialogOpen] = useState(false);
+  const [tagInput, setTagInput] = useState(file.tags.join(", "));
+
+  // Move to folder dialog
+  const [folderDialogOpen, setFolderDialogOpen] = useState(false);
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(file.folderId || null);
 
   const handleFavorite = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -242,103 +369,231 @@ export function FileListItem({ file, onPreview }: FileCardProps) {
     setAiChatFile(file);
   };
 
+  const handleEditTags = () => {
+    setTagInput(file.tags.join(", "));
+    setTagDialogOpen(true);
+  };
+
+  const handleSaveTags = () => {
+    const newTags = tagInput
+      .split(/[,，]/)
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+    updateFile(file.id, { tags: newTags });
+    const { user, storageMode } = useAppStore.getState();
+    if (user) {
+      const adapter = getStorageAdapter(storageMode);
+      adapter.updateFile(file.id, { tags: newTags }, user.id).catch(console.error);
+    }
+    setTagDialogOpen(false);
+  };
+
+  const handleMoveToFolder = () => {
+    setSelectedFolderId(file.folderId || null);
+    refreshFolders();
+    setFolderDialogOpen(true);
+  };
+
+  const handleSaveFolder = () => {
+    updateFile(file.id, { folderId: selectedFolderId || undefined });
+    const { user, storageMode } = useAppStore.getState();
+    if (user) {
+      const adapter = getStorageAdapter(storageMode);
+      adapter.updateFile(file.id, { folderId: selectedFolderId || null } as Partial<FileData>, user.id).catch(console.error);
+    }
+    setFolderDialogOpen(false);
+  };
+
   const hasAITags = file.tags && file.tags.length > 0;
 
   return (
-    <div
-      className="flex items-center gap-3 p-3 rounded-lg hover:bg-muted/50 cursor-pointer transition-colors group"
-      onClick={() => onPreview(file)}
-    >
-      {file.fileType === "image" && file.thumbnailUrl ? (
-        <img
-          src={file.thumbnailUrl}
-          alt={file.fileName}
-          className="h-10 w-10 rounded-md object-cover shrink-0"
-        />
-      ) : (
-        <div
-          className={cn(
-            "h-10 w-10 rounded-lg flex items-center justify-center shrink-0",
-            colorClass
-          )}
-        >
-          <FileIconDisplay fileType={file.fileType} className="h-5 w-5" />
-        </div>
-      )}
-
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5">
-          <p className="text-sm font-medium truncate">{file.fileName}</p>
-          {hasAITags && (
-            <Sparkles className="h-3 w-3 text-primary shrink-0" />
-          )}
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {formatSize(file.fileSize)} ·{" "}
-          {new Date(file.createdAt).toLocaleDateString("zh-CN")}
-        </p>
-      </div>
-
-      <div className="flex items-center gap-2 shrink-0">
-        {file.tags.slice(0, 2).map((tag) => (
-          <Badge
-            key={tag}
-            variant="secondary"
-            className="text-[10px] px-1.5 py-0 hidden sm:inline-flex"
-          >
-            {tag}
-          </Badge>
-        ))}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          onClick={handleFavorite}
-        >
-          <Star
-            className={cn(
-              "h-3.5 w-3.5",
-              file.isFavorite
-                ? "fill-yellow-400 text-yellow-400"
-                : "text-muted-foreground"
-            )}
+    <>
+      <div
+        className="flex items-center gap-3 p-3 rounded-lg hover:bg-muted/50 cursor-pointer transition-colors group"
+        onClick={() => onPreview(file)}
+      >
+        {file.fileType === "image" && file.thumbnailUrl ? (
+          <img
+            src={file.thumbnailUrl}
+            alt={file.fileName}
+            className="h-10 w-10 rounded-md object-cover shrink-0"
           />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7 hidden sm:flex"
-          onClick={handleAIChat}
-        >
-          <Sparkles className="h-3.5 w-3.5 text-primary" />
-        </Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 opacity-0 group-hover:opacity-100"
+        ) : (
+          <div
+            className={cn(
+              "h-10 w-10 rounded-lg flex items-center justify-center shrink-0",
+              colorClass
+            )}
+          >
+            <FileIconDisplay fileType={file.fileType} className="h-5 w-5" />
+          </div>
+        )}
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <p className="text-sm font-medium truncate">{file.fileName}</p>
+            {hasAITags && (
+              <Sparkles className="h-3 w-3 text-primary shrink-0" />
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {formatSize(file.fileSize)} ·{" "}
+            {new Date(file.createdAt).toLocaleDateString("zh-CN")}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {file.tags.slice(0, 2).map((tag) => (
+            <Badge
+              key={tag}
+              variant="secondary"
+              className="text-[10px] px-1.5 py-0 hidden sm:inline-flex"
             >
-              <MoreVertical className="h-3.5 w-3.5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => onPreview(file)}>
-              预览
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={handleAIChat}>
-              <Sparkles className="h-4 w-4 mr-2" />
-              AI 解读
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="text-destructive"
-              onClick={handleDelete}
-            >
-              删除
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+              {tag}
+            </Badge>
+          ))}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={handleFavorite}
+          >
+            <Star
+              className={cn(
+                "h-3.5 w-3.5",
+                file.isFavorite
+                  ? "fill-yellow-400 text-yellow-400"
+                  : "text-muted-foreground"
+              )}
+            />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 hidden sm:flex"
+            onClick={handleAIChat}
+          >
+            <Sparkles className="h-3.5 w-3.5 text-primary" />
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 opacity-0 group-hover:opacity-100"
+              >
+                <MoreVertical className="h-3.5 w-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => onPreview(file)}>
+                预览
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleAIChat}>
+                <Sparkles className="h-4 w-4 mr-2" />
+                AI 解读
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleEditTags}>
+                <Tag className="h-4 w-4 mr-2" />
+                编辑标签
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleMoveToFolder}>
+                <FolderInput className="h-4 w-4 mr-2" />
+                移动到文件夹
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="text-destructive"
+                onClick={handleDelete}
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                删除
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
-    </div>
+
+      {/* Edit Tags Dialog */}
+      <Dialog open={tagDialogOpen} onOpenChange={setTagDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>编辑标签</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <Label>标签（用逗号分隔）</Label>
+            <Input
+              value={tagInput}
+              onChange={(e) => setTagInput(e.target.value)}
+              placeholder="风景, 旅行, 美食"
+            />
+            <div className="flex flex-wrap gap-1.5">
+              {tagInput.split(/[,，]/).map((t, i) => {
+                const trimmed = t.trim();
+                if (!trimmed) return null;
+                return (
+                  <Badge key={i} variant="secondary" className="text-xs">
+                    {trimmed}
+                  </Badge>
+                );
+              })}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTagDialogOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={handleSaveTags}>保存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Move to Folder Dialog */}
+      <Dialog open={folderDialogOpen} onOpenChange={setFolderDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>移动到文件夹</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 py-2 max-h-64 overflow-y-auto">
+            <button
+              className={cn(
+                "w-full text-left px-3 py-2 rounded-lg text-sm transition-colors",
+                selectedFolderId === null
+                  ? "bg-primary text-primary-foreground"
+                  : "hover:bg-muted"
+              )}
+              onClick={() => setSelectedFolderId(null)}
+            >
+              📁 根目录（无文件夹）
+            </button>
+            {folders.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">
+                暂无文件夹
+              </p>
+            ) : (
+              folders.map((folder) => (
+                <button
+                  key={folder.id}
+                  className={cn(
+                    "w-full text-left px-3 py-2 rounded-lg text-sm transition-colors",
+                    selectedFolderId === folder.id
+                      ? "bg-primary text-primary-foreground"
+                      : "hover:bg-muted"
+                  )}
+                  onClick={() => setSelectedFolderId(folder.id)}
+                >
+                  📁 {folder.name}
+                </button>
+              ))
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFolderDialogOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={handleSaveFolder}>移动</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

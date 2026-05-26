@@ -23,7 +23,7 @@ export class ServerStorageAdapter implements StorageAdapter {
     formData.append("file", file);
     formData.append("userId", userId);
 
-    const res = await fetch(this.baseUrl + "/upload", {
+    const res = await fetch(this.baseUrl, {
       method: "POST",
       body: formData,
     });
@@ -41,8 +41,10 @@ export class ServerStorageAdapter implements StorageAdapter {
     return res.json();
   }
 
-  async searchFiles(query: string, _userId: string): Promise<FileData[]> {
-    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+  async searchFiles(query: string, userId: string): Promise<FileData[]> {
+    const res = await fetch(
+      `/api/search?q=${encodeURIComponent(query)}&userId=${encodeURIComponent(userId)}`
+    );
     if (!res.ok) return [];
     return res.json();
   }
@@ -59,8 +61,8 @@ export class ServerStorageAdapter implements StorageAdapter {
     });
   }
 
-  async getFiles(_userId: string): Promise<FileData[]> {
-    const res = await fetch(this.baseUrl);
+  async getFiles(userId: string): Promise<FileData[]> {
+    const res = await fetch(`${this.baseUrl}?userId=${encodeURIComponent(userId)}`);
     if (!res.ok) return [];
     return res.json();
   }

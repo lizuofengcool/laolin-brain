@@ -143,3 +143,110 @@
 - AI 聊天面板通过 Zustand store 的 aiChatFile 驱动显示
 
 ---
+
+## 2026-05-26 - 会话 4 - Bug 修复 + 第三轮高级功能开发
+
+### 完成事项
+
+#### Part 1: Bug 修复（7 项）
+
+##### 1. 修复 ServerStorageAdapter URLs
+- ✅ `src/lib/storage/server.ts`
+  - `uploadFile()` 改为 POST `/api/files`（去掉 `/upload` 后缀）
+  - `getFiles()` 添加 `userId` 查询参数
+  - `searchFiles()` 添加 `userId` 查询参数
+
+##### 2. 修复 SearchResults 无限循环
+- ✅ `src/components/search/SearchResults.tsx`
+  - 将 `performSearch()` 调用从渲染期间移到 `useEffect`
+  - 使用 `useRef` 追踪 `triggerSearch` 避免重复触发
+  - `triggerSearch` 参数类型从 `boolean` 改为 `number`
+
+##### 3. 修复服务端缩略图生成
+- ✅ `src/lib/parser/image.ts` - 用 `sharp` 替换 `browser-image-compression`
+  - 使用 `sharp().resize(200, 200).jpeg({ quality: 70 })` 生成缩略图
+- ✅ 新增 `src/app/api/files/thumbnail/[filename]/route.ts` - 缩略图服务路由
+  - 支持从 `upload/thumbnails/` 目录读取缩略图
+  - 自动识别 MIME 类型（jpeg/png/webp/gif）
+  - 添加 24 小时缓存头
+
+##### 4. 实现 FileCard 缺失的 onClick 处理
+- ✅ `src/components/files/FileCard.tsx`（FileCard + FileListItem）
+  - 编辑标签：弹出 Dialog，逗号分隔输入，实时预览标签 Badge，保存到 Zustand + 存储后端
+  - 移动到文件夹：弹出 Dialog，显示文件夹列表（含根目录选项），保存到 Zustand + 存储后端
+
+##### 5. 实现文件下载功能
+- ✅ 新增 `src/app/api/files/[id]/download/route.ts`
+  - 从 `upload/` 目录读取文件，返回二进制流
+  - 支持正确的 MIME 类型和中文文件名编码
+- ✅ `src/components/files/FilePreview.tsx`
+  - 下载按钮启用功能，支持加载状态（Loader2）
+  - 云端模式：fetch `/api/files/[id]/download`，创建 Blob 下载
+  - 本地模式：从 IndexedDB 读取 base64 数据，转换为 Blob 下载
+
+##### 6. 提取共享工具函数
+- ✅ 新增 `src/lib/file-utils.tsx`
+  - `formatSize()` - 文件大小格式化
+  - `getFileIcon()` / `FileIconDisplay` - 文件类型图标
+  - `getFileColor()` - 文件类型颜色
+  - `formatTime()` - 相对时间格式化
+  - 新增 PPTX 文件类型支持（`Presentation` 图标 + 橙色配色）
+- ✅ 更新 `FileCard.tsx`、`FilePreview.tsx`、`SearchResults.tsx`、`RecentFiles.tsx` 从共享模块导入
+
+##### 7. 本地模式文件夹支持
+- ✅ `src/stores/app-store.ts`
+  - `refreshFolders()` 添加 IndexedDB 分支：从 `folders` object store 读取
+  - 新增 `addFolder()` / `removeFolder()` 方法
+  - `setStorageMode()` 切换时同步刷新文件夹
+  - `ViewType` 新增 `"timeline"` 类型
+
+#### Part 2: 第三轮功能开发
+
+##### Feature 3.1: PPT 文件上传 + 解析
+- ✅ 新增 `src/lib/parser/ppt.ts` - PPTX 解析器
+  - 使用 `unzip` 解压 PPTX（ZIP 格式），读取 `ppt/slides/` 下 XML
+  - 提取 `<a:t>` 标签中的文本，按页分隔输出
+  - 自动清理临时文件
+- ✅ `src/app/api/files/route.ts` - 上传路由添加 PPTX 支持
+  - 检测 `.pptx` 文件类型，调用 `parsePptx()` 提取文本
+- ✅ `src/components/files/UploadZone.tsx`
+  - dropzone 添加 `.pptx` MIME 类型
+  - 更新提示文案
+
+##### Feature 3.4: 时间线浏览模式
+- ✅ 新增 `src/components/timeline/TimelineView.tsx`
+  - 按年月分组展示文件（年月 → 文件缩略图网格）
+  - 左侧时间轴竖线 + 圆形日期标记
+  - 每组显示年月标题 + 文件数量
+  - 支持文件预览弹窗（含下载功能）
+  - 使用 framer-motion 入场动画
+  - 空状态 SVG 提示
+- ✅ 更新 Sidebar / MobileNav 添加"时间线"导航项
+- ✅ ViewType 添加 `"timeline"`
+- ✅ `src/app/page.tsx` 添加 TimelineView 路由
+
+##### Feature 3.6: UI 优化 + 动画
+- ✅ 页面切换动画：framer-motion `AnimatePresence` + slide 过渡
+- ✅ FileCard 悬浮动画：`motion.div whileHover={{ y: -2 }}`
+- ✅ Skeleton 加载状态组件（DashboardSkeleton / FilesSkeleton）
+- ✅ 空状态 SVG 插画：仪表盘、搜索、时间线
+- ✅ Sidebar "最近文件" 区域：显示最近 5 个文件，带图标
+- ✅ 版本号更新为 v2.0
+
+##### Feature 3.7: 性能优化
+- ✅ 文件列表分页：FilesView 默认显示 20 条，"加载更多"按钮
+- ✅ 搜索防抖：300ms debounce，输入即搜
+
+#### Part 3: 代码质量
+- ✅ ESLint 0 errors, 0 warnings
+- ✅ Next.js build 成功，所有路由正确注册
+- ✅ 新增路由：`/api/files/[id]/download`、`/api/files/thumbnail/[filename]`
+
+---
+
+### 技术要点
+- `sharp` 替代 `browser-image-compression` 作为服务端图片处理库
+- PPTX 解析通过解压 ZIP 读取 XML 中的 `<a:t>` 标签实现
+- framer-motion `AnimatePresence mode="wait"` 实现页面切换动画
+- 文件夹操作同时更新 Zustand store 和后端存储，保持数据同步
+- 侧边栏最近文件在 sidebarOpen 时展示，折叠时隐藏

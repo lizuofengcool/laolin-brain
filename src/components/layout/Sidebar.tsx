@@ -9,21 +9,27 @@ import {
   ChevronRight,
   LogOut,
   Upload,
+  CalendarDays,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAppStore, type ViewType } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
+import { Separator } from "@/components/ui/separator";
 
 const navItems: { icon: typeof LayoutDashboard; label: string; view: ViewType }[] = [
   { icon: LayoutDashboard, label: "仪表盘", view: "dashboard" },
   { icon: FolderOpen, label: "文件管理", view: "files" },
+  { icon: CalendarDays, label: "时间线", view: "timeline" },
   { icon: Search, label: "搜索", view: "search" },
   { icon: Settings, label: "设置", view: "settings" },
 ];
 
 export function Sidebar() {
-  const { currentView, setCurrentView, sidebarOpen, setSidebarOpen, logout, user } =
+  const { currentView, setCurrentView, sidebarOpen, setSidebarOpen, logout, user, files } =
     useAppStore();
+
+  // Get last 5 recently viewed files for sidebar
+  const recentFiles = files.slice(0, 5);
 
   return (
     <aside
@@ -45,7 +51,7 @@ export function Sidebar() {
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 py-4 px-2 space-y-1">
+      <nav className="flex-1 py-4 px-2 space-y-1 overflow-y-auto">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = currentView === item.view;
@@ -76,6 +82,35 @@ export function Sidebar() {
           <Upload className="h-4 w-4 shrink-0" />
           {sidebarOpen && <span className="text-sm">上传文件</span>}
         </Button>
+
+        {/* Recent files section */}
+        {sidebarOpen && recentFiles.length > 0 && (
+          <>
+            <Separator className="my-3" />
+            <div className="px-2">
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                最近文件
+              </span>
+            </div>
+            {recentFiles.map((file) => (
+              <Button
+                key={file.id}
+                variant="ghost"
+                className="w-full justify-start gap-3 h-8 text-xs truncate"
+                onClick={() => {
+                  setCurrentView("files");
+                }}
+              >
+                <div className="h-5 w-5 rounded flex items-center justify-center shrink-0 bg-muted">
+                  <span className="text-[10px]">
+                    {file.fileType === "image" ? "🖼" : file.fileType === "word" ? "📝" : "📄"}
+                  </span>
+                </div>
+                <span className="truncate">{file.fileName}</span>
+              </Button>
+            ))}
+          </>
+        )}
       </nav>
 
       {/* Footer */}

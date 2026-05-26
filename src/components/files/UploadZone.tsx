@@ -156,6 +156,12 @@ export function UploadZone({ className }: UploadZoneProps) {
     onDrop,
     noClick: false,
     multiple: true,
+    accept: {
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
+      "application/pdf": [".pdf"],
+      "image/*": [".jpg", ".jpeg", ".png", ".webp", ".gif"],
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation": [".pptx"],
+    },
   });
 
   return (
@@ -208,7 +214,7 @@ export function UploadZone({ className }: UploadZoneProps) {
               {isDragActive ? "松开以上传文件" : "拖拽文件到此处，或点击上传"}
             </p>
             <p className="text-xs text-muted-foreground mt-1">
-              支持 Word、PDF、图片，单文件最大 50MB
+              支持 Word、PDF、PPT、图片，单文件最大 50MB
             </p>
           </div>
           <p className="text-xs text-muted-foreground">

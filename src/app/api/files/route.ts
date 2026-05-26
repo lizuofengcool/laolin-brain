@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { writeFile, mkdir, readFile } from "fs/promises";
+import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 import { parseWord } from "@/lib/parser/word";
 import { parsePdf } from "@/lib/parser/pdf";
+import { parsePptx } from "@/lib/parser/ppt";
 import { generateThumbnail } from "@/lib/parser/image";
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -50,6 +51,12 @@ export async function POST(request: NextRequest) {
       fileType = "word";
     else if (file.type === "application/pdf" || file.name.endsWith(".pdf"))
       fileType = "pdf";
+    else if (
+      file.type ===
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+      file.name.endsWith(".pptx")
+    )
+      fileType = "pptx";
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const uniqueName = `${Date.now()}_${file.name}`;
@@ -65,6 +72,8 @@ export async function POST(request: NextRequest) {
         textContent = await parseWord(buffer);
       } else if (fileType === "pdf") {
         textContent = await parsePdf(buffer);
+      } else if (fileType === "pptx") {
+        textContent = await parsePptx(buffer);
       }
     } catch (e) {
       console.error("Failed to extract text:", e);
