@@ -1,18 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { authenticateRequest } from '@/lib/api-auth';
 import { db } from '@/lib/db';
 
 export async function GET(request: NextRequest) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
+
   try {
-    const { searchParams } = new URL(request.url);
-    const userId = searchParams.get('userId');
-
-    if (!userId) {
-      return NextResponse.json(
-        { error: '缺少用户ID' },
-        { status: 400 }
-      );
-    }
-
     const groups = await db.faceGroup.findMany({
       where: { userId },
       include: {

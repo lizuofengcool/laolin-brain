@@ -1,16 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { authenticateRequest } from "@/lib/api-auth";
 
 // GET: Return analytics data for the current user
 export async function GET(request: NextRequest) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
+
   try {
-    const { searchParams } = new URL(request.url);
-    const userId = searchParams.get("userId");
-
-    if (!userId) {
-      return NextResponse.json({ error: "缺少 userId 参数" }, { status: 400 });
-    }
-
     // Get all files for user (including deleted for analytics)
     const allFiles = await db.file.findMany({
       where: { userId },
@@ -110,7 +108,15 @@ export async function GET(request: NextRequest) {
     if (months >= 2) {
       const recentCounts = fileGrowth.slice(-3).map((m) => m.count);
       const avgMonthlyFiles = recentCounts.reduce((a, b) => a + b, 0) / recentCounts.length;
-      const avgMonthlySize = months > 0 ? totalSize / months : 0;
+      const recentSizeGrowth = activeFiles
+        .filter((f) => {
+          const d = new Date(f.createdAt);
+          const threeMonthsAgo = new Date(now);
+          threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+          return d >= threeMonthsAgo;
+        })
+        .reduce((acc, f) => acc + f.fileSize, 0);
+      const avgMonthlySize = recentSizeGrowth / 3;
 
       predicted1Month = totalSize + avgMonthlySize;
       predicted3Months = totalSize + avgMonthlySize * 3;

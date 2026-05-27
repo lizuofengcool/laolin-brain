@@ -7,6 +7,7 @@ import { parsePdf } from "@/lib/parser/pdf";
 import { parsePptx } from "@/lib/parser/ppt";
 import { generateThumbnail } from "@/lib/parser/image";
 import { authenticateRequest } from "@/lib/api-auth";
+import { safeJsonParseArray } from "@/lib/safe-json-parse";
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
@@ -25,17 +26,18 @@ export async function POST(request: NextRequest) {
 
   try {
     const formData = await request.formData();
-    const file = formData.get("file") as File | null;
+    const file = formData.get("file");
 
-    // Use authenticated userId instead of client-sent userId
-    const userId = authenticatedUserId;
-
-    if (!file) {
+    // Validate file is actually a File instance
+    if (!(file instanceof File)) {
       return NextResponse.json(
-        { error: "File is required" },
+        { error: "Valid file is required" },
         { status: 400 }
       );
     }
+
+    // Use authenticated userId instead of client-sent userId
+    const userId = authenticatedUserId;
 
     if (file.size > 50 * 1024 * 1024) {
       return NextResponse.json(
@@ -71,9 +73,22 @@ export async function POST(request: NextRequest) {
       fileType = "txt";
 
     const buffer = Buffer.from(await file.arrayBuffer());
-    const uniqueName = `${Date.now()}_${file.name}`;
+    // Sanitize filename to prevent path traversal
+    const safeName = path.basename(file.name);
+    const uniqueName = `${Date.now()}_${safeName}`;
     const filePath = path.join(uploadDir, uniqueName);
-    await writeFile(filePath, buffer);
+
+    // Validate the resolved path stays within the upload directory
+    const resolvedPath = path.resolve(filePath);
+    const resolvedUploadDir = path.resolve(uploadDir);
+    if (!resolvedPath.startsWith(resolvedUploadDir + path.sep) && resolvedPath !== resolvedUploadDir) {
+      return NextResponse.json(
+        { error: "Invalid file path" },
+        { status: 400 }
+      );
+    }
+
+    await writeFile(resolvedPath, buffer);
 
     // Extract text content
     let textContent: string | undefined;
@@ -175,7 +190,7 @@ export async function POST(request: NextRequest) {
         textContent: fileRecord.textContent,
         thumbnailUrl: fileRecord.thumbnailUrl || previewUrl,
         previewUrl,
-        tags: tags.length > 0 ? tags : JSON.parse(existingFile.tags || "[]"),
+        tags: tags.length > 0 ? tags : safeJsonParseArray(existingFile.tags),
         isVersionUpdate: true,
       });
     }
@@ -291,8 +306,8 @@ export async function GET(request: NextRequest) {
       files.map((f) => {
         const parsed = {
           ...f,
-          tags: JSON.parse(f.tags || "[]"),
-          keyPoints: JSON.parse(f.keyPoints || "[]"),
+          tags: safeJsonParseArray(f.tags),
+          keyPoints: safeJsonParseArray(f.keyPoints),
         };
         // For image files, convert thumbnailUrl to full API URL
         // and generate a preview URL for the original image

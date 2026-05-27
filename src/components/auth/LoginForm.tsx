@@ -109,7 +109,7 @@ export function LoginForm() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                minLength={4}
+                minLength={8}
               />
             </div>
 
@@ -128,6 +128,7 @@ export function LoginForm() {
           <div className="mt-4 text-center text-sm text-muted-foreground">
             {isLogin ? "还没有账号？" : "已有账号？"}
             <button
+              type="button"
               className="text-primary hover:underline font-medium ml-1"
               onClick={() => {
                 setIsLogin(!isLogin);

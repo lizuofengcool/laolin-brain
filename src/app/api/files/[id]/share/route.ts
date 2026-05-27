@@ -1,12 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { randomUUID } from "crypto";
+import { authenticateRequest } from "@/lib/api-auth";
+import { timingSafeEqual } from "crypto";
 
 // POST: Generate a share link for a file
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
+
   try {
     const { id } = await params;
     const body = await request.json();
@@ -19,6 +25,11 @@ export async function POST(
 
     if (!file) {
       return NextResponse.json({ error: "文件不存在" }, { status: 404 });
+    }
+
+    // Ownership check
+    if (file.userId !== userId) {
+      return NextResponse.json({ error: "无权操作此文件" }, { status: 403 });
     }
 
     // Generate unique token
@@ -80,11 +91,19 @@ export async function GET(
       );
     }
 
-    // Check password
+    // Check password using timing-safe comparison
     if (share.password) {
-      if (!passwordParam || passwordParam !== share.password) {
+      if (!passwordParam) {
         return NextResponse.json(
           { error: "需要密码", passwordRequired: true },
+          { status: 403 }
+        );
+      }
+      const a = Buffer.from(passwordParam);
+      const b = Buffer.from(share.password);
+      if (a.length !== b.length || !timingSafeEqual(a, b)) {
+        return NextResponse.json(
+          { error: "密码错误", passwordRequired: true },
           { status: 403 }
         );
       }

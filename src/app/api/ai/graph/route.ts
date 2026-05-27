@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { authenticateRequest } from '@/lib/api-auth';
 import ZAI from 'z-ai-web-dev-sdk';
 
-let zaiInstance: Awaited<ReturnType<typeof ZAI.create>> | null = null;
+let zaiPromise: Promise<Awaited<ReturnType<typeof ZAI.create>>> | null = null;
 
-async function getZAI() {
-  if (!zaiInstance) {
-    zaiInstance = await ZAI.create();
+function getZAI() {
+  if (!zaiPromise) {
+    zaiPromise = ZAI.create();
   }
-  return zaiInstance;
+  return zaiPromise;
 }
 
 interface GraphFile {
@@ -44,7 +45,7 @@ function buildFallbackGraph(files: GraphFile[]): { nodes: GraphNode[]; edges: Gr
       id: file.id,
       label: file.fileName.length > 20 ? file.fileName.slice(0, 17) + '...' : file.fileName,
       type: file.fileType,
-      size: 1, // Will be updated based on connections
+      size: 1,
     });
   }
 
@@ -104,6 +105,9 @@ function buildFallbackGraph(files: GraphFile[]): { nodes: GraphNode[]; edges: Gr
 }
 
 export async function POST(request: NextRequest) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const body = await request.json();
     const { files } = body;

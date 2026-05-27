@@ -1,24 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { authenticateRequest } from '@/lib/api-auth';
 import { db } from '@/lib/db';
-import { detectFaces, type FaceDetection } from '@/lib/ai/face-detection';
+import type { FaceDetection } from '@/lib/ai/face-detection';
 import { randomUUID } from 'crypto';
 import { cosineSimilarity } from '@/lib/face-cluster';
+import fs from 'fs/promises';
 
 // Track processing state in memory
 const processingState = new Map<string, { processed: number; total: number; isProcessing: boolean }>();
 
 export async function POST(request: NextRequest) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
+
   try {
-    const body = await request.json();
-    const { userId } = body;
-
-    if (!userId) {
-      return NextResponse.json(
-        { error: '缺少用户ID' },
-        { status: 400 }
-      );
-    }
-
     // Check if already processing
     const state = processingState.get(userId);
     if (state?.isProcessing) {
@@ -83,23 +79,16 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const userId = searchParams.get('userId');
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
 
-    if (!userId) {
-      return NextResponse.json({ isProcessing: false, processed: 0, total: 0 });
-    }
-
-    const state = processingState.get(userId);
-    if (!state) {
-      return NextResponse.json({ isProcessing: false, processed: 0, total: 0 });
-    }
-
-    return NextResponse.json(state);
-  } catch {
+  const state = processingState.get(userId);
+  if (!state) {
     return NextResponse.json({ isProcessing: false, processed: 0, total: 0 });
   }
+
+  return NextResponse.json(state);
 }
 
 async function processFilesInBackground(
@@ -132,17 +121,18 @@ async function processFilesInBackground(
             return;
           }
 
-          // Read file from disk and convert to base64
-          const fs = await import('fs');
-          const path = await import('path');
-          const fullPath = path.join(process.cwd(), 'uploads', file.filePath.replace('/uploads/', ''));
+          // Read file from disk and convert to base64 (async)
+          const pathModule = await import('path');
+          const fullPath = pathModule.join(process.cwd(), 'uploads', file.filePath.replace('/uploads/', ''));
 
-          if (!fs.existsSync(fullPath)) {
+          let buffer: Buffer;
+          try {
+            buffer = await fs.readFile(fullPath);
+          } catch {
             state.processed++;
             return;
           }
 
-          const buffer = fs.readFileSync(fullPath);
           const base64 = buffer.toString('base64');
 
           // Detect faces

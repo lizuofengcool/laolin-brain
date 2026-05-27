@@ -456,7 +456,7 @@ export class TauriStorageAdapter implements StorageAdapter {
 
     // 降级：使用 IndexedDB 直接读取
     const { openDB } = await import('idb');
-    const db = await openDB('knowledge-base-db', 1);
+    const db = await openDB('knowledge-base-db', 2);
     const allFolders = await db.getAll('folders');
     return allFolders
       .filter((f: { userId?: string }) => f.userId === userId)
@@ -484,7 +484,7 @@ export class TauriStorageAdapter implements StorageAdapter {
 
     // 降级：使用 IndexedDB
     const { openDB } = await import('idb');
-    const db = await openDB('knowledge-base-db', 1);
+    const db = await openDB('knowledge-base-db', 2);
     await db.delete('folders', folderId);
   }
 
@@ -504,7 +504,7 @@ export class TauriStorageAdapter implements StorageAdapter {
 
     // 降级：使用 IndexedDB
     const { openDB } = await import('idb');
-    const db = await openDB('knowledge-base-db', 1);
+    const db = await openDB('knowledge-base-db', 2);
     const folder = await db.get('folders', folderId);
     if (folder) {
       folder.name = newName;

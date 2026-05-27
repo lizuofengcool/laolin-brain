@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { unlink } from "fs/promises";
 import { authenticateRequest } from "@/lib/api-auth";
+import { safeJsonParseArray } from "@/lib/safe-json-parse";
 
 export async function GET(
   request: NextRequest,
@@ -9,6 +10,7 @@ export async function GET(
 ) {
   const auth = authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
 
   try {
     const { id } = await params;
@@ -16,7 +18,11 @@ export async function GET(
     if (!file) {
       return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
-    return NextResponse.json({ ...file, tags: JSON.parse(file.tags || "[]") });
+    // Ownership check
+    if (file.userId !== userId) {
+      return NextResponse.json({ error: "无权访问此文件" }, { status: 403 });
+    }
+    return NextResponse.json({ ...file, tags: safeJsonParseArray(file.tags) });
   } catch {
     return NextResponse.json({ error: "Failed to fetch file" }, { status: 500 });
   }
@@ -28,9 +34,17 @@ export async function PUT(
 ) {
   const auth = authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
 
   try {
     const { id } = await params;
+
+    // Ownership check
+    const existingFile = await db.file.findUnique({ where: { id } });
+    if (!existingFile || existingFile.userId !== userId) {
+      return NextResponse.json({ error: "文件不存在" }, { status: 404 });
+    }
+
     const body = await request.json();
 
     const data: Record<string, unknown> = {};
@@ -49,7 +63,7 @@ export async function PUT(
       data,
     });
 
-    return NextResponse.json({ ...file, tags: JSON.parse(file.tags || "[]") });
+    return NextResponse.json({ ...file, tags: safeJsonParseArray(file.tags) });
   } catch {
     return NextResponse.json(
       { error: "Failed to update file" },
@@ -64,12 +78,17 @@ export async function DELETE(
 ) {
   const auth = authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
 
   try {
     const { id } = await params;
     const file = await db.file.findUnique({ where: { id } });
 
-    if (file?.filePath) {
+    if (!file || file.userId !== userId) {
+      return NextResponse.json({ error: "文件不存在" }, { status: 404 });
+    }
+
+    if (file.filePath) {
       try {
         await unlink(file.filePath);
       } catch {

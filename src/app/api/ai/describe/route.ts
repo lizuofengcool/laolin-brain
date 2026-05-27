@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { describeImage } from '@/lib/ai/vision';
+import { authenticateRequest } from '@/lib/api-auth';
 
 export async function POST(request: NextRequest) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const body = await request.json();
     const { imageBase64 } = body;

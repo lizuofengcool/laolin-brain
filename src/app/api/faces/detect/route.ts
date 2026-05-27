@@ -1,15 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { authenticateRequest } from '@/lib/api-auth';
 import { db } from '@/lib/db';
-import { detectFaces, type FaceDetection } from '@/lib/ai/face-detection';
+import { detectFaces } from '@/lib/ai/face-detection';
 import { cosineSimilarity } from '@/lib/face-cluster';
 import { randomUUID } from 'crypto';
 
 export async function POST(request: NextRequest) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
+
   try {
     const body = await request.json();
-    const { imageBase64, fileId, userId } = body;
+    const { imageBase64, fileId } = body;
 
-    if (!imageBase64 || !fileId || !userId) {
+    if (!imageBase64 || !fileId) {
       return NextResponse.json(
         { error: '缺少必要参数' },
         { status: 400 }
@@ -53,7 +58,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Detect faces using AI
-    const detections: FaceDetection[] = await detectFaces(imageBase64);
+    const detections = await detectFaces(imageBase64);
 
     if (detections.length === 0) {
       return NextResponse.json({
@@ -84,17 +89,6 @@ export async function POST(request: NextRequest) {
       };
 
       // Try to find a matching existing cluster
-      const faceForMatching = {
-        fileId,
-        faceId: detection.id,
-        embedding: detection.embedding,
-        description: detection.description,
-        x: detection.x,
-        y: detection.y,
-        width: detection.width,
-        height: detection.height,
-      };
-
       let assignedGroupId: string | null = null;
 
       // Check against existing DB groups

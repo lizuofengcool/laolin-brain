@@ -1,15 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { authenticateRequest } from '@/lib/api-auth';
 import { db } from '@/lib/db';
+import { safeJsonParseArray } from '@/lib/safe-json-parse';
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
+
   try {
     const { id } = await params;
     const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get('page') || '1');
     const limit = parseInt(searchParams.get('limit') || '20');
+
+    // Verify group belongs to user
+    const group = await db.faceGroup.findUnique({ where: { id } });
+    if (!group || group.userId !== userId) {
+      return NextResponse.json({ error: "分组不存在" }, { status: 404 });
+    }
 
     // Get all face instances in this group
     const faceInstances = await db.faceInstance.findMany({
@@ -34,7 +46,7 @@ export async function GET(
     // Parse tags
     const result = files.map((file) => ({
       ...file,
-      tags: JSON.parse(file.tags || '[]'),
+      tags: safeJsonParseArray(file.tags),
     }));
 
     return NextResponse.json({

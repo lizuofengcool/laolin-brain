@@ -161,8 +161,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         // Simple client-side check: parse the base64 payload and check exp
         try {
           const parts = token.split(".");
-          if (parts.length === 2) {
-            const payload = JSON.parse(atob(parts[0].replace(/-/g, "+").replace(/_/g, "/")));
+          if (parts.length === 3) {
+            const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
             if (payload.exp && Date.now() > payload.exp) {
               // Token expired
               localStorage.removeItem("kb_token");
@@ -324,11 +324,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   emptyRecycleBin: async () => {
     const deletedFiles = get().files.filter((f) => f.isDeleted);
     try {
-      await Promise.all(deletedFiles.map((file) => get().permanentDeleteFile(file.id)));
+      const results = await Promise.allSettled(deletedFiles.map((file) => get().permanentDeleteFile(file.id)));
+      const succeeded = results.filter((r) => r.status === "fulfilled").length;
+      const failed = results.filter((r) => r.status === "rejected").length;
       useNotificationStore.getState().addNotification({
-        type: "success",
-        title: "回收站已清空",
-        message: `已删除 ${deletedFiles.length} 个文件`,
+        type: failed === 0 ? "success" : "info",
+        title: failed === 0 ? "回收站已清空" : "部分文件删除失败",
+        message: `成功删除 ${succeeded} 个文件` + (failed > 0 ? `，${failed} 个失败` : ""),
         autoDismiss: true,
         duration: 3000,
       });

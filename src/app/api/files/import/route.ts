@@ -1,17 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { authenticateRequest } from "@/lib/api-auth";
 
 export async function POST(request: NextRequest) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
+
   try {
     const body = await request.json();
-    const { files, folders, userId } = body;
-
-    if (!userId) {
-      return NextResponse.json(
-        { error: "userId 参数不能为空" },
-        { status: 400 }
-      );
-    }
+    const { files, folders } = body;
 
     if (!files || !Array.isArray(files)) {
       return NextResponse.json(
@@ -22,55 +20,33 @@ export async function POST(request: NextRequest) {
 
     let importedCount = 0;
 
-    // Import folders first
+    // Import folders (don't use client-supplied IDs)
     if (folders && Array.isArray(folders)) {
       for (const folder of folders) {
-        if (!folder.id || !folder.name) continue;
+        if (!folder.name) continue;
 
         try {
-          // Check if folder already exists
-          const existing = await db.folder.findUnique({
-            where: { id: folder.id },
+          await db.folder.create({
+            data: {
+              userId,
+              name: folder.name,
+              parentId: folder.parentId || null,
+              createdAt: folder.createdAt ? new Date(folder.createdAt) : new Date(),
+            },
           });
-
-          if (!existing) {
-            await db.folder.create({
-              data: {
-                id: folder.id,
-                userId,
-                name: folder.name,
-                parentId: folder.parentId || null,
-                createdAt: folder.createdAt ? new Date(folder.createdAt) : new Date(),
-              },
-            });
-          }
         } catch (err) {
-          console.error(`Failed to import folder ${folder.id}:`, err);
+          console.error(`Failed to import folder ${folder.name}:`, err);
         }
       }
     }
 
-    // Import files
+    // Import files (don't use client-supplied IDs)
     for (const file of files) {
       if (!file.fileName) continue;
 
       try {
-        // Check if file already exists (by ID or fileName + userId)
-        let existing: Awaited<ReturnType<typeof db.file.findUnique>> = null;
-        if (file.id) {
-          existing = await db.file.findUnique({
-            where: { id: file.id },
-          });
-        }
-
-        if (existing) {
-          // Skip existing files
-          continue;
-        }
-
         await db.file.create({
           data: {
-            id: file.id || undefined,
             userId,
             fileName: file.fileName,
             fileType: file.fileType || "other",

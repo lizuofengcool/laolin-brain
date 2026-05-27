@@ -1,16 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { authenticateRequest } from '@/lib/api-auth';
 import ZAI from 'z-ai-web-dev-sdk';
 
-let zaiInstance: Awaited<ReturnType<typeof ZAI.create>> | null = null;
+let zaiPromise: Promise<Awaited<ReturnType<typeof ZAI.create>>> | null = null;
 
-async function getZAI() {
-  if (!zaiInstance) {
-    zaiInstance = await ZAI.create();
+function getZAI() {
+  if (!zaiPromise) {
+    zaiPromise = ZAI.create();
   }
-  return zaiInstance;
+  return zaiPromise;
 }
 
 export async function POST(request: NextRequest) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const body = await request.json();
     const { fileId, files } = body;

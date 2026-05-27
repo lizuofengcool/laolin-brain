@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useMemo, useCallback } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { useAppStore, type ViewType } from "@/stores/app-store";
 import type { FileData } from "@/lib/storage/base";
@@ -95,7 +95,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { useI18n, LOCALES } from "@/lib/i18n";
+import { useI18n } from "@/lib/i18n";
 import {
   FileText,
   Image as ImageIcon,
@@ -133,19 +133,6 @@ function EmptyDashboard() {
       </svg>
       <p className="text-sm font-medium">欢迎使用知识库</p>
       <p className="text-xs mt-1">上传你的第一个文件开始使用</p>
-    </div>
-  );
-}
-
-function EmptySearch() {
-  return (
-    <div className="text-center py-20 text-muted-foreground">
-      <svg className="h-20 w-20 mx-auto mb-4 opacity-20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="11" cy="11" r="8" />
-        <line x1="21" y1="21" x2="16.65" y2="16.65" />
-      </svg>
-      <p className="text-sm font-medium">搜索你的文件</p>
-      <p className="text-xs mt-1">输入关键词搜索文件名、文档内容或标签</p>
     </div>
   );
 }
@@ -189,23 +176,6 @@ function ConfirmDialog({ open, title, description, onConfirm, onCancel }: {
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function FilesSkeleton() {
-  return (
-    <div className="space-y-6">
-      <div>
-        <Skeleton className="h-8 w-32" />
-        <Skeleton className="h-4 w-48 mt-2" />
-      </div>
-      <Skeleton className="h-32 rounded-xl" />
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-        {[1, 2, 3, 4, 5, 6].map((i) => (
-          <Skeleton key={i} className="h-48 rounded-lg" />
-        ))}
-      </div>
-    </div>
   );
 }
 
@@ -366,28 +336,32 @@ function FilesView() {
   };
 
   // Filter active (non-deleted) files
-  let filteredFiles = files.filter((f) => !f.isDeleted);
+  const filteredFiles = useMemo(() => {
+    let result = files.filter((f) => !f.isDeleted);
 
-  // Apply file type filter (from dashboard stats click)
-  if (fileTypeFilter === "document") {
-    filteredFiles = filteredFiles.filter((f) => f.fileType === "word" || f.fileType === "pdf" || f.fileType === "pptx");
-  } else if (fileTypeFilter === "image") {
-    filteredFiles = filteredFiles.filter((f) => f.fileType === "image");
-  } else if (fileTypeFilter === "favorite") {
-    filteredFiles = filteredFiles.filter((f) => f.isFavorite);
-  }
+    // Apply file type filter (from dashboard stats click)
+    if (fileTypeFilter === "document") {
+      result = result.filter((f) => f.fileType === "word" || f.fileType === "pdf" || f.fileType === "pptx");
+    } else if (fileTypeFilter === "image") {
+      result = result.filter((f) => f.fileType === "image");
+    } else if (fileTypeFilter === "favorite") {
+      result = result.filter((f) => f.isFavorite);
+    }
 
-  // Filter by folder
-  if (selectedFolderId) {
-    filteredFiles = filteredFiles.filter((f) => f.folderId === selectedFolderId);
-  } else if (!fileTypeFilter) {
-    filteredFiles = filteredFiles.filter((f) => !f.folderId);
-  }
+    // Filter by folder
+    if (selectedFolderId) {
+      result = result.filter((f) => f.folderId === selectedFolderId);
+    } else if (!fileTypeFilter) {
+      result = result.filter((f) => !f.folderId);
+    }
 
-  // Filter by tag
-  if (tagFilter) {
-    filteredFiles = filteredFiles.filter((f) => f.tags.includes(tagFilter));
-  }
+    // Filter by tag
+    if (tagFilter) {
+      result = result.filter((f) => f.tags.includes(tagFilter));
+    }
+
+    return result;
+  }, [files, fileTypeFilter, selectedFolderId, tagFilter]);
 
   // Sort files
   const sortedFiles = useMemo(() => {
@@ -416,7 +390,7 @@ function FilesView() {
   const hasMore = visibleCount < sortedFiles.length;
 
   // Collect all tags
-  const allTags = [...new Set(files.filter((f) => !f.isDeleted).flatMap((f) => f.tags))];
+  const allTags = useMemo(() => [...new Set(files.filter((f) => !f.isDeleted).flatMap((f) => f.tags))], [files]);
 
   // Clear file type filter when entering files view directly
   useEffect(() => {
@@ -556,20 +530,26 @@ function FilesView() {
                 </span>
                 <div className="flex flex-wrap gap-1.5 mt-2">
                   <Badge
+                    role="button"
+                    tabIndex={0}
                     variant={tagFilter === null ? "default" : "secondary"}
                     className="cursor-pointer text-xs"
                     onClick={() => setTagFilter(null)}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setTagFilter(null); } }}
                   >
                     全部
                   </Badge>
                   {allTags.map((tag) => (
                     <Badge
                       key={tag}
+                      role="button"
+                      tabIndex={0}
                       variant={tagFilter === tag ? "default" : "secondary"}
                       className="cursor-pointer text-xs"
                       onClick={() =>
                         setTagFilter(tagFilter === tag ? null : tag)
                       }
+                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setTagFilter(tagFilter === tag ? null : tag); } }}
                     >
                       {tag}
                     </Badge>
@@ -676,6 +656,13 @@ function SearchView() {
     setSearchTrigger((prev) => prev + 1);
   };
 
+  // Cleanup debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, []);
+
   const handleChange = (value: string) => {
     setLocalQuery(value);
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -715,11 +702,17 @@ function SearchView() {
         open={previewOpen}
         onClose={() => setPreviewOpen(false)}
       />
-
-      <AIChatPanel open={!!aiChatFile} onOpenChange={(open) => { if (!open) setAiChatFile(null); }} />
     </div>
   );
 }
+
+// ─── Shared constants ────────────────────────────────────────
+const TYPE_GROUP_LABELS: Record<string, string> = {
+  image: "图片",
+  document: "文档",
+  note: "笔记",
+  other: "其他",
+};
 
 // ─── Favorites View ──────────────────────────────────────────
 function FavoritesView() {
@@ -754,13 +747,6 @@ function FavoritesView() {
     return groups;
   }, [favFiles]);
 
-  const typeGroupLabels: Record<string, string> = {
-    image: "图片",
-    document: "文档",
-    note: "笔记",
-    other: "其他",
-  };
-
   const visibleFiles = favFiles.slice(0, visibleCount);
   const hasMore = visibleCount < favFiles.length;
 
@@ -787,6 +773,7 @@ function FavoritesView() {
           <div className="flex items-center gap-2">
             <ArrowUpDown className="h-4 w-4 text-muted-foreground" />
             <select
+              aria-label="排序方式"
               className="text-sm border rounded-md px-2 py-1 bg-background"
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as "date" | "name")}
@@ -810,7 +797,7 @@ function FavoritesView() {
           {Object.entries(groupedFavs).map(([groupType, groupFiles]) => (
             <div key={groupType} className="space-y-2">
               <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold">{typeGroupLabels[groupType] || groupType}</h3>
+                <h3 className="text-sm font-semibold">{TYPE_GROUP_LABELS[groupType] || groupType}</h3>
                 <Badge variant="secondary" className="text-xs">{groupFiles.length}</Badge>
               </div>
               <FileGrid files={groupFiles.slice(0, 8)} onPreview={handlePreview} onShowVersions={handleShowVersions} />
@@ -914,6 +901,7 @@ function RecycleBinView() {
             <div className="flex items-center gap-2">
               <ArrowUpDown className="h-4 w-4 text-muted-foreground" />
               <select
+                aria-label="排序方式"
                 className="text-sm border rounded-md px-2 py-1 bg-background"
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as "deletedAt" | "name")}
@@ -1065,6 +1053,7 @@ function SettingsView() {
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const jsonInputRef = useRef<HTMLInputElement>(null);
   const [batchDragOver, setBatchDragOver] = useState(false);
@@ -1084,10 +1073,19 @@ function SettingsView() {
       URL.revokeObjectURL(url);
     } catch (err) {
       console.error("Export failed:", err);
+      setExportError("导出失败，请重试");
     } finally {
       setExporting(false);
     }
   };
+
+  // Auto-dismiss export error after 5s
+  useEffect(() => {
+    if (exportError) {
+      const timer = setTimeout(() => setExportError(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [exportError]);
 
   return (
     <div className="max-w-2xl">
@@ -1204,6 +1202,12 @@ function SettingsView() {
                   <Download className="h-4 w-4 mr-2" />
                   {exporting ? "导出中..." : "导出数据 (JSON)"}
                 </Button>
+                {exportError && (
+                  <div className="flex items-center gap-2 text-sm text-destructive">
+                    <X className="h-4 w-4" />
+                    {exportError}
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -1286,7 +1290,8 @@ function SettingsView() {
                         for (const f of droppedFiles) {
                           try {
                             const adapter = getStorageAdapter(storageMode);
-                            await adapter.uploadFile(f, user!.id);
+                            if (!user) { setImportError("用户未登录"); break; }
+                            await adapter.uploadFile(f, user.id);
                             count++;
                           } catch (err) {
                             console.error(`Failed to import ${f.name}:`, err);

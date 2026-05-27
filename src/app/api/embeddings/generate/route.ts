@@ -1,27 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
-import {
-  generateEmbedding,
-  createFileEmbeddingText,
-  serializeEmbedding,
-  getEmbeddingCacheSize,
-  clearEmbeddingCache,
-} from '@/lib/ai/embeddings';
+import { authenticateRequest } from '@/lib/api-auth';
+import { safeJsonParseArray } from '@/lib/safe-json-parse';
 
 // Rate limiting: max 50 files per call
 const MAX_FILES_PER_CALL = 50;
 
 export async function POST(request: NextRequest) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
+
   try {
     const body = await request.json();
-    const { userId, fileIds } = body;
+    const { fileIds } = body;
 
-    if (!userId) {
-      return NextResponse.json(
-        { error: '缺少用户ID' },
-        { status: 400 }
-      );
-    }
+    const { db } = await import('@/lib/db');
+    const {
+      generateEmbedding,
+      createFileEmbeddingText,
+      serializeEmbedding,
+      getEmbeddingCacheSize,
+      clearEmbeddingCache,
+    } = await import('@/lib/ai/embeddings');
 
     // Find files that need embeddings
     let targetFileIds: string[] = [];
@@ -91,7 +91,7 @@ export async function POST(request: NextRequest) {
     for (const file of files) {
       try {
         // Create combined text for embedding
-        const tags = JSON.parse(file.tags || '[]');
+        const tags = safeJsonParseArray(file.tags) as string[];
         const embeddingText = createFileEmbeddingText({
           fileName: file.fileName,
           fileType: file.fileType,
@@ -152,16 +152,12 @@ export async function POST(request: NextRequest) {
 
 // GET endpoint to check embedding status
 export async function GET(request: NextRequest) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const userId = searchParams.get('userId');
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
 
-    if (!userId) {
-      return NextResponse.json(
-        { error: '缺少用户ID' },
-        { status: 400 }
-      );
-    }
+  try {
+    const { db } = await import('@/lib/db');
 
     const totalFiles = await db.file.count({
       where: { userId, isDeleted: false },

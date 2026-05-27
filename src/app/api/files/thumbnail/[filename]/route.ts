@@ -1,17 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readFile } from "fs/promises";
 import path from "path";
+import { authenticateRequest } from "@/lib/api-auth";
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ filename: string }> }
 ) {
+  // Auth check
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const { filename } = await params;
     const thumbDir = path.join(process.cwd(), "upload", "thumbnails");
     const filePath = path.join(thumbDir, filename);
 
-    const buffer = await readFile(filePath);
+    // Path traversal validation: ensure resolved path starts with thumbDir
+    const resolvedPath = path.resolve(filePath);
+    const resolvedThumbDir = path.resolve(thumbDir);
+    if (!resolvedPath.startsWith(resolvedThumbDir + path.sep) && resolvedPath !== resolvedThumbDir) {
+      return NextResponse.json({ error: "Invalid filename" }, { status: 400 });
+    }
+
+    const buffer = await readFile(resolvedPath);
 
     // Determine content type
     const ext = filename.split(".").pop()?.toLowerCase();

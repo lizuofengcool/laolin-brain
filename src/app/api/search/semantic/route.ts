@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
-import {
-  generateEmbedding,
-  cosineSimilarity,
-  deserializeEmbedding,
-} from '@/lib/ai/embeddings';
+import { authenticateRequest } from '@/lib/api-auth';
+import { safeJsonParseArray } from '@/lib/safe-json-parse';
 
 export async function POST(request: NextRequest) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const body = await request.json();
     const { query, userId } = body;
@@ -17,6 +16,16 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+
+    // Use authenticated userId for security
+    const authenticatedUserId = userId;
+
+    const { db } = await import('@/lib/db');
+    const {
+      generateEmbedding,
+      cosineSimilarity,
+      deserializeEmbedding,
+    } = await import('@/lib/ai/embeddings');
 
     // Generate embedding for the search query
     const queryEmbedding = await generateEmbedding(query.trim());
@@ -32,7 +41,7 @@ export async function POST(request: NextRequest) {
 
     // Fetch all embeddings for this user
     const fileEmbeddings = await db.fileEmbedding.findMany({
-      where: { userId },
+      where: { userId: authenticatedUserId },
     });
 
     if (fileEmbeddings.length === 0) {
@@ -80,7 +89,7 @@ export async function POST(request: NextRequest) {
     const results = files
       .map((f) => ({
         ...f,
-        tags: JSON.parse(f.tags || '[]'),
+        tags: safeJsonParseArray(f.tags),
         similarityScore: scoreMap.get(f.id) || 0,
         matchType: 'semantic' as const,
       }))

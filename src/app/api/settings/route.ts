@@ -1,14 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { authenticateRequest } from "@/lib/api-auth";
+import { resetAdapter } from "@/lib/storage/factory";
 
 export async function PUT(request: NextRequest) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
+
   try {
     const body = await request.json();
-    const { userId, storageMode } = body;
+    let { storageMode } = body;
 
-    if (!userId || !storageMode) {
+    if (!storageMode) {
       return NextResponse.json(
-        { error: "userId and storageMode are required" },
+        { error: "storageMode is required" },
+        { status: 400 }
+      );
+    }
+
+    // Validate storageMode against allowed values
+    const allowedModes = ["cloud", "local"];
+    if (!allowedModes.includes(storageMode)) {
+      return NextResponse.json(
+        { error: "无效的存储模式" },
         { status: 400 }
       );
     }
@@ -17,6 +32,9 @@ export async function PUT(request: NextRequest) {
       where: { id: userId },
       data: { storageMode },
     });
+
+    // Reset the cached storage adapter so the new mode takes effect
+    resetAdapter();
 
     return NextResponse.json({
       id: user.id,

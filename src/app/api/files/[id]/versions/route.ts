@@ -1,16 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { authenticateRequest } from "@/lib/api-auth";
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
+
   try {
     const { id } = await params;
 
-    // Verify file exists
+    // Verify file exists and belongs to user
     const file = await db.file.findUnique({ where: { id } });
-    if (!file) {
+    if (!file || file.userId !== userId) {
       return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
 
@@ -33,6 +38,10 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
+
   try {
     const { id } = await params;
     const body = await request.json();
@@ -46,9 +55,9 @@ export async function POST(
       );
     }
 
-    // Verify file exists
+    // Verify file exists and belongs to user
     const file = await db.file.findUnique({ where: { id } });
-    if (!file) {
+    if (!file || file.userId !== userId) {
       return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
 
@@ -86,6 +95,10 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
+
   try {
     const { id: fileId } = await params;
     const { searchParams } = new URL(request.url);
@@ -96,6 +109,12 @@ export async function DELETE(
         { error: "versionId is required" },
         { status: 400 }
       );
+    }
+
+    // Verify file belongs to user
+    const file = await db.file.findUnique({ where: { id: fileId } });
+    if (!file || file.userId !== userId) {
+      return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
 
     // Verify version belongs to this file

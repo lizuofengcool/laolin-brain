@@ -2,17 +2,27 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { readFile } from "fs/promises";
 import path from "path";
+import { authenticateRequest } from "@/lib/api-auth";
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
+
   try {
     const { id } = await params;
     const file = await db.file.findUnique({ where: { id } });
 
     if (!file || !file.filePath) {
       return NextResponse.json({ error: "File not found" }, { status: 404 });
+    }
+
+    // Ownership check
+    if (file.userId !== userId) {
+      return NextResponse.json({ error: "无权访问此文件" }, { status: 403 });
     }
 
     const buffer = await readFile(file.filePath);

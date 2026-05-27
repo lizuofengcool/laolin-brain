@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import {
-  generateEmbedding,
-  cosineSimilarity,
-  deserializeEmbedding,
-} from "@/lib/ai/embeddings";
+import { authenticateRequest } from "@/lib/api-auth";
+import { safeJsonParseArray } from "@/lib/safe-json-parse";
 
 type SearchMode = "keyword" | "semantic" | "hybrid";
 
@@ -30,7 +27,7 @@ async function keywordSearch(
 
   return files.map((f) => ({
     ...f,
-    tags: JSON.parse(f.tags || "[]"),
+    tags: safeJsonParseArray(f.tags),
     matchType: "keyword",
     similarityScore: 0,
   }));
@@ -41,6 +38,12 @@ async function semanticSearch(
   q: string,
   userId: string
 ): Promise<Array<Record<string, unknown>>> {
+  const {
+    generateEmbedding,
+    cosineSimilarity,
+    deserializeEmbedding,
+  } = await import("@/lib/ai/embeddings");
+
   const queryEmbedding = await generateEmbedding(q.trim());
 
   // Check if query embedding is a zero vector
@@ -82,7 +85,7 @@ async function semanticSearch(
   return files
     .map((f) => ({
       ...f,
-      tags: JSON.parse(f.tags || "[]"),
+      tags: safeJsonParseArray(f.tags),
       similarityScore: scoreMap.get(f.id) || 0,
       matchType: "semantic",
     }))
@@ -190,7 +193,7 @@ async function faceSearch(
 
   return files.map((f) => ({
     ...f,
-    tags: JSON.parse(f.tags || "[]"),
+    tags: safeJsonParseArray(f.tags),
     matchType: "face",
     similarityScore: 0,
     matchedFaceNames: matchedGroupNames,
@@ -198,13 +201,16 @@ async function faceSearch(
 }
 
 export async function GET(request: NextRequest) {
+  const auth = authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
+
   try {
     const { searchParams } = new URL(request.url);
     const q = searchParams.get("q") || "";
-    const userId = searchParams.get("userId");
     const mode = (searchParams.get("mode") || "hybrid") as SearchMode;
 
-    if (!userId || !q) {
+    if (!q) {
       return NextResponse.json([]);
     }
 

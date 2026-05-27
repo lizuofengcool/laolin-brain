@@ -32,7 +32,7 @@ interface SharedFileData {
 
 export default function SharePage() {
   const params = useParams();
-  const token = params.token as string;
+  const token = typeof params.token === "string" ? params.token : undefined;
 
   const [fileData, setFileData] = useState<SharedFileData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -59,6 +59,7 @@ export default function SharePage() {
 
       if (res.status === 403 && data.passwordRequired) {
         setPasswordRequired(true);
+        setPasswordError(true);
         return;
       }
 
@@ -81,20 +82,24 @@ export default function SharePage() {
     }
   }, [token]);
 
-  const handlePasswordSubmit = (e: React.FormEvent) => {
+  const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!passwordInput.trim()) {
       setPasswordError(true);
       return;
     }
-    fetchSharedFile(passwordInput);
     setPasswordError(false);
+    const pwd = passwordInput;
+    setPasswordInput("");
+    await fetchSharedFile(pwd);
+    // After fetch, if still passwordRequired (fetch failed), set error
+    // fetchSharedFile will handle setting passwordRequired/fileData internally
   };
 
   const handleDownload = () => {
     if (!fileData) return;
     // Get the token from localStorage or use direct download URL
-    const downloadUrl = `/api/files/${fileData.id}/download`;
+    const downloadUrl = `/api/files/${fileData.id}/download?token=${token}`;
     window.open(downloadUrl, "_blank");
   };
 
