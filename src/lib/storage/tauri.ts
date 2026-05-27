@@ -143,6 +143,18 @@ function mapFile(f: TauriFile): FileData {
 }
 
 /**
+ * 将 Tauri 文件夹对象映射为前端格式
+ */
+function mapFolder(f: TauriFolder): { id: string; name: string; parentId: string | null; createdAt: string } {
+  return {
+    id: f.id,
+    name: f.name,
+    parentId: f.parentId,
+    createdAt: f.createdAt,
+  };
+}
+
+/**
  * 将文件转换为 base64 字符串
  */
 function fileToBase64(file: File): Promise<string> {
@@ -413,12 +425,7 @@ export class TauriStorageAdapter implements StorageAdapter {
           folderName,
           userId,
         });
-        return {
-          id: folder.id,
-          name: folder.name,
-          parentId: folder.parentId,
-          createdAt: folder.createdAt,
-        };
+        return mapFolder(folder);
       } catch (error) {
         console.error(
           '[Tauri] create_folder 调用失败，降级到 IndexedDB:',
@@ -429,5 +436,189 @@ export class TauriStorageAdapter implements StorageAdapter {
 
     const { IndexedDBAdapter } = await import('./indexeddb');
     return (new IndexedDBAdapter() as StorageAdapter).createFolder?.(folderName, userId) ?? null;
+  }
+
+  /**
+   * 获取用户的所有文件夹
+   * 通过 Rust 后端 get_folders 命令读取 folders.json
+   */
+  async getFolders(
+    userId: string
+  ): Promise<{ id: string; name: string; parentId: string | null; createdAt: string }[]> {
+    if (isTauriEnvironment()) {
+      try {
+        const folders = await tauriInvoke<TauriFolder[]>('get_folders', { userId });
+        return folders.map(mapFolder);
+      } catch (error) {
+        console.error('[Tauri] get_folders 调用失败，降级到 IndexedDB:', error);
+      }
+    }
+
+    // 降级：使用 IndexedDB 直接读取
+    const { openDB } = await import('idb');
+    const db = await openDB('knowledge-base-db', 1);
+    const allFolders = await db.getAll('folders');
+    return allFolders
+      .filter((f: { userId?: string }) => f.userId === userId)
+      .map((f: { id: string; name: string; parentId?: string; createdAt: Date }) => ({
+        id: f.id,
+        name: f.name,
+        parentId: f.parentId || null,
+        createdAt: typeof f.createdAt === 'string' ? f.createdAt : new Date(f.createdAt).toISOString(),
+      }));
+  }
+
+  /**
+   * 删除文件夹
+   * 通过 Rust 后端 delete_folder 命令删除，同时将该文件夹下的文件移出
+   */
+  async deleteFolder(folderId: string, userId: string): Promise<void> {
+    if (isTauriEnvironment()) {
+      try {
+        await tauriInvoke('delete_folder', { folderId, userId });
+        return;
+      } catch (error) {
+        console.error('[Tauri] delete_folder 调用失败，降级到 IndexedDB:', error);
+      }
+    }
+
+    // 降级：使用 IndexedDB
+    const { openDB } = await import('idb');
+    const db = await openDB('knowledge-base-db', 1);
+    await db.delete('folders', folderId);
+  }
+
+  /**
+   * 重命名文件夹
+   * 通过 Rust 后端 rename_folder 命令更新文件夹名称
+   */
+  async renameFolder(folderId: string, newName: string, userId: string): Promise<void> {
+    if (isTauriEnvironment()) {
+      try {
+        await tauriInvoke('rename_folder', { folderId, newName, userId });
+        return;
+      } catch (error) {
+        console.error('[Tauri] rename_folder 调用失败，降级到 IndexedDB:', error);
+      }
+    }
+
+    // 降级：使用 IndexedDB
+    const { openDB } = await import('idb');
+    const db = await openDB('knowledge-base-db', 1);
+    const folder = await db.get('folders', folderId);
+    if (folder) {
+      folder.name = newName;
+      await db.put('folders', folder);
+    }
+  }
+
+  // ─── 回收站与文件恢复 ─────────────────────────────────────
+
+  /**
+   * 永久删除文件（从数据库彻底移除 + 删除物理文件）
+   */
+  async permanentDeleteFile(fileId: string, userId: string): Promise<void> {
+    if (isTauriEnvironment()) {
+      try {
+        await tauriInvoke('permanent_delete_file', { fileId, userId });
+        return;
+      } catch (error) {
+        console.error('[Tauri] permanent_delete_file 调用失败，降级到 IndexedDB:', error);
+      }
+    }
+
+    // 降级：使用 IndexedDB 删除
+    const { IndexedDBAdapter } = await import('./indexeddb');
+    return new IndexedDBAdapter().deleteFile(fileId, userId);
+  }
+
+  /**
+   * 清空回收站（删除所有 is_deleted=true 的文件）
+   * 返回被删除的文件数量
+   */
+  async emptyRecycleBin(userId: string): Promise<number> {
+    if (isTauriEnvironment()) {
+      try {
+        const count = await tauriInvoke<number>('empty_recycle_bin', { userId });
+        return count;
+      } catch (error) {
+        console.error('[Tauri] empty_recycle_bin 调用失败，降级到 IndexedDB:', error);
+      }
+    }
+
+    // 降级：逐个删除已删除的文件
+    const { IndexedDBAdapter } = await import('./indexeddb');
+    const adapter = new IndexedDBAdapter();
+    const files = await adapter.getFiles(userId);
+    const deletedFiles = files.filter((f) => f.isDeleted);
+    await Promise.all(deletedFiles.map((f) => adapter.deleteFile(f.id, userId)));
+    return deletedFiles.length;
+  }
+
+  /**
+   * 从回收站恢复文件（设置 is_deleted=false）
+   */
+  async restoreFile(fileId: string, userId: string): Promise<void> {
+    if (isTauriEnvironment()) {
+      try {
+        // 通过 update_file 命令恢复，传递 isDeleted: false
+        await tauriInvoke('update_file', {
+          fileId,
+          userId,
+          data: { isDeleted: false },
+        });
+        return;
+      } catch (error) {
+        console.error('[Tauri] restore_file 调用失败，降级到 IndexedDB:', error);
+      }
+    }
+
+    // 降级：使用 IndexedDB
+    const { IndexedDBAdapter } = await import('./indexeddb');
+    return new IndexedDBAdapter().updateFile(
+      fileId,
+      { isDeleted: false, deletedAt: undefined } as Partial<FileData>,
+      userId
+    );
+  }
+
+  // ─── 文件预览 ─────────────────────────────────────────────
+
+  /**
+   * 获取文件数据（base64 编码，用于文件预览）
+   * 通过 Rust 后端读取物理文件并返回 base64 编码数据
+   */
+  async getFileData(fileId: string, userId: string): Promise<string> {
+    if (isTauriEnvironment()) {
+      try {
+        const base64 = await tauriInvoke<string>('get_file_data', { fileId, userId });
+        return base64;
+      } catch (error) {
+        console.error('[Tauri] get_file_data 调用失败:', error);
+        throw error;
+      }
+    }
+
+    // 非桌面端不支持直接读取文件数据
+    throw new Error('get_file_data 仅在 Tauri 桌面端可用');
+  }
+
+  /**
+   * 使用系统默认程序打开文件
+   * 通过 Rust 后端 open_file_externally 命令调用系统命令打开
+   */
+  async openFileExternally(filePath: string): Promise<void> {
+    if (isTauriEnvironment()) {
+      try {
+        await tauriInvoke('open_file_externally', { filePath });
+        return;
+      } catch (error) {
+        console.error('[Tauri] open_file_externally 调用失败:', error);
+        throw error;
+      }
+    }
+
+    // 非桌面端不支持使用系统程序打开文件
+    throw new Error('openFileExternally 仅在 Tauri 桌面端可用');
   }
 }

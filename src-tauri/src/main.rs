@@ -5,9 +5,23 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod lib;
+mod menu;
+mod tray;
 
 fn main() {
     tauri::Builder::default()
+        .setup(|app| {
+            // 设置原生菜单栏
+            let native_menu = menu::create_menu(app.handle())
+                .expect("创建菜单栏失败");
+            app.set_menu(native_menu);
+
+            // 创建系统托盘
+            tray::create_tray(app.handle())
+                .expect("创建系统托盘失败");
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             lib::get_app_data_dir,
             lib::get_files,
@@ -21,6 +35,14 @@ fn main() {
             lib::restore_version,
             lib::delete_version,
             lib::create_folder,
+            // 新增命令
+            lib::get_folders,
+            lib::delete_folder,
+            lib::rename_folder,
+            lib::permanent_delete_file,
+            lib::empty_recycle_bin,
+            lib::get_file_data,
+            lib::open_file_externally,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用运行时发生错误");

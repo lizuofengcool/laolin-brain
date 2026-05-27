@@ -25,6 +25,16 @@ export interface StorageAdapter {
   restoreVersion?(versionId: string, fileId: string, userId: string): Promise<void>;
   deleteVersion?(versionId: string, fileId: string, userId: string): Promise<void>;
   createFolder?(folderName: string, userId: string): Promise<{ id: string; name: string; parentId: string | null; createdAt: string } | null>;
+  // 新增方法：文件夹管理扩展
+  getFolders?(userId: string): Promise<{ id: string; name: string; parentId: string | null; createdAt: string }[]>;
+  deleteFolder?(folderId: string, userId: string): Promise<void>;
+  renameFolder?(folderId: string, newName: string, userId: string): Promise<void>;
+  // 新增方法：回收站与文件恢复
+  permanentDeleteFile?(fileId: string, userId: string): Promise<void>;
+  emptyRecycleBin?(userId: string): Promise<number>;
+  restoreFile?(fileId: string, userId: string): Promise<void>;
+  // 新增方法：文件预览
+  getFileData?(fileId: string, userId: string): Promise<string>;
 }
 
 export interface FileData {

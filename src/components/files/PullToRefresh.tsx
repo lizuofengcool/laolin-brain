@@ -4,6 +4,8 @@ import { useRef, useEffect, useCallback, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { isTouchDevice } from "@/hooks/use-gestures";
+import { usePWA } from "@/hooks/use-service-worker";
+import { toast } from "@/hooks/use-toast";
 
 interface PullToRefreshProps {
   children: React.ReactNode;
@@ -20,6 +22,8 @@ export function PullToRefresh({ children, onRefresh, className, threshold = 80 }
   const startYRef = useRef(0);
   const isAtTopRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const { isOnline } = usePWA();
 
   const handleTouchStart = useCallback((e: TouchEvent) => {
     if (isRefreshing) return;
@@ -51,6 +55,19 @@ export function PullToRefresh({ children, onRefresh, className, threshold = 80 }
 
   const handleTouchEnd = useCallback(async () => {
     if (isPulling && pullDistance >= threshold && !isRefreshing) {
+      // Check offline status before triggering refresh
+      if (!isOnline) {
+        toast({
+          title: "离线模式",
+          description: "无法刷新，请检查网络连接",
+          variant: "destructive",
+        });
+        setIsPulling(false);
+        setPullDistance(0);
+        isAtTopRef.current = false;
+        return;
+      }
+
       setIsRefreshing(true);
       setIsPulling(false);
       setPullDistance(0);
@@ -67,7 +84,7 @@ export function PullToRefresh({ children, onRefresh, className, threshold = 80 }
       setPullDistance(0);
     }
     isAtTopRef.current = false;
-  }, [isPulling, pullDistance, threshold, isRefreshing, onRefresh]);
+  }, [isPulling, pullDistance, threshold, isRefreshing, onRefresh, isOnline]);
 
   useEffect(() => {
     if (!isTouchDevice()) return;

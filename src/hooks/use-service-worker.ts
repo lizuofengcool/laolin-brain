@@ -68,6 +68,7 @@ if (typeof window !== 'undefined') {
 
 export function usePWA() {
   const [registration, setRegistration] = useState<ServiceWorkerRegistration | null>(null);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
 
   // Use useSyncExternalStore for reactive online/offline status
   const isOnline = useSyncExternalStore(subscribeOnline, getOnlineSnapshot, getServerOnlineSnapshot);
@@ -96,6 +97,17 @@ export function usePWA() {
           setInterval(() => {
             reg.update();
           }, 60 * 60 * 1000); // Every hour
+
+          // Listen for new service worker update
+          reg.addEventListener('updatefound', () => {
+            const newWorker = reg.installing;
+            if (!newWorker) return;
+            newWorker.addEventListener('statechange', () => {
+              if (newWorker.state === 'activated') {
+                setUpdateAvailable(true);
+              }
+            });
+          });
         })
         .catch((err) => {
           console.warn('[PWA] Service worker registration failed:', err);
@@ -136,6 +148,29 @@ export function usePWA() {
     }
   }, [registration]);
 
+  // Register background sync for failed uploads
+  const registerBackgroundSync = useCallback(async () => {
+    if ('serviceWorker' in navigator && 'SyncManager' in window) {
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        // SyncManager is not in default TS types, cast via any
+        await (reg as unknown as { sync: { register(tag: string): Promise<void> } }).sync.register('upload-sync');
+      } catch {
+        // Sync not supported, background sync will be handled by SW on next online
+      }
+    }
+  }, []);
+
+  // Apply a pending service worker update
+  const applyUpdate = useCallback(() => {
+    if (registration?.waiting) {
+      registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+      registration.waiting.addEventListener('activated', () => {
+        window.location.reload();
+      });
+    }
+  }, [registration]);
+
   return {
     isInstalled,
     canInstall,
@@ -143,5 +178,8 @@ export function usePWA() {
     isOnline,
     registration,
     clearCaches,
+    registerBackgroundSync,
+    updateAvailable,
+    applyUpdate,
   };
 }

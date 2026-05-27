@@ -439,3 +439,149 @@ Stage Summary:
 - 新增文件：9个（5个Rust/Tauri配置, 1个TS适配器, 1个类型声明, 1个文档）
 - 修改文件：4个（factory.ts, index.ts, package.json, tsconfig.json）
 - 构建通过，0错误
+
+---
+Task ID: 5a
+Agent: Main Agent
+Task: 完善PWA移动端体验（Enhance PWA Mobile Experience）
+
+Work Log:
+- 创建 src/components/files/CameraCapture.tsx — 移动端相机拍照组件
+  - 后置摄像头按钮（capture="environment"）+ 前置自拍按钮（capture="user"）
+  - 桌面端隐藏（md:hidden），主色调按钮 + Camera图标
+  - 通过 hidden file input 触发原生相机，onCapture 回调传递 File 对象
+- 集成 CameraCapture 到 src/components/files/UploadZone.tsx
+  - 上传区域外层添加 relative 容器
+  - 底部右侧 absolute 定位相机按钮（仅移动端可见）
+  - handleCameraCapture 复用现有 onDrop 上传流程
+- 添加 iOS 安全区域 CSS（src/app/globals.css）
+  - :root 新增 --sat, --sar, --sab, --sal 四个 safe-area CSS 变量
+- 添加 iOS 安全区域内边距
+  - src/components/layout/MobileNav.tsx: 底部导航栏 pb-[env(safe-area-inset-bottom)]
+  - src/components/layout/Header.tsx: 顶部导航栏 pt-[env(safe-area-inset-top)]
+- 增强 src/hooks/use-service-worker.ts
+  - 新增 registerBackgroundSync() — 注册 Background Sync 上传同步
+  - 新增 updateAvailable 状态 — 检测 SW updatefound 事件
+  - 新增 applyUpdate() — 发送 SKIP_WAITING 消息并刷新页面
+  - 返回值扩展：{ ..., registerBackgroundSync, updateAvailable, applyUpdate }
+- 增强 public/manifest.json
+  - 新增 lang: "zh-CN", dir: "ltr", scope: "/"
+  - 新增 display_override: ["window-controls-overlay", "standalone", "minimal-ui"]
+  - 新增 share_target — 支持从其他应用分享文件（PDF/DOCX/图片）
+  - shortcuts 新增 icons 字段和 short_name
+- 增强 public/sw.js（v2）
+  - 缓存版本升级 v1 → v2
+  - 新增 OFFLINE_HTML 完整离线页面（深色主题 + 重新连接按钮）
+  - Install 事件：预缓存离线页面 + 日志输出缓存配额使用情况
+  - Shell 请求失败：返回完整 HTML 离线页面（替代纯文本）
+  - 静态资源匹配增加 /_next/image/ 路径
+  - 完善 SKIP_WAITING 消息处理（使用 event.data?.type 语法）
+- 修改 src/components/files/PullToRefresh.tsx — 离线感知
+  - 导入 usePWA hook 获取 isOnline 状态
+  - handleTouchEnd 中检查离线状态，离线时显示 toast 提示"离线模式，无法刷新"
+
+Stage Summary:
+- 新增文件：1个（CameraCapture.tsx）
+- 修改文件：7个（UploadZone.tsx, globals.css, MobileNav.tsx, Header.tsx, use-service-worker.ts, manifest.json, sw.js, PullToRefresh.tsx）
+- 构建状态：✅ 通过（0 TypeScript 错误，所有 API 路由正常编译）
+
+---
+Task ID: 5b
+Agent: Main Agent
+Task: 完善Tauri桌面端体验（Enhance Tauri Desktop Experience）
+
+Work Log:
+- 更新 src-tauri/tauri.conf.json — Tauri v2 配置增强
+  - 新增 capabilities 权限块（21个权限：core, fs, dialog, notification, shell, clipboard-manager）
+  - 主窗口新增 drag_drop_enabled: true（支持文件拖拽上传）
+- 更新 src-tauri/Cargo.toml — 添加 Tauri v2 官方插件
+  - tauri features 添加 tray-icon
+  - 新增依赖：tauri-plugin-fs, tauri-plugin-dialog, tauri-plugin-notification, tauri-plugin-shell, tauri-plugin-clipboard-manager, open = "5"
+- 更新 src-tauri/src/lib.rs — 新增 7 个 Rust 后端命令（共 ~750 行）
+  - get_folders: 获取用户所有文件夹（从 folders.json 读取）
+  - delete_folder: 删除文件夹 + 移出该文件夹下的文件
+  - rename_folder: 更新文件夹名称
+  - permanent_delete_file: 永久删除文件（从 DB 移除 + 删除物理文件 + 清除版本记录）
+  - empty_recycle_bin: 清空回收站（删除所有 is_deleted=true 的文件，返回删除数量）
+  - get_file_data: 读取物理文件返回 base64 数据（用于文件预览）
+  - open_file_externally: 使用系统默认程序打开文件（跨平台支持 macOS/Linux/Windows）
+  - 更新 update_file 命令：新增 is_deleted 字段支持（用于恢复文件）
+  - 新增 Base64EncodeWriter 结构体：纯 Rust 实现 Base64 编码（无外部依赖）
+- 创建 src-tauri/src/menu.rs — 原生菜单栏配置（~100 行）
+  - 文件菜单：新建文件、打开文件、导入/导出数据、关闭窗口
+  - 编辑菜单：撤销、重做、剪切、复制、粘贴、全选（使用 PredefinedMenuItem）
+  - 视图菜单：切换侧边栏(CmdOrCtrl+B)、全屏(F11)、仪表盘/文件管理/搜索快捷键(CmdOrCtrl+1/2/3)
+  - 帮助菜单：检查更新、关于知识库
+- 创建 src-tauri/src/tray.rs — 系统托盘配置（~70 行）
+  - 托盘右键菜单：显示主窗口、退出
+  - 左键单击托盘图标显示并聚焦主窗口
+  - 使用 TrayIconBuilder + TrayEvent API
+- 更新 src-tauri/src/main.rs — 注册所有新命令 + 集成菜单和托盘
+  - 新增 mod menu; mod tray;
+  - setup 中创建原生菜单栏和系统托盘
+  - invoke_handler 注册全部 20 个 Rust 命令（原 12 个 + 新增 7 个）
+- 更新 src/lib/storage/base.ts — 扩展 IStorageAdapter 接口
+  - 新增 7 个可选方法：getFolders, deleteFolder, renameFolder, permanentDeleteFile, emptyRecycleBin, restoreFile, getFileData
+- 更新 src/lib/storage/tauri.ts — TauriStorageAdapter 新增 8 个方法（~480 行）
+  - getFolders: 调用 get_folders 命令 + IndexedDB 降级
+  - deleteFolder: 调用 delete_folder 命令 + IndexedDB 降级
+  - renameFolder: 调用 rename_folder 命令 + IndexedDB 降级
+  - permanentDeleteFile: 调用 permanent_delete_file 命令 + IndexedDB 降级
+  - emptyRecycleBin: 调用 empty_recycle_bin 命令 + 逐个删除降级
+  - restoreFile: 调用 update_file(isDeleted: false) + IndexedDB 降级
+  - getFileData: 调用 get_file_data 命令（仅桌面端可用）
+  - openFileExternally: 调用 open_file_externally 命令（仅桌面端可用）
+  - 新增 mapFolder() 类型映射函数
+- 更新 src/lib/storage/factory.ts — 修复同步版本 Tauri 检测
+  - 同步 getStorageAdapter() 在 Tauri 环境中添加 console.warn 提示
+  - 推荐使用 getStorageAdapterAsync() 获取 Tauri 支持
+  - 保留 IndexedDB 即时降级方案
+
+Stage Summary:
+- 新增文件：2个（src-tauri/src/menu.rs, src-tauri/src/tray.rs）
+- 修改文件：6个（tauri.conf.json, Cargo.toml, lib.rs, main.rs, tauri.ts, base.ts, factory.ts）
+- Rust 后端命令总数：20 个（原 12 个 + 新增 8 个）
+- 构建状态：✅ 通过（0 TypeScript 错误，所有 API 路由正常编译）
+---
+Task ID: 5a
+Agent: Main Agent (subagent: full-stack-developer)
+Task: PWA移动端体验完善
+
+Work Log:
+- 创建CameraCapture组件（前后摄像头切换，capture属性）
+- 集成相机按钮到UploadZone（移动端底部浮动）
+- 添加iOS安全区域CSS变量（globals.css + MobileNav + Header）
+- 添加Background Sync注册（use-service-worker.ts）
+- 增强manifest.json（lang/dir/scope/display_override/share_target/shortcuts icons）
+- 升级Service Worker v2（离线HTML页面/缓存配额日志/_next/image缓存/SKIP_WAITING消息）
+- PullToRefresh离线感知（离线时显示toast而非刷新）
+- SW更新通知（updateAvailable状态 + applyUpdate方法）
+
+Stage Summary:
+- 新增文件：1个（CameraCapture.tsx）
+- 修改文件：8个（UploadZone, globals.css, MobileNav, Header, use-service-worker, manifest, sw.js, PullToRefresh）
+- 构建通过，0错误
+
+---
+Task ID: 5b
+Agent: Main Agent (subagent: full-stack-developer)
+Task: Tauri桌面端体验完善
+
+Work Log:
+- 创建原生菜单栏（menu.rs — 文件/编辑/视图/帮助，含快捷键CmdOrCtrl+B/1/2/3, F11）
+- 创建系统托盘（tray.rs — 右键菜单 + 左键聚焦窗口）
+- 添加capabilities权限块（21项Tauri v2权限）
+- 新增7个Rust命令（get_folders, delete_folder, rename_folder, permanent_delete_file, empty_recycle_bin, get_file_data, open_file_externally）
+- update_file命令新增is_deleted字段支持
+- main.rs注册全部20个命令 + setup集成菜单/托盘
+- IStorageAdapter接口新增7个可选方法
+- TauriStorageAdapter新增8个方法
+- factory.ts同步版添加Tauri环境检测
+- Cargo.toml添加6个Tauri v2插件 + open crate
+- tauri.conf.json启用drag_drop_enabled
+
+Stage Summary:
+- 新增文件：2个（menu.rs, tray.rs）
+- 修改文件：7个（tauri.conf.json, Cargo.toml, lib.rs, main.rs, base.ts, tauri.ts, factory.ts）
+- 构建通过，0错误
+- Rust命令总数：20个

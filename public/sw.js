@@ -1,17 +1,24 @@
 // ─── Service Worker for 智能文档知识库 PWA ───────────────────────────
+// Version: v2 — Enhanced with offline fallback page, cache quota management,
+//           SKIP_WAITING message handler, improved static caching
+//
 // Caching strategies:
-//   - Static assets (CSS, JS, fonts): Cache-first
+//   - Static assets (CSS, JS, fonts, _next/static): Cache-first
 //   - API calls (/api/*): Network-first with 5min TTL fallback
 //   - Images (png, jpg, webp, svg, gif): Stale-while-revalidate
 //   - App shell: Pre-cached on install
 //   - Upload sync queue: Background sync for failed uploads
+//   - Navigation offline fallback: Full HTML offline page
 
-const CACHE_NAME = 'kb-static-v1';
-const SHELL_CACHE = 'kb-shell-v1';
-const API_CACHE = 'kb-api-v1';
-const IMAGE_CACHE = 'kb-images-v1';
+const CACHE_NAME = 'kb-static-v2';
+const SHELL_CACHE = 'kb-shell-v2';
+const API_CACHE = 'kb-api-v2';
+const IMAGE_CACHE = 'kb-images-v2';
 
 const ALL_CACHES = [CACHE_NAME, SHELL_CACHE, API_CACHE, IMAGE_CACHE];
+
+// Offline fallback HTML page
+const OFFLINE_HTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>离线模式</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#09090b;color:#fafafa;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}.container{text-align:center}.icon{font-size:48px;margin-bottom:16px}.title{font-size:20px;font-weight:600;margin-bottom:8px}.desc{font-size:14px;color:#a1a1aa;max-width:300px;margin:0 auto}.btn{margin-top:24px;padding:10px 24px;background:#2563eb;color:#fff;border:none;border-radius:8px;font-size:14px;cursor:pointer}</style></head><body><div class="container"><div class="icon">📡</div><div class="title">离线模式</div><p class="desc">网络连接不可用，已缓存的文件仍可访问。请检查网络后重试。</p><button class="btn" onclick="location.reload()">重新连接</button></div></body></html>`;
 
 // Shell resources to pre-cache on install
 const SHELL_URLS = [
@@ -34,6 +41,26 @@ self.addEventListener('install', (event) => {
         return Promise.resolve();
       });
     })
+    .then(() => {
+      // Cache the offline page in shell cache
+      return caches.open(SHELL_CACHE).then((cache) => {
+        return cache.put('/offline.html', new Response(OFFLINE_HTML, {
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        }));
+      });
+    })
+    .then(() => {
+      // Log cache quota usage for debugging
+      if (navigator.storage && navigator.storage.estimate) {
+        return navigator.storage.estimate().then((estimate) => {
+          console.log('[SW] Cache quota usage:', {
+            usage: (estimate.usage / 1024 / 1024).toFixed(2) + ' MB',
+            quota: (estimate.quota / 1024 / 1024).toFixed(2) + ' MB',
+            usagePercent: ((estimate.usage / estimate.quota) * 100).toFixed(1) + '%',
+          });
+        });
+      }
+    })
   );
   // Activate immediately without waiting for old SW to finish
   self.skipWaiting();
@@ -46,7 +73,10 @@ self.addEventListener('activate', (event) => {
       return Promise.all(
         keys
           .filter((key) => !ALL_CACHES.includes(key))
-          .map((key) => caches.delete(key))
+          .map((key) => {
+            console.log('[SW] Cleaning old cache:', key);
+            return caches.delete(key);
+          })
       );
     })
   );
@@ -68,9 +98,10 @@ function getRequestType(url, request) {
   // Image requests
   if (/\.(png|jpg|jpeg|webp|svg|gif|ico|avif)$/i.test(url.pathname)) return 'image';
 
-  // Static assets (JS, CSS, fonts)
+  // Static assets (JS, CSS, fonts, _next/static/*)
   if (/\.(js|css|woff|woff2|ttf|eot|otf)$/i.test(url.pathname) ||
-      url.pathname.includes('/_next/static/')) {
+      url.pathname.includes('/_next/static/') ||
+      url.pathname.includes('/_next/image/')) {
     return 'static';
   }
 
@@ -117,7 +148,7 @@ self.addEventListener('fetch', (event) => {
       return;
 
     case 'shell':
-      // Cache-first for navigation, fallback to network then cache
+      // Cache-first for navigation, fallback to network then offline page
       event.respondWith(handleShellRequest(request));
       return;
 
@@ -194,7 +225,7 @@ async function handleImageRequest(request) {
   }
 }
 
-// ─── Shell: Cache-first for navigation ────────────────────────────
+// ─── Shell: Cache-first for navigation with offline fallback ──────
 async function handleShellRequest(request) {
   // Try shell cache first
   const cached = await caches.match(request, { cacheName: SHELL_CACHE });
@@ -213,10 +244,8 @@ async function handleShellRequest(request) {
     }
     return response;
   } catch {
-    // Return cached offline page if available
-    const offlinePage = await caches.match('/');
-    if (offlinePage) return offlinePage;
-    return new Response('离线模式 - 请检查网络连接', {
+    // Serve the offline HTML page for failed navigation requests
+    return new Response(OFFLINE_HTML, {
       status: 503,
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
     });
@@ -309,11 +338,11 @@ function removeFromUploadQueue(id) {
 
 // ─── Message Handler ──────────────────────────────────────────────
 self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'SKIP_WAITING') {
+  if (event.data?.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
 
-  if (event.data && event.data.type === 'CLEAR_CACHES') {
+  if (event.data?.type === 'CLEAR_CACHES') {
     event.waitUntil(
       Promise.all(ALL_CACHES.map((name) => caches.delete(name)))
         .then(() => {

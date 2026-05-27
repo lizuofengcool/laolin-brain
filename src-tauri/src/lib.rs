@@ -82,7 +82,7 @@ fn get_app_data_dir(app: tauri::AppHandle) -> Result<String, String> {
     Ok(path.to_string_lossy().to_string())
 }
 
-/// 获取用户的所有文件
+/// 获取用户的所有文件（过滤掉已删除的）
 #[command]
 fn get_files(user_id: String, app: tauri::AppHandle) -> Result<Vec<KBFile>, String> {
     let files = read_all_files(&app, &user_id)?;
@@ -201,7 +201,7 @@ fn delete_file(file_id: String, user_id: String, app: tauri::AppHandle) -> Resul
     Ok(())
 }
 
-/// 更新文件元数据
+/// 更新文件元数据（支持 is_deleted 字段用于恢复文件）
 #[command]
 fn update_file(
     file_id: String,
@@ -212,25 +212,30 @@ fn update_file(
     let mut files = read_all_files(&app, &user_id)?;
 
     if let Some(file) = files.iter_mut().find(|f| f.id == file_id) {
-        // 支持更新以下字段
+        // 支持更新文件名
         if let Some(name) = data.get("fileName").and_then(|v| v.as_str()) {
             file.file_name = name.to_string();
         }
+        // 支持更新标签
         if let Some(tags) = data.get("tags").and_then(|v| v.as_array()) {
             file.tags = tags
                 .iter()
                 .filter_map(|t| t.as_str().map(String::from))
                 .collect();
         }
+        // 支持更新收藏状态
         if let Some(fav) = data.get("isFavorite").and_then(|v| v.as_bool()) {
             file.is_favorite = fav;
         }
+        // 支持更新文件夹
         if let Some(folder) = data.get("folderId") {
             file.folder_id = folder.as_str().map(String::from);
         }
+        // 支持更新摘要
         if let Some(summary) = data.get("summary").and_then(|v| v.as_str()) {
             file.summary = Some(summary.to_string());
         }
+        // 支持更新关键点
         if let Some(key_points) = data.get("keyPoints").and_then(|v| v.as_array()) {
             file.key_points = Some(
                 key_points
@@ -238,6 +243,17 @@ fn update_file(
                     .filter_map(|t| t.as_str().map(String::from))
                     .collect(),
             );
+        }
+        // 支持更新删除状态（用于恢复文件）
+        if let Some(deleted) = data.get("isDeleted").and_then(|v| v.as_bool()) {
+            file.is_deleted = Some(deleted);
+            if deleted {
+                // 软删除时记录删除时间
+                file.deleted_at = Some(now_iso8601());
+            } else {
+                // 恢复文件时清除删除时间
+                file.deleted_at = None;
+            }
         }
     } else {
         return Err(format!("文件 {} 不存在", file_id));
@@ -365,6 +381,204 @@ fn create_folder(
     folders.push(folder.clone());
     write_all_folders(&app, &user_id, &folders)?;
     Ok(folder)
+}
+
+// ─── 新增命令 ──────────────────────────────────────────────────
+
+/// 获取用户的所有文件夹
+#[command]
+fn get_folders(user_id: String, app: tauri::AppHandle) -> Result<Vec<KBFolder>, String> {
+    let folders = read_all_folders(&app, &user_id)?;
+    Ok(folders)
+}
+
+/// 删除文件夹（从 JSON 数据库中移除）
+#[command]
+fn delete_folder(folder_id: String, user_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    let mut folders = read_all_folders(&app, &user_id)?;
+
+    let before_len = folders.len();
+    folders.retain(|f| f.id != folder_id);
+
+    if folders.len() == before_len {
+        return Err(format!("文件夹 {} 不存在", folder_id));
+    }
+
+    // 同时将该文件夹下的文件移出文件夹（folder_id 设为 null）
+    let mut files = read_all_files(&app, &user_id)?;
+    for file in files.iter_mut() {
+        if file.folder_id.as_deref() == Some(&folder_id) {
+            file.folder_id = None;
+        }
+    }
+    write_all_files(&app, &user_id, &files)?;
+    write_all_folders(&app, &user_id, &folders)?;
+    Ok(())
+}
+
+/// 重命名文件夹
+#[command]
+fn rename_folder(
+    folder_id: String,
+    new_name: String,
+    user_id: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let mut folders = read_all_folders(&app, &user_id)?;
+
+    if let Some(folder) = folders.iter_mut().find(|f| f.id == folder_id) {
+        folder.name = new_name;
+    } else {
+        return Err(format!("文件夹 {} 不存在", folder_id));
+    }
+
+    write_all_folders(&app, &user_id, &folders)?;
+    Ok(())
+}
+
+/// 永久删除文件（从数据库中彻底移除 + 删除物理文件）
+#[command]
+fn permanent_delete_file(
+    file_id: String,
+    user_id: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let mut files = read_all_files(&app, &user_id)?;
+
+    // 查找文件并获取物理路径
+    let file = files
+        .iter()
+        .find(|f| f.id == file_id)
+        .ok_or_else(|| format!("文件 {} 不存在", file_id))?;
+
+    // 删除物理文件
+    if let Some(ref path) = file.file_path {
+        let file_path = PathBuf::from(path);
+        if file_path.exists() {
+            fs::remove_file(&file_path)
+                .map_err(|e| format!("删除物理文件失败: {}", e))?;
+        }
+    }
+
+    // 从数据库中移除文件记录
+    files.retain(|f| f.id != file_id);
+
+    // 同时删除该文件的所有版本记录
+    let mut versions = read_all_versions(&app, &user_id)?;
+    versions.retain(|v| v.file_id != file_id);
+    write_all_versions(&app, &user_id, &versions)?;
+
+    write_all_files(&app, &user_id, &files)?;
+    Ok(())
+}
+
+/// 清空回收站（删除所有 is_deleted=true 的文件，返回删除数量）
+#[command]
+fn empty_recycle_bin(user_id: String, app: tauri::AppHandle) -> Result<usize, String> {
+    let mut files = read_all_files(&app, &user_id)?;
+
+    // 找出所有已删除的文件
+    let deleted_ids: Vec<String> = files
+        .iter()
+        .filter(|f| f.is_deleted == Some(true))
+        .map(|f| f.id.clone())
+        .collect();
+
+    if deleted_ids.is_empty() {
+        return Ok(0);
+    }
+
+    // 删除已删除文件的物理文件
+    for file in &files {
+        if file.is_deleted == Some(true) {
+            if let Some(ref path) = file.file_path {
+                let file_path = PathBuf::from(path);
+                if file_path.exists() {
+                    let _ = fs::remove_file(&file_path);
+                }
+            }
+        }
+    }
+
+    // 从数据库中移除已删除的文件
+    files.retain(|f| f.is_deleted != Some(true));
+
+    // 删除已删除文件的所有版本记录
+    let mut versions = read_all_versions(&app, &user_id)?;
+    versions.retain(|v| !deleted_ids.contains(&v.file_id));
+    write_all_versions(&app, &user_id, &versions)?;
+
+    let count = deleted_ids.len();
+    write_all_files(&app, &user_id, &files)?;
+    Ok(count)
+}
+
+/// 获取文件数据（读取物理文件并返回 base64 编码，用于文件预览）
+#[command]
+fn get_file_data(
+    file_id: String,
+    user_id: String,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let files = read_all_files(&app, &user_id)?;
+
+    let file = files
+        .iter()
+        .find(|f| f.id == file_id)
+        .ok_or_else(|| format!("文件 {} 不存在", file_id))?;
+
+    // 读取物理文件
+    let file_path = file
+        .file_path
+        .as_ref()
+        .ok_or_else(|| "文件没有物理存储路径".to_string())?;
+
+    let path = PathBuf::from(file_path);
+    if !path.exists() {
+        return Err(format!("物理文件不存在: {}", file_path));
+    }
+
+    let data = fs::read(&path).map_err(|e| format!("读取文件失败: {}", e))?;
+
+    // 编码为 base64（标准字母表）
+    use std::io::Write;
+    let mut base64_output = String::new();
+    {
+        let mut encoder = base64_encode_writer(&mut base64_output);
+        encoder.write_all(&data).map_err(|e| e.to_string())?;
+    }
+
+    Ok(base64_output)
+}
+
+/// 使用系统默认程序打开文件
+#[command]
+fn open_file_externally(file_path: String) -> Result<(), String> {
+    // 使用 open crate 打开文件（需要 Cargo.toml 添加 open = "5" 依赖）
+    // 如果 open crate 不可用，尝试使用平台原生命令
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&file_path)
+            .spawn()
+            .map_err(|e| format!("打开文件失败: {}", e))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &file_path])
+            .spawn()
+            .map_err(|e| format!("打开文件失败: {}", e))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&file_path)
+            .spawn()
+            .map_err(|e| format!("打开文件失败: {}", e))?;
+    }
+
+    Ok(())
 }
 
 // ─── 辅助函数 ────────────────────────────────────────────────────
@@ -645,4 +859,73 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
     }
 
     Ok(result)
+}
+
+/// 简单的 Base64 编码器（用于将文件数据编码为 base64 字符串）
+struct Base64EncodeWriter<'a> {
+    output: &'a mut String,
+    buffer: [u8; 3],
+    position: usize,
+}
+
+fn base64_encode_writer(output: &mut String) -> Base64EncodeWriter<'_> {
+    Base64EncodeWriter {
+        output,
+        buffer: [0; 3],
+        position: 0,
+    }
+}
+
+impl<'a> std::io::Write for Base64EncodeWriter<'a> {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        const CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+        for &byte in data {
+            self.buffer[self.position] = byte;
+            self.position += 1;
+
+            if self.position == 3 {
+                let b0 = self.buffer[0] as usize;
+                let b1 = self.buffer[1] as usize;
+                let b2 = self.buffer[2] as usize;
+
+                self.output.push(CHARS[(b0 >> 2) as usize] as char);
+                self.output.push(CHARS[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+                self.output.push(CHARS[(((b1 & 0x0F) << 2) | (b2 >> 6)) as usize] as char);
+                self.output.push(CHARS[(b2 & 0x3F) as usize] as char);
+
+                self.position = 0;
+            }
+        }
+
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        const CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+        if self.position > 0 {
+            let b0 = self.buffer[0] as usize;
+            let b1 = if self.position > 1 {
+                self.buffer[1] as usize
+            } else {
+                0
+            };
+
+            self.output.push(CHARS[(b0 >> 2) as usize] as char);
+            self.output
+                .push(CHARS[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+
+            if self.position == 2 {
+                self.output
+                    .push(CHARS[((b1 & 0x0F) << 2) as usize] as char);
+            } else {
+                self.output.push('=');
+            }
+
+            self.output.push('=');
+        }
+
+        Ok(())
+    }
 }

@@ -44,13 +44,25 @@ export async function getStorageAdapterAsync(
 
 /**
  * 同步版本：获取存储适配器
- * 注意：此版本无法在 Tauri 环境中使用动态导入，如果需要 Tauri 支持，请使用 getStorageAdapterAsync()
+ * 注意：Tauri 适配器需要异步动态导入，因此同步版本无法在首次调用时使用 Tauri。
+ * 如果在 Tauri 环境中需要使用 Tauri 适配器，请使用 getStorageAdapterAsync()。
+ * 此版本在 Tauri 环境中会返回 IndexedDB 作为即时降级方案，
+ * 后续调用（若适配器已由异步版本初始化）会正确返回 Tauri 适配器。
  */
 export function getStorageAdapter(mode: string): StorageAdapter {
   if (_adapter) return _adapter;
 
   switch (mode) {
     case "local": {
+      // Tauri 环境下同步版本无法动态导入，返回 IndexedDB 作为即时降级
+      // 提示：首次初始化时应使用 getStorageAdapterAsync() 以获得 Tauri 支持
+      if (isTauriEnvironment()) {
+        console.warn(
+          '[Storage] 同步 getStorageAdapter() 在 Tauri 环境中无法使用 Tauri 适配器。' +
+          '请改用 getStorageAdapterAsync() 以获得完整的本地文件系统支持。' +
+          '当前降级为 IndexedDB 适配器。'
+        );
+      }
       _adapter = new IndexedDBAdapter();
       break;
     }

@@ -32,7 +32,7 @@ export function Header() {
   };
 
   return (
-    <header className="h-14 border-b bg-card/50 backdrop-blur-sm sticky top-0 z-30 flex items-center px-4 gap-4">
+    <header className="h-14 border-b bg-card/50 backdrop-blur-sm sticky top-0 z-30 flex items-center px-4 gap-4 pt-[env(safe-area-inset-top)]">
       {/* Search */}
       <form onSubmit={handleSearch} className="flex-1 max-w-md">
         <div className="relative">

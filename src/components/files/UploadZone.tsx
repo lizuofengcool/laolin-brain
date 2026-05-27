@@ -6,6 +6,7 @@ import { Upload, Cloud, HardDrive, Sparkles, Loader2, CheckCircle2, FileWarning 
 import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
+import { CameraCapture } from "./CameraCapture";
 
 // Guess MIME type from file extension (fallback when browser reports empty file.type)
 function guessMimeType(fileName: string): string {
@@ -343,21 +344,29 @@ export function UploadZone({ className }: UploadZoneProps) {
     console.warn("[UploadZone] Rejected files:", rejectionMsg);
   }
 
-  return (
-    <div
-      {...getRootProps()}
-      className={cn(
-        "border-2 border-dashed rounded-xl p-8 text-center transition-all cursor-pointer",
-        isDragActive
-          ? "border-primary bg-primary/5 scale-[1.01]"
-          : "border-muted-foreground/25 hover:border-primary/50 hover:bg-muted/30",
-        uploading && "pointer-events-none opacity-60",
-        className
-      )}
-    >
-      <input {...getInputProps()} />
+  const handleCameraCapture = useCallback(
+    (file: File) => {
+      onDrop([file]);
+    },
+    [onDrop]
+  );
 
-      {uploading ? (
+  return (
+    <div className="relative">
+      <div
+        {...getRootProps()}
+        className={cn(
+          "border-2 border-dashed rounded-xl p-8 text-center transition-all cursor-pointer",
+          isDragActive
+            ? "border-primary bg-primary/5 scale-[1.01]"
+            : "border-muted-foreground/25 hover:border-primary/50 hover:bg-muted/30",
+          uploading && "pointer-events-none opacity-60",
+          className
+        )}
+      >
+        <input {...getInputProps()} />
+
+        {uploading ? (
         <div className="space-y-3">
           <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center mx-auto">
             <Upload className="h-5 w-5 text-primary animate-bounce" />
@@ -418,6 +427,12 @@ export function UploadZone({ className }: UploadZoneProps) {
           </p>
         </div>
       )}
+      </div>
+
+      {/* Camera capture buttons - positioned at bottom-right on mobile */}
+      <div className="absolute bottom-3 right-3 md:hidden">
+        <CameraCapture onCapture={handleCameraCapture} disabled={uploading} />
+      </div>
     </div>
   );
 }
