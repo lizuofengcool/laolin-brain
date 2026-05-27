@@ -30,6 +30,8 @@ import { SortFilter } from "@/components/files/SortFilter";
 import StorageCharts from "@/components/dashboard/StorageCharts";
 import AnalyticsDashboard from "@/components/dashboard/AnalyticsDashboard";
 import AlbumView from "@/components/album/AlbumView";
+import FaceGroups from "@/components/album/FaceGroups";
+import FaceGroupPhotos from "@/components/album/FaceGroupPhotos";
 import TagManagement from "@/components/tags/TagManagement";
 import { KnowledgeGraphView } from "@/components/graph/KnowledgeGraph";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
@@ -960,6 +962,34 @@ function RecycleBinView() {
   );
 }
 
+// ─── Face Groups View ────────────────────────────────────────
+function FaceGroupsView() {
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [selectedGroupName, setSelectedGroupName] = useState<string | null>(null);
+
+  if (selectedGroupId) {
+    return (
+      <FaceGroupPhotos
+        groupId={selectedGroupId}
+        groupName={selectedGroupName}
+        onBack={() => {
+          setSelectedGroupId(null);
+          setSelectedGroupName(null);
+        }}
+      />
+    );
+  }
+
+  return (
+    <FaceGroups
+      onSelectGroup={(groupId, groupName) => {
+        setSelectedGroupId(groupId);
+        setSelectedGroupName(groupName);
+      }}
+    />
+  );
+}
+
 // ─── Settings View ───────────────────────────────────────────
 function SettingsView() {
   const { user, exportData, importData, storageMode } = useAppStore();
@@ -1319,6 +1349,12 @@ export default function Home() {
         return (
           <motion.div key="albums" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
             <AlbumView />
+          </motion.div>
+        );
+      case "faceGroups":
+        return (
+          <motion.div key="faceGroups" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
+            <FaceGroupsView />
           </motion.div>
         );
       case "tags":

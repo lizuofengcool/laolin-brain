@@ -109,6 +109,12 @@ export function renderMarkdown(md: string): string {
     }
     if (paraLines.length > 0) {
       html.push(`<p>${inlineFormat(paraLines.join("<br/>"))}</p>`);
+    } else {
+      // Line matched no block handler (e.g. "#NoSpace" fails heading regex
+      // but starts with "#" so paragraph loop skips it). Render it as a
+      // plain paragraph to prevent an infinite loop.
+      html.push(`<p>${inlineFormat(line)}</p>`);
+      i++;
     }
   }
 

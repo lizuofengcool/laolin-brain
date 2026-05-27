@@ -14,6 +14,7 @@ import {
   MoreHorizontal,
   BarChart3,
   Network,
+  ScanFace,
 } from "lucide-react";
 import { useAppStore, type ViewType } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
@@ -28,6 +29,7 @@ const mainNavItems: { icon: typeof LayoutDashboard; label: string; view: ViewTyp
 
 const moreNavItems: { icon: typeof LayoutDashboard; label: string; view: ViewType }[] = [
   { icon: ImageIcon, label: "相册", view: "albums" },
+  { icon: ScanFace, label: "人脸", view: "faceGroups" },
   { icon: Tag, label: "标签", view: "tags" },
   { icon: CalendarDays, label: "时间线", view: "timeline" },
   { icon: Trash2, label: "回收站", view: "recycleBin" },

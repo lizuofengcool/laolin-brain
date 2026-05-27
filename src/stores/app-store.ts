@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { FileData } from "@/lib/storage/base";
 import { getStorageAdapter, resetAdapter } from "@/lib/storage/factory";
 
-export type ViewType = "login" | "dashboard" | "files" | "search" | "settings" | "timeline" | "favorites" | "recycleBin" | "albums" | "tags" | "analytics" | "knowledgeGraph";
+export type ViewType = "login" | "dashboard" | "files" | "search" | "settings" | "timeline" | "favorites" | "recycleBin" | "albums" | "faceGroups" | "tags" | "analytics" | "knowledgeGraph";
 
 export interface UserInfo {
   id: string;

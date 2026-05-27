@@ -94,3 +94,43 @@ model FileShare {
   file      File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
   @@index([token])
 }
+
+model FileEmbedding {
+  id        String   @id @default(cuid())
+  fileId    String   @unique
+  userId    String
+  embedding String
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([fileId])
+}
+
+model FaceGroup {
+  id        String        @id @default(cuid())
+  userId    String
+  name      String?
+  thumbnail String?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  faces     FaceInstance[]
+
+  @@index([userId])
+}
+
+model FaceInstance {
+  id          String    @id @default(cuid())
+  groupId     String
+  fileId      String
+  embedding   String
+  description String
+  bboxX       Int
+  bboxY       Int
+  bboxW       Int
+  bboxH       Int
+  createdAt   DateTime  @default(now())
+  group       FaceGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([groupId])
+  @@index([fileId])
+}

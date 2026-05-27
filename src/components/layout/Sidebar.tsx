@@ -16,6 +16,7 @@ import {
   Tag,
   BarChart3,
   Network,
+  ScanFace,
 } from "lucide-react";
 import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,7 @@ const navItems: { icon: typeof LayoutDashboard; label: string; view: ViewType; b
   { icon: LayoutDashboard, label: "仪表盘", view: "dashboard" },
   { icon: FolderOpen, label: "文件管理", view: "files" },
   { icon: ImageIcon, label: "智能相册", view: "albums" },
+  { icon: ScanFace, label: "人脸识别", view: "faceGroups" },
   { icon: CalendarDays, label: "时间线", view: "timeline" },
   { icon: Star, label: "收藏夹", view: "favorites", badge: () => 0 },
   { icon: Tag, label: "标签管理", view: "tags" },

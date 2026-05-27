@@ -3,12 +3,14 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import type { FileData } from "@/lib/storage/base";
 import { useAppStore } from "@/stores/app-store";
-import { Loader2, File, Filter, Search, X } from "lucide-react";
+import { Loader2, File, Filter, Search, X, Sparkles, Type, Blend, ScanFace } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getFileColor, formatSize, FileIconDisplay } from "@/lib/file-utils";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Progress } from "@/components/ui/progress";
 
 interface SearchResultsProps {
   query: string;
@@ -19,10 +21,18 @@ interface SearchResultsProps {
 type FileTypeFilter = "all" | "document" | "image" | "other";
 type DateRange = "all" | "today" | "week" | "month" | "year";
 type SortMode = "relevance" | "date" | "name";
+type SearchMode = "hybrid" | "semantic" | "keyword";
+
+interface EnhancedFileData extends FileData {
+  similarityScore?: number;
+  matchType?: string;
+  combinedScore?: number;
+  matchedFaceNames?: string[];
+}
 
 const highlightText = (text: string, query: string) => {
   if (!query) return text;
-  const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$");
   const regex = new RegExp(`(${escapedQuery})`, "gi");
   const parts = text.split(regex);
   return parts.map((part, i) =>
@@ -54,9 +64,87 @@ function isInRange(date: Date, range: DateRange): boolean {
   }
 }
 
+function MatchTypeBadge({ matchType, matchedFaceNames }: { matchType?: string; matchedFaceNames?: string[] }) {
+  if (!matchType || matchType === "keyword") return null;
+
+  if (matchType === "face") {
+    return (
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 border-rose-300 text-rose-700 dark:border-rose-700 dark:text-rose-300 gap-0.5">
+              <ScanFace className="h-2.5 w-2.5" />
+              人脸匹配{matchedFaceNames && matchedFaceNames.length > 0 ? `: ${matchedFaceNames.join(", ")}` : ""}
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p>通过人脸分组名称匹配</p>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
+  }
+
+  if (matchType === "semantic") {
+    return (
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 border-purple-300 text-purple-700 dark:border-purple-700 dark:text-purple-300 gap-0.5">
+              <Sparkles className="h-2.5 w-2.5" />
+              AI 匹配
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p>基于语义相似度匹配</p>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
+  }
+
+  if (matchType === "both") {
+    return (
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-300 gap-0.5">
+              <Blend className="h-2.5 w-2.5" />
+              混合匹配
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p>同时匹配关键词和语义</p>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
+  }
+
+  return null;
+}
+
+function SimilarityBar({ score }: { score: number }) {
+  if (score <= 0) return null;
+  const percent = Math.round(score * 100);
+  const color =
+    percent >= 70 ? "bg-emerald-500" :
+    percent >= 40 ? "bg-amber-500" :
+    "bg-red-400";
+
+  return (
+    <div className="flex items-center gap-1.5 w-20">
+      <Progress value={percent} className="h-1.5 flex-1 [&>div]:bg-inherit">
+        <div className={cn("h-full rounded-full", color)} style={{ width: `${percent}%` }} />
+      </Progress>
+      <span className="text-[10px] text-muted-foreground tabular-nums w-8 text-right">{percent}%</span>
+    </div>
+  );
+}
+
 export function SearchResults({ query, triggerSearch, onPreview }: SearchResultsProps) {
   const { files, storageMode, user } = useAppStore();
-  const [rawResults, setRawResults] = useState<FileData[]>([]);
+  const [rawResults, setRawResults] = useState<EnhancedFileData[]>([]);
   const [searching, setSearching] = useState(false);
   const [searched, setSearched] = useState(false);
   const [searchTime, setSearchTime] = useState(0);
@@ -68,6 +156,15 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
   const [sortBy, setSortBy] = useState<SortMode>("relevance");
   const [withinQuery, setWithinQuery] = useState("");
 
+  // Search mode
+  const [searchMode, setSearchMode] = useState<SearchMode>("hybrid");
+  const [embeddingStatus, setEmbeddingStatus] = useState<{
+    totalFiles: number;
+    totalEmbeddings: number;
+    coverage: number;
+  } | null>(null);
+  const [generating, setGenerating] = useState(false);
+
   // Reset filters on new search
   useEffect(() => {
     setFileTypeFilter("all");
@@ -75,6 +172,43 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
     setSortBy("relevance");
     setWithinQuery("");
   }, [triggerSearch]);
+
+  // Fetch embedding status when user is available
+  useEffect(() => {
+    if (storageMode === "cloud" && user) {
+      fetch(`/api/embeddings/generate?userId=${user.id}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.totalFiles !== undefined) {
+            setEmbeddingStatus(data);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [storageMode, user]);
+
+  // Generate embeddings
+  const handleGenerateEmbeddings = async () => {
+    if (!user || generating) return;
+    setGenerating(true);
+    try {
+      await fetch("/api/embeddings/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user.id }),
+      });
+      // Refresh embedding status
+      const res = await fetch(`/api/embeddings/generate?userId=${user.id}`);
+      const data = await res.json();
+      if (data.totalFiles !== undefined) {
+        setEmbeddingStatus(data);
+      }
+    } catch {
+      // Silently handle
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   useEffect(() => {
     if (triggerSearch === lastTriggerRef.current) return;
@@ -89,8 +223,9 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
 
       try {
         if (storageMode === "cloud" && user) {
+          const modeParam = searchMode;
           const res = await fetch(
-            `/api/search?q=${encodeURIComponent(q)}&userId=${user.id}`
+            `/api/search?q=${encodeURIComponent(q)}&userId=${user.id}&mode=${modeParam}`
           );
           if (res.ok) {
             const data = await res.json();
@@ -118,7 +253,7 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
     };
 
     performSearch(query);
-  }, [triggerSearch, query, storageMode, user, files]);
+  }, [triggerSearch, query, storageMode, user, files, searchMode]);
 
   // Apply filters
   const filteredResults = useMemo(() => {
@@ -159,17 +294,28 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
         break;
       case "relevance":
       default:
-        // Files with matching text content first, then by name match
-        results.sort((a, b) => {
-          const aText = a.textContent?.toLowerCase().includes(query.toLowerCase()) ? 1 : 0;
-          const bText = b.textContent?.toLowerCase().includes(query.toLowerCase()) ? 1 : 0;
-          return bText - aText || a.fileName.localeCompare(b.fileName, "zh-CN");
-        });
+        // For hybrid/semantic mode, use similarity score; otherwise use content match
+        if (searchMode !== "keyword") {
+          results.sort((a, b) => {
+            const aScore = (a as EnhancedFileData).combinedScore || (a as EnhancedFileData).similarityScore || 0;
+            const bScore = (b as EnhancedFileData).combinedScore || (b as EnhancedFileData).similarityScore || 0;
+            if (aScore !== bScore) return bScore - aScore;
+            const aText = a.textContent?.toLowerCase().includes(query.toLowerCase()) ? 1 : 0;
+            const bText = b.textContent?.toLowerCase().includes(query.toLowerCase()) ? 1 : 0;
+            return bText - aText;
+          });
+        } else {
+          results.sort((a, b) => {
+            const aText = a.textContent?.toLowerCase().includes(query.toLowerCase()) ? 1 : 0;
+            const bText = b.textContent?.toLowerCase().includes(query.toLowerCase()) ? 1 : 0;
+            return bText - aText || a.fileName.localeCompare(b.fileName, "zh-CN");
+          });
+        }
         break;
     }
 
     return results;
-  }, [rawResults, fileTypeFilter, dateRange, sortBy, withinQuery, query]);
+  }, [rawResults, fileTypeFilter, dateRange, sortBy, withinQuery, query, searchMode]);
 
   const fileTypeOptions: { value: FileTypeFilter; label: string }[] = [
     { value: "all", label: "全部" },
@@ -192,32 +338,95 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
     { value: "name", label: "名称" },
   ];
 
+  const searchModeOptions: { value: SearchMode; label: string; icon: React.ReactNode; desc: string }[] = [
+    { value: "hybrid", label: "混合搜索", icon: <Blend className="h-3.5 w-3.5" />, desc: "结合关键词和语义" },
+    { value: "semantic", label: "智能搜索", icon: <Sparkles className="h-3.5 w-3.5" />, desc: "AI语义理解" },
+    { value: "keyword", label: "关键词", icon: <Type className="h-3.5 w-3.5" />, desc: "精确匹配" },
+  ];
+
   if (!searched) return null;
 
   return (
     <div className="mt-6 space-y-4">
       {/* Filter bar */}
       <div className="space-y-3">
-        {/* Search within results */}
-        <div className="relative max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-          <Input
-            type="text"
-            placeholder="在结果中搜索..."
-            className="pl-9 pr-8 h-8 text-sm rounded-lg"
-            value={withinQuery}
-            onChange={(e) => setWithinQuery(e.target.value)}
-          />
-          {withinQuery && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6"
-              onClick={() => setWithinQuery("")}
-            >
-              <X className="h-3 w-3" />
-            </Button>
+        {/* Search mode toggle + search within */}
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Search mode selector */}
+          <div className="flex items-center gap-0.5 bg-muted/50 rounded-lg p-0.5">
+            {searchModeOptions.map((opt) => (
+              <TooltipProvider key={opt.value}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      className={cn(
+                        "flex items-center gap-1 px-2.5 py-1 text-xs rounded-md transition-colors",
+                        searchMode === opt.value
+                          ? "bg-background shadow-sm font-medium text-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      )}
+                      onClick={() => setSearchMode(opt.value)}
+                    >
+                      {opt.icon}
+                      <span className="hidden sm:inline">{opt.label}</span>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>{opt.desc}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            ))}
+          </div>
+
+          {/* Embedding status indicator (only for non-keyword modes) */}
+          {searchMode !== "keyword" && embeddingStatus && storageMode === "cloud" && (
+            <div className="flex items-center gap-2">
+              {embeddingStatus.coverage < 100 ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs gap-1"
+                  onClick={handleGenerateEmbeddings}
+                  disabled={generating}
+                >
+                  {generating ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3 w-3" />
+                  )}
+                  {generating ? "生成中..." : `生成向量 (${embeddingStatus.coverage}%)`}
+                </Button>
+              ) : (
+                <Badge variant="secondary" className="text-[10px] gap-1">
+                  <Sparkles className="h-2.5 w-2.5" />
+                  向量就绪
+                </Badge>
+              )}
+            </div>
           )}
+
+          {/* Search within results */}
+          <div className="relative max-w-sm flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              type="text"
+              placeholder="在结果中搜索..."
+              className="pl-9 pr-8 h-8 text-sm rounded-lg"
+              value={withinQuery}
+              onChange={(e) => setWithinQuery(e.target.value)}
+            />
+            {withinQuery && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6"
+                onClick={() => setWithinQuery("")}
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Filter pills */}
@@ -281,9 +490,11 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
       </div>
 
       {searching ? (
-        <div className="flex items-center justify-center py-12">
+        <div className="flex flex-col items-center justify-center py-12 gap-2">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          <span className="ml-2 text-muted-foreground text-sm">搜索中...</span>
+          <span className="text-muted-foreground text-sm">
+            {searchMode === "semantic" || searchMode === "hybrid" ? "AI 语义搜索中..." : "搜索中..."}
+          </span>
         </div>
       ) : filteredResults.length === 0 ? (
         <div className="text-center py-16 text-muted-foreground">
@@ -292,12 +503,28 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
             {rawResults.length === 0 ? "未找到相关文件" : "没有符合筛选条件的文件"}
           </p>
           <p className="text-xs mt-1">尝试使用不同的关键词或调整筛选条件</p>
+          {searchMode !== "keyword" && rawResults.length === 0 && embeddingStatus && embeddingStatus.coverage < 100 && (
+            <p className="text-xs mt-2">
+              提示：当前仅 {embeddingStatus.coverage}% 的文件有向量索引，
+              <button
+                className="text-primary hover:underline"
+                onClick={handleGenerateEmbeddings}
+              >
+                点击生成
+              </button>
+            </p>
+          )}
         </div>
       ) : (
         <>
           <p className="text-sm text-muted-foreground">
             找到 {filteredResults.length} 个结果
             {searchTime > 0 && <span className="ml-2">（{searchTime}ms）</span>}
+            {searchMode !== "keyword" && (
+              <span className="ml-1 text-xs">
+                {searchMode === "hybrid" ? "混合搜索" : "语义搜索"}
+              </span>
+            )}
             {rawResults.length !== filteredResults.length && (
               <span className="ml-1">，共 {rawResults.length} 条</span>
             )}
@@ -305,6 +532,7 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
           <div className="space-y-2">
             {filteredResults.map((file) => {
               const colorClass = getFileColor(file.fileType);
+              const enhancedFile = file as EnhancedFileData;
 
               return (
                 <div
@@ -329,18 +557,24 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
                     </div>
                   )}
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">
-                      {highlightText(file.fileName, query)}
-                    </p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium truncate">
+                        {highlightText(file.fileName, query)}
+                      </p>
+                      <MatchTypeBadge matchType={enhancedFile.matchType} matchedFaceNames={enhancedFile.matchedFaceNames} />
+                    </div>
                     {file.textContent && (
                       <p className="text-xs text-muted-foreground truncate mt-0.5">
                         {highlightText(file.textContent.slice(0, 150), query)}
                       </p>
                     )}
-                    <div className="flex items-center gap-2 mt-1">
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
                       <p className="text-xs text-muted-foreground">
                         {formatSize(file.fileSize)} · {file.fileType.toUpperCase()}
                       </p>
+                      {enhancedFile.similarityScore !== undefined && enhancedFile.similarityScore > 0 && (
+                        <SimilarityBar score={enhancedFile.similarityScore} />
+                      )}
                       {file.tags.length > 0 && (
                         <div className="flex items-center gap-1 flex-wrap">
                           {file.tags.slice(0, 3).map((tag) => (

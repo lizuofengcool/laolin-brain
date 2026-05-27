@@ -29,3 +29,21 @@ Stage Summary:
 - 构建：0 TypeScript 错误，0 ESLint 错误
 - 数据库索引已存在，无需修改（schema.prisma已有7个索引）
 - 备份恢复功能已有完整实现（BackupRestore.tsx使用JSZip）
+
+---
+Task ID: 2
+Agent: Main Agent
+Task: 修复测试失败 + 构建错误
+
+Work Log:
+- 修复 use-toast-reducer.test.ts: 在 src/hooks/use-toast.ts 的 switch 语句添加 `default: return state`
+- 修复 markdown-edge-cases.test.ts: 在 src/lib/markdown.ts 的 renderMarkdown() 中修复 "#NoSpace" 导致的无限循环
+- 修复 faces/detect/route.ts: 将 @paralleldrive/cuid2 替换为 Node.js 内置 crypto.randomUUID()
+- 修复 faces/process-all/route.ts: 同上替换 cuid2，修正 detectFaces 导入路径为 @/lib/ai/face-detection
+- 修复 faces/detect/route.ts: 为 results 数组添加类型注解解决 TS 类型推断为 never[] 的问题
+- 验证构建通过：next build 0 errors
+
+Stage Summary:
+- 2个测试修复：use-toast-reducer (18/18 pass) + markdown-edge-cases (7/7 pass)
+- 4处构建错误修复：cuid2依赖、import路径、类型注解
+- 构建状态：✅ 通过，27个API路由全部正常编译
