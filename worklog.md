@@ -303,3 +303,120 @@ Stage Summary:
 - ViewType validation: 12 values in union, 11 switch cases + default (correct — login handled separately)
 - No duplicate ViewType entries
 - All route cases covered
+
+---
+Task ID: 7
+Agent: Test Writer
+Task: React hook and component unit tests
+
+Work Log:
+- Created 6 new test files with 53 test cases, all passing (3.91s)
+
+- src/__tests__/hooks/use-gestures.test.ts (13 tests):
+  - isTouchDevice: ontouchstart detection, maxTouchPoints detection, desktop returns false
+  - useSwipeLeft: fires on left swipe beyond threshold, ignores right swipe, ignores vertical swipe, ignores below-threshold swipe
+  - useLongPress: fires after delay with vibration, cancels on touch move >10px, cancels on early touch end
+  - usePullToRefresh: enters pulling state on pull-down, ignores when scrolled, triggers refresh on pull past threshold
+
+- src/__tests__/hooks/use-keyboard-shortcuts.test.ts (10 tests):
+  - Mocked useAppStore with vi.mock
+  - Ctrl+K→search, Ctrl+N→files, Ctrl+D→dashboard, Ctrl+F→favorites, Ctrl+T→timeline
+  - Number keys 1-7→correct views
+  - Escape with lightboxOpen→closeLightbox, without→dashboard
+  - Shortcuts blocked when focused on input/textarea (except Ctrl+K)
+
+- src/__tests__/hooks/use-mobile.test.ts (3 tests):
+  - Mocked window.matchMedia for jsdom
+  - Returns true when innerWidth < 768, false when >= 768
+  - Updates correctly on resize via matchMedia change listener
+
+- src/__tests__/hooks/use-toast-hook.test.ts (9 tests):
+  - Mocked @/components/ui/toast to avoid radix dependency
+  - useToast returns toasts, toast function, dismiss function
+  - toast({title}) adds with id, dismiss removes, multiple toasts, 5-toast limit
+  - Reducer tests: ADD_TOAST, REMOVE_TOAST, DISMISS_TOAST
+
+- src/__tests__/lib/file-utils-component.test.ts (9 tests):
+  - FileIconDisplay renders correct SVG icons for word/pdf/image/pptx/markdown/txt
+  - Default icon for unknown types
+  - Passes through className prop
+
+- src/__tests__/components/ui-button.test.ts (9 tests):
+  - Renders with default/destructive/outline/ghost variants
+  - Renders with sm/lg/icon sizes
+  - Clickable, disabled prevents clicks
+  - Custom className passthrough, asChild Slot rendering
+
+Stage Summary:
+- 6 test files, 53 test cases, all passing (3.91s)
+- Total project test count: 76 (existing) + 53 (new) = 129 tests
+- Test framework: Vitest 4.1.7 + @testing-library/react 16 + jsdom 29
+
+---
+Task ID: 8
+Agent: Test Writer (Mock-based)
+Task: Write 6 mock-heavy test files for API auth, storage factory, storage server, file hash, search history, app store
+
+Work Log:
+- Created 6 test files with 82 test cases, all passing (3.93s)
+
+- src/__tests__/lib/api-auth.test.ts (6 tests):
+  - Mocked @/lib/auth (verifyToken) and next/server (NextResponse.json)
+  - Valid token in Authorization header → returns { userId, email }
+  - Token in query param → returns user info
+  - No token → 401 response
+  - Invalid token → 401 response
+  - Authorization header takes precedence over query param
+  - Case-insensitive Bearer prefix handling
+
+- src/__tests__/lib/storage-factory.test.ts (7 tests):
+  - Mocked IndexedDBAdapter and ServerStorageAdapter with class mockImplementation
+  - getStorageAdapter("local") returns IndexedDBAdapter
+  - getStorageAdapter("cloud") returns ServerStorageAdapter
+  - getStorageAdapter("invalid") returns IndexedDBAdapter (default)
+  - Singleton behavior: same instance returned on subsequent calls
+  - resetAdapter() clears singleton allowing new instantiation
+  - Constructor call count verification before/after reset
+
+- src/__tests__/lib/storage-server.test.ts (11 tests):
+  - Mocked global.fetch with vi.stubGlobal
+  - Mocked localStorage for auth token
+  - uploadFile sends POST with FormData, correct URL and headers
+  - uploadFile throws on non-OK response
+  - deleteFile sends DELETE request
+  - getFile returns parsed JSON on OK, null on non-OK
+  - searchFiles URL-encodes query and userId, returns empty array on error
+  - updateFile sends PUT with JSON body and Content-Type header
+  - getFiles returns array on OK, empty array on non-OK
+  - Omits Authorization header when no token in localStorage
+
+- src/__tests__/lib/file-hash-extended.test.ts (11 tests):
+  - computeFileHash returns 64-char hex string
+  - computeFileHash is deterministic (same content → same hash)
+  - computeFileHash differs for different files
+  - findDuplicateByHash with match, no match, undefined fileHash, empty array
+  - checkDuplicateOnUpload integration: detects duplicates, handles empty lists
+
+- src/__tests__/hooks/use-search-history.test.ts (13 tests):
+  - Mocked localStorage with getItem/setItem/removeItem
+  - getSearchHistory: empty → [], with data → parsed, corrupted → [], non-array → [], MAX_HISTORY 20
+  - addSearchHistory: adds to front, removes duplicates, no-op for empty/whitespace, trims, enforces 20 limit
+  - clearSearchHistory: removes from localStorage
+
+- src/__tests__/stores/app-store-extended.test.ts (34 tests):
+  - Mocked storage factory, fetch, localStorage
+  - reorderFiles(0, 2) moves first to third; higher-to-lower; empty array edge case
+  - moveFileToFolder updates folderId, calls adapter, no-op without user
+  - importData: returns 0 without user, throws on invalid JSON, throws on missing files, cloud mode API call
+  - selectAllFiles: respects fileTypeFilter (document/image/favorite), empty array
+  - batchDeleteFiles: soft-deletes all, calls adapter, toggles batch mode off, empty ids
+  - batchToggleFavorite: sets all to true/false, calls adapter per id, no-op without user
+  - setStorageMode: updates state and user, calls /api/settings PUT, falls back on API fail, no-op without user
+  - exportData: correct JSON structure, null user, empty files, all file fields included
+  - Edge cases: updateFile/removeFile/toggleFavorite with non-existent ids
+
+Stage Summary:
+- 6 test files, 82 test cases, all passing (3.93s)
+- Total new test count: 82 (this batch)
+- Key mocking patterns demonstrated: vi.mock for modules, vi.fn() for functions, vi.stubGlobal for globals, class mockImplementation for constructor mocks
+- Fixed 2 test issues during development: class constructor mocking (mockReturnValue → mockImplementation), and importData throw vs return behavior
