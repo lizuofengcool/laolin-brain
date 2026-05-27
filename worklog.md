@@ -420,3 +420,53 @@ Stage Summary:
 - Total new test count: 82 (this batch)
 - Key mocking patterns demonstrated: vi.mock for modules, vi.fn() for functions, vi.stubGlobal for globals, class mockImplementation for constructor mocks
 - Fixed 2 test issues during development: class constructor mocking (mockReturnValue → mockImplementation), and importData throw vs return behavior
+
+---
+Task ID: 9
+Agent: Main Agent
+Task: 安全与基础完善 - 第一阶段优化（README、错误边界、速率限制、XSS防护、备份恢复、数据库索引）
+
+Work Log:
+- 评审用户提供的7个安全优化建议，识别出5项需适配修改（原方案引用了项目不存在的next-auth、@/lib/prisma、@/lib/local-db等模块）
+- 修复 src/middleware.ts 中 request.ip TypeScript 类型错误（Next.js 16 不支持 request.ip，改用 x-forwarded-for header）
+- 创建 README.md — 完整项目文档（实际技术栈：SQLite/Vitest/bun，非PostgreSQL/Jest/pnpm）
+- 创建 src/app/error.tsx — 全局错误边界（重试 + 清除数据回到首页 + 开发者调试信息折叠面板）
+- 创建 src/app/not-found.tsx — 404页面（返回首页按钮）
+- 修复 src/app/error.tsx 中 onClick={reset()} → onClick={() => reset()} 类型错误
+- 创建 src/lib/rate-limit.ts — 内存级API速率限制器（LRU Cache，无外部Redis依赖）
+  - 认证接口：10次/分钟（防暴力破解）
+  - 文件上传：30次/分钟
+  - 通用API：100次/分钟
+  - 支持按IP独立跟踪、自动过期清理
+- 更新 src/middleware.ts — 集成速率限制（滑动窗口算法 + 自动过期清理）
+  - 路径前缀匹配：/api/auth/ → 10次, /api/files/upload → 30次, /api/files → 20次, 其他 → 100次
+  - 响应头：X-RateLimit-Remaining, Retry-After
+  - 429 状态码 + 中文错误信息
+- 创建 src/lib/sanitize.ts — XSS防护模块（sanitize-html）
+  - sanitizeUserHtml: 通用HTML净化
+  - sanitizeMarkdownHtml: Markdown渲染后净化（保留代码块、表格、任务列表）
+  - stripHtml: 纯文本提取
+  - 自动添加 target="_blank" + rel="noopener noreferrer" 到外部链接
+  - 过滤 javascript: 协议、移除 script/iframe/事件处理器
+- 创建 src/lib/markdown-safe.ts — 安全Markdown渲染入口（renderMarkdown + sanitize 组合）
+- 创建 src/components/settings/BackupRestore.tsx — ZIP备份与恢复组件
+  - 基于现有 store exportData/importData 能力
+  - ZIP格式导出（DEFLATE压缩 + README.txt + backup.json）
+  - 支持 .zip 和 .json 两种格式导入（向后兼容）
+  - 进度反馈、错误处理、状态消息
+- 修改 src/app/page.tsx — 集成 BackupRestore 组件到 SettingsView
+- 更新 prisma/schema.prisma — 添加数据库索引
+  - File: @@index([userId]), @@index([userId, isDeleted]), @@index([folderId]), @@index([userId, isFavorite]), @@index([fileHash]), @@index([createdAt]), @@index([fileType])
+  - Folder: @@index([userId]), @@index([parentId]), @@unique([userId, name, parentId])
+- 更新 .gitignore — 添加 /uploads/ 目录
+- 新增3个测试文件共29个测试用例：
+  - src/__tests__/lib/rate-limit.test.ts (9 tests): 限制策略、独立客户端跟踪、upload优先匹配
+  - src/__tests__/lib/sanitize.test.ts (13 tests): XSS过滤、script/iframe/onclick移除、javascript:URL过滤、Markdown元素保留
+  - src/__tests__/lib/markdown-safe.test.ts (7 tests): 安全渲染、XSS注入防护、链接安全属性
+
+Stage Summary:
+- 构建状态: PASS（0 TypeScript错误）
+- 新增测试: 29个测试用例全部通过
+- 新增文件: README.md, src/app/error.tsx, src/app/not-found.tsx, src/lib/rate-limit.ts, src/lib/sanitize.ts, src/lib/markdown-safe.ts, src/components/settings/BackupRestore.tsx, 3个测试文件
+- 修改文件: src/middleware.ts, src/app/page.tsx, prisma/schema.prisma, .gitignore, package.json（新增lru-cache, sanitize-html, jszip）
+- 未实施的建议（原因）：原方案文件上传安全引用了不存在的next-auth/@/lib/prisma，项目已使用自定义auth+api-auth；Upstash Redis对个人应用过重，改用内存LRU Cache

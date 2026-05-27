@@ -43,6 +43,14 @@ model File {
   folder       Folder?  @relation(fields: [folderId], references: [id], onDelete: SetNull)
   shares       FileShare[]
   versions     FileVersion[]
+
+  @@index([userId])
+  @@index([userId, isDeleted])
+  @@index([folderId])
+  @@index([userId, isFavorite])
+  @@index([fileHash])
+  @@index([createdAt])
+  @@index([fileType])
 }
 
 model FileVersion {
@@ -70,6 +78,10 @@ model Folder {
   files     File[]
   parent    Folder?  @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
   children  Folder[] @relation("FolderTree")
+
+  @@index([userId])
+  @@index([parentId])
+  @@unique([userId, name, parentId])
 }
 
 model FileShare {

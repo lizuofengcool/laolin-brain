@@ -18,7 +18,12 @@ import { ImageLightbox } from "@/components/files/ImageLightbox";
 import { SearchBar } from "@/components/search/SearchBar";
 import { SearchResults } from "@/components/search/SearchResults";
 import { StorageSwitch } from "@/components/settings/StorageSwitch";
+import { BackupRestore } from "@/components/settings/BackupRestore";
+import { ThemeCustomizer } from "@/components/settings/ThemeCustomizer";
 import AutomationRules from "@/components/settings/AutomationRules";
+import { VoiceNote } from "@/components/voice/VoiceNote";
+import { ShortcutHelpPanel } from "@/components/help/ShortcutHelpPanel";
+import { BatchActions } from "@/components/files/BatchActions";
 import { AIChatPanel } from "@/components/ai/AIChatPanel";
 import { TimelineView } from "@/components/timeline/TimelineView";
 import { SortFilter } from "@/components/files/SortFilter";
@@ -35,6 +40,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { useI18n, LOCALES } from "@/lib/i18n";
 import {
   FileText,
   Image as ImageIcon,
@@ -148,7 +154,14 @@ function FilesSkeleton() {
 
 // ─── Login View ──────────────────────────────────────────────
 function LoginView() {
-  return <LoginForm />;
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[60vh] gap-2">
+      <LoginForm />
+      <p className="text-xs text-muted-foreground mt-4">
+        按 <kbd className="inline-flex h-5 items-center justify-center rounded border border-border bg-muted px-1 text-xs font-mono">?</kbd> 查看快捷键
+      </p>
+    </div>
+  );
 }
 
 // ─── Dashboard View ──────────────────────────────────────────
@@ -274,6 +287,7 @@ function FilesView() {
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(20);
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false);
+  const [batchActionsOpen, setBatchActionsOpen] = useState(false);
   const [versionFile, setVersionFile] = useState<FileData | null>(null);
   const [versionsOpen, setVersionsOpen] = useState(false);
 
@@ -432,6 +446,15 @@ function FilesView() {
                 <Trash2 className="h-4 w-4 mr-1" />
                 删除
               </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={batchSelectedIds.length === 0}
+                onClick={() => setBatchActionsOpen(true)}
+              >
+                <FolderInput className="h-4 w-4 mr-1" />
+                更多操作
+              </Button>
               <Button variant="outline" size="sm" onClick={toggleBatchMode}>
                 <X className="h-4 w-4 mr-1" />
                 退出批量
@@ -538,6 +561,11 @@ function FilesView() {
         onClose={() => setVersionsOpen(false)}
       />
 
+      <BatchActions
+        open={batchActionsOpen}
+        onClose={() => setBatchActionsOpen(false)}
+      />
+
       <ConfirmDialog
         open={batchDeleteConfirm}
         title="批量删除文件"
@@ -642,6 +670,26 @@ function FavoritesView() {
     return sorted;
   }, [files, sortBy]);
 
+  // Group favorites by file type
+  const groupedFavs = useMemo(() => {
+    const groups: Record<string, typeof favFiles> = {};
+    for (const f of favFiles) {
+      const type = f.fileType === "image" ? "image" :
+                   f.fileType === "word" || f.fileType === "pdf" || f.fileType === "pptx" ? "document" :
+                   f.fileType === "markdown" || f.fileType === "txt" ? "note" : "other";
+      if (!groups[type]) groups[type] = [];
+      groups[type].push(f);
+    }
+    return groups;
+  }, [favFiles]);
+
+  const typeGroupLabels: Record<string, string> = {
+    image: "图片",
+    document: "文档",
+    note: "笔记",
+    other: "其他",
+  };
+
   const visibleFiles = favFiles.slice(0, visibleCount);
   const hasMore = visibleCount < favFiles.length;
 
@@ -687,7 +735,16 @@ function FavoritesView() {
         </div>
       ) : (
         <>
-          <FileGrid files={visibleFiles} onPreview={handlePreview} onShowVersions={handleShowVersions} />
+          {/* Grouped favorites */}
+          {Object.entries(groupedFavs).map(([groupType, groupFiles]) => (
+            <div key={groupType} className="space-y-2">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold">{typeGroupLabels[groupType] || groupType}</h3>
+                <Badge variant="secondary" className="text-xs">{groupFiles.length}</Badge>
+              </div>
+              <FileGrid files={groupFiles.slice(0, 8)} onPreview={handlePreview} onShowVersions={handleShowVersions} />
+            </div>
+          ))}
           {hasMore && (
             <div className="flex justify-center mt-6">
               <Button
@@ -1124,6 +1181,15 @@ function SettingsView() {
         </CardContent>
       </Card>
 
+      {/* ZIP Backup & Restore */}
+      <BackupRestore />
+
+      {/* Voice Note */}
+      <VoiceNote />
+
+      {/* Theme Customizer */}
+      <ThemeCustomizer />
+
       {/* Automation Rules */}
       <Card className="shadow-sm">
         <CardHeader className="pb-3">
@@ -1146,7 +1212,7 @@ function SettingsView() {
           <CardTitle className="text-base font-semibold">关于</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-muted-foreground">
-          <p>智能文档知识库 - v2.0</p>
+          <p>智能文档知识库 - v3.0</p>
           <p>支持 Word、PDF、PPTX、图片文件管理</p>
           <p>提供全文搜索、AI 解读、时间线浏览功能</p>
           <p>新增：图片全屏查看、批量操作、回收站、文件重命名、数据导出</p>
@@ -1307,6 +1373,9 @@ export default function Home() {
         open={lightboxOpen}
         onClose={closeLightbox}
       />
+
+      {/* Global Shortcut Help Panel */}
+      <ShortcutHelpPanel />
     </div>
   );
 }

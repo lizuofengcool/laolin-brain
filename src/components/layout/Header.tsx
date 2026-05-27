@@ -1,6 +1,6 @@
 "use client";
 
-import { Search, Sun, Moon } from "lucide-react";
+import { Search, Sun, Moon, Languages } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -12,11 +12,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useTheme } from "next-themes";
+import { useI18n, LOCALES, type Locale } from "@/lib/i18n";
 
 export function Header() {
   const { user, searchQuery, setSearchQuery, setCurrentView, logout } =
     useAppStore();
   const { theme, setTheme } = useTheme();
+  const { locale, setLocale } = useI18n();
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -56,6 +58,26 @@ export function Header() {
           <Sun className="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
           <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
         </Button>
+
+        {/* Language switch */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon" className="h-9 w-9" title="切换语言">
+              <Languages className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-32">
+            {LOCALES.map((l) => (
+              <DropdownMenuItem
+                key={l.value}
+                onClick={() => setLocale(l.value as Locale)}
+                className={locale === l.value ? "bg-accent" : ""}
+              >
+                {l.label}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
