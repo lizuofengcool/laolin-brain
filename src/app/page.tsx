@@ -9,6 +9,7 @@ import type { FileData } from "@/lib/storage/base";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Header } from "@/components/layout/Header";
 import { MobileNav } from "@/components/layout/MobileNav";
+import { ProfileView } from "@/components/layout/ProfileView";
 import { LoginForm } from "@/components/auth/LoginForm";
 
 // ─── Core UI components (static — used frequently) ───
@@ -1378,6 +1379,12 @@ export default function Home() {
         return (
           <motion.div key="settings" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
             <SettingsView />
+          </motion.div>
+        );
+      case "profile":
+        return (
+          <motion.div key="profile" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
+            <ProfileView />
           </motion.div>
         );
       case "timeline":

@@ -1,6 +1,6 @@
 "use client";
 
-import { Search, Sun, Moon, Languages } from "lucide-react";
+import { Search, Sun, Moon, Languages, User, Settings, Star, Trash2, Tag, BarChart3, ImageIcon, ScanFace, CalendarDays, Network } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -9,7 +9,9 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
+  DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
 import { useTheme } from "next-themes";
 import { useI18n, LOCALES, type Locale } from "@/lib/i18n";
@@ -79,6 +81,7 @@ export function Header() {
           </DropdownMenuContent>
         </DropdownMenu>
 
+        {/* My profile dropdown */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="h-9 px-2 gap-2">
@@ -92,13 +95,60 @@ export function Header() {
               </span>
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-48">
-            <DropdownMenuItem onClick={() => setCurrentView("settings")}>
-              设置
+          <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuLabel className="font-normal">
+              <div className="flex flex-col space-y-1">
+                <p className="text-sm font-medium leading-none">{user?.name || "用户"}</p>
+                <p className="text-xs leading-none text-muted-foreground">{user?.email}</p>
+              </div>
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => setCurrentView("profile")}>
+              <User className="mr-2 h-4 w-4" />
+              个人中心
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setCurrentView("favorites")}>
+              <Star className="mr-2 h-4 w-4" />
+              我的收藏
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setCurrentView("recycleBin")}>
+              <Trash2 className="mr-2 h-4 w-4" />
+              回收站
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => setCurrentView("albums")}>
+              <ImageIcon className="mr-2 h-4 w-4" />
+              智能相册
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setCurrentView("faceGroups")}>
+              <ScanFace className="mr-2 h-4 w-4" />
+              人脸识别
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setCurrentView("timeline")}>
+              <CalendarDays className="mr-2 h-4 w-4" />
+              时间线
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setCurrentView("tags")}>
+              <Tag className="mr-2 h-4 w-4" />
+              标签管理
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setCurrentView("analytics")}>
+              <BarChart3 className="mr-2 h-4 w-4" />
+              数据分析
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setCurrentView("knowledgeGraph")}>
+              <Network className="mr-2 h-4 w-4" />
+              知识图谱
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => setCurrentView("settings")}>
+              <Settings className="mr-2 h-4 w-4" />
+              系统设置
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={logout}
-              className="text-destructive"
+              className="text-destructive focus:text-destructive"
             >
               退出登录
             </DropdownMenuItem>

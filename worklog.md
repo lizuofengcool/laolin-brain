@@ -585,3 +585,23 @@ Stage Summary:
 - 修改文件：7个（tauri.conf.json, Cargo.toml, lib.rs, main.rs, base.ts, tauri.ts, factory.ts）
 - 构建通过，0错误
 - Rust命令总数：20个
+
+---
+Task ID: 9
+Agent: main
+Task: 修复主题设置 + 重构导航（顶部/侧边栏/底部）为个人中心模式
+
+Work Log:
+- 分析了ThemeCustomizer根因：写入HSL格式但globals.css使用oklch格式，导致颜色不生效
+- 重写ThemeCustomizer：8种预设色全部改为oklch格式，区分light/dark两套色值，添加MutationObserver自动响应主题切换
+- 新增ViewType "profile"到app-store.ts
+- 创建ProfileView组件（个人中心）：用户信息卡片、存储统计（6项数据）、快捷操作（收藏/回收站/标签/分析）、更多功能入口（相册/人脸/时间线/知识图谱）、偏好设置（深浅模式+系统设置）、退出登录
+- 重构Header：用户头像下拉菜单从2项扩展为完整导航，包含个人中心、收藏、回收站、所有更多功能、系统设置、退出
+- 重构MobileNav：底部5Tab简化为4Tab（首页/文件/收藏/我的），移除设置Tab和更多弹出面板
+- 重构Sidebar：设置项替换为"我的"（profile视图）
+- page.tsx添加profile路由case和ProfileView导入
+
+Stage Summary:
+- 构建通过：0错误
+- 修改文件：ThemeCustomizer.tsx(重写)、Header.tsx(重写)、MobileNav.tsx(重写)、Sidebar.tsx(修改)、app-store.ts(修改)、page.tsx(修改)
+- 新增文件：ProfileView.tsx

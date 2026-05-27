@@ -4,7 +4,7 @@ import {
   LayoutDashboard,
   FolderOpen,
   Search,
-  Settings,
+  User,
   ChevronLeft,
   ChevronRight,
   LogOut,
@@ -37,7 +37,7 @@ const navItems: { icon: typeof LayoutDashboard; label: string; view: ViewType; b
   { icon: Search, label: "搜索", view: "search" },
   { icon: BarChart3, label: "分析", view: "analytics" },
   { icon: Network, label: "知识图谱", view: "knowledgeGraph" },
-  { icon: Settings, label: "设置", view: "settings" },
+  { icon: User, label: "我的", view: "profile" },
 ];
 
 export function Sidebar() {
