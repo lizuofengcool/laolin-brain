@@ -1,11 +1,14 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import type { FileData } from "@/lib/storage/base";
 import { useAppStore } from "@/stores/app-store";
 import { FileCard, FileListItem, type CardSize } from "./FileCard";
+import { SwipeableFileItem } from "./SwipeableFileItem";
+import { GestureGridItem } from "./GestureGridItem";
 import { LayoutGrid, List, File, Minimize2, Maximize2, SquareDashedBottom } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 
 interface FileGridProps {
@@ -36,7 +39,8 @@ function getInitialCardSize(): CardSize {
 }
 
 export function FileGrid({ files, onPreview, onShowVersions }: FileGridProps) {
-  const { fileViewMode, setFileViewMode } = useAppStore();
+  const { fileViewMode, setFileViewMode, batchSelectedIds } = useAppStore();
+  const isMobile = useIsMobile();
 
   // Card size state with localStorage persistence (lazy init)
   const [cardSize, setCardSizeState] = useState<CardSize>(getInitialCardSize);
@@ -49,6 +53,12 @@ export function FileGrid({ files, onPreview, onShowVersions }: FileGridProps) {
       // ignore
     }
   }, []);
+
+  // Memoize the selected IDs set for GestureGridItem
+  const selectedIdsSet = useMemo(
+    () => new Set(batchSelectedIds),
+    [batchSelectedIds]
+  );
 
   return (
     <div>
@@ -124,26 +134,66 @@ export function FileGrid({ files, onPreview, onShowVersions }: FileGridProps) {
         </div>
       ) : fileViewMode === "grid" ? (
         <div className={cn("grid gap-4", gridColsMap[cardSize])}>
-          {files.map((file) => (
-            <FileCard
-              key={file.id}
-              file={file}
-              onPreview={onPreview}
-              cardSize={cardSize}
-              onShowVersions={onShowVersions}
-            />
-          ))}
+          {files.map((file) => {
+            const card = (
+              <FileCard
+                key={file.id}
+                file={file}
+                onPreview={onPreview}
+                cardSize={cardSize}
+                onShowVersions={onShowVersions}
+              />
+            );
+
+            // On mobile, wrap with gesture support
+            if (isMobile) {
+              return (
+                <GestureGridItem
+                  key={file.id}
+                  file={file}
+                  isSelected={selectedIdsSet.has(file.id)}
+                >
+                  {/* Remove the key from inner card since GestureGridItem already has it */}
+                  <FileCard
+                    file={file}
+                    onPreview={onPreview}
+                    cardSize={cardSize}
+                    onShowVersions={onShowVersions}
+                  />
+                </GestureGridItem>
+              );
+            }
+
+            return card;
+          })}
         </div>
       ) : (
         <div className="border rounded-lg divide-y">
-          {files.map((file) => (
-            <FileListItem
-              key={file.id}
-              file={file}
-              onPreview={onPreview}
-              onShowVersions={onShowVersions}
-            />
-          ))}
+          {files.map((file) => {
+            const listItem = (
+              <FileListItem
+                key={file.id}
+                file={file}
+                onPreview={onPreview}
+                onShowVersions={onShowVersions}
+              />
+            );
+
+            // On mobile, wrap with swipeable support
+            if (isMobile) {
+              return (
+                <SwipeableFileItem key={file.id} file={file}>
+                  <FileListItem
+                    file={file}
+                    onPreview={onPreview}
+                    onShowVersions={onShowVersions}
+                  />
+                </SwipeableFileItem>
+              );
+            }
+
+            return listItem;
+          })}
         </div>
       )}
     </div>

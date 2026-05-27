@@ -32,6 +32,8 @@ import {
   Info,
   Share2,
 } from "lucide-react";
+import { AvatarUploader } from "./AvatarUploader";
+import { RecentActivity } from "./RecentActivity";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -82,9 +84,7 @@ export function ProfileView() {
       <Card className="shadow-sm">
         <CardContent className="pt-6">
           <div className="flex items-center gap-4">
-            <div className="h-16 w-16 rounded-full bg-primary flex items-center justify-center text-primary-foreground font-bold text-2xl shrink-0">
-              {user?.name?.charAt(0)?.toUpperCase() || "U"}
-            </div>
+            <AvatarUploader size={64} />
             <div className="min-w-0 flex-1">
               <h2 className="text-lg font-semibold truncate">{user?.name || "用户"}</h2>
               <div className="flex items-center gap-1.5 text-sm text-muted-foreground mt-0.5">
@@ -147,6 +147,9 @@ export function ProfileView() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Recent Activity */}
+      <RecentActivity />
 
       {/* Quick actions */}
       <Card className="shadow-sm">

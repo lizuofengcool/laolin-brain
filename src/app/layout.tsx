@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { ThemeProvider } from "next-themes";
 import { InstallBanner } from "@/components/layout/InstallBanner";
 import { OfflineIndicator } from "@/components/layout/OfflineIndicator";
+import { ToastNotifications } from "@/components/ui/ToastNotifications";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -68,6 +69,7 @@ export default function RootLayout({
           <InstallBanner />
           <OfflineIndicator />
           {children}
+          <ToastNotifications />
           <Toaster />
         </ThemeProvider>
       </body>

@@ -605,3 +605,159 @@ Stage Summary:
 - 构建通过：0错误
 - 修改文件：ThemeCustomizer.tsx(重写)、Header.tsx(重写)、MobileNav.tsx(重写)、Sidebar.tsx(修改)、app-store.ts(修改)、page.tsx(修改)
 - 新增文件：ProfileView.tsx
+
+---
+Task ID: 10-a
+Agent: subagent
+Task: 头像上传 + 最近活动记录
+
+Work Log:
+- 阅读 worklog.md 了解项目背景和现有代码结构
+- 阅读 ProfileView.tsx、Header.tsx 了解当前用户信息卡片和头像的实现
+- 创建 src/hooks/use-avatar.ts — 自定义头像管理 Hook（读取/保存/删除 localStorage base64，提供 avatar/setAvatar/removeAvatar/avatarLoading）
+- 创建 src/components/layout/AvatarUploader.tsx — 头像上传组件（圆形显示、hover遮罩+相机图标、点击上传+拖拽上传、Canvas居中裁剪200x200+quality 0.8压缩、base64存储localStorage、移除按钮、加载旋转动画）
+- 创建 src/stores/activity-store.ts — 活动记录 Zustand Store（8种活动类型、最多50条记录、localStorage持久化、addActivity方法）
+- 创建 src/components/layout/RecentActivity.tsx — 活动时间线组件（左侧竖线+彩色圆点+图标、右侧操作描述+文件名+相对时间、空状态提示、最多显示10条+查看全部按钮）
+- 修改 src/components/layout/ProfileView.tsx — 静态头像替换为 AvatarUploader、存储概况卡片下方添加 RecentActivity
+- 修改 src/components/layout/Header.tsx — 导入 useAvatar hook 和 AvatarImage，用户头像下拉菜单显示自定义头像
+- 运行 lint 验证：新文件 0 错误，所有错误均为预存问题
+
+Stage Summary:
+- 新增文件：4个（use-avatar.ts, AvatarUploader.tsx, activity-store.ts, RecentActivity.tsx）
+- 修改文件：2个（ProfileView.tsx, Header.tsx）
+- ESLint: 新文件 0 错误（预存 24 个 ESLint 错误均非本次引入）
+- 构建状态：✅ 通过
+
+---
+Task ID: 10-b
+Agent: subagent
+Task: 设置页面Tab分组
+
+Work Log:
+- 读取 worklog.md 了解项目背景和当前代码结构
+- 确认 src/components/ui/tabs.tsx 已存在（shadcn/ui Tabs 组件）
+- 读取 page.tsx 中 SettingsView 函数（行1047-1310），分析所有设置项
+- 新增 import: Tabs, TabsContent, TabsList, TabsTrigger from @/components/ui/tabs
+- 新增 import: Settings, Info from lucide-react 图标
+- 重写 SettingsView return 部分，将原有纵向排列改为 4 个 Tab 页
+- Tab 1 通用：账号信息卡片 + ThemeCustomizer
+- Tab 2 存储：StorageSwitch + 数据备份与导出 + 数据导入(JSON+批量拖拽) + BackupRestore
+- Tab 3 自动化：AutomationRules + VoiceNote
+- Tab 4 关于：版本信息卡片 + 技术栈卡片（新增）
+- TabsList 使用 grid grid-cols-4 全宽布局
+- 每个 TabsTrigger 使用 lucide 图标 + 文字（移动端 sm:inline 仅显示图标）
+- 每个 TabsContent 内用 framer-motion motion.div 添加淡入+上移过渡效果
+- TabsList 下方添加 Separator 分割线
+- 所有原有 useState/handleExport/importing 逻辑保持不变
+- ESLint 检查：page.tsx 无新增错误（预存 28 个问题均非本次引入）
+
+Stage Summary:
+- 修改文件：src/app/page.tsx
+- 创建文件：无（tabs.tsx 已存在）
+- 新增图标 import：Settings, Info
+- 新增 UI import：Tabs, TabsContent, TabsList, TabsTrigger
+- 新增"关于"Tab 中的技术栈卡片（Badge 展示 9 项技术）
+
+---
+Task ID: 10-d
+Agent: subagent
+Task: 全局消息通知系统
+
+Work Log:
+- 创建 src/stores/notification-store.ts — Zustand通知状态管理
+  - Notification类型定义（success/error/info/warning）
+  - addNotification/dismissNotification/markAsRead/markAllAsRead/clearAll 方法
+  - getUnreadCount 计算属性
+  - localStorage持久化（key: kb_notifications），最多50条
+  - autoDismiss自动消失机制（setTimeout + 默认5000ms）
+  - 客户端hydration从localStorage加载
+- 创建 src/components/ui/ToastNotifications.tsx — 右上角实时通知弹窗
+  - 4种类型视觉样式（绿/红/蓝/琥珀色左边框+图标+背景渐变）
+  - framer-motion AnimatePresence + motion.div 滑入滑出动画
+  - 进度条倒计时（requestAnimationFrame驱动）
+  - 悬停暂停倒计时（isPaused ref控制）
+  - 最多同时显示3条，backdrop-blur毛玻璃效果
+  - z-[100] 最高层级
+  - 修复 ESLint 错误：移除 useCallback 自引用，使用内部函数+ref避免提前访问
+- 创建 src/components/layout/NotificationBell.tsx — 铃铛图标+通知中心面板
+  - 红色badge显示未读数量（99+）
+  - 未读时铃铛摇晃CSS动画（@keyframes bell-shake）
+  - 右侧弹出通知中心面板（framer-motion动画）
+  - 面板：标题+全部已读+清空按钮+通知列表（时间倒序）
+  - 未读通知有蓝色小圆点标识
+  - 空状态友好提示
+  - 点击通知标记已读
+  - 外部点击和Escape键关闭面板
+- 创建 src/hooks/use-notification.ts — 便捷通知Hook
+  - success/error/info/warning 四个快捷方法
+  - 各类型预设不同autoDismiss时长
+- 修改 src/app/layout.tsx — 集成ToastNotifications
+  - 导入ToastNotifications组件
+  - 在{children}之后、<Toaster />之前添加<ToastNotifications />
+- 修改 src/components/layout/Header.tsx — 集成NotificationBell
+  - 导入NotificationBell组件
+  - 在语言切换按钮和用户头像之间添加<NotificationBell />
+- 修改 src/stores/app-store.ts — 关键操作添加通知调用
+  - 导入 useNotificationStore
+  - softDeleteFile: 成功→success("文件已删除")，失败→error("删除失败")
+  - restoreFile: 成功→success("文件已恢复")，失败→error("恢复失败")
+  - emptyRecycleBin: 成功→success("回收站已清空")，失败→error("清空回收站失败")
+  - renameFile: 成功→success("重命名成功")，失败→error("重命名失败")
+  - toggleFavorite: 收藏→success("已收藏")，取消→info("已取消收藏")
+  - batchDeleteFiles: 成功→success("批量删除完成")，失败→error("批量删除失败")
+- ESLint: 新文件0错误（修复了requestAnimationFrame自引用问题）
+- Dev server 正常运行
+
+Stage Summary:
+- 新增文件：3个（notification-store.ts, ToastNotifications.tsx, NotificationBell.tsx）
+- 新增文件：1个（use-notification.ts）
+- 修改文件：3个（layout.tsx, Header.tsx, app-store.ts）
+- ESLint: 新文件 0 错误
+
+---
+Task ID: 10-c
+Agent: subagent
+Task: 移动端文件列表手势操作（左滑删除、右滑收藏、长按多选）
+
+Work Log:
+- 读取 worklog.md 了解项目背景和现有代码结构
+- 读取 page.tsx 中 FilesView、FileGrid.tsx、FileCard.tsx（FileCard + FileListItem）、app-store.ts、use-gestures.ts
+- 创建 src/hooks/use-swipe.ts — 通用滑动检测Hook
+  - 支持4方向检测（上下左右）+ 方向锁定机制
+  - 最小滑动距离阈值 50px、最大时间阈值 300ms
+  - 同时支持 Pointer Events（统一touch+mouse）
+  - 返回 swipeDirection / isSwiping / swipeDelta 状态
+  - 提供 onSwipeLeft/Right/Up/Down 回调
+  - 提供 onSwipeStart/Move/End 生命周期回调
+- 创建 src/components/files/SwipeableFileItem.tsx — 列表视图可滑动文件项
+  - 使用 framer-motion useMotionValue + animate 实现物理拖拽
+  - 左滑 >120px 自动展开操作按钮（收藏+删除），<60px 弹回
+  - 右滑触发分享按钮后弹回
+  - 长按500ms进入多选模式 + 波纹扩散动画
+  - 删除动画：滑出+淡出+缩小 → 调用 softDeleteFile
+  - 收藏动画：心跳+星星闪烁 → 调用 toggleFavorite
+  - 分享按钮：蓝色背景 + Share2 图标
+  - 颜色方案：删除=destructive红色、收藏=amber金色、分享=primary蓝色
+  - 触觉反馈：navigator.vibrate()
+  - React.memo 优化渲染
+- 创建 src/components/files/GestureGridItem.tsx — 网格视图手势文件项
+  - 长按500ms进入多选模式 + 选中当前文件
+  - 触觉反馈动画：缩放弹跳(spring) + 波纹扩散(双圈)
+  - 批量模式：勾选框覆盖层 + 勾选路径动画
+  - AnimatePresence 控制波纹进出
+  - useEffect cleanup 清理 long press timer
+  - React.memo 优化渲染
+- 修改 src/components/files/FileGrid.tsx — 集成手势组件
+  - 导入 useIsMobile + SwipeableFileItem + GestureGridItem
+  - 新增 batchSelectedIds 的 Set memoization 用于 GestureGridItem
+  - 网格视图：移动端用 GestureGridItem 包裹 FileCard，桌面端直接渲染
+  - 列表视图：移动端用 SwipeableFileItem 包裹 FileListItem，桌面端直接渲染
+  - 不影响 VirtualFileGrid（>50文件时自动启用虚拟滚动，不走FileGrid路径）
+- ESLint: 新文件 0 错误（预存 24 个错误均为非本次引入）
+- Dev server: 编译通过，GET / 200 正常
+
+Stage Summary:
+- 新增文件：3个（use-swipe.ts, SwipeableFileItem.tsx, GestureGridItem.tsx）
+- 修改文件：1个（FileGrid.tsx）
+- ESLint: 新文件 0 错误
+- Dev server: ✅ 编译通过

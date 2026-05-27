@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { FileData } from "@/lib/storage/base";
 import { getStorageAdapter, resetAdapter } from "@/lib/storage/factory";
+import { useNotificationStore } from "@/stores/notification-store";
 
 export type ViewType = "login" | "dashboard" | "files" | "search" | "settings" | "profile" | "timeline" | "favorites" | "recycleBin" | "albums" | "faceGroups" | "tags" | "analytics" | "knowledgeGraph";
 
@@ -227,28 +228,58 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Soft delete - move to recycle bin
   softDeleteFile: async (id) => {
-    const { user, storageMode } = get();
+    const { user, storageMode, files } = get();
     if (!user) return;
+    const file = files.find((f) => f.id === id);
     const now = new Date().toISOString();
     get().updateFile(id, { isDeleted: true, deletedAt: now });
     try {
       const adapter = getStorageAdapter(storageMode);
       await adapter.updateFile(id, { isDeleted: true, deletedAt: now }, user.id);
+      useNotificationStore.getState().addNotification({
+        type: "success",
+        title: "文件已删除",
+        message: file?.fileName,
+        autoDismiss: true,
+        duration: 3000,
+      });
     } catch (err) {
       console.error("Failed to soft delete file:", err);
+      useNotificationStore.getState().addNotification({
+        type: "error",
+        title: "删除失败",
+        message: file?.fileName,
+        autoDismiss: true,
+        duration: 5000,
+      });
     }
   },
 
   // Restore file from recycle bin
   restoreFile: async (id) => {
-    const { user, storageMode } = get();
+    const { user, storageMode, files } = get();
     if (!user) return;
+    const file = files.find((f) => f.id === id);
     get().updateFile(id, { isDeleted: false, deletedAt: undefined });
     try {
       const adapter = getStorageAdapter(storageMode);
       await adapter.updateFile(id, { isDeleted: false, deletedAt: undefined }, user.id);
+      useNotificationStore.getState().addNotification({
+        type: "success",
+        title: "文件已恢复",
+        message: file?.fileName,
+        autoDismiss: true,
+        duration: 3000,
+      });
     } catch (err) {
       console.error("Failed to restore file:", err);
+      useNotificationStore.getState().addNotification({
+        type: "error",
+        title: "恢复失败",
+        message: file?.fileName,
+        autoDismiss: true,
+        duration: 5000,
+      });
     }
   },
 
@@ -268,7 +299,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Empty recycle bin
   emptyRecycleBin: async () => {
     const deletedFiles = get().files.filter((f) => f.isDeleted);
-    await Promise.all(deletedFiles.map((file) => get().permanentDeleteFile(file.id)));
+    try {
+      await Promise.all(deletedFiles.map((file) => get().permanentDeleteFile(file.id)));
+      useNotificationStore.getState().addNotification({
+        type: "success",
+        title: "回收站已清空",
+        message: `已删除 ${deletedFiles.length} 个文件`,
+        autoDismiss: true,
+        duration: 3000,
+      });
+    } catch (err) {
+      console.error("Failed to empty recycle bin:", err);
+      useNotificationStore.getState().addNotification({
+        type: "error",
+        title: "清空回收站失败",
+        autoDismiss: true,
+        duration: 5000,
+      });
+    }
   },
 
   // Rename file
@@ -279,8 +327,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const adapter = getStorageAdapter(storageMode);
       await adapter.updateFile(id, { fileName: newName }, user.id);
+      useNotificationStore.getState().addNotification({
+        type: "success",
+        title: "重命名成功",
+        message: newName,
+        autoDismiss: true,
+        duration: 3000,
+      });
     } catch (err) {
       console.error("Failed to rename file:", err);
+      useNotificationStore.getState().addNotification({
+        type: "error",
+        title: "重命名失败",
+        autoDismiss: true,
+        duration: 5000,
+      });
     }
   },
 
@@ -289,6 +350,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!file) return;
     const newVal = !file.isFavorite;
     get().updateFile(id, { isFavorite: newVal });
+
+    if (newVal) {
+      useNotificationStore.getState().addNotification({
+        type: "success",
+        title: "已收藏",
+        message: file.fileName,
+        autoDismiss: true,
+        duration: 2500,
+      });
+    } else {
+      useNotificationStore.getState().addNotification({
+        type: "info",
+        title: "已取消收藏",
+        message: file.fileName,
+        autoDismiss: true,
+        duration: 2500,
+      });
+    }
 
     const { user, storageMode } = get();
     if (!user) return;
@@ -322,8 +401,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const adapter = getStorageAdapter(storageMode);
       await Promise.all(ids.map((id) => adapter.updateFile(id, { isDeleted: true, deletedAt: now }, user.id)));
+      useNotificationStore.getState().addNotification({
+        type: "success",
+        title: "批量删除完成",
+        message: `已删除 ${ids.length} 个文件`,
+        autoDismiss: true,
+        duration: 3000,
+      });
     } catch (err) {
       console.error("Batch delete failed:", err);
+      useNotificationStore.getState().addNotification({
+        type: "error",
+        title: "批量删除失败",
+        autoDismiss: true,
+        duration: 5000,
+      });
     }
     get().toggleBatchMode();
   },

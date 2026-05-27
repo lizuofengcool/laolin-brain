@@ -3,8 +3,9 @@
 import { Search, Sun, Moon, Languages, User, Settings, Star, Trash2, Tag, BarChart3, ImageIcon, ScanFace, CalendarDays, Network } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useAppStore } from "@/stores/app-store";
+import { useAvatar } from "@/hooks/use-avatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,12 +16,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useTheme } from "next-themes";
 import { useI18n, LOCALES, type Locale } from "@/lib/i18n";
+import { NotificationBell } from "@/components/layout/NotificationBell";
 
 export function Header() {
   const { user, searchQuery, setSearchQuery, setCurrentView, logout } =
     useAppStore();
   const { theme, setTheme } = useTheme();
   const { locale, setLocale } = useI18n();
+  const { avatar } = useAvatar();
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -81,11 +84,15 @@ export function Header() {
           </DropdownMenuContent>
         </DropdownMenu>
 
+        {/* Notification bell */}
+        <NotificationBell />
+
         {/* My profile dropdown */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="h-9 px-2 gap-2">
               <Avatar className="h-7 w-7">
+                <AvatarImage src={avatar || undefined} alt="头像" />
                 <AvatarFallback className="text-xs bg-primary text-primary-foreground">
                   {user?.name?.charAt(0)?.toUpperCase() || "U"}
                 </AvatarFallback>
