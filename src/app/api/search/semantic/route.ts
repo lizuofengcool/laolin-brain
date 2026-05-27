@@ -8,17 +8,17 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { query, userId } = body;
+    const { query } = body;
 
-    if (!userId || !query || !query.trim()) {
+    if (!query || typeof query !== 'string' || !query.trim()) {
       return NextResponse.json(
         { error: '缺少必要参数' },
         { status: 400 }
       );
     }
 
-    // Use authenticated userId for security
-    const authenticatedUserId = userId;
+    // Use authenticated userId for security — never trust client-sent userId
+    const authenticatedUserId = auth.userId;
 
     const { db } = await import('@/lib/db');
     const {

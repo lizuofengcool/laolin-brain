@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
+import { safeJsonParseArray } from "@/lib/safe-json-parse";
 
 // GET: Return analytics data for the current user
 export async function GET(request: NextRequest) {
@@ -88,7 +89,7 @@ export async function GET(request: NextRequest) {
     const tagCount: Record<string, number> = {};
     for (const file of activeFiles) {
       if (file.tags) {
-        const tags = typeof file.tags === "string" ? file.tags.split(",").map((t) => t.trim()).filter(Boolean) : file.tags;
+        const tags = safeJsonParseArray(file.tags) as string[];
         for (const tag of tags) {
           tagCount[tag] = (tagCount[tag] || 0) + 1;
         }

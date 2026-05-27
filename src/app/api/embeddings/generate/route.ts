@@ -14,6 +14,14 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { fileIds } = body;
 
+    // If fileIds is explicitly an empty array, return immediately
+    if (Array.isArray(fileIds) && fileIds.length === 0) {
+      return NextResponse.json({
+        generated: 0,
+        message: '未指定需要处理的文件',
+      });
+    }
+
     const { db } = await import('@/lib/db');
     const {
       generateEmbedding,

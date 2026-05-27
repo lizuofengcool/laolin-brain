@@ -81,7 +81,7 @@ export async function detectFaces(imageBase64: string): Promise<FaceDetection[]>
     if (!Array.isArray(faces)) return [];
 
     return faces.map((face: Record<string, unknown>, index: number) => ({
-      id: `face_${Date.now()}_${index}`,
+      id: crypto.randomUUID(),
       x: typeof face.x === 'number' ? Math.round(face.x) : 0,
       y: typeof face.y === 'number' ? Math.round(face.y) : 0,
       width: typeof face.width === 'number' ? Math.round(face.width) : 0,

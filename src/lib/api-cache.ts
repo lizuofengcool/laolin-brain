@@ -19,7 +19,17 @@ type CacheKey = string;
 
 // ─── In-memory store ────────────────────────────────────────
 
+const API_CACHE_MAX = 1000;
 const cache = new Map<CacheKey, CacheEntry>();
+
+function cacheEvictFifo(): void {
+  if (cache.size >= API_CACHE_MAX) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey !== undefined) {
+      cache.delete(oldestKey);
+    }
+  }
+}
 
 // Default TTL values (ms)
 const DEFAULT_TTL = {
@@ -79,13 +89,7 @@ export async function cachedFetch<T = unknown>(
   }
 
   // Cache miss or expired — fetch fresh data
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
-  });
+  const response = await fetch(url, options);
 
   if (!response.ok) {
     throw new Error(`cachedFetch error: ${response.status} ${response.statusText} for ${url}`);
@@ -96,6 +100,7 @@ export async function cachedFetch<T = unknown>(
   // Store in cache (only cache successful GET requests)
   const method = options?.method?.toUpperCase() || "GET";
   if (method === "GET") {
+    cacheEvictFifo();
     cache.set(key, {
       data,
       timestamp: now,

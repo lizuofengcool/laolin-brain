@@ -51,10 +51,13 @@ export class ServerStorageAdapter implements StorageAdapter {
   }
 
   async deleteFile(fileId: string, _userId: string): Promise<void> {
-    await fetch(`${this.baseUrl}/${fileId}`, {
+    const res = await fetch(`${this.baseUrl}/${fileId}`, {
       method: "DELETE",
       headers: authHeaders(),
     });
+    if (!res.ok) {
+      throw new Error(`Failed to delete file: ${res.status}`);
+    }
   }
 
   async getFile(fileId: string, _userId: string): Promise<FileData | null> {
@@ -81,11 +84,14 @@ export class ServerStorageAdapter implements StorageAdapter {
     data: Partial<FileData>,
     _userId: string
   ): Promise<void> {
-    await fetch(`${this.baseUrl}/${fileId}`, {
+    const res = await fetch(`${this.baseUrl}/${fileId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(data),
     });
+    if (!res.ok) {
+      throw new Error(`Failed to update file: ${res.status}`);
+    }
   }
 
   async getFiles(userId: string): Promise<FileData[]> {

@@ -18,12 +18,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (files.length > 500) {
+      return NextResponse.json(
+        { error: "单次最多导入500个文件" },
+        { status: 400 }
+      );
+    }
+
     let importedCount = 0;
 
     // Import folders (don't use client-supplied IDs)
     if (folders && Array.isArray(folders)) {
       for (const folder of folders) {
-        if (!folder.name) continue;
+        if (!folder.name || typeof folder.name !== 'string' || folder.name.length > 255) continue;
 
         try {
           await db.folder.create({
@@ -42,7 +49,7 @@ export async function POST(request: NextRequest) {
 
     // Import files (don't use client-supplied IDs)
     for (const file of files) {
-      if (!file.fileName) continue;
+      if (!file.fileName || typeof file.fileName !== 'string' || file.fileName.length > 255) continue;
 
       try {
         await db.file.create({

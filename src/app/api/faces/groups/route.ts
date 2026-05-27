@@ -38,6 +38,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(result);
   } catch (e) {
     console.error('Face groups list error:', e);
-    return NextResponse.json([], { status: 200 });
+    return NextResponse.json(
+      { error: '获取人脸分组失败' },
+      { status: 500 }
+    );
   }
 }

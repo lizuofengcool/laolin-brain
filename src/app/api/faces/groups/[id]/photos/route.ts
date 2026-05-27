@@ -14,8 +14,16 @@ export async function GET(
   try {
     const { id } = await params;
     const { searchParams } = new URL(request.url);
-    const page = parseInt(searchParams.get('page') || '1');
-    const limit = parseInt(searchParams.get('limit') || '20');
+    const page = parseInt(searchParams.get('page') || '1', 10);
+    const limit = parseInt(searchParams.get('limit') || '20', 10);
+
+    // Validate pagination parameters
+    if (isNaN(page) || page < 1) {
+      return NextResponse.json({ error: 'page 必须 >= 1' }, { status: 400 });
+    }
+    if (isNaN(limit) || limit < 1 || limit > 100) {
+      return NextResponse.json({ error: 'limit 必须在 1-100 之间' }, { status: 400 });
+    }
 
     // Verify group belongs to user
     const group = await db.faceGroup.findUnique({ where: { id } });

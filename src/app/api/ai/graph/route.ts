@@ -119,6 +119,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (files.length > 200) {
+      return NextResponse.json(
+        { error: '最多支持200个文件生成知识图谱' },
+        { status: 400 }
+      );
+    }
+
     const graphFiles: GraphFile[] = files.map((f: Partial<GraphFile>) => ({
       id: f.id || '',
       fileName: f.fileName || '未命名',

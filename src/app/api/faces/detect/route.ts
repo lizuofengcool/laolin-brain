@@ -21,6 +21,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Verify file belongs to authenticated user
+    const file = await db.file.findUnique({ where: { id: fileId } });
+    if (!file || file.userId !== userId) {
+      return NextResponse.json(
+        { error: '文件不存在或无权访问' },
+        { status: 403 }
+      );
+    }
+
     // Check if faces already detected for this file
     const existingFaces = await db.faceInstance.findMany({
       where: { fileId },

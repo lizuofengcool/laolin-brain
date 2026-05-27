@@ -55,7 +55,7 @@ describe('chunk-upload', () => {
     it('generates ID with correct format', () => {
       const file = new File(['world'], 'doc.pdf', { type: 'application/pdf' });
       const id = generateUploadFileId(file);
-      expect(id).toMatch(/^upload_[a-z0-9]+_[a-z0-9]+$/);
+      expect(id).toMatch(/^upload_[a-z0-9]+_[a-z0-9]+_[a-z0-9]+$/);
     });
   });
 });

@@ -12,9 +12,9 @@ export async function PUT(request: NextRequest) {
     const body = await request.json();
     let { storageMode } = body;
 
-    if (!storageMode) {
+    if (!storageMode || typeof storageMode !== 'string') {
       return NextResponse.json(
-        { error: "storageMode is required" },
+        { error: "storageMode is required and must be a string" },
         { status: 400 }
       );
     }

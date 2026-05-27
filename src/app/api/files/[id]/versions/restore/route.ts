@@ -38,15 +38,16 @@ export async function POST(
       return NextResponse.json({ error: "Version not found" }, { status: 404 });
     }
 
-    // Backup current state before restoring (create a new FileVersion entry)
-    try {
-      const currentLatestVersion = await db.fileVersion.findFirst({
+    // Backup current state and update file atomically in a transaction
+    const updatedFile = await db.$transaction(async (tx) => {
+      // Backup current state before restoring (create a new FileVersion entry)
+      const currentLatestVersion = await tx.fileVersion.findFirst({
         where: { fileId },
         orderBy: { version: "desc" },
       });
       const nextVersion = (currentLatestVersion?.version || 0) + 1;
 
-      await db.fileVersion.create({
+      await tx.fileVersion.create({
         data: {
           fileId,
           fileName: file.fileName,
@@ -57,21 +58,18 @@ export async function POST(
           version: nextVersion,
         },
       });
-    } catch (backupErr) {
-      console.error("Failed to backup current state before restore:", backupErr);
-      // Continue with restore even if backup fails
-    }
 
-    // Update the file with version data
-    const updatedFile = await db.file.update({
-      where: { id: fileId },
-      data: {
-        fileName: version.fileName,
-        fileSize: version.fileSize,
-        filePath: version.filePath,
-        textContent: version.textContent,
-        thumbnailUrl: version.thumbnailUrl,
-      },
+      // Update the file with version data
+      return tx.file.update({
+        where: { id: fileId },
+        data: {
+          fileName: version.fileName,
+          fileSize: version.fileSize,
+          filePath: version.filePath,
+          textContent: version.textContent,
+          thumbnailUrl: version.thumbnailUrl,
+        },
+      });
     });
 
     return NextResponse.json({

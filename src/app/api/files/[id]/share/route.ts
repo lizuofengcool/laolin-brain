@@ -18,6 +18,17 @@ export async function POST(
     const body = await request.json();
     const { expiresIn = 168, password } = body;
 
+    // Validate expiresIn
+    if (typeof expiresIn !== 'number' || expiresIn < 1 || expiresIn > 8760) {
+      return NextResponse.json(
+        { error: 'expiresIn 必须为1-8760之间的数字' },
+        { status: 400 }
+      );
+    }
+
+    // Treat empty string password as null
+    const sharePassword = (typeof password === 'string' && password.length > 0) ? password : null;
+
     // Find the file
     const file = await db.file.findUnique({
       where: { id },
@@ -42,7 +53,7 @@ export async function POST(
       data: {
         fileId: id,
         token,
-        password: password || null,
+        password: sharePassword,
         expiresAt,
       },
     });

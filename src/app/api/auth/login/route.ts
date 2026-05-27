@@ -14,6 +14,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (typeof email !== 'string' || typeof password !== 'string') {
+      return NextResponse.json(
+        { error: '邮箱和密码必须为字符串' },
+        { status: 400 }
+      );
+    }
+
     const user = await db.user.findUnique({ where: { email } });
     if (!user || !user.password) {
       return NextResponse.json(
@@ -37,7 +44,8 @@ export async function POST(request: NextRequest) {
       user: { id: user.id, name: user.name, email: user.email, storageMode: user.storageMode },
       token,
     });
-  } catch {
+  } catch (error) {
+    console.error('Login error:', error);
     return NextResponse.json({ error: "Login failed" }, { status: 500 });
   }
 }

@@ -25,6 +25,15 @@ export async function POST(request: NextRequest) {
   const { userId: authenticatedUserId } = auth;
 
   try {
+    // Check content-type is multipart/form-data
+    const contentType = request.headers.get('content-type') || '';
+    if (!contentType.includes('multipart/form-data')) {
+      return NextResponse.json(
+        { error: '请求必须是 multipart/form-data 格式' },
+        { status: 415 }
+      );
+    }
+
     const formData = await request.formData();
     const file = formData.get("file");
 
@@ -42,7 +51,7 @@ export async function POST(request: NextRequest) {
     if (file.size > 50 * 1024 * 1024) {
       return NextResponse.json(
         { error: "File size exceeds 50MB limit" },
-        { status: 400 }
+        { status: 413 }
       );
     }
 
@@ -146,9 +155,11 @@ export async function POST(request: NextRequest) {
     });
 
     if (existingFile) {
-      // Create a version of the existing file before updating
-      try {
-        await db.fileVersion.create({
+      // Create version + update file atomically in a transaction
+      const fileRecord = await db.$transaction(async (tx) => {
+        // Create a version of the existing file before updating
+        const versionCount = await tx.fileVersion.count({ where: { fileId: existingFile.id } });
+        await tx.fileVersion.create({
           data: {
             fileId: existingFile.id,
             fileName: existingFile.fileName,
@@ -156,25 +167,23 @@ export async function POST(request: NextRequest) {
             filePath: existingFile.filePath,
             textContent: existingFile.textContent,
             thumbnailUrl: existingFile.thumbnailUrl,
-            version: (await db.fileVersion.count({ where: { fileId: existingFile.id } })) + 1,
+            version: versionCount + 1,
           },
         });
-      } catch (e) {
-        console.error("Failed to create file version:", e);
-      }
 
-      // Update the existing file
-      const fileRecord = await db.file.update({
-        where: { id: existingFile.id },
-        data: {
-          fileName: file.name,
-          fileType,
-          fileSize: file.size,
-          filePath,
-          textContent,
-          thumbnailUrl,
-          tags: tags.length > 0 ? JSON.stringify(tags) : existingFile.tags,
-        },
+        // Update the existing file
+        return tx.file.update({
+          where: { id: existingFile.id },
+          data: {
+            fileName: file.name,
+            fileType,
+            fileSize: file.size,
+            filePath,
+            textContent,
+            thumbnailUrl,
+            tags: tags.length > 0 ? JSON.stringify(tags) : existingFile.tags,
+          },
+        });
       });
 
       const previewUrl = fileType === "image"

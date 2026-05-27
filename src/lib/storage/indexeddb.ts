@@ -222,18 +222,23 @@ export class IndexedDBAdapter implements StorageAdapter {
   }
 
   async getFiles(userId: string): Promise<FileData[]> {
-    const db = await getDB();
-    const allFiles = await db.getAll("files");
-    return allFiles
-      .filter((f) => f.userId === userId)
-      .map(({ data: _, userId: __, ...fileData }) => ({
-        ...fileData,
-        createdAt: new Date(fileData.createdAt),
-      }))
-      .sort(
-        (a, b) =>
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      );
+    try {
+      const db = await getDB();
+      const allFiles = await db.getAll("files");
+      return allFiles
+        .filter((f) => f.userId === userId)
+        .map(({ data: _, userId: __, ...fileData }) => ({
+          ...fileData,
+          createdAt: new Date(fileData.createdAt),
+        }))
+        .sort(
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+    } catch (err) {
+      console.error("Failed to get files from IndexedDB:", err);
+      return [];
+    }
   }
 
   // ─── Version Management ────────────────────────────────────

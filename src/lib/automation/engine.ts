@@ -82,7 +82,17 @@ export function loadRules(): AutomationRule[] {
     const stored = localStorage.getItem(RULES_STORAGE_KEY);
     if (stored) {
       const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        // Validate structure of loaded rules
+        const validRules = parsed.filter((r: unknown): r is AutomationRule =>
+          r !== null && typeof r === 'object' &&
+          typeof (r as Record<string, unknown>).id === 'string' &&
+          typeof (r as Record<string, unknown>).type === 'string' &&
+          typeof (r as Record<string, unknown>).enabled === 'boolean' &&
+          typeof (r as Record<string, unknown>).config === 'object'
+        );
+        if (validRules.length > 0) return validRules;
+      }
     }
   } catch {
     // Fall through

@@ -17,6 +17,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Validate type against allowed values
+    const allowedTypes = ['document', 'image'];
+    if (!allowedTypes.includes(type)) {
+      return NextResponse.json(
+        { error: 'type must be "document" or "image"' },
+        { status: 400 }
+      );
+    }
+
     if (type === 'document') {
       if (!content) {
         return NextResponse.json(
@@ -24,7 +33,11 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
-      const answer = await askAboutDocument(content, question);
+      // Truncate content to 50000 chars to avoid excessive token usage
+      const truncatedContent = typeof content === 'string' && content.length > 50000
+        ? content.slice(0, 50000)
+        : content;
+      const answer = await askAboutDocument(truncatedContent, question);
       return NextResponse.json({ answer });
     }
 

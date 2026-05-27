@@ -18,6 +18,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (typeof name !== 'string') {
+      return NextResponse.json(
+        { error: "name 必须为字符串" },
+        { status: 400 }
+      );
+    }
+
     // Name length validation
     if (name.length > 255) {
       return NextResponse.json(

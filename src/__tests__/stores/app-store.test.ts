@@ -9,7 +9,7 @@ vi.mock('@/lib/storage/factory', () => ({
     deleteFile: vi.fn(),
     getFile: vi.fn(),
     searchFiles: vi.fn(),
-    updateFile: vi.fn(),
+    updateFile: vi.fn().mockResolvedValue(undefined),
     getFiles: vi.fn().mockResolvedValue([]),
   })),
   resetAdapter: vi.fn(),
@@ -162,21 +162,23 @@ describe('useAppStore', () => {
   });
 
   describe('toggleFavorite', () => {
-    it('toggles isFavorite from false to true', () => {
+    it('toggles isFavorite from false to true', async () => {
       useAppStore.getState().setFiles([createMockFileData({ id: '1', isFavorite: false })]);
-      useAppStore.getState().toggleFavorite('1');
+      useAppStore.setState({ user: { id: 'u1', email: 'a@b.com', name: 'Test' } as any });
+      await useAppStore.getState().toggleFavorite('1');
       expect(useAppStore.getState().files[0].isFavorite).toBe(true);
     });
 
-    it('toggles isFavorite from true to false', () => {
+    it('toggles isFavorite from true to false', async () => {
       useAppStore.getState().setFiles([createMockFileData({ id: '1', isFavorite: true })]);
-      useAppStore.getState().toggleFavorite('1');
+      useAppStore.setState({ user: { id: 'u1', email: 'a@b.com', name: 'Test' } as any });
+      await useAppStore.getState().toggleFavorite('1');
       expect(useAppStore.getState().files[0].isFavorite).toBe(false);
     });
 
-    it('does nothing if file not found', () => {
+    it('does nothing if file not found', async () => {
       useAppStore.getState().setFiles([]);
-      expect(() => useAppStore.getState().toggleFavorite('nonexistent')).not.toThrow();
+      await expect(useAppStore.getState().toggleFavorite('nonexistent')).resolves.not.toThrow();
     });
   });
 

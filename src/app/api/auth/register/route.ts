@@ -14,11 +14,34 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Type validation
+    if (typeof name !== 'string' || name.length > 100) {
+      return NextResponse.json(
+        { error: '名称必须为字符串且不超过100个字符' },
+        { status: 400 }
+      );
+    }
+
+    if (typeof email !== 'string' || typeof password !== 'string') {
+      return NextResponse.json(
+        { error: '邮箱和密码必须为字符串' },
+        { status: 400 }
+      );
+    }
+
     // Email format validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
       return NextResponse.json(
         { error: "邮箱格式不正确" },
+        { status: 400 }
+      );
+    }
+
+    // Password max length validation
+    if (password.length > 128) {
+      return NextResponse.json(
+        { error: "密码不能超过128个字符" },
         { status: 400 }
       );
     }
@@ -68,7 +91,15 @@ export async function POST(request: NextRequest) {
       user: { id: user.id, name: user.name, email: user.email, storageMode: user.storageMode },
       token,
     });
-  } catch {
+  } catch (error) {
+    // Handle Prisma unique constraint violation (P2002)
+    if (error && typeof error === 'object' && 'code' in error && (error as { code: string }).code === 'P2002') {
+      return NextResponse.json(
+        { error: '邮箱已存在' },
+        { status: 409 }
+      );
+    }
+    console.error('Registration error:', error);
     return NextResponse.json(
       { error: "Registration failed" },
       { status: 500 }

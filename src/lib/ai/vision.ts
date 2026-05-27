@@ -9,8 +9,19 @@ async function getZAI() {
   return zaiInstance;
 }
 
+/** Create an AbortController with a 30-second timeout and return both the controller and a cleanup function. */
+function createTimeoutController(timeoutMs: number = 30_000): { controller: AbortController; cleanup: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    controller,
+    cleanup: () => clearTimeout(timer),
+  };
+}
+
 // Image description - identify scene content (scene, objects, people actions, etc.)
 export async function describeImage(imageBase64: string): Promise<string> {
+  const { controller, cleanup } = createTimeoutController();
   try {
     const zai = await getZAI();
     const completion = await zai.chat.completions.create({
@@ -31,11 +42,18 @@ export async function describeImage(imageBase64: string): Promise<string> {
           ] as unknown as string,
         },
       ],
+      signal: controller.signal,
     });
     return completion.choices[0]?.message?.content || '';
   } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      console.error('Image description timed out after 30 seconds');
+      return '';
+    }
     console.error('Image description failed:', e);
     return '';
+  } finally {
+    cleanup();
   }
 }
 
@@ -43,6 +61,7 @@ export async function describeImage(imageBase64: string): Promise<string> {
 export async function extractTextFromImage(
   imageBase64: string
 ): Promise<string> {
+  const { controller, cleanup } = createTimeoutController();
   try {
     const zai = await getZAI();
     const completion = await zai.chat.completions.create({
@@ -63,11 +82,18 @@ export async function extractTextFromImage(
           ] as unknown as string,
         },
       ],
+      signal: controller.signal,
     });
     return completion.choices[0]?.message?.content || '';
   } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      console.error('OCR timed out after 30 seconds');
+      return '';
+    }
     console.error('OCR failed:', e);
     return '';
+  } finally {
+    cleanup();
   }
 }
 
@@ -76,6 +102,7 @@ export async function askAboutDocument(
   content: string,
   question: string
 ): Promise<string> {
+  const { controller, cleanup } = createTimeoutController();
   try {
     const zai = await getZAI();
     const completion = await zai.chat.completions.create({
@@ -90,11 +117,18 @@ export async function askAboutDocument(
           content: `文档内容：\n${content}\n\n问题：${question}`,
         },
       ],
+      signal: controller.signal,
     });
     return completion.choices[0]?.message?.content || '无法回答此问题。';
   } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      console.error('Document Q&A timed out after 30 seconds');
+      return 'AI 响应超时，请稍后再试。';
+    }
     console.error('Document Q&A failed:', e);
     return 'AI 服务暂时不可用，请稍后再试。';
+  } finally {
+    cleanup();
   }
 }
 
@@ -103,6 +137,7 @@ export async function askAboutImage(
   imageBase64: string,
   question: string
 ): Promise<string> {
+  const { controller, cleanup } = createTimeoutController();
   try {
     const zai = await getZAI();
     const completion = await zai.chat.completions.create({
@@ -123,10 +158,17 @@ export async function askAboutImage(
           ] as unknown as string,
         },
       ],
+      signal: controller.signal,
     });
     return completion.choices[0]?.message?.content || '无法回答此问题。';
   } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      console.error('Image Q&A timed out after 30 seconds');
+      return 'AI 响应超时，请稍后再试。';
+    }
     console.error('Image Q&A failed:', e);
     return 'AI 服务暂时不可用，请稍后再试。';
+  } finally {
+    cleanup();
   }
 }

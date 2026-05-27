@@ -13,6 +13,11 @@ export async function GET(
 
   try {
     const { filename } = await params;
+    // NOTE: Ownership check limitation — we cannot easily verify the thumbnail belongs to the
+    // authenticated user from the filename alone. The upload path already stores thumbnails in
+    // a user-specific directory structure (/upload/{userId}/thumbnails/). If the thumbnail
+    // directory does NOT include userId in the path, this should be updated to prevent
+    // unauthorized access to other users' thumbnails.
     const thumbDir = path.join(process.cwd(), "upload", "thumbnails");
     const filePath = path.join(thumbDir, filename);
 

@@ -17,6 +17,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (typeof imageBase64 !== 'string' || imageBase64.length > 26_600_000) {
+      return NextResponse.json(
+        { error: 'imageBase64 无效或超过大小限制(20MB)' },
+        { status: 400 }
+      );
+    }
+
     const text = await extractTextFromImage(imageBase64);
 
     return NextResponse.json({ text });

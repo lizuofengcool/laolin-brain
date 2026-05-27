@@ -55,6 +55,14 @@ export async function POST(
       );
     }
 
+    // Validate fileSize
+    if (typeof fileSize !== 'number' || fileSize < 0 || fileSize > 5 * 1024 * 1024 * 1024) {
+      return NextResponse.json(
+        { error: "fileSize 必须为0-5GB之间的数字" },
+        { status: 400 }
+      );
+    }
+
     // Verify file exists and belongs to user
     const file = await db.file.findUnique({ where: { id } });
     if (!file || file.userId !== userId) {

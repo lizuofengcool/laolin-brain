@@ -72,14 +72,14 @@ interface TauriFileVersion {
 
 // ─── 工具函数 ─────────────────────────────────────────────────
 
-/**
- * 检测是否在 Tauri 桌面环境中运行
- */
+  /**
+   * 检测是否在 Tauri 桌面环境中运行
+   * Includes safety check for __TAURI__ being a string or number (common injection patterns)
+   */
 export function isTauriEnvironment(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    !!(window as unknown as Record<string, unknown>).__TAURI__
-  );
+  if (typeof window === 'undefined') return false;
+  const tauri = (window as unknown as Record<string, unknown>).__TAURI__;
+  return !!tauri && typeof tauri === 'object';
 }
 
 /**
@@ -181,6 +181,16 @@ function fileToBase64(file: File): Promise<string> {
  * - 如果不在 Tauri 环境中，动态导入 IndexedDB 适配器作为降级方案
  */
 export class TauriStorageAdapter implements StorageAdapter {
+  // Cached fallback adapter to avoid creating a new instance on every method call
+  private _fallbackAdapter: InstanceType<typeof import('./indexeddb').IndexedDBAdapter> | null = null;
+
+  private async getFallbackAdapter() {
+    if (!this._fallbackAdapter) {
+      const { IndexedDBAdapter } = await import('./indexeddb');
+      this._fallbackAdapter = new IndexedDBAdapter();
+    }
+    return this._fallbackAdapter;
+  }
   // ─── 文件操作 ─────────────────────────────────────────────
 
   async uploadFile(
@@ -222,8 +232,7 @@ export class TauriStorageAdapter implements StorageAdapter {
     }
 
     // 降级：使用 IndexedDB
-    const { IndexedDBAdapter } = await import('./indexeddb');
-    return new IndexedDBAdapter().uploadFile(file, userId);
+    return this.getFallbackAdapter().then(a => a.uploadFile(file, userId));
   }
 
   async deleteFile(fileId: string, userId: string): Promise<void> {
@@ -236,8 +245,7 @@ export class TauriStorageAdapter implements StorageAdapter {
       }
     }
 
-    const { IndexedDBAdapter } = await import('./indexeddb');
-    return new IndexedDBAdapter().deleteFile(fileId, userId);
+    return this.getFallbackAdapter().then(a => a.deleteFile(fileId, userId));
   }
 
   async getFile(fileId: string, userId: string): Promise<FileData | null> {
@@ -253,8 +261,7 @@ export class TauriStorageAdapter implements StorageAdapter {
       }
     }
 
-    const { IndexedDBAdapter } = await import('./indexeddb');
-    return new IndexedDBAdapter().getFile(fileId, userId);
+    return this.getFallbackAdapter().then(a => a.getFile(fileId, userId));
   }
 
   async searchFiles(query: string, userId: string): Promise<FileData[]> {
@@ -270,8 +277,7 @@ export class TauriStorageAdapter implements StorageAdapter {
       }
     }
 
-    const { IndexedDBAdapter } = await import('./indexeddb');
-    return new IndexedDBAdapter().searchFiles(query, userId);
+    return this.getFallbackAdapter().then(a => a.searchFiles(query, userId));
   }
 
   async updateFile(
@@ -288,8 +294,7 @@ export class TauriStorageAdapter implements StorageAdapter {
       }
     }
 
-    const { IndexedDBAdapter } = await import('./indexeddb');
-    return new IndexedDBAdapter().updateFile(fileId, data, userId);
+    return this.getFallbackAdapter().then(a => a.updateFile(fileId, data, userId));
   }
 
   async getFiles(userId: string): Promise<FileData[]> {
@@ -302,8 +307,7 @@ export class TauriStorageAdapter implements StorageAdapter {
       }
     }
 
-    const { IndexedDBAdapter } = await import('./indexeddb');
-    return new IndexedDBAdapter().getFiles(userId);
+    return this.getFallbackAdapter().then(a => a.getFiles(userId));
   }
 
   // ─── 版本管理 ─────────────────────────────────────────────
@@ -336,8 +340,7 @@ export class TauriStorageAdapter implements StorageAdapter {
       }
     }
 
-    const { IndexedDBAdapter } = await import('./indexeddb');
-    return new IndexedDBAdapter().getVersions(fileId, userId);
+    return this.getFallbackAdapter().then(a => a.getVersions(fileId, userId));
   }
 
   async createVersion(
@@ -361,8 +364,7 @@ export class TauriStorageAdapter implements StorageAdapter {
       }
     }
 
-    const { IndexedDBAdapter } = await import('./indexeddb');
-    return new IndexedDBAdapter().createVersion(fileId, data, userId);
+    return this.getFallbackAdapter().then(a => a.createVersion(fileId, data, userId));
   }
 
   async restoreVersion(
@@ -386,8 +388,7 @@ export class TauriStorageAdapter implements StorageAdapter {
       }
     }
 
-    const { IndexedDBAdapter } = await import('./indexeddb');
-    return new IndexedDBAdapter().restoreVersion(versionId, fileId, userId);
+    return this.getFallbackAdapter().then(a => a.restoreVersion(versionId, fileId, userId));
   }
 
   async deleteVersion(
@@ -407,8 +408,7 @@ export class TauriStorageAdapter implements StorageAdapter {
       }
     }
 
-    const { IndexedDBAdapter } = await import('./indexeddb');
-    return new IndexedDBAdapter().deleteVersion(versionId, fileId, userId);
+    return this.getFallbackAdapter().then(a => a.deleteVersion(versionId, fileId, userId));
   }
 
   // ─── 文件夹管理 ───────────────────────────────────────────
@@ -434,8 +434,7 @@ export class TauriStorageAdapter implements StorageAdapter {
       }
     }
 
-    const { IndexedDBAdapter } = await import('./indexeddb');
-    return (new IndexedDBAdapter() as StorageAdapter).createFolder?.(folderName, userId) ?? null;
+    return (await this.getFallbackAdapter() as unknown as StorageAdapter).createFolder?.(folderName, userId) ?? null;
   }
 
   /**
@@ -528,8 +527,7 @@ export class TauriStorageAdapter implements StorageAdapter {
     }
 
     // 降级：使用 IndexedDB 删除
-    const { IndexedDBAdapter } = await import('./indexeddb');
-    return new IndexedDBAdapter().deleteFile(fileId, userId);
+    return this.getFallbackAdapter().then(a => a.deleteFile(fileId, userId));
   }
 
   /**
@@ -547,8 +545,7 @@ export class TauriStorageAdapter implements StorageAdapter {
     }
 
     // 降级：逐个删除已删除的文件
-    const { IndexedDBAdapter } = await import('./indexeddb');
-    const adapter = new IndexedDBAdapter();
+    const adapter = await this.getFallbackAdapter();
     const files = await adapter.getFiles(userId);
     const deletedFiles = files.filter((f) => f.isDeleted);
     await Promise.all(deletedFiles.map((f) => adapter.deleteFile(f.id, userId)));
@@ -574,8 +571,7 @@ export class TauriStorageAdapter implements StorageAdapter {
     }
 
     // 降级：使用 IndexedDB
-    const { IndexedDBAdapter } = await import('./indexeddb');
-    return new IndexedDBAdapter().updateFile(
+    return (await this.getFallbackAdapter()).updateFile(
       fileId,
       { isDeleted: false, deletedAt: undefined } as Partial<FileData>,
       userId

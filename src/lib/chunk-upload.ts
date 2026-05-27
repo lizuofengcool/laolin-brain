@@ -113,5 +113,5 @@ export function generateUploadFileId(file: File): string {
     hash = ((hash << 5) - hash) + char;
     hash |= 0;
   }
-  return `upload_${Math.abs(hash).toString(36)}_${Date.now().toString(36)}`;
+  return `upload_${Math.abs(hash).toString(36)}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
 }

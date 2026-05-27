@@ -48,7 +48,7 @@ interface AppState {
   permanentDeleteFile: (id: string) => Promise<void>;
   emptyRecycleBin: () => Promise<void>;
   renameFile: (id: string, newName: string) => Promise<void>;
-  toggleFavorite: (id: string) => void;
+  toggleFavorite: (id: string) => Promise<void>;
   batchToggleFavorite: (ids: string[], value: boolean) => Promise<void>;
   batchDeleteFiles: (ids: string[]) => Promise<void>;
 
@@ -240,10 +240,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!user) return;
     const file = files.find((f) => f.id === id);
     const now = new Date().toISOString();
-    get().updateFile(id, { isDeleted: true, deletedAt: now });
     try {
       const adapter = getStorageAdapter(storageMode);
       await adapter.updateFile(id, { isDeleted: true, deletedAt: now }, user.id);
+      get().updateFile(id, { isDeleted: true, deletedAt: now });
       useNotificationStore.getState().addNotification({
         type: "success",
         title: "文件已删除",
@@ -258,6 +258,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     } catch (err) {
       console.error("Failed to soft delete file:", err);
+      // Revert optimistic update on failure
+      get().updateFile(id, { isDeleted: false, deletedAt: undefined });
       useNotificationStore.getState().addNotification({
         type: "error",
         title: "删除失败",
@@ -273,10 +275,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { user, storageMode, files } = get();
     if (!user) return;
     const file = files.find((f) => f.id === id);
-    get().updateFile(id, { isDeleted: false, deletedAt: undefined });
     try {
       const adapter = getStorageAdapter(storageMode);
       await adapter.updateFile(id, { isDeleted: false, deletedAt: undefined }, user.id);
+      get().updateFile(id, { isDeleted: false, deletedAt: undefined });
       useNotificationStore.getState().addNotification({
         type: "success",
         title: "文件已恢复",
@@ -291,6 +293,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     } catch (err) {
       console.error("Failed to restore file:", err);
+      // Revert optimistic update on failure
+      get().updateFile(id, { isDeleted: true, deletedAt: file?.deletedAt });
       useNotificationStore.getState().addNotification({
         type: "error",
         title: "恢复失败",
@@ -350,10 +354,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { user, storageMode, files } = get();
     if (!user) return;
     const oldName = files.find((f) => f.id === id)?.fileName || newName;
-    get().updateFile(id, { fileName: newName });
     try {
       const adapter = getStorageAdapter(storageMode);
       await adapter.updateFile(id, { fileName: newName }, user.id);
+      get().updateFile(id, { fileName: newName });
       useNotificationStore.getState().addNotification({
         type: "success",
         title: "重命名成功",
@@ -369,6 +373,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     } catch (err) {
       console.error("Failed to rename file:", err);
+      // Revert optimistic update on failure
+      get().updateFile(id, { fileName: oldName });
       useNotificationStore.getState().addNotification({
         type: "error",
         title: "重命名失败",
@@ -378,62 +384,96 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  toggleFavorite: (id) => {
+  toggleFavorite: async (id) => {
     const file = get().files.find((f) => f.id === id);
     if (!file) return;
+    const { user, storageMode } = get();
     const newVal = !file.isFavorite;
-    get().updateFile(id, { isFavorite: newVal });
+    if (!user) return;
+    try {
+      const adapter = getStorageAdapter(storageMode);
+      await adapter.updateFile(id, { isFavorite: newVal }, user.id);
+      get().updateFile(id, { isFavorite: newVal });
 
-    if (newVal) {
+      if (newVal) {
+        useNotificationStore.getState().addNotification({
+          type: "success",
+          title: "已收藏",
+          message: file.fileName,
+          autoDismiss: true,
+          duration: 2500,
+        });
+        useActivityStore.getState().addActivity({
+          type: "favorite",
+          fileName: file.fileName,
+          fileId: id,
+        });
+      } else {
+        useNotificationStore.getState().addNotification({
+          type: "info",
+          title: "已取消收藏",
+          message: file.fileName,
+          autoDismiss: true,
+          duration: 2500,
+        });
+        useActivityStore.getState().addActivity({
+          type: "unfavorite",
+          fileName: file.fileName,
+          fileId: id,
+        });
+      }
+    } catch (err) {
+      console.error("Failed to toggle favorite:", err);
       useNotificationStore.getState().addNotification({
-        type: "success",
-        title: "已收藏",
+        type: "error",
+        title: newVal ? "收藏失败" : "取消收藏失败",
         message: file.fileName,
         autoDismiss: true,
-        duration: 2500,
-      });
-      useActivityStore.getState().addActivity({
-        type: "favorite",
-        fileName: file.fileName,
-        fileId: id,
-      });
-    } else {
-      useNotificationStore.getState().addNotification({
-        type: "info",
-        title: "已取消收藏",
-        message: file.fileName,
-        autoDismiss: true,
-        duration: 2500,
-      });
-      useActivityStore.getState().addActivity({
-        type: "unfavorite",
-        fileName: file.fileName,
-        fileId: id,
+        duration: 3000,
       });
     }
-
-    const { user, storageMode } = get();
-    if (!user) return;
-    const adapter = getStorageAdapter(storageMode);
-    adapter.updateFile(id, { isFavorite: newVal }, user.id).catch(console.error);
   },
 
   // Batch favorite toggle
   batchToggleFavorite: async (ids, value) => {
     const { user, storageMode } = get();
     if (!user) return;
+    // Optimistic update
     for (const id of ids) {
       get().updateFile(id, { isFavorite: value });
     }
     try {
       const adapter = getStorageAdapter(storageMode);
-      await Promise.all(ids.map((id) => adapter.updateFile(id, { isFavorite: value }, user.id)));
+      const results = await Promise.allSettled(ids.map((id) => adapter.updateFile(id, { isFavorite: value }, user.id)));
+      // Revert individual failures
+      const failedIds: string[] = [];
+      results.forEach((result, idx) => {
+        if (result.status === "rejected") {
+          const failId = ids[idx];
+          failedIds.push(failId);
+          get().updateFile(failId, { isFavorite: !value });
+        }
+      });
+      const succeeded = ids.length - failedIds.length;
+      if (failedIds.length > 0) {
+        useNotificationStore.getState().addNotification({
+          type: "warning",
+          title: "部分收藏操作失败",
+          message: `成功 ${succeeded} 个，失败 ${failedIds.length} 个`,
+          autoDismiss: true,
+          duration: 5000,
+        });
+      }
       useActivityStore.getState().addActivity({
         type: value ? "favorite" : "unfavorite",
-        fileName: value ? `批量收藏了${ids.length}个文件` : `批量取消收藏了${ids.length}个文件`,
+        fileName: value ? `批量收藏了${succeeded}个文件` : `批量取消收藏了${succeeded}个文件`,
       });
     } catch (err) {
       console.error("Batch favorite failed:", err);
+      // Revert all on unexpected error
+      for (const id of ids) {
+        get().updateFile(id, { isFavorite: !value });
+      }
     }
   },
 
@@ -442,25 +482,50 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { user, storageMode } = get();
     if (!user) return;
     const now = new Date().toISOString();
+    // Optimistic update
     for (const id of ids) {
       get().updateFile(id, { isDeleted: true, deletedAt: now });
     }
     try {
       const adapter = getStorageAdapter(storageMode);
-      await Promise.all(ids.map((id) => adapter.updateFile(id, { isDeleted: true, deletedAt: now }, user.id)));
-      useNotificationStore.getState().addNotification({
-        type: "success",
-        title: "批量删除完成",
-        message: `已删除 ${ids.length} 个文件`,
-        autoDismiss: true,
-        duration: 3000,
+      const results = await Promise.allSettled(ids.map((id) => adapter.updateFile(id, { isDeleted: true, deletedAt: now }, user.id)));
+      // Revert individual failures
+      const failedIds: string[] = [];
+      results.forEach((result, idx) => {
+        if (result.status === "rejected") {
+          const failId = ids[idx];
+          failedIds.push(failId);
+          get().updateFile(failId, { isDeleted: false, deletedAt: undefined });
+        }
       });
+      const succeeded = ids.length - failedIds.length;
+      if (failedIds.length === 0) {
+        useNotificationStore.getState().addNotification({
+          type: "success",
+          title: "批量删除完成",
+          message: `已删除 ${succeeded} 个文件`,
+          autoDismiss: true,
+          duration: 3000,
+        });
+      } else {
+        useNotificationStore.getState().addNotification({
+          type: "warning",
+          title: "部分文件删除失败",
+          message: `成功删除 ${succeeded} 个，失败 ${failedIds.length} 个`,
+          autoDismiss: true,
+          duration: 5000,
+        });
+      }
       useActivityStore.getState().addActivity({
         type: "delete",
-        fileName: `批量删除了${ids.length}个文件`,
+        fileName: `批量删除了${succeeded}个文件` + (failedIds.length > 0 ? `，${failedIds.length}个失败` : ""),
       });
     } catch (err) {
       console.error("Batch delete failed:", err);
+      // Revert all on unexpected error
+      for (const id of ids) {
+        get().updateFile(id, { isDeleted: false, deletedAt: undefined });
+      }
       useNotificationStore.getState().addNotification({
         type: "error",
         title: "批量删除失败",
@@ -591,10 +656,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!user) return;
     const file = files.find((f) => f.id === fileId);
     const targetFolder = folderId ? folders.find((f) => f.id === folderId) : null;
-    get().updateFile(fileId, { folderId: folderId || undefined });
+    const previousFolderId = file?.folderId || undefined;
     try {
       const adapter = getStorageAdapter(storageMode);
       await adapter.updateFile(fileId, { folderId: folderId || null } as Partial<import("@/lib/storage/base").FileData>, user.id);
+      // Optimistic update only after API success
+      get().updateFile(fileId, { folderId: folderId || undefined });
       useActivityStore.getState().addActivity({
         type: "tag",
         fileName: file?.fileName || "未知文件",
@@ -603,6 +670,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     } catch (err) {
       console.error("Failed to move file to folder:", err);
+      // No revert needed since we didn't optimistically update
+      useNotificationStore.getState().addNotification({
+        type: "error",
+        title: "移动文件失败",
+        message: file?.fileName || "未知文件",
+        autoDismiss: true,
+        duration: 5000,
+      });
     }
   },
 

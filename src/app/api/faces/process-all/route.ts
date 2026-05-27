@@ -121,13 +121,10 @@ async function processFilesInBackground(
             return;
           }
 
-          // Read file from disk and convert to base64 (async)
-          const pathModule = await import('path');
-          const fullPath = pathModule.join(process.cwd(), 'uploads', file.filePath.replace('/uploads/', ''));
-
+          // Read file from disk — file.filePath is already an absolute path from the upload route
           let buffer: Buffer;
           try {
-            buffer = await fs.readFile(fullPath);
+            buffer = await fs.readFile(file.filePath);
           } catch {
             state.processed++;
             return;

@@ -117,7 +117,7 @@ export function clusterFaces(faces: FaceInstance[], threshold: number = 0.75): F
     }
 
     clusters.push({
-      id: `cluster_${Date.now()}_${root}`,
+      id: crypto.randomUUID(),
       name: null,
       representativeFace: faces[bestIdx].description,
       faceInstances: clusterFaces,

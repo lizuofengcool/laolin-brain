@@ -10,8 +10,20 @@ async function getZAI() {
   return zaiInstance;
 }
 
-// In-memory cache for embeddings
+// In-memory cache for embeddings (max 500 entries, FIFO eviction)
+const EMBEDDING_CACHE_MAX = 500;
 const embeddingCache = new Map<string, number[]>();
+
+function cacheSet(key: string, value: number[]): void {
+  if (embeddingCache.size >= EMBEDDING_CACHE_MAX) {
+    // FIFO eviction: delete the oldest entry (first key in insertion order)
+    const oldestKey = embeddingCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      embeddingCache.delete(oldestKey);
+    }
+  }
+  embeddingCache.set(key, value);
+}
 
 const EMBEDDING_DIMENSIONS = 64;
 const SYSTEM_PROMPT = `你是一个文本向量化助手。你的任务是将给定的文本转换为一个${EMBEDDING_DIMENSIONS}维的归一化浮点向量，用于语义搜索和相似度计算。
@@ -57,8 +69,8 @@ export async function generateEmbedding(text: string): Promise<number[]> {
     // Parse the embedding from the response
     const embedding = parseEmbedding(responseText);
 
-    // Cache the result
-    embeddingCache.set(cacheKey, embedding);
+    // Cache the result (with FIFO eviction)
+    cacheSet(cacheKey, embedding);
 
     return embedding;
   } catch (e) {
@@ -74,7 +86,7 @@ export async function generateEmbedding(text: string): Promise<number[]> {
 function parseEmbedding(responseText: string): number[] {
   try {
     // Try to extract JSON array from the response
-    const jsonMatch = responseText.match(/\[[\s\S]*\]/);
+    const jsonMatch = responseText.match(/\[[\s\S]*?\]/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
       if (Array.isArray(parsed) && parsed.length === EMBEDDING_DIMENSIONS) {
