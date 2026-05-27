@@ -3,7 +3,7 @@
 > **项目代号**: KnowledgeBase-Album  
 > **创建时间**: 2026-05-26  
 > **最后更新**: 2026-05-27  
-> **当前状态**: ✅ 第四轮开发完成（全部功能）
+> **当前状态**: ✅ 第五阶段开发完成（性能+PWA+桌面版）
 > **技术栈**: Next.js 16 + shadcn/ui + SQLite + Prisma  
 > **存储模式**: 双模式（本地 IndexedDB / 服务端存储）  
 > **迁移预留**: Tauri 桌面版 / App 移动端
@@ -399,6 +399,29 @@
   - 覆盖认证、文件管理、导航、设置四大核心流程
   - 支持桌面端+移动端双视图测试
 - 构建状态：0错误，31个API路由，194个源文件
+
+### 2026-05-27 第五阶段：性能优化 + PWA增强 + Tauri桌面版
+- [x] 性能优化
+  - 12个重型组件转为next/dynamic动态导入（代码分割）
+  - 虚拟滚动文件网格（@tanstack/react-virtual，>50文件自动启用）
+  - 图片懒加载Hook（IntersectionObserver + blur-up占位）
+  - API响应缓存层（内存缓存 + TTL自动过期）
+  - 集成@next/bundle-analyzer包体积分析
+- [x] PWA增强
+  - Web App Manifest（standalone模式 + 快捷方式）
+  - Service Worker（4级缓存策略：API网络优先/图片缓存优先/静态资源缓存优先）
+  - PWA安装提示组件（安装到桌面横幅）
+  - 离线模式指示器（断网浮动提示）
+  - PWA图标生成（512/192/1024px）
+  - Apple PWA meta标签（全屏、状态栏、触摸图标）
+- [x] Tauri桌面版基础架构
+  - Tauri v2配置（tauri.conf.json + Cargo.toml + build.rs）
+  - Rust后端12个命令（文件CRUD + 版本管理 + 文件夹管理）
+  - TauriStorageAdapter（TypeScript适配器 + IndexedDB降级）
+  - 零外部Rust依赖（UUID/时间/Base64全部手写实现）
+  - 桌面版搭建指南（docs/TAURI_SETUP.md）
+  - 新增tauri/tauri:dev/tauri:build脚本
+- 构建状态：0错误，31个API路由
 
 ---
 

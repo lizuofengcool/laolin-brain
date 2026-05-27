@@ -1,12 +1,17 @@
 "use client";
 
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useRef, useMemo, useCallback } from "react";
+import dynamic from "next/dynamic";
 import { useAppStore, type ViewType } from "@/stores/app-store";
 import type { FileData } from "@/lib/storage/base";
+
+// ─── Core layout & auth (static — used every page load) ───
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Header } from "@/components/layout/Header";
 import { MobileNav } from "@/components/layout/MobileNav";
 import { LoginForm } from "@/components/auth/LoginForm";
+
+// ─── Core UI components (static — used frequently) ───
 import { StatsCard } from "@/components/dashboard/StatsCard";
 import { RecentFiles } from "@/components/dashboard/RecentFiles";
 import { FileGrid } from "@/components/files/FileGrid";
@@ -14,28 +19,71 @@ import { FolderTree } from "@/components/files/FolderTree";
 import { UploadZone } from "@/components/files/UploadZone";
 import { FilePreview } from "@/components/files/FilePreview";
 import { FileVersions } from "@/components/files/FileVersions";
-import { ImageLightbox } from "@/components/files/ImageLightbox";
 import { SearchBar } from "@/components/search/SearchBar";
 import { SearchResults } from "@/components/search/SearchResults";
 import { StorageSwitch } from "@/components/settings/StorageSwitch";
 import { BackupRestore } from "@/components/settings/BackupRestore";
 import { ThemeCustomizer } from "@/components/settings/ThemeCustomizer";
-import AutomationRules from "@/components/settings/AutomationRules";
-import { VoiceNote } from "@/components/voice/VoiceNote";
 import { ShortcutHelpPanel } from "@/components/help/ShortcutHelpPanel";
 import { BatchActions } from "@/components/files/BatchActions";
-import { AIChatPanel } from "@/components/ai/AIChatPanel";
-import { TimelineView } from "@/components/timeline/TimelineView";
 import { SortFilter } from "@/components/files/SortFilter";
-import StorageCharts from "@/components/dashboard/StorageCharts";
-import AnalyticsDashboard from "@/components/dashboard/AnalyticsDashboard";
-import AlbumView from "@/components/album/AlbumView";
-import FaceGroups from "@/components/album/FaceGroups";
-import FaceGroupPhotos from "@/components/album/FaceGroupPhotos";
-import TagManagement from "@/components/tags/TagManagement";
-import { KnowledgeGraphView } from "@/components/graph/KnowledgeGraph";
+import { VirtualFileGrid } from "@/components/files/VirtualFileGrid";
+
+// ─── Heavy / seldom-used views (code-split via dynamic import) ───
+const TimelineView = dynamic(
+  () => import("@/components/timeline/TimelineView").then((m) => ({ default: m.TimelineView })),
+  { loading: () => <Skeleton className="h-64 rounded-lg" /> }
+);
+const AnalyticsDashboard = dynamic(
+  () => import("@/components/dashboard/AnalyticsDashboard"),
+  { loading: () => <Skeleton className="h-64 rounded-lg" /> }
+);
+const StorageCharts = dynamic(
+  () => import("@/components/dashboard/StorageCharts"),
+  { loading: () => <Skeleton className="h-48 rounded-lg" /> }
+);
+const KnowledgeGraphView = dynamic(
+  () => import("@/components/graph/KnowledgeGraph").then((m) => ({ default: m.KnowledgeGraphView })),
+  { loading: () => <Skeleton className="h-64 rounded-lg" /> }
+);
+const AIChatPanel = dynamic(
+  () => import("@/components/ai/AIChatPanel").then((m) => ({ default: m.AIChatPanel })),
+  { ssr: false }
+);
+const VoiceNote = dynamic(
+  () => import("@/components/voice/VoiceNote").then((m) => ({ default: m.VoiceNote })),
+  { ssr: false }
+);
+const ImageLightbox = dynamic(
+  () => import("@/components/files/ImageLightbox").then((m) => ({ default: m.ImageLightbox })),
+  { ssr: false }
+);
+const FaceGroups = dynamic(
+  () => import("@/components/album/FaceGroups"),
+  { loading: () => <Skeleton className="h-64 rounded-lg" /> }
+);
+const FaceGroupPhotos = dynamic(
+  () => import("@/components/album/FaceGroupPhotos"),
+  { loading: () => <Skeleton className="h-64 rounded-lg" /> }
+);
+const TagManagement = dynamic(
+  () => import("@/components/tags/TagManagement"),
+  { loading: () => <Skeleton className="h-64 rounded-lg" /> }
+);
+const AlbumView = dynamic(
+  () => import("@/components/album/AlbumView"),
+  { loading: () => <Skeleton className="h-64 rounded-lg" /> }
+);
+const AutomationRules = dynamic(
+  () => import("@/components/settings/AutomationRules"),
+  { loading: () => <Skeleton className="h-48 rounded-lg" /> }
+);
+
+// ─── Hooks & utilities ───
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { getStorageAdapter } from "@/lib/storage/factory";
+
+// ─── UI primitives (tree-shaken) ───
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -533,10 +581,15 @@ function FilesView() {
             filteredCount={sortedFiles.length}
           />
           <div className="mt-3">
-            <FileGrid files={visibleFiles} onPreview={handlePreview} onShowVersions={handleShowVersions} />
+            {sortedFiles.length > 50 ? (
+              <VirtualFileGrid files={sortedFiles} onPreview={handlePreview} onShowVersions={handleShowVersions} />
+            ) : (
+              <FileGrid files={visibleFiles} onPreview={handlePreview} onShowVersions={handleShowVersions} />
+            )}
           </div>
 
-          {hasMore && (
+          {/* Only show "load more" when not using virtual grid */}
+          {hasMore && sortedFiles.length <= 50 && (
             <div className="flex justify-center mt-6">
               <Button
                 variant="outline"
