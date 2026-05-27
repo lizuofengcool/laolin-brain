@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { FileData } from "@/lib/storage/base";
 import { getStorageAdapter, resetAdapter } from "@/lib/storage/factory";
 
-export type ViewType = "login" | "dashboard" | "files" | "search" | "settings" | "timeline" | "favorites" | "recycleBin" | "albums" | "tags";
+export type ViewType = "login" | "dashboard" | "files" | "search" | "settings" | "timeline" | "favorites" | "recycleBin" | "albums" | "tags" | "analytics" | "knowledgeGraph";
 
 export interface UserInfo {
   id: string;
@@ -103,6 +103,13 @@ interface AppState {
 
   // Data export
   exportData: () => Promise<string>;
+
+  // Data import
+  importData: (jsonData: string) => Promise<number>;
+
+  // Drag & drop
+  reorderFiles: (fromIndex: number, toIndex: number) => void;
+  moveFileToFolder: (fileId: string, folderId: string | null) => Promise<void>;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -147,6 +154,27 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (token && userStr) {
       try {
         const user = JSON.parse(userStr);
+
+        // Verify token is still valid (check expiry)
+        // Simple client-side check: parse the base64 payload and check exp
+        try {
+          const parts = token.split(".");
+          if (parts.length === 2) {
+            const payload = JSON.parse(atob(parts[0].replace(/-/g, "+").replace(/_/g, "/")));
+            if (payload.exp && Date.now() > payload.exp) {
+              // Token expired
+              localStorage.removeItem("kb_token");
+              localStorage.removeItem("kb_user");
+              return;
+            }
+          }
+        } catch {
+          // Token format invalid, clear it
+          localStorage.removeItem("kb_token");
+          localStorage.removeItem("kb_user");
+          return;
+        }
+
         set({
           user,
           token,
@@ -404,6 +432,29 @@ export const useAppStore = create<AppState>((set, get) => ({
   addFolder: (folder) => set((s) => ({ folders: [...s.folders, folder] })),
   removeFolder: (id) => set((s) => ({ folders: s.folders.filter((f) => f.id !== id) })),
 
+  // Drag & drop: reorder files within a list
+  reorderFiles: (fromIndex: number, toIndex: number) => {
+    set((s) => {
+      const newFiles = [...s.files];
+      const [moved] = newFiles.splice(fromIndex, 1);
+      newFiles.splice(toIndex, 0, moved);
+      return { files: newFiles };
+    });
+  },
+
+  // Drag & drop: move file to folder
+  moveFileToFolder: async (fileId: string, folderId: string | null) => {
+    const { user, storageMode } = get();
+    if (!user) return;
+    get().updateFile(fileId, { folderId: folderId || undefined });
+    try {
+      const adapter = getStorageAdapter(storageMode);
+      await adapter.updateFile(fileId, { folderId: folderId || null } as Partial<import("@/lib/storage/base").FileData>, user.id);
+    } catch (err) {
+      console.error("Failed to move file to folder:", err);
+    }
+  },
+
   refreshFolders: async () => {
     const { user, storageMode } = get();
     if (!user) return;
@@ -427,7 +478,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } else {
       try {
-        const res = await fetch(`/api/folders?userId=${user.id}`);
+        const token = get().token;
+        const headers: Record<string, string> = {};
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        const res = await fetch(`/api/folders?userId=${user.id}`, { headers });
         if (res.ok) {
           const folders = await res.json();
           set({ folders });
@@ -459,5 +513,77 @@ export const useAppStore = create<AppState>((set, get) => ({
       folders,
     };
     return JSON.stringify(exportObj, null, 2);
+  },
+
+  // Data import
+  importData: async (jsonData: string) => {
+    const { user, storageMode } = get();
+    if (!user) return 0;
+
+    try {
+      const parsed = JSON.parse(jsonData);
+      if (!parsed.files || !Array.isArray(parsed.files)) {
+        throw new Error("Invalid data format");
+      }
+
+      if (storageMode === "cloud" && user) {
+        // Cloud mode: use API
+        const res = await fetch("/api/files/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId: user.id,
+            files: parsed.files,
+            folders: parsed.folders || [],
+          }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          // Refresh files to include imported ones
+          get().refreshFiles();
+          get().refreshFolders();
+          return data.importedCount || 0;
+        }
+        return 0;
+      } else {
+        // Local mode: use IndexedDB directly
+        const { openDB } = await import("idb");
+        const db = await openDB("knowledge-base-db", 1);
+        let count = 0;
+
+        for (const file of parsed.files) {
+          if (!file.fileName) continue;
+
+          // Check if already exists
+          const existing = await db.get("files", file.id);
+          if (existing) continue;
+
+          const fileData = {
+            id: file.id || `imported_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+            fileName: file.fileName,
+            fileType: file.fileType || "other",
+            fileSize: file.fileSize || 0,
+            textContent: file.textContent || undefined,
+            tags: file.tags || [],
+            isFavorite: file.isFavorite || false,
+            storageMode: "local" as const,
+            folderId: file.folderId || undefined,
+            createdAt: file.createdAt ? new Date(file.createdAt) : new Date(),
+            userId: user.id,
+          };
+
+          await db.put("files", fileData);
+          count++;
+        }
+
+        // Refresh files
+        get().refreshFiles();
+        return count;
+      }
+    } catch (err) {
+      console.error("Import failed:", err);
+      throw err;
+    }
   },
 }));

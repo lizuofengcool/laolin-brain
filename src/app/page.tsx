@@ -13,17 +13,22 @@ import { FileGrid } from "@/components/files/FileGrid";
 import { FolderTree } from "@/components/files/FolderTree";
 import { UploadZone } from "@/components/files/UploadZone";
 import { FilePreview } from "@/components/files/FilePreview";
+import { FileVersions } from "@/components/files/FileVersions";
 import { ImageLightbox } from "@/components/files/ImageLightbox";
 import { SearchBar } from "@/components/search/SearchBar";
 import { SearchResults } from "@/components/search/SearchResults";
 import { StorageSwitch } from "@/components/settings/StorageSwitch";
+import AutomationRules from "@/components/settings/AutomationRules";
 import { AIChatPanel } from "@/components/ai/AIChatPanel";
 import { TimelineView } from "@/components/timeline/TimelineView";
 import { SortFilter } from "@/components/files/SortFilter";
 import StorageCharts from "@/components/dashboard/StorageCharts";
+import AnalyticsDashboard from "@/components/dashboard/AnalyticsDashboard";
 import AlbumView from "@/components/album/AlbumView";
 import TagManagement from "@/components/tags/TagManagement";
+import { KnowledgeGraphView } from "@/components/graph/KnowledgeGraph";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { getStorageAdapter } from "@/lib/storage/factory";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -48,6 +53,8 @@ import {
   StarOff,
   FolderInput,
   ArrowUpDown,
+  BarChart3,
+  Zap,
 } from "lucide-react";
 import { getFileColor, formatSize, FileIconDisplay } from "@/lib/file-utils";
 import { cn } from "@/lib/utils";
@@ -147,7 +154,6 @@ function LoginView() {
 // ─── Dashboard View ──────────────────────────────────────────
 function DashboardView() {
   const { files, user, setCurrentView, setFileTypeFilter } = useAppStore();
-
   const activeFiles = useMemo(() => files.filter((f) => !f.isDeleted), [files]);
   const docCount = useMemo(() => activeFiles.filter((f) => f.fileType === "word" || f.fileType === "pdf" || f.fileType === "pptx").length, [activeFiles]);
   const imageCount = useMemo(() => activeFiles.filter((f) => f.fileType === "image").length, [activeFiles]);
@@ -222,6 +228,18 @@ function DashboardView() {
       {/* Charts */}
       <StorageCharts files={activeFiles} />
 
+      {/* View Analytics Button */}
+      <div className="flex justify-center">
+        <Button
+          variant="outline"
+          onClick={() => setCurrentView("analytics")}
+          className="gap-2"
+        >
+          <BarChart3 className="h-4 w-4" />
+          查看详细分析
+        </Button>
+      </div>
+
       {/* Recent files */}
       <RecentFiles />
     </div>
@@ -249,16 +267,24 @@ function FilesView() {
     setSort,
     folders,
     updateFile,
+    refreshFiles,
   } = useAppStore();
   const [previewFile, setPreviewFile] = useState<FileData | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(20);
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false);
+  const [versionFile, setVersionFile] = useState<FileData | null>(null);
+  const [versionsOpen, setVersionsOpen] = useState(false);
 
   const handlePreview = (file: FileData) => {
     setPreviewFile(file);
     setPreviewOpen(true);
+  };
+
+  const handleShowVersions = (file: FileData) => {
+    setVersionFile(file);
+    setVersionsOpen(true);
   };
 
   const handleFolderSelect = (folderId: string | null) => {
@@ -482,7 +508,7 @@ function FilesView() {
             filteredCount={sortedFiles.length}
           />
           <div className="mt-3">
-            <FileGrid files={visibleFiles} onPreview={handlePreview} />
+            <FileGrid files={visibleFiles} onPreview={handlePreview} onShowVersions={handleShowVersions} />
           </div>
 
           {hasMore && (
@@ -505,6 +531,13 @@ function FilesView() {
         onClose={() => setPreviewOpen(false)}
       />
 
+      {/* File versions dialog */}
+      <FileVersions
+        file={versionFile}
+        open={versionsOpen}
+        onClose={() => setVersionsOpen(false)}
+      />
+
       <ConfirmDialog
         open={batchDeleteConfirm}
         title="批量删除文件"
@@ -518,17 +551,26 @@ function FilesView() {
 
 // ─── Search View ─────────────────────────────────────────────
 function SearchView() {
-  const { searchQuery, setSearchQuery, aiChatFile, setAiChatFile } = useAppStore();
+  const { searchQuery, setSearchQuery, aiChatFile, setAiChatFile, files } = useAppStore();
   const [localQuery, setLocalQuery] = useState("");
   const [searchTrigger, setSearchTrigger] = useState(0);
   const [previewFile, setPreviewFile] = useState<FileData | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Collect all tags and file names for suggestions
+  const allSuggestions = useMemo(() => {
+    const tags = [...new Set(files.filter((f) => !f.isDeleted).flatMap((f) => f.tags))];
+    const names = files.filter((f) => !f.isDeleted).map((f) => f.fileName);
+    return [...tags, ...names];
+  }, [files]);
+
   // Sync from store (e.g. when navigating from header search)
-  useEffect(() => {
-    if (searchQuery) setLocalQuery(searchQuery);
-  }, [searchQuery]);
+  const [prevSearchQuery, setPrevSearchQuery] = useState(searchQuery);
+  if (searchQuery !== prevSearchQuery) {
+    setPrevSearchQuery(searchQuery);
+    setLocalQuery(searchQuery);
+  }
 
   const handleSearch = () => {
     setSearchQuery(localQuery);
@@ -559,6 +601,7 @@ function SearchView() {
           value={localQuery}
           onChange={handleChange}
           onSearch={handleSearch}
+          suggestions={allSuggestions}
         />
       </div>
 
@@ -581,11 +624,13 @@ function SearchView() {
 
 // ─── Favorites View ──────────────────────────────────────────
 function FavoritesView() {
-  const { files } = useAppStore();
+  const { files, refreshFiles } = useAppStore();
   const [previewFile, setPreviewFile] = useState<FileData | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [visibleCount, setVisibleCount] = useState(20);
   const [sortBy, setSortBy] = useState<"date" | "name">("date");
+  const [versionFile, setVersionFile] = useState<FileData | null>(null);
+  const [versionsOpen, setVersionsOpen] = useState(false);
 
   const favFiles = useMemo(() => {
     const sorted = files.filter((f) => f.isFavorite && !f.isDeleted);
@@ -603,6 +648,11 @@ function FavoritesView() {
   const handlePreview = (file: FileData) => {
     setPreviewFile(file);
     setPreviewOpen(true);
+  };
+
+  const handleShowVersions = (file: FileData) => {
+    setVersionFile(file);
+    setVersionsOpen(true);
   };
 
   return (
@@ -637,14 +687,14 @@ function FavoritesView() {
         </div>
       ) : (
         <>
-          <FileGrid files={visibleFiles} onPreview={handlePreview} />
+          <FileGrid files={visibleFiles} onPreview={handlePreview} onShowVersions={handleShowVersions} />
           {hasMore && (
             <div className="flex justify-center mt-6">
               <Button
                 variant="outline"
                 onClick={() => setVisibleCount((prev) => prev + 20)}
               >
-                加载更多（剩余 {favFiles.length - visibleCount} 个文件）
+                加载更多（剩余 {favFiles.length - visibleFiles.length} 个文件）
               </Button>
             </div>
           )}
@@ -655,6 +705,12 @@ function FavoritesView() {
         file={previewFile}
         open={previewOpen}
         onClose={() => setPreviewOpen(false)}
+      />
+
+      <FileVersions
+        file={versionFile}
+        open={versionsOpen}
+        onClose={() => setVersionsOpen(false)}
       />
     </div>
   );
@@ -849,8 +905,13 @@ function RecycleBinView() {
 
 // ─── Settings View ───────────────────────────────────────────
 function SettingsView() {
-  const { user, exportData } = useAppStore();
+  const { user, exportData, importData, storageMode } = useAppStore();
   const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const jsonInputRef = useRef<HTMLInputElement>(null);
+  const [batchDragOver, setBatchDragOver] = useState(false);
 
   const handleExport = async () => {
     setExporting(true);
@@ -943,6 +1004,139 @@ function SettingsView() {
             <Download className="h-4 w-4 mr-2" />
             {exporting ? "导出中..." : "导出数据 (JSON)"}
           </Button>
+        </CardContent>
+      </Card>
+
+      {/* Data Import */}
+      <Card className="shadow-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base font-semibold flex items-center gap-2">
+            <FolderInput className="h-4 w-4" />
+            数据导入
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            从之前导出的 JSON 文件恢复数据，或批量导入文件到知识库。
+          </p>
+
+          {/* JSON Import */}
+          <div className="space-y-2">
+            <span className="text-sm font-medium">JSON 导入</span>
+            <p className="text-xs text-muted-foreground">上传之前导出的 JSON 备份文件，恢复文件元数据。</p>
+            <input
+              ref={jsonInputRef}
+              type="file"
+              accept=".json"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                setImporting(true);
+                setImportResult(null);
+                setImportError(null);
+                try {
+                  const text = await file.text();
+                  const count = await importData(text);
+                  setImportResult(`成功导入 ${count} 个文件`);
+                } catch {
+                  setImportError("导入失败：文件格式不正确");
+                } finally {
+                  setImporting(false);
+                  if (jsonInputRef.current) jsonInputRef.current.value = "";
+                }
+              }}
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => jsonInputRef.current?.click()}
+              disabled={importing}
+            >
+              <FolderInput className="h-4 w-4 mr-2" />
+              {importing ? "导入中..." : "选择 JSON 文件"}
+            </Button>
+          </div>
+
+          <Separator />
+
+          {/* Batch Import */}
+          <div className="space-y-2">
+            <span className="text-sm font-medium">批量导入</span>
+            <p className="text-xs text-muted-foreground">拖拽文件到下方区域进行批量上传（仅支持 {storageMode === "cloud" ? "云端" : "本地"} 模式）。</p>
+            <div
+              className={cn(
+                "border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer",
+                batchDragOver
+                  ? "border-primary bg-primary/5"
+                  : "border-muted-foreground/25 hover:border-muted-foreground/50"
+              )}
+              onDragOver={(e) => { e.preventDefault(); setBatchDragOver(true); }}
+              onDragLeave={() => setBatchDragOver(false)}
+              onDrop={async (e) => {
+                e.preventDefault();
+                setBatchDragOver(false);
+                const droppedFiles = Array.from(e.dataTransfer.files);
+                if (droppedFiles.length === 0) return;
+                setImporting(true);
+                setImportResult(null);
+                setImportError(null);
+                try {
+                  let count = 0;
+                  for (const f of droppedFiles) {
+                    try {
+                      const adapter = getStorageAdapter(storageMode);
+                      await adapter.uploadFile(f, user!.id);
+                      count++;
+                    } catch (err) {
+                      console.error(`Failed to import ${f.name}:`, err);
+                    }
+                  }
+                  useAppStore.getState().refreshFiles();
+                  setImportResult(`成功导入 ${count} / ${droppedFiles.length} 个文件`);
+                } catch {
+                  setImportError("批量导入失败");
+                } finally {
+                  setImporting(false);
+                }
+              }}
+            >
+              <FolderInput className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">
+                {importing ? "导入中..." : "拖拽文件到这里，或点击选择文件"}
+              </p>
+            </div>
+          </div>
+
+          {/* Import result */}
+          {importResult && (
+            <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+              <CheckSquare className="h-4 w-4" />
+              {importResult}
+            </div>
+          )}
+          {importError && (
+            <div className="flex items-center gap-2 text-sm text-destructive">
+              <X className="h-4 w-4" />
+              {importError}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Automation Rules */}
+      <Card className="shadow-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base font-semibold flex items-center gap-2">
+            <Zap className="h-4 w-4" />
+            自动化规则
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            配置自动化规则，让知识库自动管理你的文件。支持自动标签、自动分类、回收站清理等功能。
+          </p>
+          <AutomationRules />
         </CardContent>
       </Card>
 
@@ -1065,6 +1259,18 @@ export default function Home() {
         return (
           <motion.div key="tags" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
             <TagManagement />
+          </motion.div>
+        );
+      case "analytics":
+        return (
+          <motion.div key="analytics" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
+            <AnalyticsDashboard />
+          </motion.div>
+        );
+      case "knowledgeGraph":
+        return (
+          <motion.div key="knowledgeGraph" variants={viewVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.25 }}>
+            <KnowledgeGraphView />
           </motion.div>
         );
       default:

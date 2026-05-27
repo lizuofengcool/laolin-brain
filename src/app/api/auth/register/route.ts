@@ -1,16 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-
-// Simple hash function for passwords
-function simpleHash(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0;
-  }
-  return Math.abs(hash).toString(36);
-}
+import { hashPassword, generateToken } from "@/lib/auth";
 
 export async function POST(request: NextRequest) {
   try {
@@ -32,16 +22,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const hashedPassword = await hashPassword(password);
+
     const user = await db.user.create({
       data: {
         email,
         name,
-        password: simpleHash(password),
+        password: hashedPassword,
       },
     });
 
-    // Simple token
-    const token = Buffer.from(`${user.id}:${user.email}`).toString("base64");
+    // Generate secure token
+    const token = generateToken({ id: user.id, email: user.email });
 
     return NextResponse.json({
       user: { id: user.id, name: user.name, email: user.email, storageMode: user.storageMode },

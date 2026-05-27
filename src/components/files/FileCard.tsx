@@ -1,6 +1,6 @@
 "use client";
 
-import React, { memo } from "react";
+import React, { memo, useState, useRef, useCallback } from "react";
 import type { FileData } from "@/lib/storage/base";
 import {
   Star,
@@ -12,6 +12,8 @@ import {
   Pencil,
   Check,
   Maximize2,
+  History,
+  Share2,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -33,27 +35,45 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { useFileActions } from "./useFileActions";
-import { getFileColor, formatSize, FileIconDisplay } from "@/lib/file-utils";
+import { useAppStore } from "@/stores/app-store";
+import { getFileColor, formatSize, getFileTypeBadge, isDocumentType, FileIconDisplay } from "@/lib/file-utils";
+import { ShareDialog } from "./ShareDialog";
 import { motion } from "framer-motion";
+import { useSwipeLeft, useLongPress, useSwipeRight, isTouchDevice } from "@/hooks/use-gestures";
+
+export type CardSize = "small" | "medium" | "large";
 
 interface FileCardProps {
   file: FileData;
   onPreview: (file: FileData) => void;
+  cardSize?: CardSize;
+  onShowVersions?: (file: FileData) => void;
 }
+
+const previewHeightMap: Record<CardSize, string> = {
+  small: "h-28",
+  medium: "h-36",
+  large: "h-48",
+};
 
 const areFileCardPropsEqual = (prev: FileCardProps, next: FileCardProps) => {
   const f1 = prev.file, f2 = next.file;
   if (f1.id !== f2.id || f1.fileName !== f2.fileName || f1.fileType !== f2.fileType ||
       f1.fileSize !== f2.fileSize || f1.thumbnailUrl !== f2.thumbnailUrl ||
-      f1.isFavorite !== f2.isFavorite || prev.onPreview !== next.onPreview) return false;
+      f1.isFavorite !== f2.isFavorite || prev.onPreview !== next.onPreview ||
+      prev.cardSize !== next.cardSize) return false;
   if (f1.tags.length !== f2.tags.length) return false;
   for (let i = 0; i < f1.tags.length; i++) {
     if (f1.tags[i] !== f2.tags[i]) return false;
   }
+  if (f1.textContent !== f2.textContent) return false;
   return true;
 };
 
-export const FileCard = memo(function FileCard({ file, onPreview }: FileCardProps) {
+export const FileCard = memo(function FileCard({ file, onPreview, cardSize = "medium", onShowVersions }: FileCardProps) {
+  const [shareOpen, setShareOpen] = useState(false);
+  const [longPressActive, setLongPressActive] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
   const {
     tagDialogOpen, setTagDialogOpen, tagInput, setTagInput,
     folderDialogOpen, setFolderDialogOpen, selectedFolderId, setSelectedFolderId,
@@ -68,6 +88,31 @@ export const FileCard = memo(function FileCard({ file, onPreview }: FileCardProp
   } = useFileActions(file);
 
   const colorClass = getFileColor(file.fileType);
+  const typeBadge = getFileTypeBadge(file.fileType);
+  const isDoc = isDocumentType(file.fileType);
+  const previewHeight = previewHeightMap[cardSize];
+
+  // Long press on mobile enters batch selection mode
+  const handleLongPress = useCallback(() => {
+    const state = useAppStore.getState();
+    if (!state.batchMode) {
+      state.toggleBatchMode();
+      state.toggleBatchSelect(file.id);
+    } else {
+      state.toggleBatchSelect(file.id);
+    }
+  }, [file.id]);
+
+  useLongPress(cardRef, handleLongPress, { delay: 500 });
+
+  // Content preview for documents
+  const contentPreview = React.useMemo(() => {
+    if (!isDoc || !file.textContent) return null;
+    const lines = file.textContent.split("\n").filter((l) => l.trim().length > 0);
+    const previewLines = cardSize === "large" ? lines.slice(0, 3) : lines.slice(0, 2);
+    const previewText = previewLines.join("\n").slice(0, cardSize === "large" ? 120 : 80);
+    return previewText;
+  }, [isDoc, file.textContent, cardSize]);
 
   const onCardClick = () => {
     const result = handleCardClick();
@@ -83,9 +128,11 @@ export const FileCard = memo(function FileCard({ file, onPreview }: FileCardProp
         transition={{ duration: 0.2 }}
       >
         <Card
+          ref={cardRef}
           className={cn(
             "group cursor-pointer hover:shadow-md transition-all duration-200 overflow-hidden relative",
-            batchMode && isSelected && "ring-2 ring-primary ring-offset-2"
+            batchMode && isSelected && "ring-2 ring-primary ring-offset-2",
+            longPressActive && "scale-95"
           )}
           onClick={onCardClick}
         >
@@ -108,18 +155,34 @@ export const FileCard = memo(function FileCard({ file, onPreview }: FileCardProp
           {/* Preview area */}
           <div
             className={cn(
-              "h-36 flex items-center justify-center relative",
+              previewHeight,
+              "flex items-center justify-center relative",
               isImage
                 ? "bg-muted/30"
                 : "bg-muted/50"
             )}
           >
             {isImage ? (
-              <img
-                src={file.thumbnailUrl || file.previewUrl}
-                alt={file.fileName}
-                className="w-full h-full object-cover"
-              />
+              <>
+                <img
+                  src={file.thumbnailUrl || file.previewUrl}
+                  alt={file.fileName}
+                  className="w-full h-full object-cover"
+                />
+                {/* Tag overlay on images - bottom left */}
+                {file.tags.length > 0 && (
+                  <div className="absolute bottom-2 left-2 flex flex-wrap gap-1 pointer-events-none">
+                    {file.tags.slice(0, 2).map((tag) => (
+                      <span
+                        key={tag}
+                        className="text-[10px] px-1.5 py-0.5 rounded bg-black/50 text-white/90 backdrop-blur-sm"
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </>
             ) : (
               <div
                 className={cn(
@@ -131,9 +194,21 @@ export const FileCard = memo(function FileCard({ file, onPreview }: FileCardProp
               </div>
             )}
 
+            {/* File type badge - top left */}
+            <div className="absolute top-2 left-2 pointer-events-none">
+              <span
+                className={cn(
+                  "text-[9px] font-semibold px-1.5 py-0.5 rounded border",
+                  typeBadge.color
+                )}
+              >
+                {typeBadge.label}
+              </span>
+            </div>
+
             {/* AI badge */}
             {hasAITags && (
-              <div className="absolute top-2 left-2">
+              <div className="absolute top-2 left-2" style={{ left: "auto", right: isImage ? "auto" : undefined }}>
                 <Badge
                   variant="secondary"
                   className="text-[10px] bg-primary/90 text-primary-foreground hover:bg-primary/90 gap-1"
@@ -205,6 +280,16 @@ export const FileCard = memo(function FileCard({ file, onPreview }: FileCardProp
                     <FolderInput className="h-4 w-4 mr-2" />
                     移动到文件夹
                   </DropdownMenuItem>
+                  {onShowVersions && (
+                    <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onShowVersions(file); }}>
+                      <History className="h-4 w-4 mr-2" />
+                      版本历史
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setShareOpen(true); }}>
+                    <Share2 className="h-4 w-4 mr-2" />
+                    分享链接
+                  </DropdownMenuItem>
                   <DropdownMenuItem
                     className="text-destructive"
                     onClick={(e) => {
@@ -228,7 +313,7 @@ export const FileCard = memo(function FileCard({ file, onPreview }: FileCardProp
                 {formatSize(file.fileSize)}
               </span>
               <div className="flex gap-1">
-                {file.tags.slice(0, 2).map((tag) => (
+                {file.tags.slice(0, cardSize === "small" ? 1 : 2).map((tag) => (
                   <Badge
                     key={tag}
                     variant="secondary"
@@ -239,8 +324,17 @@ export const FileCard = memo(function FileCard({ file, onPreview }: FileCardProp
                 ))}
               </div>
             </div>
-            {/* AI OCR text preview */}
-            {hasAITextContent && (
+            {/* Content preview snippet for documents */}
+            {contentPreview && (
+              <p className={cn(
+                "text-[10px] text-muted-foreground mt-1.5 leading-relaxed",
+                cardSize === "large" ? "line-clamp-3" : "line-clamp-2"
+              )}>
+                {contentPreview}
+              </p>
+            )}
+            {/* AI OCR text preview (for images only) */}
+            {!contentPreview && hasAITextContent && (
               <p className="text-[10px] text-muted-foreground mt-1 line-clamp-1">
                 {file.textContent!.slice(0, 50)}
               </p>
@@ -250,6 +344,11 @@ export const FileCard = memo(function FileCard({ file, onPreview }: FileCardProp
       </motion.div>
 
       {/* Dialogs */}
+      <ShareDialog
+        file={{ id: file.id, fileName: file.fileName }}
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+      />
       <FileActionDialogs
         tagDialogOpen={tagDialogOpen} setTagDialogOpen={setTagDialogOpen}
         tagInput={tagInput} setTagInput={setTagInput} handleSaveTags={handleSaveTags}
@@ -395,7 +494,16 @@ function FileActionDialogs({
 }
 
 // List item variant
-export const FileListItem = memo(function FileListItem({ file, onPreview }: FileCardProps) {
+export interface FileListItemProps {
+  file: FileData;
+  onPreview: (file: FileData) => void;
+  onShowVersions?: (file: FileData) => void;
+}
+
+export const FileListItem = memo(function FileListItem({ file, onPreview, onShowVersions }: FileListItemProps) {
+  const [shareOpen, setShareOpen] = useState(false);
+  const [swiped, setSwiped] = useState(false);
+  const listItemRef = useRef<HTMLDivElement>(null);
   const {
     tagDialogOpen, setTagDialogOpen, tagInput, setTagInput,
     folderDialogOpen, setFolderDialogOpen, selectedFolderId, setSelectedFolderId,
@@ -410,6 +518,27 @@ export const FileListItem = memo(function FileListItem({ file, onPreview }: File
   } = useFileActions(file);
 
   const colorClass = getFileColor(file.fileType);
+  const typeBadge = getFileTypeBadge(file.fileType);
+  const isDoc = isDocumentType(file.fileType);
+
+  // Swipe left to reveal action buttons on mobile
+  const showSwipeActions = useCallback(() => {
+    setSwiped(true);
+  }, []);
+
+  const hideSwipeActions = useCallback(() => {
+    setSwiped(false);
+  }, []);
+
+  useSwipeLeft(listItemRef, showSwipeActions, { threshold: 40 });
+  useSwipeRight(listItemRef, hideSwipeActions, { threshold: 30 });
+
+  // Content preview for documents (first line)
+  const contentPreview = React.useMemo(() => {
+    if (!isDoc || !file.textContent) return null;
+    const firstLine = file.textContent.split("\n").find((l) => l.trim().length > 0);
+    return firstLine ? firstLine.slice(0, 80) : null;
+  }, [isDoc, file.textContent]);
 
   const onItemClick = () => {
     const result = handleCardClick();
@@ -420,12 +549,41 @@ export const FileListItem = memo(function FileListItem({ file, onPreview }: File
 
   return (
     <>
+      <div className="relative overflow-hidden rounded-lg" ref={listItemRef}>
+        {/* Swipe action buttons overlay */}
+        <div
+          className={cn(
+            "absolute right-0 top-0 bottom-0 flex items-center z-20 transition-transform duration-200 md:hidden",
+            swiped ? "translate-x-0" : "translate-x-full"
+          )}
+        >
+          <button
+            className="h-full px-3 bg-yellow-500 text-white flex items-center justify-center min-w-[60px] active:bg-yellow-600"
+            onClick={(e) => { e.stopPropagation(); handleFavorite(); hideSwipeActions(); }}
+          >
+            <Star className={cn("h-4 w-4", file.isFavorite ? "fill-current" : "")} />
+          </button>
+          <button
+            className="h-full px-3 bg-destructive text-destructive-foreground flex items-center justify-center min-w-[60px] active:bg-destructive/90"
+            onClick={(e) => { e.stopPropagation(); handleDelete(); hideSwipeActions(); }}
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+          <button
+            className="h-full px-3 bg-muted-foreground/60 text-white flex items-center justify-center min-w-[50px] active:bg-muted-foreground/80"
+            onClick={(e) => { e.stopPropagation(); onPreview(file); hideSwipeActions(); }}
+          >
+            <MoreVertical className="h-4 w-4" />
+          </button>
+        </div>
+
       <div
         className={cn(
-          "flex items-center gap-3 p-3 rounded-lg hover:bg-muted/50 cursor-pointer transition-colors group",
-          batchMode && isSelected && "bg-primary/5 ring-1 ring-primary"
+          "flex items-center gap-3 p-3 rounded-lg hover:bg-muted/50 cursor-pointer transition-all duration-200 group",
+          batchMode && isSelected && "bg-primary/5 ring-1 ring-primary",
+          swiped && "-translate-x-[170px] md:translate-x-0"
         )}
-        onClick={onItemClick}
+        onClick={(e) => { onItemClick(); hideSwipeActions(); }}
       >
         {/* Batch checkbox */}
         {batchMode && (
@@ -440,21 +598,47 @@ export const FileListItem = memo(function FileListItem({ file, onPreview }: File
         )}
 
         {isImage ? (
-          <img src={file.thumbnailUrl || file.previewUrl} alt={file.fileName} className="h-10 w-10 rounded-md object-cover shrink-0" />
+          <div className="relative shrink-0">
+            <img src={file.thumbnailUrl || file.previewUrl} alt={file.fileName} className="h-10 w-10 rounded-md object-cover shrink-0" />
+            {/* Tag overlay on image thumbnails */}
+            {file.tags.length > 0 && (
+              <div className="absolute -bottom-1 -right-1 flex -space-x-0.5">
+                <span className="text-[8px] px-1 py-0 rounded bg-primary/90 text-primary-foreground leading-none">
+                  {file.tags.length > 1 ? `${file.tags.length}` : file.tags[0]}
+                </span>
+              </div>
+            )}
+          </div>
         ) : (
-          <div className={cn("h-10 w-10 rounded-lg flex items-center justify-center shrink-0", colorClass)}>
-            <FileIconDisplay fileType={file.fileType} className="h-5 w-5" />
+          <div className="h-10 w-10 rounded-lg flex items-center justify-center shrink-0" style={{ position: "relative" }}>
+            <div className={cn("h-10 w-10 rounded-lg flex items-center justify-center shrink-0", colorClass)}>
+              <FileIconDisplay fileType={file.fileType} className="h-5 w-5" />
+            </div>
           </div>
         )}
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
             <p className="text-sm font-medium truncate" title={file.fileName}>{file.fileName}</p>
+            <span
+              className={cn(
+                "text-[8px] font-semibold px-1 py-0 rounded border shrink-0 leading-none",
+                typeBadge.color
+              )}
+            >
+              {typeBadge.label}
+            </span>
             {hasAITags && <Sparkles className="h-3 w-3 text-primary shrink-0" />}
           </div>
           <p className="text-xs text-muted-foreground">
             {formatSize(file.fileSize)} · {new Date(file.createdAt).toLocaleDateString("zh-CN")}
           </p>
+          {/* Content preview snippet */}
+          {contentPreview && (
+            <p className="text-[10px] text-muted-foreground mt-0.5 truncate max-w-md">
+              {contentPreview}
+            </p>
+          )}
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
@@ -494,6 +678,14 @@ export const FileListItem = memo(function FileListItem({ file, onPreview }: File
                   <DropdownMenuItem onClick={handleMoveToFolder}>
                     <FolderInput className="h-4 w-4 mr-2" />移动到文件夹
                   </DropdownMenuItem>
+                  {onShowVersions && (
+                    <DropdownMenuItem onClick={() => onShowVersions(file)}>
+                      <History className="h-4 w-4 mr-2" />版本历史
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setShareOpen(true); }}>
+                    <Share2 className="h-4 w-4 mr-2" />分享链接
+                  </DropdownMenuItem>
                   <DropdownMenuItem className="text-destructive" onClick={handleDelete}>
                     <Trash2 className="h-4 w-4 mr-2" />删除
                   </DropdownMenuItem>
@@ -503,8 +695,14 @@ export const FileListItem = memo(function FileListItem({ file, onPreview }: File
           )}
         </div>
       </div>
+      </div>
 
       {/* Dialogs */}
+      <ShareDialog
+        file={{ id: file.id, fileName: file.fileName }}
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+      />
       <FileActionDialogs
         tagDialogOpen={tagDialogOpen} setTagDialogOpen={setTagDialogOpen}
         tagInput={tagInput} setTagInput={setTagInput} handleSaveTags={handleSaveTags}

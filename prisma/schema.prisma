@@ -35,10 +35,28 @@ model File {
   isDeleted    Boolean  @default(false)
   deletedAt    DateTime?
   fileHash     String?
+  summary      String?
+  keyPoints    String   @default("")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   folder       Folder?  @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  shares       FileShare[]
+  versions     FileVersion[]
+}
+
+model FileVersion {
+  id           String   @id @default(cuid())
+  fileId       String
+  fileName     String
+  fileSize     Int
+  filePath     String?
+  textContent  String?
+  thumbnailUrl String?
+  version      Int
+  createdAt    DateTime @default(now())
+  file         File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  @@index([fileId])
 }
 
 model Folder {
@@ -52,4 +70,15 @@ model Folder {
   files     File[]
   parent    Folder?  @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
   children  Folder[] @relation("FolderTree")
+}
+
+model FileShare {
+  id        String   @id @default(cuid())
+  fileId    String
+  token     String   @unique
+  password  String?
+  expiresAt DateTime?
+  createdAt DateTime @default(now())
+  file      File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  @@index([token])
 }

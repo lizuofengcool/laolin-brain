@@ -1,15 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-
-function simpleHash(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0;
-  }
-  return Math.abs(hash).toString(36);
-}
+import { verifyPassword, generateToken } from "@/lib/auth";
 
 export async function POST(request: NextRequest) {
   try {
@@ -24,14 +15,23 @@ export async function POST(request: NextRequest) {
     }
 
     const user = await db.user.findUnique({ where: { email } });
-    if (!user || user.password !== simpleHash(password)) {
+    if (!user || !user.password) {
       return NextResponse.json(
         { error: "Invalid email or password" },
         { status: 401 }
       );
     }
 
-    const token = Buffer.from(`${user.id}:${user.email}`).toString("base64");
+    const isValid = await verifyPassword(password, user.password);
+    if (!isValid) {
+      return NextResponse.json(
+        { error: "Invalid email or password" },
+        { status: 401 }
+      );
+    }
+
+    // Generate secure token
+    const token = generateToken({ id: user.id, email: user.email });
 
     return NextResponse.json({
       user: { id: user.id, name: user.name, email: user.email, storageMode: user.storageMode },

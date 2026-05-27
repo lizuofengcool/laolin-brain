@@ -1,5 +1,24 @@
 import type { StorageAdapter, FileData } from "./base";
 
+/**
+ * Get the current auth token from localStorage (client-side only).
+ */
+function getAuthToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("kb_token");
+}
+
+/**
+ * Build headers with Authorization token.
+ */
+function authHeaders(): Record<string, string> {
+  const token = getAuthToken();
+  if (token) {
+    return { "Authorization": `Bearer ${token}` };
+  }
+  return {};
+}
+
 export class ServerStorageAdapter implements StorageAdapter {
   private baseUrl: string;
 
@@ -21,10 +40,10 @@ export class ServerStorageAdapter implements StorageAdapter {
   }> {
     const formData = new FormData();
     formData.append("file", file);
-    formData.append("userId", userId);
 
     const res = await fetch(this.baseUrl, {
       method: "POST",
+      headers: authHeaders(),
       body: formData,
     });
     if (!res.ok) throw new Error("Upload failed");
@@ -32,19 +51,27 @@ export class ServerStorageAdapter implements StorageAdapter {
   }
 
   async deleteFile(fileId: string, _userId: string): Promise<void> {
-    await fetch(`${this.baseUrl}/${fileId}`, { method: "DELETE" });
+    await fetch(`${this.baseUrl}/${fileId}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
   }
 
   async getFile(fileId: string, _userId: string): Promise<FileData | null> {
-    const res = await fetch(`${this.baseUrl}/${fileId}`);
+    const res = await fetch(`${this.baseUrl}/${fileId}`, {
+      headers: authHeaders(),
+    });
     if (!res.ok) return null;
     return res.json();
   }
 
   async searchFiles(query: string, userId: string): Promise<FileData[]> {
-    const res = await fetch(
-      `/api/search?q=${encodeURIComponent(query)}&userId=${encodeURIComponent(userId)}`
-    );
+    const token = getAuthToken();
+    const url = `/api/search?q=${encodeURIComponent(query)}&userId=${encodeURIComponent(userId)}`;
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    const res = await fetch(url, { headers });
     if (!res.ok) return [];
     return res.json();
   }
@@ -56,13 +83,18 @@ export class ServerStorageAdapter implements StorageAdapter {
   ): Promise<void> {
     await fetch(`${this.baseUrl}/${fileId}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(data),
     });
   }
 
   async getFiles(userId: string): Promise<FileData[]> {
-    const res = await fetch(`${this.baseUrl}?userId=${encodeURIComponent(userId)}`);
+    const token = getAuthToken();
+    const url = `${this.baseUrl}?userId=${encodeURIComponent(userId)}`;
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    const res = await fetch(url, { headers });
     if (!res.ok) return [];
     return res.json();
   }

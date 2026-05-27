@@ -5,8 +5,8 @@ export async function parsePdf(buffer: Buffer): Promise<string> {
     const pdfParse = (pdfParseModule as any).default || pdfParseModule;
     const result = await pdfParse(buffer);
     return result.text || "";
-  } catch (e) {
-    console.error("PDF parse error:", e);
+  } catch (_e) {
+    console.error("PDF parse error:", _e);
     return "";
   }
 }

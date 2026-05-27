@@ -14,6 +14,8 @@ import {
   Trash2,
   ImageIcon,
   Tag,
+  BarChart3,
+  Network,
 } from "lucide-react";
 import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
@@ -31,6 +33,8 @@ const navItems: { icon: typeof LayoutDashboard; label: string; view: ViewType; b
   { icon: Tag, label: "标签管理", view: "tags" },
   { icon: Trash2, label: "回收站", view: "recycleBin", badge: () => 0 },
   { icon: Search, label: "搜索", view: "search" },
+  { icon: BarChart3, label: "分析", view: "analytics" },
+  { icon: Network, label: "知识图谱", view: "knowledgeGraph" },
   { icon: Settings, label: "设置", view: "settings" },
 ];
 

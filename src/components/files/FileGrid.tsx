@@ -1,40 +1,119 @@
 "use client";
 
+import { useState, useCallback } from "react";
 import type { FileData } from "@/lib/storage/base";
 import { useAppStore } from "@/stores/app-store";
-import { FileCard, FileListItem } from "./FileCard";
-import { LayoutGrid, List, File } from "lucide-react";
+import { FileCard, FileListItem, type CardSize } from "./FileCard";
+import { LayoutGrid, List, File, Minimize2, Maximize2, SquareDashedBottom } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 interface FileGridProps {
   files: FileData[];
   onPreview: (file: FileData) => void;
+  onShowVersions?: (file: FileData) => void;
 }
 
-export function FileGrid({ files, onPreview }: FileGridProps) {
+const gridColsMap: Record<CardSize, string> = {
+  small: "grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-5 xl:grid-cols-6",
+  medium: "grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5",
+  large: "grid-cols-1 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3",
+};
+
+const STORAGE_KEY_CARD_SIZE = "kb_card_size";
+
+function getInitialCardSize(): CardSize {
+  if (typeof window === "undefined") return "medium";
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_CARD_SIZE) as CardSize | null;
+    if (saved && ["small", "medium", "large"].includes(saved)) {
+      return saved;
+    }
+  } catch {
+    // ignore
+  }
+  return "medium";
+}
+
+export function FileGrid({ files, onPreview, onShowVersions }: FileGridProps) {
   const { fileViewMode, setFileViewMode } = useAppStore();
+
+  // Card size state with localStorage persistence (lazy init)
+  const [cardSize, setCardSizeState] = useState<CardSize>(getInitialCardSize);
+
+  const setCardSize = useCallback((size: CardSize) => {
+    setCardSizeState(size);
+    try {
+      localStorage.setItem(STORAGE_KEY_CARD_SIZE, size);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   return (
     <div>
-      {/* View toggle */}
+      {/* View toggle + card size */}
       <div className="flex items-center justify-end mb-4 gap-2">
-        <Button
-          variant={fileViewMode === "grid" ? "secondary" : "ghost"}
-          size="icon"
-          className="h-8 w-8"
-          onClick={() => setFileViewMode("grid")}
-        >
-          <LayoutGrid className="h-4 w-4" />
-        </Button>
-        <Button
-          variant={fileViewMode === "list" ? "secondary" : "ghost"}
-          size="icon"
-          className="h-8 w-8"
-          onClick={() => setFileViewMode("list")}
-        >
-          <List className="h-4 w-4" />
-        </Button>
+        {/* Card size selector (only in grid mode) */}
+        {fileViewMode === "grid" && (
+          <div className="flex items-center gap-1 bg-muted rounded-lg p-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn(
+                "h-7 w-7",
+                cardSize === "small" && "bg-background shadow-sm"
+              )}
+              onClick={() => setCardSize("small")}
+              title="小卡片"
+            >
+              <Minimize2 className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn(
+                "h-7 w-7",
+                cardSize === "medium" && "bg-background shadow-sm"
+              )}
+              onClick={() => setCardSize("medium")}
+              title="中卡片"
+            >
+              <SquareDashedBottom className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn(
+                "h-7 w-7",
+                cardSize === "large" && "bg-background shadow-sm"
+              )}
+              onClick={() => setCardSize("large")}
+              title="大卡片"
+            >
+              <Maximize2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        )}
+
+        <div className="flex items-center gap-1 bg-muted rounded-lg p-1">
+          <Button
+            variant={fileViewMode === "grid" ? "secondary" : "ghost"}
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => setFileViewMode("grid")}
+          >
+            <LayoutGrid className="h-4 w-4" />
+          </Button>
+          <Button
+            variant={fileViewMode === "list" ? "secondary" : "ghost"}
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => setFileViewMode("list")}
+          >
+            <List className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
       {files.length === 0 ? (
@@ -44,15 +123,26 @@ export function FileGrid({ files, onPreview }: FileGridProps) {
           <p className="text-xs mt-1">拖拽文件到此处或点击上传按钮</p>
         </div>
       ) : fileViewMode === "grid" ? (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+        <div className={cn("grid gap-4", gridColsMap[cardSize])}>
           {files.map((file) => (
-            <FileCard key={file.id} file={file} onPreview={onPreview} />
+            <FileCard
+              key={file.id}
+              file={file}
+              onPreview={onPreview}
+              cardSize={cardSize}
+              onShowVersions={onShowVersions}
+            />
           ))}
         </div>
       ) : (
         <div className="border rounded-lg divide-y">
           {files.map((file) => (
-            <FileListItem key={file.id} file={file} onPreview={onPreview} />
+            <FileListItem
+              key={file.id}
+              file={file}
+              onPreview={onPreview}
+              onShowVersions={onShowVersions}
+            />
           ))}
         </div>
       )}

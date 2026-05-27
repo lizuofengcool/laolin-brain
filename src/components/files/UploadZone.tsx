@@ -103,12 +103,18 @@ export function UploadZone({ className }: UploadZoneProps) {
 
           if (storageMode === "cloud") {
             // ─── Cloud Mode ─────────────────────────────
+            const token = useAppStore.getState().token;
             const formData = new FormData();
             formData.append("file", file);
-            formData.append("userId", user.id);
+
+            const headers: Record<string, string> = {};
+            if (token) {
+              headers["Authorization"] = `Bearer ${token}`;
+            }
 
             const res = await fetch("/api/files", {
               method: "POST",
+              headers,
               body: formData,
             });
 
@@ -258,6 +264,52 @@ export function UploadZone({ className }: UploadZoneProps) {
       }
 
       refreshFiles();
+
+      // Trigger automation rules after upload (fire-and-forget)
+      try {
+        const { loadRules, shouldAutoOrganize, getOrganizeRules } = await import("@/lib/automation/engine");
+        const automationRules = loadRules();
+        if (shouldAutoOrganize(automationRules)) {
+          const orgRules = getOrganizeRules(automationRules);
+          if (orgRules.length > 0) {
+            // Run auto-organize in background
+            setTimeout(async () => {
+              try {
+                const { getStorageAdapter } = await import("@/lib/storage/factory");
+                const adapter = getStorageAdapter(storageMode);
+                const currentFiles = useAppStore.getState().files;
+                for (const rule of orgRules) {
+                  const matchFiles = currentFiles.filter(
+                    (f) => f.fileType === rule.fileType && !f.folderId && !f.isDeleted
+                  );
+                  for (const file of matchFiles.slice(0, 3)) {
+                    // Find or create target folder
+                    const folders = useAppStore.getState().folders;
+                    let targetFolder = folders.find((fd) => fd.name === rule.folderName);
+                    if (!targetFolder) {
+                      const newFolder = adapter.createFolder ? await adapter.createFolder(rule.folderName, user!.id) : null;
+                      if (newFolder) {
+                        useAppStore.getState().addFolder(newFolder);
+                        targetFolder = newFolder;
+                      }
+                    }
+                    if (targetFolder) {
+                      await adapter.updateFile(file.id, { folderId: targetFolder.id }, user!.id);
+                      useAppStore.getState().updateFile(file.id, { folderId: targetFolder.id });
+                    }
+                  }
+                }
+                useAppStore.getState().refreshFiles();
+              } catch (e) {
+                console.error("[Automation] Auto-organize failed:", e);
+              }
+            }, 1000);
+          }
+        }
+      } catch {
+        // Automation is optional, don't fail upload
+      }
+
       // Clear status after a delay
       setTimeout(() => {
         setUploadedCount(0);

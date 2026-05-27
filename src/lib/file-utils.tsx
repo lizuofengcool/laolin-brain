@@ -67,6 +67,31 @@ export function FileIconDisplay({
   return <File className={className} />;
 }
 
+// Get file type label for badge display
+export function getFileTypeBadge(fileType: string): { label: string; color: string } {
+  switch (fileType) {
+    case "word":
+      return { label: "DOCX", color: "bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/20" };
+    case "pdf":
+      return { label: "PDF", color: "bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/20" };
+    case "image":
+      return { label: "IMG", color: "bg-green-500/15 text-green-600 dark:text-green-400 border-green-500/20" };
+    case "pptx":
+      return { label: "PPTX", color: "bg-orange-500/15 text-orange-600 dark:text-orange-400 border-orange-500/20" };
+    case "markdown":
+      return { label: "MD", color: "bg-purple-500/15 text-purple-600 dark:text-purple-400 border-purple-500/20" };
+    case "txt":
+      return { label: "TXT", color: "bg-purple-500/15 text-purple-600 dark:text-purple-400 border-purple-500/20" };
+    default:
+      return { label: "FILE", color: "bg-gray-500/15 text-gray-600 dark:text-gray-400 border-gray-500/20" };
+  }
+}
+
+// Check if file type is a document that may have text content
+export function isDocumentType(fileType: string): boolean {
+  return ["word", "pdf", "pptx", "markdown", "txt"].includes(fileType);
+}
+
 export function formatTime(date: Date | string): string {
   const now = new Date();
   const diff = now.getTime() - new Date(date).getTime();

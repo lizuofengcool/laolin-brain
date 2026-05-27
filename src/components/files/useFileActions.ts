@@ -35,8 +35,8 @@ export function useFileActions(file: FileData) {
   const [renameInput, setRenameInput] = useState(file.fileName);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
-  const handleFavorite = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleFavorite = useCallback((e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
     toggleFavorite(file.id);
   }, [toggleFavorite, file.id]);
 

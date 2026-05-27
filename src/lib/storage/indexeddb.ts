@@ -1,5 +1,5 @@
 import { openDB, DBSchema, IDBPDatabase } from "idb";
-import type { StorageAdapter, FileData } from "./base";
+import type { StorageAdapter, FileData, FileVersionData } from "./base";
 
 interface KBDBSchema extends DBSchema {
   files: {
@@ -7,17 +7,31 @@ interface KBDBSchema extends DBSchema {
     value: FileData & { data?: string; thumbnailData?: string; userId?: string };
     indexes: { "by-user": string; "by-folder": string };
   };
+  versions: {
+    key: string;
+    value: FileVersionData & { userId?: string };
+    indexes: { "by-file": string };
+  };
 }
 
 const DB_NAME = "knowledge-base-db";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 async function getDB(): Promise<IDBPDatabase<KBDBSchema>> {
   return openDB<KBDBSchema>(DB_NAME, DB_VERSION, {
-    upgrade(db) {
-      const store = db.createObjectStore("files", { keyPath: "id" });
-      store.createIndex("by-user", "userId");
-      store.createIndex("by-folder", "folderId");
+    upgrade(db, oldVersion) {
+      // Create files store if not exists
+      if (!db.objectStoreNames.contains("files")) {
+        const fileStore = db.createObjectStore("files", { keyPath: "id" });
+        fileStore.createIndex("by-user", "userId");
+        fileStore.createIndex("by-folder", "folderId");
+      }
+
+      // Create versions store (new in v2)
+      if (!db.objectStoreNames.contains("versions") && oldVersion < 2) {
+        const versionStore = db.createObjectStore("versions", { keyPath: "id" });
+        versionStore.createIndex("by-file", "fileId");
+      }
     },
   });
 }
@@ -220,6 +234,71 @@ export class IndexedDBAdapter implements StorageAdapter {
         (a, b) =>
           new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
+  }
+
+  // ─── Version Management ────────────────────────────────────
+
+  async getVersions(fileId: string, _userId: string): Promise<FileVersionData[]> {
+    const db = await getDB();
+    const allVersions = await db.getAllFromIndex("versions", "by-file", fileId);
+    return allVersions
+      .sort((a, b) => b.version - a.version)
+      .map(({ userId: _, ...v }) => ({
+        ...v,
+        createdAt: typeof v.createdAt === "string" ? v.createdAt : new Date(v.createdAt).toISOString(),
+      }));
+  }
+
+  async createVersion(
+    fileId: string,
+    data: Omit<FileVersionData, "id" | "version" | "createdAt">,
+    userId: string
+  ): Promise<void> {
+    const db = await getDB();
+    const existingVersions = await db.getAllFromIndex("versions", "by-file", fileId);
+    const maxVersion = existingVersions.length > 0
+      ? Math.max(...existingVersions.map((v) => v.version))
+      : 0;
+
+    const version: FileVersionData & { userId?: string } = {
+      ...data,
+      id: `ver_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      fileId,
+      version: maxVersion + 1,
+      createdAt: new Date().toISOString(),
+      userId,
+    };
+
+    await db.put("versions", version);
+  }
+
+  async restoreVersion(versionId: string, fileId: string, userId: string): Promise<void> {
+    const db = await getDB();
+    const version = await db.get("versions", versionId);
+    if (!version || version.fileId !== fileId) {
+      throw new Error("Version not found");
+    }
+
+    // Update the file with version data
+    const existingFile = await db.get("files", fileId);
+    if (existingFile) {
+      await db.put("files", {
+        ...existingFile,
+        fileName: version.fileName,
+        fileSize: version.fileSize,
+        filePath: version.filePath,
+        textContent: version.textContent,
+        thumbnailUrl: version.thumbnailUrl,
+      });
+    }
+  }
+
+  async deleteVersion(versionId: string, fileId: string, _userId: string): Promise<void> {
+    const db = await getDB();
+    const version = await db.get("versions", versionId);
+    if (version && version.fileId === fileId) {
+      await db.delete("versions", versionId);
+    }
   }
 
   /**
