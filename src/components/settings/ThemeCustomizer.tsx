@@ -30,17 +30,6 @@ export function ThemeCustomizer() {
   const [selectedColor, setSelectedColor] = useState(THEME_COLORS[0].name);
   const [mounted, setMounted] = useState(false);
 
-  useEffect(() => {
-    setMounted(true);
-    try {
-      const saved = localStorage.getItem(THEME_STORAGE_KEY);
-      if (saved) {
-        setSelectedColor(saved);
-        applyThemeColor(saved);
-      }
-    } catch {}
-  }, []);
-
   const applyThemeColor = (colorName: string) => {
     const theme = THEME_COLORS.find((t) => t.name === colorName);
     if (!theme) return;
@@ -56,6 +45,19 @@ export function ThemeCustomizer() {
 
     root.classList.add("theme-customized");
   };
+
+  /* eslint-disable react-hooks/set-state-in-effect -- setMounted is a hydration guard pattern */
+  useEffect(() => {
+    setMounted(true);
+    try {
+      const saved = localStorage.getItem(THEME_STORAGE_KEY);
+      if (saved) {
+        setSelectedColor(saved);
+        applyThemeColor(saved);
+      }
+    } catch {}
+  }, [applyThemeColor]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const handleColorSelect = (colorName: string) => {
     setSelectedColor(colorName);
@@ -86,7 +88,7 @@ export function ThemeCustomizer() {
     });
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     return () => observer.disconnect();
-  }, []);
+  }, [applyThemeColor]);
 
   if (!mounted) return null;
 

@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 
 describe('Button', () => {
   it('renders with default variant', () => {
-    render(createElement(Button, { children: 'Click me' }));
+    render(createElement(Button, null, 'Click me'));
     const button = screen.getByRole('button', { name: /click me/i });
     expect(button).toBeInTheDocument();
     expect(button.tagName).toBe('BUTTON');
@@ -13,7 +13,7 @@ describe('Button', () => {
 
   it('renders with destructive variant', () => {
     render(
-      createElement(Button, { variant: 'destructive', children: 'Delete' })
+      createElement(Button, { variant: 'destructive' }, 'Delete')
     );
     const button = screen.getByRole('button', { name: /delete/i });
     expect(button).toBeInTheDocument();
@@ -23,7 +23,7 @@ describe('Button', () => {
 
   it('renders with outline variant', () => {
     render(
-      createElement(Button, { variant: 'outline', children: 'Outline' })
+      createElement(Button, { variant: 'outline' }, 'Outline')
     );
     const button = screen.getByRole('button', { name: /outline/i });
     expect(button).toBeInTheDocument();
@@ -32,7 +32,7 @@ describe('Button', () => {
 
   it('renders with ghost variant', () => {
     render(
-      createElement(Button, { variant: 'ghost', children: 'Ghost' })
+      createElement(Button, { variant: 'ghost' }, 'Ghost')
     );
     const button = screen.getByRole('button', { name: /ghost/i });
     expect(button).toBeInTheDocument();
@@ -42,20 +42,20 @@ describe('Button', () => {
 
   it('renders with different sizes', () => {
     const { rerender } = render(
-      createElement(Button, { size: 'sm', children: 'Small' })
+      createElement(Button, { size: 'sm' }, 'Small')
     );
     expect(screen.getByRole('button', { name: /small/i })).toBeInTheDocument();
 
-    rerender(createElement(Button, { size: 'lg', children: 'Large' }));
+    rerender(createElement(Button, { size: 'lg' }, 'Large'));
     expect(screen.getByRole('button', { name: /large/i })).toBeInTheDocument();
 
-    rerender(createElement(Button, { size: 'icon', children: '📋' }));
+    rerender(createElement(Button, { size: 'icon' }, '📋'));
     expect(screen.getByRole('button')).toBeInTheDocument();
   });
 
   it('is clickable', () => {
     const onClick = vi.fn();
-    render(createElement(Button, { onClick, children: 'Click me' }));
+    render(createElement(Button, { onClick }, 'Click me'));
     const button = screen.getByRole('button', { name: /click me/i });
 
     fireEvent.click(button);
@@ -64,7 +64,7 @@ describe('Button', () => {
 
   it('disabled state prevents clicks', () => {
     const onClick = vi.fn();
-    render(createElement(Button, { onClick, disabled: true, children: 'Disabled' }));
+    render(createElement(Button, { onClick, disabled: true }, 'Disabled'));
     const button = screen.getByRole('button', { name: /disabled/i });
 
     expect(button).toBeDisabled();
@@ -76,8 +76,7 @@ describe('Button', () => {
     render(
       createElement(Button, {
         className: 'my-custom-class',
-        children: 'Styled',
-      })
+      }, 'Styled')
     );
     const button = screen.getByRole('button', { name: /styled/i });
     expect(button.className).toContain('my-custom-class');

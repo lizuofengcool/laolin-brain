@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useMemo } from "react";
 import type { FileData } from "@/lib/storage/base";
+import type { MouseEvent } from "react";
 import { useAppStore } from "@/stores/app-store";
 import { FileCard, FileListItem, type CardSize } from "./FileCard";
 import { SwipeableFileItem } from "./SwipeableFileItem";
@@ -15,6 +16,8 @@ interface FileGridProps {
   files: FileData[];
   onPreview: (file: FileData) => void;
   onShowVersions?: (file: FileData) => void;
+  /** Desktop right-click context menu handler — receives the file and raw MouseEvent */
+  onFileContextMenu?: (e: MouseEvent, file: FileData) => void;
 }
 
 const gridColsMap: Record<CardSize, string> = {
@@ -38,7 +41,7 @@ function getInitialCardSize(): CardSize {
   return "medium";
 }
 
-export function FileGrid({ files, onPreview, onShowVersions }: FileGridProps) {
+export function FileGrid({ files, onPreview, onShowVersions, onFileContextMenu }: FileGridProps) {
   const { fileViewMode, setFileViewMode, batchSelectedIds } = useAppStore();
   const isMobile = useIsMobile();
 
@@ -136,13 +139,17 @@ export function FileGrid({ files, onPreview, onShowVersions }: FileGridProps) {
         <div className={cn("grid gap-4", gridColsMap[cardSize])}>
           {files.map((file) => {
             const card = (
-              <FileCard
+              <div
                 key={file.id}
-                file={file}
-                onPreview={onPreview}
-                cardSize={cardSize}
-                onShowVersions={onShowVersions}
-              />
+                onContextMenu={onFileContextMenu ? (e) => onFileContextMenu(e, file) : undefined}
+              >
+                <FileCard
+                  file={file}
+                  onPreview={onPreview}
+                  cardSize={cardSize}
+                  onShowVersions={onShowVersions}
+                />
+              </div>
             );
 
             // On mobile, wrap with gesture support
@@ -171,12 +178,16 @@ export function FileGrid({ files, onPreview, onShowVersions }: FileGridProps) {
         <div className="border rounded-lg divide-y">
           {files.map((file) => {
             const listItem = (
-              <FileListItem
+              <div
                 key={file.id}
-                file={file}
-                onPreview={onPreview}
-                onShowVersions={onShowVersions}
-              />
+                onContextMenu={onFileContextMenu ? (e) => onFileContextMenu(e, file) : undefined}
+              >
+                <FileListItem
+                  file={file}
+                  onPreview={onPreview}
+                  onShowVersions={onShowVersions}
+                />
+              </div>
             );
 
             // On mobile, wrap with swipeable support

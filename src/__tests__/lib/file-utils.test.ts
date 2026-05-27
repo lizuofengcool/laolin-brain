@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { FileText, File, Image as ImageIcon, Presentation, FileCode } from 'lucide-react';
 import { formatSize, getFileIcon, getFileColor, formatTime } from '@/lib/file-utils';
 
 describe('formatSize', () => {
@@ -40,37 +41,30 @@ describe('getFileIcon', () => {
   });
 
   it('returns FileText for "word"', () => {
-    const { FileText } = require('lucide-react');
     expect(getFileIcon('word')).toBe(FileText);
   });
 
   it('returns File for "pdf"', () => {
-    const { File } = require('lucide-react');
     expect(getFileIcon('pdf')).toBe(File);
   });
 
   it('returns ImageIcon for "image"', () => {
-    const { Image: ImageIcon } = require('lucide-react');
     expect(getFileIcon('image')).toBe(ImageIcon);
   });
 
   it('returns Presentation for "pptx"', () => {
-    const { Presentation } = require('lucide-react');
     expect(getFileIcon('pptx')).toBe(Presentation);
   });
 
   it('returns FileCode for "markdown"', () => {
-    const { FileCode } = require('lucide-react');
     expect(getFileIcon('markdown')).toBe(FileCode);
   });
 
   it('returns FileCode for "txt"', () => {
-    const { FileCode } = require('lucide-react');
     expect(getFileIcon('txt')).toBe(FileCode);
   });
 
   it('returns File for unknown types', () => {
-    const { File } = require('lucide-react');
     expect(getFileIcon('other')).toBe(File);
     expect(getFileIcon('unknown')).toBe(File);
   });

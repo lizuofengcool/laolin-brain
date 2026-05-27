@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useCallback, useMemo, useState } from "react";
+import type { MouseEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { FileData } from "@/lib/storage/base";
 import { useAppStore } from "@/stores/app-store";
@@ -13,6 +14,8 @@ interface VirtualFileGridProps {
   files: FileData[];
   onPreview: (file: FileData) => void;
   onShowVersions?: (file: FileData) => void;
+  /** Desktop right-click context menu handler — receives the file and raw MouseEvent */
+  onFileContextMenu?: (e: MouseEvent, file: FileData) => void;
 }
 
 // Map card size to estimated row height (px)
@@ -49,7 +52,7 @@ function getInitialCardSize(): CardSize {
  * VirtualFileGrid — virtualised file grid using @tanstack/react-virtual.
  * Falls back to a simple grid when file count < 50 for simplicity.
  */
-export function VirtualFileGrid({ files, onPreview, onShowVersions }: VirtualFileGridProps) {
+export function VirtualFileGrid({ files, onPreview, onShowVersions, onFileContextMenu }: VirtualFileGridProps) {
   const { fileViewMode, setFileViewMode } = useAppStore();
   const parentRef = useRef<HTMLDivElement>(null);
   const [cardSize, setCardSizeState] = useState<CardSize>(getInitialCardSize);
@@ -69,6 +72,7 @@ export function VirtualFileGrid({ files, onPreview, onShowVersions }: VirtualFil
   const estimatedRowHeight = isGrid ? ROW_HEIGHT_MAP[cardSize] : LIST_ROW_HEIGHT;
   const rowCount = Math.ceil(files.length / cols);
 
+  // eslint-disable-next-line react-hooks/incompatible-library -- useVirtualizer returns non-memoizable functions
   const rowVirtualizer = useVirtualizer({
     count: rowCount,
     getScrollElement: () => parentRef.current,
@@ -191,24 +195,32 @@ export function VirtualFileGrid({ files, onPreview, onShowVersions }: VirtualFil
                     )}
                   >
                     {rowFiles.map((file) => (
-                      <FileCard
+                      <div
                         key={file.id}
-                        file={file}
-                        onPreview={onPreview}
-                        cardSize={cardSize}
-                        onShowVersions={onShowVersions}
-                      />
+                        onContextMenu={onFileContextMenu ? (e) => onFileContextMenu(e, file) : undefined}
+                      >
+                        <FileCard
+                          file={file}
+                          onPreview={onPreview}
+                          cardSize={cardSize}
+                          onShowVersions={onShowVersions}
+                        />
+                      </div>
                     ))}
                   </div>
                 )}
                 {!isGrid &&
                   rowFiles.map((file) => (
-                    <FileListItem
+                    <div
                       key={file.id}
-                      file={file}
-                      onPreview={onPreview}
-                      onShowVersions={onShowVersions}
-                    />
+                      onContextMenu={onFileContextMenu ? (e) => onFileContextMenu(e, file) : undefined}
+                    >
+                      <FileListItem
+                        file={file}
+                        onPreview={onPreview}
+                        onShowVersions={onShowVersions}
+                      />
+                    </div>
                   ))}
               </div>
             );

@@ -761,3 +761,162 @@ Stage Summary:
 - 修改文件：1个（FileGrid.tsx）
 - ESLint: 新文件 0 错误
 - Dev server: ✅ 编译通过
+
+---
+Task ID: 11-d
+Agent: subagent
+Task: 创建桌面端文件右键上下文菜单 + 修复代码质量问题
+
+Work Log:
+- 读取 worklog.md 了解项目背景，分析现有文件组件架构
+- 创建 src/hooks/use-context-menu.ts — 自定义右键菜单状态管理 Hook
+  - 返回 { contextMenu, showContextMenu, hideContextMenu }
+  - 使用 useState + useRef + useEffect 模式
+  - showContextMenu 接收 React.MouseEvent + FileData，调用 preventDefault + stopPropagation
+- 创建 src/components/files/FileContextMenu.tsx — 桌面端右键上下文菜单组件
+  - 10个菜单项分为4组，3条分割线分隔
+  - 组1: 打开预览(Eye)、收藏/取消收藏(Star，根据isFavorite状态切换文字和图标颜色)
+  - 组2: 复制文件名(Copy)、移动到文件夹(FolderInput)、管理标签(Tag)
+  - 组3: 重命名(PenLine)、分享(Share2)、下载(Download)
+  - 组4: 删除(Trash2，text-destructive红色)
+  - framer-motion 动画（scale+opacity，从点击位置缩放展开）
+  - 视口边界检测（菜单不超出屏幕）
+  - 点击外部关闭（mousedown事件监听）+ Escape键关闭
+  - 阻止菜单自身的默认右键菜单
+  - z-index: z-[60]，shadcn/ui 风格但自实现
+  - 删除项使用 text-destructive + hover:bg-destructive/10
+  - 收藏项已收藏时显示 fill-amber-400 图标
+- 修改 src/components/files/FileGrid.tsx — 集成右键菜单
+  - 新增 onFileContextMenu 可选prop（类型 MouseEvent）
+  - 网格视图：桌面端每个文件卡片外层div添加 onContextMenu 事件处理
+  - 列表视图：桌面端每个文件列表项外层div添加 onContextMenu 事件处理
+  - 移动端不添加右键处理（由GestureGridItem/SwipeableFileItem接管手势）
+- 修改 src/components/files/VirtualFileGrid.tsx — 集成右键菜单
+  - 新增 onFileContextMenu 可选prop
+  - 网格视图和列表视图的每个文件项均添加 onContextMenu
+  - 修复 React Compiler incompatible-library 警告（eslint-disable注释）
+- 修改 src/app/page.tsx — FilesView集成上下文菜单
+  - 导入 useContextMenu hook + useIsMobile + FileContextMenu组件
+  - 在FilesView中调用 useContextMenu() 获取状态和控制函数
+  - FileGrid和VirtualFileGrid传入 onFileContextMenu={!isMobile ? showContextMenu : undefined}
+  - 在FilesView底部渲染 <FileContextMenu file={...} position={...} onClose={hideContextMenu} />
+- 修复 ESLint 错误（从原 24+ 个降至 0 个）:
+  - file-utils.test.ts: require('lucide-react') → 顶部 import { FileText, File, ... } from 'lucide-react'
+  - auth.test.ts: require('crypto') → import { createHmac } from 'crypto'
+  - ui-button.test.ts: children prop → createElement第3参数传递
+  - use-gestures.test.ts: react-hooks/refs → eslint-disable块级注释（测试辅助组件）
+  - ThemeCustomizer.tsx: 变量声明前访问 → 将 applyThemeColor 移到 useEffect 之前
+  - ThemeCustomizer.tsx: set-state-in-effect → eslint-disable块级注释（hydration guard模式）
+  - i18n/index.tsx: set-state-in-effect → eslint-disable块级注释（hydration guard模式）
+  - use-lazy-image.ts: set-state-in-effect → setTimeout 包裹 setState 避免同步调用
+  - pdf.ts: 移除未使用的 eslint-disable注释，改用类型断言替代 any
+
+Stage Summary:
+- 新增文件：2个（use-context-menu.ts, FileContextMenu.tsx）
+- 修改文件：7个（FileGrid.tsx, VirtualFileGrid.tsx, page.tsx, file-utils.test.ts, auth.test.ts, ui-button.test.ts, use-gestures.test.ts, ThemeCustomizer.tsx, i18n/index.tsx, use-lazy-image.ts, pdf.ts）
+- ESLint: ✅ 0 错误 0 警告（从 24+ 错误降至 0）
+- Dev server: ✅ 运行正常，HTTP 200
+
+---
+Task ID: 11-a
+Agent: subagent
+Task: 将活动记录集成到所有文件操作中
+
+Work Log:
+- 阅读 worklog.md 了解项目背景和现有代码结构
+- 阅读 activity-store.ts 确认 addActivity 接口：接受 Omit<ActivityItem, "id" | "timestamp">，即 { type, fileName, fileId?, details? }
+- 阅读 app-store.ts 分析所有文件操作方法
+- 修改 src/stores/app-store.ts，在以下 9 个操作成功后调用 useActivityStore.getState().addActivity()：
+  - addFile(file): type='upload', fileName=file.fileName, fileId=file.id
+  - softDeleteFile(id): type='delete', fileName=文件名, fileId=id（在try内通知后）
+  - restoreFile(id): type='restore', fileName=文件名, fileId=id（在try内通知后）
+  - permanentDeleteFile(id): type='delete', fileName=文件名, fileId=id（新增files解构获取文件名）
+  - renameFile(id, newName): type='rename', fileName=newName, fileId=id, details="从「oldName」改为「newName」"
+  - toggleFavorite(id): 收藏时type='favorite'，取消时type='unfavorite'，fileName=file.fileName
+  - batchDeleteFiles(ids): type='delete', fileName="批量删除了N个文件"
+  - batchToggleFavorite(ids, value): type='favorite'/'unfavorite', fileName="批量收藏了N个文件"/"批量取消收藏了N个文件"
+  - moveFileToFolder(fileId, folderId): type='tag', fileName=文件名, details="移动到文件夹「xxx」"/"移出文件夹"
+- 所有addActivity调用均放在try块中操作成功后，不阻塞原有操作
+- ESLint: app-store.ts 0 新增错误（预存27个错误均非本次引入）
+
+Stage Summary:
+- 修改文件：1个（src/stores/app-store.ts）
+- 未修改文件：activity-store.ts（保持不变）
+- 活动记录覆盖全部 9 个关键文件操作
+- ESLint: 0 新增错误
+
+---
+Task ID: 11-c
+Agent: Main Agent
+Task: 文件版本差异对比查看器
+
+Work Log:
+- 读取 worklog.md 了解项目背景和现有代码结构
+- 读取 FileVersions.tsx、versions API、restore API、storage/base.ts 了解当前版本管理实现
+- 创建 src/components/files/DiffViewer.tsx — 精美的文本差异对比组件（~290行）
+  - 自实现 LCS（最长公共子序列）diff 算法：DP表构建 + 回溯生成 DiffLine[]
+  - 并排视图（side-by-side）：左侧旧版本、右侧新版本，行号+彩色竖线指示
+  - 统一视图（unified）：单面板显示，双行号列，+/-前缀标记增删行
+  - 新增行：emerald 绿色背景 + 左侧绿色竖线 + 绿色文字
+  - 删除行：rose 红色背景 + 左侧红色竖线 + 红色文字
+  - 顶部工具栏：版本标签 Badge + 统计信息（新增/删除/未变行数）
+  - 视图切换按钮组：并排 / 统一，带 ColumnsIcon 和 Rows3 图标
+  - 毛玻璃效果工具栏（backdrop-blur-xl）
+  - 同步滚动：左侧滚动右侧跟随，requestAnimationFrame 防循环
+  - 等宽字体（font-mono）+ 表格布局
+  - framer-motion 入场动画 + AnimatePresence 视图切换过渡
+  - 空内容友好提示
+- 重写 src/components/files/FileVersions.tsx — 集成 DiffViewer + 版本选择对比
+  - 新增 selectedIds: Set<string> state 管理多选（最多2个）
+  - 每个版本项添加 Checkbox（使用 shadcn/ui Checkbox 组件）
+  - 选满2个后其他 checkbox 自动 disabled
+  - 选中1个时提示"再选一个即可对比"，选中2个时显示"对比差异"按钮
+  - 点击"对比差异"进入 custom diff 模式，使用 DiffViewer 展示
+  - 保留原有"快速对比"功能（Eye 图标一键对比当前/历史版本 → quick diff 模式）
+  - 两种 diff 模式统一使用 DiffViewer 组件渲染
+  - 返回按钮带 ChevronLeft 图标
+  - 版本列表入场动画（framer-motion motion.div，逐项延迟）
+  - 对话框宽度升级为 sm:max-w-5xl 以容纳并排对比
+  - 移除原有的简单并排文本展示（两个 ScrollArea + pre），替换为专业的 DiffViewer
+  - 使用 cn() from @/lib/utils 替代自定义 cn 函数
+  - 底部提示文字新增"勾选2个版本可对比文本差异"引导
+- ESLint: 新文件 0 错误（DiffViewer.tsx + FileVersions.tsx 无新增问题）
+- Dev server: 已在运行中（PID 913）
+
+Stage Summary:
+- 新增文件：1个（DiffViewer.tsx）
+- 修改文件：1个（FileVersions.tsx 重写）
+- 新增依赖：无（全部使用现有组件库）
+- Diff 算法：自实现 LCS，无外部 diff 库
+- ESLint: 新文件 0 错误
+- Dev server: ✅ 运行中
+
+---
+Task ID: 11-b
+Agent: Main Agent
+Task: 创建文件分享对话框UI
+
+Work Log:
+- 读取 worklog.md 了解项目背景和现有代码结构
+- 读取 /api/files/[id]/share/route.ts 了解分享API接口（POST请求体 { expiresIn, password }，响应 { shareUrl, token, expiresAt, id }）
+- 读取 prisma/schema.prisma 了解 FileShare 模型结构（fileId, token, password, expiresAt）
+- 读取 FileCard.tsx 发现已有 ShareDialog 组件和分享菜单项集成
+- 重写 src/components/files/ShareDialog.tsx — 精美两步式分享对话框
+  - 步骤1（分享设置）：文件信息展示（文件名+类型+大小）、有效期选择（5个选项）、密码保护开关+输入框、生成分享链接按钮
+  - 步骤2（分享结果）：成功动画（spring弹跳绿色对勾）、分享链接显示（monospace字体+select-all）、一键复制按钮（AnimatePresence动画+绿色对勾反馈）、分享信息摘要（有效期+过期时间+密码状态）、在新标签页打开链接
+  - framer-motion AnimatePresence 做步骤切换动画（水平滑入滑出）
+  - 密码输入框展开/收起动画（AnimatePresence + height auto）
+  - 错误提示动画（AnimatePresence）
+  - DialogDescription 无障碍支持（sr-only）
+  - 对话框打开时自动重置所有状态
+  - "继续分享"按钮返回步骤1（可多次生成不同链接）
+- 创建 src/hooks/use-share.ts — 分享对话框状态管理Hook
+  - shareDialogOpen / shareFile / openShareDialog / closeShareDialog
+  - closeShareDialog 延迟300ms清除文件引用（支持关闭动画）
+- 确认 FileCard.tsx 和 FileListItem.tsx 已有分享菜单项和 ShareDialog 集成，无需修改
+- ESLint 检查：新文件 0 错误
+
+Stage Summary:
+- 修改文件：1个（ShareDialog.tsx 重写）
+- 新增文件：1个（use-share.ts）
+- ESLint: 新文件 0 错误

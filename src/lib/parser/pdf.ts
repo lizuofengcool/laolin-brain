@@ -1,8 +1,7 @@
 export async function parsePdf(buffer: Buffer): Promise<string> {
   try {
-    const pdfParseModule = await import("pdf-parse");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const pdfParse = (pdfParseModule as any).default || pdfParseModule;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const pdfParse = require("pdf-parse") as (b: Buffer) => Promise<{ text: string }>;
     const result = await pdfParse(buffer);
     return result.text || "";
   } catch (_e) {

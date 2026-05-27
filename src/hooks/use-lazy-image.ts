@@ -52,8 +52,9 @@ export function useLazyImage(src: string, options: UseLazyImageOptions = {}): Us
       observer.observe(el);
       return () => observer.disconnect();
     } else {
-      // Fallback: load immediately
-      setIsVisible(true);
+      // Fallback: load immediately (setTimeout to avoid sync setState in effect)
+      const id = setTimeout(() => setIsVisible(true), 0);
+      return () => clearTimeout(id);
     }
   }, [threshold, rootMargin]);
 

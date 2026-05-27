@@ -1,3 +1,4 @@
+import { createHmac } from "crypto";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   hashPassword,
@@ -143,10 +144,9 @@ describe("auth utilities", () => {
     it("returns null for a token missing exp field", () => {
       const payload = Buffer.from(JSON.stringify({ id: "u1", email: "a@b.com" })).toString("base64url");
       // Use a real signature so signature check passes
-      const crypto = require("crypto");
       const secret = "kb-secure-hmac-secret-key-2024";
       const sig = Buffer.from(
-        crypto.createHmac("sha256", secret).update(payload).digest()
+        createHmac("sha256", secret).update(payload).digest()
       ).toString("base64url");
       // Without exp, the code checks `payload.exp && Date.now() > payload.exp` → falsy → returns {id, email}
       const result = verifyToken(`${payload}.${sig}`);

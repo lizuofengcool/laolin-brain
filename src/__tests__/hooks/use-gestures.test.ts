@@ -105,6 +105,7 @@ function fireTouchMove(el: HTMLElement, x: number, y: number) {
 }
 
 // Test component that uses useSwipeLeft
+/* eslint-disable react-hooks/refs */
 function SwipeTestComponent({
   onSwipe,
   threshold = 50,
@@ -116,6 +117,7 @@ function SwipeTestComponent({
   useSwipeLeft(ref, onSwipe, { threshold });
   return createElement('div', { ref, 'data-testid': 'swipe-area' });
 }
+/* eslint-enable react-hooks/refs */
 
 describe('useSwipeLeft', () => {
   beforeEach(() => {
@@ -181,6 +183,7 @@ describe('useSwipeLeft', () => {
 
 // --- useLongPress tests ---
 
+/* eslint-disable react-hooks/refs */
 function LongPressTestComponent({
   onLongPress,
   delay = 500,
@@ -192,6 +195,7 @@ function LongPressTestComponent({
   useLongPress(ref, onLongPress, { delay });
   return createElement('div', { ref, 'data-testid': 'long-press-area' });
 }
+/* eslint-enable react-hooks/refs */
 
 describe('useLongPress', () => {
   beforeEach(() => {
@@ -280,6 +284,7 @@ describe('useLongPress', () => {
 
 // --- usePullToRefresh tests ---
 
+/* eslint-disable react-hooks/refs */
 function PullToRefreshTestComponent({
   onRefresh,
   threshold = 80,
@@ -308,6 +313,7 @@ function PullToRefreshTestComponent({
     isPulling ? 'pulling' : isRefreshing ? 'refreshing' : `distance:${pullDistance}`
   );
 }
+/* eslint-enable react-hooks/refs */
 
 describe('usePullToRefresh', () => {
   beforeEach(() => {

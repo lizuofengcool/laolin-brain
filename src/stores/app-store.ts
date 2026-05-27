@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { FileData } from "@/lib/storage/base";
 import { getStorageAdapter, resetAdapter } from "@/lib/storage/factory";
 import { useNotificationStore } from "@/stores/notification-store";
+import { useActivityStore } from "@/stores/activity-store";
 
 export type ViewType = "login" | "dashboard" | "files" | "search" | "settings" | "profile" | "timeline" | "favorites" | "recycleBin" | "albums" | "faceGroups" | "tags" | "analytics" | "knowledgeGraph";
 
@@ -195,7 +196,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Files
   files: [],
   setFiles: (files) => set({ files }),
-  addFile: (file) => set((s) => ({ files: [file, ...s.files] })),
+  addFile: (file) => {
+    set((s) => ({ files: [file, ...s.files] }));
+    useActivityStore.getState().addActivity({
+      type: "upload",
+      fileName: file.fileName,
+      fileId: file.id,
+    });
+  },
   removeFile: (id) => set((s) => ({ files: s.files.filter((f) => f.id !== id) })),
   updateFile: (id, data) =>
     set((s) => ({
@@ -243,6 +251,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         autoDismiss: true,
         duration: 3000,
       });
+      useActivityStore.getState().addActivity({
+        type: "delete",
+        fileName: file?.fileName || "未知文件",
+        fileId: id,
+      });
     } catch (err) {
       console.error("Failed to soft delete file:", err);
       useNotificationStore.getState().addNotification({
@@ -271,6 +284,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         autoDismiss: true,
         duration: 3000,
       });
+      useActivityStore.getState().addActivity({
+        type: "restore",
+        fileName: file?.fileName || "未知文件",
+        fileId: id,
+      });
     } catch (err) {
       console.error("Failed to restore file:", err);
       useNotificationStore.getState().addNotification({
@@ -285,12 +303,18 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Permanent delete
   permanentDeleteFile: async (id) => {
-    const { user, storageMode } = get();
+    const { user, storageMode, files } = get();
     if (!user) return;
+    const file = files.find((f) => f.id === id);
     try {
       const adapter = getStorageAdapter(storageMode);
       await adapter.deleteFile(id, user.id);
       get().removeFile(id);
+      useActivityStore.getState().addActivity({
+        type: "delete",
+        fileName: file?.fileName || "未知文件",
+        fileId: id,
+      });
     } catch (err) {
       console.error("Failed to permanently delete file:", err);
     }
@@ -321,8 +345,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Rename file
   renameFile: async (id, newName) => {
-    const { user, storageMode } = get();
+    const { user, storageMode, files } = get();
     if (!user) return;
+    const oldName = files.find((f) => f.id === id)?.fileName || newName;
     get().updateFile(id, { fileName: newName });
     try {
       const adapter = getStorageAdapter(storageMode);
@@ -333,6 +358,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         message: newName,
         autoDismiss: true,
         duration: 3000,
+      });
+      useActivityStore.getState().addActivity({
+        type: "rename",
+        fileName: newName,
+        fileId: id,
+        details: `从「${oldName}」改为「${newName}」`,
       });
     } catch (err) {
       console.error("Failed to rename file:", err);
@@ -359,6 +390,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         autoDismiss: true,
         duration: 2500,
       });
+      useActivityStore.getState().addActivity({
+        type: "favorite",
+        fileName: file.fileName,
+        fileId: id,
+      });
     } else {
       useNotificationStore.getState().addNotification({
         type: "info",
@@ -366,6 +402,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         message: file.fileName,
         autoDismiss: true,
         duration: 2500,
+      });
+      useActivityStore.getState().addActivity({
+        type: "unfavorite",
+        fileName: file.fileName,
+        fileId: id,
       });
     }
 
@@ -385,6 +426,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const adapter = getStorageAdapter(storageMode);
       await Promise.all(ids.map((id) => adapter.updateFile(id, { isFavorite: value }, user.id)));
+      useActivityStore.getState().addActivity({
+        type: value ? "favorite" : "unfavorite",
+        fileName: value ? `批量收藏了${ids.length}个文件` : `批量取消收藏了${ids.length}个文件`,
+      });
     } catch (err) {
       console.error("Batch favorite failed:", err);
     }
@@ -407,6 +452,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         message: `已删除 ${ids.length} 个文件`,
         autoDismiss: true,
         duration: 3000,
+      });
+      useActivityStore.getState().addActivity({
+        type: "delete",
+        fileName: `批量删除了${ids.length}个文件`,
       });
     } catch (err) {
       console.error("Batch delete failed:", err);
@@ -536,12 +585,20 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Drag & drop: move file to folder
   moveFileToFolder: async (fileId: string, folderId: string | null) => {
-    const { user, storageMode } = get();
+    const { user, storageMode, files, folders } = get();
     if (!user) return;
+    const file = files.find((f) => f.id === fileId);
+    const targetFolder = folderId ? folders.find((f) => f.id === folderId) : null;
     get().updateFile(fileId, { folderId: folderId || undefined });
     try {
       const adapter = getStorageAdapter(storageMode);
       await adapter.updateFile(fileId, { folderId: folderId || null } as Partial<import("@/lib/storage/base").FileData>, user.id);
+      useActivityStore.getState().addActivity({
+        type: "tag",
+        fileName: file?.fileName || "未知文件",
+        fileId,
+        details: targetFolder ? `移动到文件夹「${targetFolder.name}」` : "移出文件夹",
+      });
     } catch (err) {
       console.error("Failed to move file to folder:", err);
     }

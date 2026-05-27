@@ -29,6 +29,9 @@ import { ShortcutHelpPanel } from "@/components/help/ShortcutHelpPanel";
 import { BatchActions } from "@/components/files/BatchActions";
 import { SortFilter } from "@/components/files/SortFilter";
 import { VirtualFileGrid } from "@/components/files/VirtualFileGrid";
+import { FileContextMenu } from "@/components/files/FileContextMenu";
+import { useContextMenu } from "@/hooks/use-context-menu";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 // ─── Heavy / seldom-used views (code-split via dynamic import) ───
 const TimelineView = dynamic(
@@ -336,6 +339,8 @@ function FilesView() {
     updateFile,
     refreshFiles,
   } = useAppStore();
+  const isMobile = useIsMobile();
+  const { contextMenu, showContextMenu, hideContextMenu } = useContextMenu();
   const [previewFile, setPreviewFile] = useState<FileData | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
@@ -586,9 +591,9 @@ function FilesView() {
           />
           <div className="mt-3">
             {sortedFiles.length > 50 ? (
-              <VirtualFileGrid files={sortedFiles} onPreview={handlePreview} onShowVersions={handleShowVersions} />
+              <VirtualFileGrid files={sortedFiles} onPreview={handlePreview} onShowVersions={handleShowVersions} onFileContextMenu={!isMobile ? showContextMenu : undefined} />
             ) : (
-              <FileGrid files={visibleFiles} onPreview={handlePreview} onShowVersions={handleShowVersions} />
+              <FileGrid files={visibleFiles} onPreview={handlePreview} onShowVersions={handleShowVersions} onFileContextMenu={!isMobile ? showContextMenu : undefined} />
             )}
           </div>
 
@@ -631,6 +636,13 @@ function FilesView() {
         description={`确定要删除选中的 ${batchSelectedIds.length} 个文件吗？文件将移入回收站。`}
         onConfirm={() => { batchDeleteFiles(batchSelectedIds); setBatchDeleteConfirm(false); }}
         onCancel={() => setBatchDeleteConfirm(false)}
+      />
+
+      {/* Desktop right-click context menu */}
+      <FileContextMenu
+        file={contextMenu.file}
+        position={contextMenu.position}
+        onClose={hideContextMenu}
       />
     </div>
   );

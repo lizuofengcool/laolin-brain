@@ -218,10 +218,12 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>('zh-CN');
   const [mounted, setMounted] = useState(false);
 
+  /* eslint-disable react-hooks/set-state-in-effect -- hydration guard pattern for i18n locale */
   useEffect(() => {
     setLocaleState(detectLocale());
     setMounted(true);
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const setLocale = useCallback((newLocale: Locale) => {
     setLocaleState(newLocale);
