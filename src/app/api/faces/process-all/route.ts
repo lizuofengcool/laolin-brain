@@ -112,8 +112,8 @@ async function processFilesInBackground(
   // Import face detection
   let detectFn: (base64: string) => Promise<FaceDetection[]>;
   try {
-    const module = await import('@/lib/ai/face-detection');
-    detectFn = module.detectFaces;
+    const detectionModule = await import('@/lib/ai/face-detection');
+    detectFn = detectionModule.detectFaces;
   } catch {
     state.isProcessing = false;
     return;

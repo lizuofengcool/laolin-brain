@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { detectFaces, type FaceDetection } from '@/lib/ai/face-detection';
-import { clusterFaces, findBestCluster } from '@/lib/face-cluster';
+import { cosineSimilarity } from '@/lib/face-cluster';
 import { randomUUID } from 'crypto';
 
 export async function POST(request: NextRequest) {
@@ -101,15 +101,6 @@ export async function POST(request: NextRequest) {
       for (const group of existingGroups) {
         if (group.faces.length === 0) continue;
 
-        // Get representative embedding from the group
-        const representative = group.faces[0];
-        let repEmbedding: number[] = [];
-        try {
-          repEmbedding = JSON.parse(representative.embedding);
-        } catch {
-          continue;
-        }
-
         // Compare with all faces in the group
         let maxSim = 0;
         for (const groupFace of group.faces) {
@@ -119,7 +110,6 @@ export async function POST(request: NextRequest) {
           } catch {
             continue;
           }
-          const { cosineSimilarity } = await import('@/lib/face-cluster');
           const sim = cosineSimilarity(detection.embedding, groupEmbedding);
           if (sim > maxSim) maxSim = sim;
         }
