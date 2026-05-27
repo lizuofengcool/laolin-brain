@@ -1,4 +1,5 @@
 import ZAI from 'z-ai-web-dev-sdk';
+import { cosineSimilarity } from '@/lib/math-utils';
 
 let zaiInstance: Awaited<ReturnType<typeof ZAI.create>> | null = null;
 
@@ -132,30 +133,7 @@ function createZeroVector(): number[] {
   return new Array(EMBEDDING_DIMENSIONS).fill(0);
 }
 
-/**
- * Compute cosine similarity between two vectors.
- * Returns a value between -1 and 1, where 1 means identical direction.
- */
-export function cosineSimilarity(a: number[], b: number[]): number {
-  if (!a || !b || a.length !== b.length || a.length === 0) {
-    return 0;
-  }
-
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-
-  const denominator = Math.sqrt(normA) * Math.sqrt(normB);
-  if (denominator === 0) return 0;
-
-  return dotProduct / denominator;
-}
+export { cosineSimilarity };
 
 /**
  * Generate embeddings for multiple texts with concurrency control.
