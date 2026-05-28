@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useAppStore } from "@/stores/app-store";
 import { useAvatar } from "@/hooks/use-avatar";
+import { useRouter } from "next/navigation";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,16 +20,16 @@ import { useI18n, LOCALES, type Locale } from "@/lib/i18n";
 import { NotificationBell } from "@/components/layout/NotificationBell";
 
 export function Header() {
-  const { user, searchQuery, setSearchQuery, setCurrentView, logout } =
-    useAppStore();
+  const { user, searchQuery, setSearchQuery, logout } = useAppStore();
   const { theme, setTheme } = useTheme();
   const { locale, setLocale } = useI18n();
   const { avatar } = useAvatar();
+  const router = useRouter();
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (searchQuery.trim()) {
-      setCurrentView("search");
+      router.push("/search");
     }
   };
 
@@ -110,45 +111,45 @@ export function Header() {
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => setCurrentView("profile")}>
+            <DropdownMenuItem onClick={() => router.push("/profile")}>
               <User className="mr-2 h-4 w-4" />
               个人中心
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setCurrentView("favorites")}>
+            <DropdownMenuItem onClick={() => router.push("/favorites")}>
               <Star className="mr-2 h-4 w-4" />
               我的收藏
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setCurrentView("recycleBin")}>
+            <DropdownMenuItem onClick={() => router.push("/trash")}>
               <Trash2 className="mr-2 h-4 w-4" />
               回收站
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => setCurrentView("albums")}>
+            <DropdownMenuItem onClick={() => router.push("/albums")}>
               <ImageIcon className="mr-2 h-4 w-4" />
               智能相册
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setCurrentView("faceGroups")}>
+            <DropdownMenuItem onClick={() => router.push("/faces")}>
               <ScanFace className="mr-2 h-4 w-4" />
               人脸识别
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setCurrentView("timeline")}>
+            <DropdownMenuItem onClick={() => router.push("/timeline")}>
               <CalendarDays className="mr-2 h-4 w-4" />
               时间线
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setCurrentView("tags")}>
+            <DropdownMenuItem onClick={() => router.push("/tags")}>
               <Tag className="mr-2 h-4 w-4" />
               标签管理
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setCurrentView("analytics")}>
+            <DropdownMenuItem onClick={() => router.push("/analytics")}>
               <BarChart3 className="mr-2 h-4 w-4" />
               数据分析
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setCurrentView("knowledgeGraph")}>
+            <DropdownMenuItem onClick={() => router.push("/graph")}>
               <Network className="mr-2 h-4 w-4" />
               知识图谱
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => setCurrentView("settings")}>
+            <DropdownMenuItem onClick={() => router.push("/settings")}>
               <Settings className="mr-2 h-4 w-4" />
               系统设置
             </DropdownMenuItem>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { useRouter } from "next/navigation";
 import {
   User,
   Mail,
@@ -30,7 +31,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { useAppStore, type ViewType } from "@/stores/app-store";
+import { useAppStore } from "@/stores/app-store";
 import { useTheme } from "next-themes";
 import { cn } from "@/lib/utils";
 
@@ -40,7 +41,8 @@ import { cn } from "@/lib/utils";
  */
 
 export function ProfileView() {
-  const { user, files, setCurrentView, logout } = useAppStore();
+  const { user, files, logout } = useAppStore();
+  const router = useRouter();
   const { theme, setTheme } = useTheme();
 
   const stats = useMemo(() => {
@@ -155,7 +157,7 @@ export function ProfileView() {
           {quickActions.map((action, i) => (
             <div key={action.view}>
               <button
-                onClick={() => action.onClick(setCurrentView)}
+                onClick={() => action.onClick(router)}
                 className="flex items-center gap-3 w-full px-6 py-3 hover:bg-muted/50 transition-colors text-left"
               >
                 <div className={cn("h-8 w-8 rounded-lg flex items-center justify-center shrink-0", action.bgColor)}>
@@ -185,7 +187,7 @@ export function ProfileView() {
           {moreFeatures.map((feature, i) => (
             <div key={feature.view}>
               <button
-                onClick={() => feature.onClick(setCurrentView)}
+                onClick={() => feature.onClick(router)}
                 className="flex items-center gap-3 w-full px-6 py-3 hover:bg-muted/50 transition-colors text-left"
               >
                 <div className="h-8 w-8 rounded-lg bg-muted flex items-center justify-center shrink-0">
@@ -231,7 +233,7 @@ export function ProfileView() {
           <Separator className="ml-16" />
           {/* Settings */}
           <button
-            onClick={() => setCurrentView("settings")}
+            onClick={() => router.push("/settings")}
             className="flex items-center gap-3 w-full px-6 py-3 hover:bg-muted/50 transition-colors text-left"
           >
             <div className="h-8 w-8 rounded-lg bg-muted flex items-center justify-center shrink-0">
@@ -277,7 +279,7 @@ const quickActions: {
   bgColor: string;
   iconColor: string;
   view: string;
-  onClick: (set: (v: ViewType) => void) => void;
+  onClick: (router: ReturnType<typeof import("next/navigation").useRouter>) => void;
 }[] = [
   {
     icon: Star,
@@ -286,7 +288,7 @@ const quickActions: {
     bgColor: "bg-amber-100 dark:bg-amber-950/30",
     iconColor: "text-amber-600 dark:text-amber-400",
     view: "favorites",
-    onClick: (set) => set("favorites"),
+    onClick: (router) => router.push("/favorites"),
   },
   {
     icon: Trash2,
@@ -295,7 +297,7 @@ const quickActions: {
     bgColor: "bg-red-100 dark:bg-red-950/30",
     iconColor: "text-red-600 dark:text-red-400",
     view: "recycleBin",
-    onClick: (set) => set("recycleBin"),
+    onClick: (router) => router.push("/trash"),
   },
   {
     icon: Tag,
@@ -304,7 +306,7 @@ const quickActions: {
     bgColor: "bg-blue-100 dark:bg-blue-950/30",
     iconColor: "text-blue-600 dark:text-blue-400",
     view: "tags",
-    onClick: (set) => set("tags"),
+    onClick: (router) => router.push("/tags"),
   },
   {
     icon: BarChart3,
@@ -313,7 +315,7 @@ const quickActions: {
     bgColor: "bg-green-100 dark:bg-green-950/30",
     iconColor: "text-green-600 dark:text-green-400",
     view: "analytics",
-    onClick: (set) => set("analytics"),
+    onClick: (router) => router.push("/analytics"),
   },
 ];
 
@@ -322,12 +324,12 @@ const moreFeatures: {
   icon: typeof User;
   label: string;
   view: string;
-  onClick: (set: (v: ViewType) => void) => void;
+  onClick: (router: ReturnType<typeof import("next/navigation").useRouter>) => void;
 }[] = [
-  { icon: ImageIcon, label: "智能相册", view: "albums", onClick: (set) => set("albums") },
-  { icon: ScanFace, label: "人脸识别", view: "faceGroups", onClick: (set) => set("faceGroups") },
-  { icon: CalendarDays, label: "时间线", view: "timeline", onClick: (set) => set("timeline") },
-  { icon: Network, label: "知识图谱", view: "knowledgeGraph", onClick: (set) => set("knowledgeGraph") },
+  { icon: ImageIcon, label: "智能相册", view: "albums", onClick: (router) => router.push("/albums") },
+  { icon: ScanFace, label: "人脸识别", view: "faceGroups", onClick: (router) => router.push("/faces") },
+  { icon: CalendarDays, label: "时间线", view: "timeline", onClick: (router) => router.push("/timeline") },
+  { icon: Network, label: "知识图谱", view: "knowledgeGraph", onClick: (router) => router.push("/graph") },
 ];
 
 function formatSize(bytes: number): string {

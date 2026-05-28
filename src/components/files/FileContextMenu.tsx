@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Eye,
@@ -51,7 +52,8 @@ type MenuEntry = MenuItemDef | MenuSeparator;
 export function FileContextMenu({ file, position, onClose, onPreview }: FileContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [shareOpen, setShareOpen] = useState(false);
-  const { toggleFavorite, softDeleteFile, renameFile, setCurrentView } = useAppStore();
+  const { toggleFavorite, softDeleteFile, renameFile } = useAppStore();
+  const router = useRouter();
 
   // ── Actions ──────────────────────────────────────────────
   const handleOpenPreview = useCallback(() => {
@@ -81,14 +83,14 @@ export function FileContextMenu({ file, position, onClose, onPreview }: FileCont
   }, [file, onClose]);
 
   const handleMoveToFolder = useCallback(() => {
-    setCurrentView("files");
+    router.push("/files");
     onClose();
-  }, [setCurrentView, onClose]);
+  }, [router, onClose]);
 
   const handleManageTags = useCallback(() => {
-    setCurrentView("tags");
+    router.push("/tags");
     onClose();
-  }, [setCurrentView, onClose]);
+  }, [router, onClose]);
 
   const handleRename = useCallback(() => {
     if (file) {
@@ -280,60 +282,60 @@ export function FileContextMenu({ file, position, onClose, onPreview }: FileCont
 
   return (
     <>
-    <AnimatePresence>
-      <motion.div
-        ref={menuRef}
-        onContextMenu={handleContextMenu}
-        className="fixed z-[60] min-w-[180px] max-w-[220px] rounded-md border bg-popover p-1 text-popover-foreground shadow-lg backdrop-blur-sm"
-        style={{
-          left: adjustedPosition.x,
-          top: adjustedPosition.y,
-          transformOrigin: `${position.x - adjustedPosition.x}px ${position.y - adjustedPosition.y}px`,
-        }}
-        initial={{ opacity: 0, scale: 0.9 }}
-        animate={{ opacity: 1, scale: 1 }}
-        exit={{ opacity: 0, scale: 0.95 }}
-        transition={{ duration: 0.12, ease: "easeOut" }}
-      >
-        {menuItems.map((item) => {
-          if (item.type === "separator") {
-            return (
-              <div
-                key={item.id}
-                className="-mx-1 my-1 h-px bg-border"
-              />
-            );
-          }
+      <AnimatePresence>
+        <motion.div
+          ref={menuRef}
+          onContextMenu={handleContextMenu}
+          className="fixed z-[60] min-w-[180px] max-w-[220px] rounded-md border bg-popover p-1 text-popover-foreground shadow-lg backdrop-blur-sm"
+          style={{
+            left: adjustedPosition.x,
+            top: adjustedPosition.y,
+            transformOrigin: `${position.x - adjustedPosition.x}px ${position.y - adjustedPosition.y}px`,
+          }}
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.95 }}
+          transition={{ duration: 0.12, ease: "easeOut" }}
+        >
+          {menuItems.map((item) => {
+            if (item.type === "separator") {
+              return (
+                <div
+                  key={item.id}
+                  className="-mx-1 my-1 h-px bg-border"
+                />
+              );
+            }
 
-          return (
-            <button
-              key={item.id}
-              className={cn(
-                "flex w-full items-center gap-2.5 rounded-sm px-2 py-1.5 text-sm outline-none select-none",
-                "transition-colors duration-75 cursor-pointer",
-                item.variant === "destructive"
-                  ? "text-destructive hover:bg-destructive/10 focus:bg-destructive/10"
-                  : "hover:bg-accent focus:bg-accent",
-              )}
-              onClick={item.action}
-            >
-              <span className={cn(
-                "shrink-0 [&_svg]:pointer-events-none [&_svg]:size-4",
-                item.variant === "destructive" ? "[&_svg]:text-destructive" : "[&_svg]:text-muted-foreground",
-              )}>
-                {item.icon}
-              </span>
-              <span>{item.label}</span>
-            </button>
-          );
-        })}
-      </motion.div>
-    </AnimatePresence>
-    <ShareDialog
-      file={{ id: file.id, fileName: file.fileName, fileType: file.fileType, fileSize: file.fileSize }}
-      open={shareOpen}
-      onClose={() => setShareOpen(false)}
-    />
+            return (
+              <button
+                key={item.id}
+                className={cn(
+                  "flex w-full items-center gap-2.5 rounded-sm px-2 py-1.5 text-sm outline-none select-none",
+                  "transition-colors duration-75 cursor-pointer",
+                  item.variant === "destructive"
+                    ? "text-destructive hover:bg-destructive/10 focus:bg-destructive/10"
+                    : "hover:bg-accent focus:bg-accent",
+                )}
+                onClick={item.action}
+              >
+                <span className={cn(
+                  "shrink-0 [&_svg]:pointer-events-none [&_svg]:size-4",
+                  item.variant === "destructive" ? "[&_svg]:text-destructive" : "[&_svg]:text-muted-foreground",
+                )}>
+                  {item.icon}
+                </span>
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </motion.div>
+      </AnimatePresence>
+      <ShareDialog
+        file={{ id: file.id, fileName: file.fileName, fileType: file.fileType, fileSize: file.fileSize }}
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+      />
     </>
   );
 }

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useAppStore } from "@/stores/app-store";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Loader2, RotateCcw, Eye, EyeOff, Filter, Network } from "lucide-react";
@@ -65,7 +66,7 @@ const FILE_TYPE_LABELS: Record<string, string> = {
 
 export function KnowledgeGraphView() {
   const files = useAppStore((s) => s.files);
-  const setCurrentView = useAppStore((s) => s.setCurrentView);
+  const router = useRouter();
 
   const [loading, setLoading] = useState(false);
   const [graphData, setGraphData] = useState<{ nodes: GraphNode[]; edges: GraphEdge[] } | null>(null);
@@ -292,10 +293,10 @@ export function KnowledgeGraphView() {
     (nodeId: string) => {
       const file = activeFiles.find((f) => f.id === nodeId);
       if (file) {
-        setCurrentView("files");
+        router.push("/files");
       }
     },
-    [activeFiles, setCurrentView]
+    [activeFiles, router]
   );
 
   // Mouse wheel zoom

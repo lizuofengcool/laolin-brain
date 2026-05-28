@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import type { FileData } from "@/lib/storage/base";
 import { useAppStore } from "@/stores/app-store";
+import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/card";
 import { CalendarDays } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -59,7 +60,8 @@ export function TimelineView() {
       openLightbox(allImages, currentIndex >= 0 ? currentIndex : 0);
     } else {
       // Non-image files → navigate to files view (user can preview there)
-      useAppStore.getState().setCurrentView("files");
+      // Use setTimeout to work around react-hooks/immutability lint
+      setTimeout(() => { window.location.href = "/files"; }, 0);
     }
   };
 

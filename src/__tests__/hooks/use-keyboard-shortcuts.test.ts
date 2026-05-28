@@ -1,9 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, act, fireEvent } from '@testing-library/react';
 import { createElement } from 'react';
+import { render, act } from '@testing-library/react';
+
+// Mock the router
+const mockPush = vi.fn();
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: mockPush }),
+}));
+
+// Mock view-routes
+vi.mock('@/lib/view-routes', () => ({
+  viewToPath: (v: string) => `/${v === 'recycleBin' ? 'trash' : v}`,
+}));
 
 // Mock the store
-const mockSetCurrentView = vi.fn();
 const mockCloseLightbox = vi.fn();
 
 vi.mock('@/stores/app-store', () => ({
@@ -26,7 +36,6 @@ describe('useKeyboardShortcuts', () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(
       (selector?: (state: any) => any) => {
         const state = {
-          setCurrentView: mockSetCurrentView,
           closeLightbox: mockCloseLightbox,
           lightboxOpen: false,
         };
@@ -50,53 +59,53 @@ describe('useKeyboardShortcuts', () => {
     el.dispatchEvent(event);
   }
 
-  it('Ctrl+K → setCurrentView("search")', () => {
+  it('Ctrl+K → navigate to /search', () => {
     render(createElement(ShortcutsWrapper));
     fireKeyDown('k', true);
-    expect(mockSetCurrentView).toHaveBeenCalledWith('search');
+    expect(mockPush).toHaveBeenCalledWith('/search');
   });
 
-  it('Ctrl+N → setCurrentView("files")', () => {
+  it('Ctrl+N → navigate to /files', () => {
     render(createElement(ShortcutsWrapper));
     fireKeyDown('n', true);
-    expect(mockSetCurrentView).toHaveBeenCalledWith('files');
+    expect(mockPush).toHaveBeenCalledWith('/files');
   });
 
-  it('Ctrl+D → setCurrentView("dashboard")', () => {
+  it('Ctrl+D → navigate to /dashboard', () => {
     render(createElement(ShortcutsWrapper));
     fireKeyDown('d', true);
-    expect(mockSetCurrentView).toHaveBeenCalledWith('dashboard');
+    expect(mockPush).toHaveBeenCalledWith('/dashboard');
   });
 
-  it('Ctrl+F → setCurrentView("favorites")', () => {
+  it('Ctrl+F → navigate to /favorites', () => {
     render(createElement(ShortcutsWrapper));
     fireKeyDown('f', true);
-    expect(mockSetCurrentView).toHaveBeenCalledWith('favorites');
+    expect(mockPush).toHaveBeenCalledWith('/favorites');
   });
 
-  it('Ctrl+T → setCurrentView("timeline")', () => {
+  it('Ctrl+T → navigate to /timeline', () => {
     render(createElement(ShortcutsWrapper));
     fireKeyDown('t', true);
-    expect(mockSetCurrentView).toHaveBeenCalledWith('timeline');
+    expect(mockPush).toHaveBeenCalledWith('/timeline');
   });
 
-  it('number keys 1-7 → correct views', () => {
+  it('number keys 1-7 → correct routes', () => {
     render(createElement(ShortcutsWrapper));
 
-    const keyViewMap: Record<string, string> = {
-      '1': 'dashboard',
-      '2': 'files',
-      '3': 'favorites',
-      '4': 'timeline',
-      '5': 'search',
-      '6': 'recycleBin',
-      '7': 'settings',
+    const keyRouteMap: Record<string, string> = {
+      '1': '/dashboard',
+      '2': '/files',
+      '3': '/favorites',
+      '4': '/timeline',
+      '5': '/search',
+      '6': '/trash',
+      '7': '/settings',
     };
 
-    for (const [key, view] of Object.entries(keyViewMap)) {
-      mockSetCurrentView.mockClear();
+    for (const [key, route] of Object.entries(keyRouteMap)) {
+      mockPush.mockClear();
       fireKeyDown(key);
-      expect(mockSetCurrentView).toHaveBeenCalledWith(view);
+      expect(mockPush).toHaveBeenCalledWith(route);
     }
   });
 
@@ -104,7 +113,6 @@ describe('useKeyboardShortcuts', () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(
       (selector?: (state: any) => any) => {
         const state = {
-          setCurrentView: mockSetCurrentView,
           closeLightbox: mockCloseLightbox,
           lightboxOpen: true,
         };
@@ -115,14 +123,13 @@ describe('useKeyboardShortcuts', () => {
     render(createElement(ShortcutsWrapper));
     fireKeyDown('Escape');
     expect(mockCloseLightbox).toHaveBeenCalled();
-    expect(mockSetCurrentView).not.toHaveBeenCalledWith('dashboard');
+    expect(mockPush).not.toHaveBeenCalledWith('/dashboard');
   });
 
   it('Escape when lightbox closed → dashboard', () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(
       (selector?: (state: any) => any) => {
         const state = {
-          setCurrentView: mockSetCurrentView,
           closeLightbox: mockCloseLightbox,
           lightboxOpen: false,
         };
@@ -132,7 +139,7 @@ describe('useKeyboardShortcuts', () => {
 
     render(createElement(ShortcutsWrapper));
     fireKeyDown('Escape');
-    expect(mockSetCurrentView).toHaveBeenCalledWith('dashboard');
+    expect(mockPush).toHaveBeenCalledWith('/dashboard');
     expect(mockCloseLightbox).not.toHaveBeenCalled();
   });
 
@@ -143,19 +150,19 @@ describe('useKeyboardShortcuts', () => {
     document.body.appendChild(input);
 
     // Ctrl+K should still work on input (it's special-cased to work)
-    mockSetCurrentView.mockClear();
+    mockPush.mockClear();
     fireKeyDown('k', true, false, input);
-    expect(mockSetCurrentView).toHaveBeenCalledWith('search');
+    expect(mockPush).toHaveBeenCalledWith('/search');
 
     // Other shortcuts should NOT work on input
-    mockSetCurrentView.mockClear();
+    mockPush.mockClear();
     fireKeyDown('n', true, false, input);
-    expect(mockSetCurrentView).not.toHaveBeenCalledWith('files');
+    expect(mockPush).not.toHaveBeenCalledWith('/files');
 
     // Number keys should NOT work on input
-    mockSetCurrentView.mockClear();
+    mockPush.mockClear();
     fireKeyDown('1', false, false, input);
-    expect(mockSetCurrentView).not.toHaveBeenCalledWith('dashboard');
+    expect(mockPush).not.toHaveBeenCalledWith('/dashboard');
 
     document.body.removeChild(input);
   });
@@ -166,13 +173,13 @@ describe('useKeyboardShortcuts', () => {
     const textarea = document.createElement('textarea');
     document.body.appendChild(textarea);
 
-    mockSetCurrentView.mockClear();
+    mockPush.mockClear();
     fireKeyDown('d', true, false, textarea);
-    expect(mockSetCurrentView).not.toHaveBeenCalledWith('dashboard');
+    expect(mockPush).not.toHaveBeenCalledWith('/dashboard');
 
-    mockSetCurrentView.mockClear();
+    mockPush.mockClear();
     fireKeyDown('3', false, false, textarea);
-    expect(mockSetCurrentView).not.toHaveBeenCalledWith('favorites');
+    expect(mockPush).not.toHaveBeenCalledWith('/favorites');
 
     document.body.removeChild(textarea);
   });

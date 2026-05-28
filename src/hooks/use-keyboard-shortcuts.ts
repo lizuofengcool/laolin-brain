@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { useAppStore } from "@/stores/app-store";
+import { viewToPath } from "@/lib/view-routes";
 
 /**
  * Global keyboard shortcuts hook
@@ -11,9 +13,11 @@ import { useAppStore } from "@/stores/app-store";
  * - 1-9: Quick navigate to views (when not in input)
  */
 export function useKeyboardShortcuts() {
-  const setCurrentView = useAppStore((s) => s.setCurrentView);
   const closeLightbox = useAppStore((s) => s.closeLightbox);
   const lightboxOpen = useAppStore((s) => s.lightboxOpen);
+  const router = useRouter();
+
+  // Helper not needed — router.push used directly in handlers
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -24,7 +28,7 @@ export function useKeyboardShortcuts() {
       // Ctrl+K / Cmd+K → Search (works even in inputs)
       if ((e.ctrlKey || e.metaKey) && e.key === "k") {
         e.preventDefault();
-        setCurrentView("search");
+        router.push("/search");
         // Focus the search input after a tick
         setTimeout(() => {
           const searchInput = document.querySelector<HTMLInputElement>(
@@ -45,7 +49,7 @@ export function useKeyboardShortcuts() {
           return;
         }
         e.preventDefault();
-        setCurrentView("dashboard");
+        router.push("/dashboard");
         return;
       }
 
@@ -54,19 +58,19 @@ export function useKeyboardShortcuts() {
         switch (e.key) {
           case "n":
             e.preventDefault();
-            setCurrentView("files");
+            router.push("/files");
             return;
           case "d":
             e.preventDefault();
-            setCurrentView("dashboard");
+            router.push("/dashboard");
             return;
           case "f":
             e.preventDefault();
-            setCurrentView("favorites");
+            router.push("/favorites");
             return;
           case "t":
             e.preventDefault();
-            setCurrentView("timeline");
+            router.push("/timeline");
             return;
         }
       }
@@ -74,29 +78,29 @@ export function useKeyboardShortcuts() {
       // Quick nav with number keys
       switch (e.key) {
         case "1":
-          setCurrentView("dashboard");
+          router.push("/dashboard");
           break;
         case "2":
-          setCurrentView("files");
+          router.push("/files");
           break;
         case "3":
-          setCurrentView("favorites");
+          router.push("/favorites");
           break;
         case "4":
-          setCurrentView("timeline");
+          router.push("/timeline");
           break;
         case "5":
-          setCurrentView("search");
+          router.push("/search");
           break;
         case "6":
-          setCurrentView("recycleBin");
+          router.push("/trash");
           break;
         case "7":
-          setCurrentView("settings");
+          router.push("/settings");
           break;
       }
     },
-    [setCurrentView, closeLightbox, lightboxOpen]
+    [router, closeLightbox, lightboxOpen]
   );
 
   useEffect(() => {

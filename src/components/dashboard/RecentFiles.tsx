@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { useAppStore } from "@/stores/app-store";
 import type { FileData } from "@/lib/storage/base";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,7 +15,8 @@ import {
 } from "@/lib/file-utils";
 
 export function RecentFiles() {
-  const { files, setCurrentView } = useAppStore();
+  const { files } = useAppStore();
+  const router = useRouter();
   const recentFiles = useMemo(() => files.filter((f) => !f.isDeleted).slice(0, 8), [files]);
 
   return (
@@ -24,7 +26,7 @@ export function RecentFiles() {
           <CardTitle className="text-base font-semibold">最近文件</CardTitle>
           <button
             className="text-sm text-primary hover:underline"
-            onClick={() => setCurrentView("files")}
+            onClick={() => router.push("/files")}
           >
             查看全部
           </button>
@@ -46,7 +48,7 @@ export function RecentFiles() {
                 <div
                   key={file.id}
                   className="flex items-center gap-3 p-2 rounded-lg hover:bg-muted/50 transition-colors cursor-pointer"
-                  onClick={() => setCurrentView("files")}
+                  onClick={() => router.push("/files")}
                 >
                   <div
                     className={cn(

@@ -27,7 +27,7 @@ interface AppState {
   token: string | null;
   isAuthenticated: boolean;
 
-  // Navigation
+  // Navigation (kept for backward compatibility — routes are now primary)
   currentView: ViewType;
   setCurrentView: (view: ViewType) => void;
 
@@ -124,9 +124,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   token: null,
   isAuthenticated: false,
 
-  // Navigation
+  // Navigation (kept for backward compat — routes are now primary)
   currentView: "login",
-  setCurrentView: (view) => set({ currentView: view }),
+  setCurrentView: (view) => {
+    set({ currentView: view });
+  },
 
   // Auth actions
   login: (user, token) => {

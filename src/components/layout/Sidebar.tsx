@@ -17,32 +17,35 @@ import {
   BarChart3,
   Network,
   ScanFace,
+  Settings,
 } from "lucide-react";
 import { useMemo } from "react";
-import { Button } from "@/components/ui/button";
+import { usePathname, useRouter } from "next/navigation";
 import { useAppStore, type ViewType } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 
-const navItems: { icon: typeof LayoutDashboard; label: string; view: ViewType; badge?: () => number }[] = [
-  { icon: LayoutDashboard, label: "仪表盘", view: "dashboard" },
-  { icon: FolderOpen, label: "文件管理", view: "files" },
-  { icon: ImageIcon, label: "智能相册", view: "albums" },
-  { icon: ScanFace, label: "人脸识别", view: "faceGroups" },
-  { icon: CalendarDays, label: "时间线", view: "timeline" },
-  { icon: Star, label: "收藏夹", view: "favorites", badge: () => 0 },
-  { icon: Tag, label: "标签管理", view: "tags" },
-  { icon: Trash2, label: "回收站", view: "recycleBin", badge: () => 0 },
-  { icon: Search, label: "搜索", view: "search" },
-  { icon: BarChart3, label: "分析", view: "analytics" },
-  { icon: Network, label: "知识图谱", view: "knowledgeGraph" },
-  { icon: User, label: "我的", view: "profile" },
+const navItems: { icon: typeof LayoutDashboard; label: string; view: ViewType; path: string; badge?: () => number }[] = [
+  { icon: LayoutDashboard, label: "仪表盘", view: "dashboard", path: "/dashboard" },
+  { icon: FolderOpen, label: "文件管理", view: "files", path: "/files" },
+  { icon: ImageIcon, label: "智能相册", view: "albums", path: "/albums" },
+  { icon: ScanFace, label: "人脸识别", view: "faceGroups", path: "/faces" },
+  { icon: CalendarDays, label: "时间线", view: "timeline", path: "/timeline" },
+  { icon: Star, label: "收藏夹", view: "favorites", path: "/favorites", badge: () => 0 },
+  { icon: Tag, label: "标签管理", view: "tags", path: "/tags" },
+  { icon: Trash2, label: "回收站", view: "recycleBin", path: "/trash", badge: () => 0 },
+  { icon: Search, label: "搜索", view: "search", path: "/search" },
+  { icon: BarChart3, label: "分析", view: "analytics", path: "/analytics" },
+  { icon: Network, label: "知识图谱", view: "knowledgeGraph", path: "/graph" },
+  { icon: User, label: "我的", view: "profile", path: "/profile" },
 ];
 
 export function Sidebar() {
-  const { currentView, setCurrentView, sidebarOpen, setSidebarOpen, logout, user, files } =
-    useAppStore();
+  const { sidebarOpen, setSidebarOpen, logout, user, files } = useAppStore();
+  const pathname = usePathname();
+  const router = useRouter();
 
   // Get last 5 recently viewed files for sidebar
   const recentFiles = useMemo(() =>
@@ -85,7 +88,7 @@ export function Sidebar() {
       <nav className="flex-1 py-4 px-2 space-y-1 overflow-y-auto">
         {navItems.map((item) => {
           const Icon = item.icon;
-          const isActive = currentView === item.view;
+          const isActive = pathname === item.path;
           const badgeCount = getBadgeCount(item.view);
           return (
             <Button
@@ -95,7 +98,7 @@ export function Sidebar() {
                 "w-full justify-start gap-3 h-10",
                 !sidebarOpen && "justify-center px-0"
               )}
-              onClick={() => setCurrentView(item.view)}
+              onClick={() => router.push(item.path)}
             >
               <Icon className={cn(
                 "h-4 w-4 shrink-0",
@@ -121,7 +124,7 @@ export function Sidebar() {
             "w-full justify-start gap-3 h-10 mt-4",
             !sidebarOpen && "justify-center px-0"
           )}
-          onClick={() => setCurrentView("files")}
+          onClick={() => router.push("/files")}
         >
           <Upload className="h-4 w-4 shrink-0" />
           {sidebarOpen && <span className="text-sm">上传文件</span>}
@@ -142,7 +145,7 @@ export function Sidebar() {
                 variant="ghost"
                 className="w-full justify-start gap-3 h-8 text-xs truncate"
                 onClick={() => {
-                  setCurrentView("files");
+                  router.push("/files");
                 }}
               >
                 <div className="h-5 w-5 rounded flex items-center justify-center shrink-0 bg-muted">

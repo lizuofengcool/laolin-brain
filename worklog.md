@@ -1146,3 +1146,30 @@ Stage Summary:
   - 验证: share token格式验证
 - 最终状态：build 0 errors, 884 tests passing, 累计约395个修复
 - 未修复（需架构决策）：单文件SPA模式、缺失loading.tsx/error.tsx、noImplicitAny:false等
+---
+Task ID: 12
+Agent: Main Agent (Architecture Refactor)
+Task: 单文件SPA重构为Next.js多路由架构
+
+Work Log:
+- 分析1596行page.tsx，识别15个视图组件和所有依赖关系
+- 创建3个共享组件（ConfirmDialog、EmptyDashboard、DashboardSkeleton）
+- 创建12个独立视图组件文件（src/components/views/）
+- 创建15个路由页面文件（src/app/(dashboard)/ 下）
+- 创建共享布局layout.tsx（sidebar+header+auth+全局overlay）
+- 创建loading.tsx骨架屏
+- 更新Sidebar/Header/MobileNav/use-keyboard-shortcuts等导航组件使用router.push
+- 更新其他5个组件的导航逻辑
+- 修复keyboard shortcuts测试（添加useRouter mock + React createElement import）
+- 验证：build 0 errors, 884 tests all passing
+
+Stage Summary:
+- page.tsx: 1596行 → 20行（仅redirect）
+- 新增15个路由页面、1个共享布局、1个loading页面
+- 12个视图组件独立为文件
+- 导航从Zustand currentView改为Next.js router.push
+- 每个视图有独立URL：/dashboard, /files, /search, /favorites, /trash, /faces, /settings, /analytics, /timeline, /graph, /albums, /tags, /profile
+- 代码分割自动生效（每个路由独立bundle）
+- 浏览器前进/后退自然工作
+- 支持loading.tsx和error.tsx
+- 构建输出显示所有路由正确注册
