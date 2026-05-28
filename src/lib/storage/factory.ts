@@ -5,6 +5,7 @@ import { isTauriEnvironment } from "./tauri";
 
 let _adapter: StorageAdapter | null = null;
 let _pendingPromise: Promise<StorageAdapter> | null = null;
+let _generation = 0;
 
 /**
  * 获取存储适配器（异步版本）
@@ -18,11 +19,13 @@ let _pendingPromise: Promise<StorageAdapter> | null = null;
 export async function getStorageAdapterAsync(
   mode: string
 ): Promise<StorageAdapter> {
-  // Return existing adapter if already created
+  // Return existing adapter if still valid (generation hasn't changed)
   if (_adapter) return _adapter;
 
-  // If an async creation is already in progress, await it instead of starting a new one
+  // If an async creation is already in progress, await it
   if (_pendingPromise) return _pendingPromise;
+
+  const gen = ++_generation;
 
   // Start async creation and store the promise to guard against concurrent calls
   _pendingPromise = (async () => {
@@ -43,6 +46,11 @@ export async function getStorageAdapterAsync(
         _adapter = new IndexedDBAdapter();
     }
     _pendingPromise = null;
+    // If adapter was reset during creation, discard and retry
+    if (gen !== _generation) {
+      _adapter = null;
+      return getStorageAdapterAsync(mode);
+    }
     return _adapter!;
   })();
 
@@ -84,6 +92,7 @@ export function getStorageAdapter(mode: string): StorageAdapter {
 }
 
 export function resetAdapter(): void {
+  _generation++;
   _adapter = null;
   _pendingPromise = null;
 }

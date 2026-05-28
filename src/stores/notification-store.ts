@@ -48,7 +48,10 @@ function loadNotifications(): Notification[] {
     const stored = localStorage.getItem(getNotificationStorageKey());
     if (stored) {
       const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed)) return parsed.slice(0, MAX_NOTIFICATIONS);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((item) => item && typeof item === 'object' && typeof item.id === 'string')
+        .slice(0, MAX_NOTIFICATIONS);
     }
   } catch {
     // ignore

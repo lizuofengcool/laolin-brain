@@ -19,7 +19,7 @@ const BASE_OPTIONS: sanitizeHtml.IOptions = {
     'div', 'span',
   ],
   allowedAttributes: {
-    '*': ['class', 'id', 'title'],
+    '*': ['class', 'title'],
     a: ['href', 'target', 'rel'],
     img: ['src', 'alt', 'width', 'height', 'loading'],
     video: ['src', 'controls', 'width', 'height', 'poster'],
@@ -53,7 +53,7 @@ const MARKDOWN_OPTIONS: sanitizeHtml.IOptions = {
     'input',
   ],
   allowedAttributes: {
-    '*': ['class', 'id', 'title'],
+    '*': ['class', 'title'],
     a: ['href', 'target', 'rel'],
     img: ['src', 'alt', 'width', 'height', 'loading'],
     video: ['src', 'controls', 'width', 'height', 'poster'],

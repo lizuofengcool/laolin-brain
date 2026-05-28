@@ -108,10 +108,10 @@ describe('useAppStore (extended)', () => {
       expect(result.map((f) => f.id)).toEqual(['c', 'a', 'b']);
     });
 
-    it('produces [undefined] when reordering empty array (splice on empty)', () => {
+    it('no-ops when reordering empty array (bounds guard)', () => {
       useAppStore.getState().reorderFiles(0, 1);
-      // splice on empty array returns undefined, then inserts it
-      expect(useAppStore.getState().files).toEqual([undefined]);
+      // Guard prevents out-of-bounds splice on empty array
+      expect(useAppStore.getState().files).toEqual([]);
     });
   });
 

@@ -131,12 +131,12 @@ describe("auth-jwt", () => {
       expect(verifyToken("")).toBeNull();
     });
 
-    it("returns {id, email} for a valid token missing exp field (signature still verified)", () => {
+    it("returns null for a token missing exp field (exp is now required)", () => {
       const payload = Buffer.from(JSON.stringify({ id: "u1", email: "a@b.com" })).toString("base64url");
       const sig = Buffer.from(
         createHmac("sha256", TOKEN_SECRET).update(payload).digest()
       ).toString("base64url");
-      expect(verifyToken(`${payload}.${sig}`)).toEqual({ id: "u1", email: "a@b.com" });
+      expect(verifyToken(`${payload}.${sig}`)).toBeNull();
     });
   });
 });

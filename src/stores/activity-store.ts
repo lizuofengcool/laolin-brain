@@ -39,7 +39,16 @@ function loadActivities(): ActivityItem[] {
   try {
     const stored = localStorage.getItem(getActivitiesStorageKey());
     if (stored) {
-      return JSON.parse(stored) as ActivityItem[];
+      try {
+        const parsed = JSON.parse(stored);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter(
+          (item): item is ActivityItem =>
+            item && typeof item.id === 'string' && typeof item.type === 'string'
+        );
+      } catch {
+        return [];
+      }
     }
   } catch {
     // 静默失败

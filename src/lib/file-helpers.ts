@@ -20,7 +20,12 @@ export async function downloadFile(file: FileData): Promise<void> {
     const db = await openDB("knowledge-base-db", DB_VERSION);
     const record = await db.get("files", file.id);
     if (!record?.data) throw new Error("File not found in local storage");
-    const binaryStr = atob(record.data);
+    let binaryStr: string;
+    try {
+      binaryStr = atob(record.data);
+    } catch {
+      throw new Error("Failed to decode file data: invalid base64");
+    }
     const bytes = new Uint8Array(binaryStr.length);
     for (let i = 0; i < binaryStr.length; i++) {
       bytes[i] = binaryStr.charCodeAt(i);
@@ -37,5 +42,6 @@ function triggerDownload(blob: Blob, fileName: string) {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  // Delay revocation to ensure the browser starts the download
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }

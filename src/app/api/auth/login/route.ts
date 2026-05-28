@@ -21,6 +21,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (password.length > 128) {
+      return NextResponse.json(
+        { error: '密码过长' },
+        { status: 400 }
+      );
+    }
+
     const user = await db.user.findUnique({ where: { email } });
     if (!user || !user.password) {
       return NextResponse.json(

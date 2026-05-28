@@ -62,6 +62,7 @@ describe('downloadFile', () => {
 
   describe('cloud mode', () => {
     it('fetches blob from API and triggers download', async () => {
+      vi.useFakeTimers();
       mockGetState.mockReturnValue({ storageMode: 'cloud' });
       const mockBlob = new Blob(['file content'], { type: 'application/pdf' });
       const mockFetch = vi.fn().mockResolvedValue({
@@ -76,7 +77,11 @@ describe('downloadFile', () => {
       expect(mockFetch).toHaveBeenCalledWith('/api/files/file-1/download');
       expect(mockCreateObjectURL).toHaveBeenCalledWith(mockBlob);
       expect(mockClick).toHaveBeenCalled();
+      // revokeObjectURL is now delayed via setTimeout
+      expect(mockRevokeObjectURL).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(60_000);
       expect(mockRevokeObjectURL).toHaveBeenCalledWith('blob:http://localhost/fake');
+      vi.useRealTimers();
     });
 
     it('throws when fetch returns non-ok response', async () => {

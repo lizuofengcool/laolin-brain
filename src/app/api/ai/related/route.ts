@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateRequest } from '@/lib/api-auth';
 import ZAI from 'z-ai-web-dev-sdk';
+import { db } from '@/lib/db';
 
 let zaiPromise: Promise<Awaited<ReturnType<typeof ZAI.create>>> | null = null;
 
@@ -32,7 +33,19 @@ export async function POST(request: NextRequest) {
         f.id !== fileId && (f.textContent || f.fileName)
     );
 
-    if (otherFiles.length === 0) {
+    // Verify file IDs belong to the authenticated user
+    const allFileIds = [...otherFiles.map(f => f.id), fileId];
+    const dbFiles = await db.file.findMany({
+      where: { id: { in: allFileIds }, isDeleted: false },
+      select: { id: true, userId: true },
+    });
+    const userFileIds = new Set(dbFiles.filter(f => f.userId === auth.userId).map(f => f.id));
+    const verifiedOtherFiles = otherFiles.filter(f => userFileIds.has(f.id));
+    if (!userFileIds.has(fileId)) {
+      return NextResponse.json({ relatedFiles: [], reasons: {} });
+    }
+
+    if (verifiedOtherFiles.length === 0) {
       return NextResponse.json({ relatedFiles: [], reasons: {} });
     }
 
@@ -45,7 +58,7 @@ export async function POST(request: NextRequest) {
     const zai = await getZAI();
 
     // Build a compact file list for the AI
-    const fileListStr = otherFiles
+    const fileListStr = verifiedOtherFiles
       .slice(0, 30) // Limit to 30 files to avoid context overflow
       .map((f: { id: string; fileName?: string; textContent?: string; tags?: string[] }, index: number) => {
         const contentPreview = (f.textContent || '').slice(0, 200);

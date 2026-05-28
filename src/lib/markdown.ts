@@ -124,11 +124,20 @@ export function renderMarkdown(md: string): string {
 /**
  * Parse inline formatting: bold, italic, strikethrough, inline code, links, images
  */
+/** Sanitize URLs to prevent javascript: and data: protocol injection */
+function sanitizeUrl(url: string): string {
+  const trimmed = url.trim().toLowerCase();
+  if (trimmed.startsWith('javascript:') || trimmed.startsWith('data:') || trimmed.startsWith('vbscript:')) {
+    return '#invalid-url';
+  }
+  return url;
+}
+
 function inlineFormat(text: string): string {
   // Images ![alt](url)
-  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="markdown-image" />');
+  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => `<img src="${sanitizeUrl(url)}" alt="${alt}" class="markdown-image" />`);
   // Links [text](url)
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="markdown-link">$1</a>');
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => `<a href="${sanitizeUrl(url)}" target="_blank" rel="noopener noreferrer" class="markdown-link">${text}</a>`);
   // Inline code
   text = text.replace(/`([^`]+)`/g, '<code class="markdown-inline-code">$1</code>');
   // Bold + italic ***text*** or ___text___

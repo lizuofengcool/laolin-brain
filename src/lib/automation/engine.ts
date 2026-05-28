@@ -89,7 +89,7 @@ export function loadRules(): AutomationRule[] {
           typeof (r as Record<string, unknown>).id === 'string' &&
           typeof (r as Record<string, unknown>).type === 'string' &&
           typeof (r as Record<string, unknown>).enabled === 'boolean' &&
-          typeof (r as Record<string, unknown>).config === 'object'
+          typeof (r as Record<string, unknown>).config === 'object' && (r as Record<string, unknown>).config !== null
         );
         if (validRules.length > 0) return validRules;
       }

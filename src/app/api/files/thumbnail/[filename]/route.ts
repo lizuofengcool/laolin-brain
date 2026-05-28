@@ -10,15 +10,12 @@ export async function GET(
   // Auth check
   const auth = authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
+  const { userId } = auth;
 
   try {
     const { filename } = await params;
-    // NOTE: Ownership check limitation — we cannot easily verify the thumbnail belongs to the
-    // authenticated user from the filename alone. The upload path already stores thumbnails in
-    // a user-specific directory structure (/upload/{userId}/thumbnails/). If the thumbnail
-    // directory does NOT include userId in the path, this should be updated to prevent
-    // unauthorized access to other users' thumbnails.
-    const thumbDir = path.join(process.cwd(), "upload", "thumbnails");
+    // Store thumbnails in user-specific directory for ownership isolation
+    const thumbDir = path.join(process.cwd(), "upload", userId, "thumbnails");
     const filePath = path.join(thumbDir, filename);
 
     // Path traversal validation: ensure resolved path starts with thumbDir

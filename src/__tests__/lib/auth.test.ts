@@ -141,16 +141,16 @@ describe("auth utilities", () => {
       expect(verifyToken(`${badPayload}.${sig}`)).toBeNull();
     });
 
-    it("returns null for a token missing exp field", () => {
+    it("returns null for a token missing exp field (exp is now required)", () => {
       const payload = Buffer.from(JSON.stringify({ id: "u1", email: "a@b.com" })).toString("base64url");
       // Use a real signature so signature check passes
-      const secret = "kb-dev-only-secret-2024";
+      const secret = "kb-dev-only-secret-do-not-use-in-prod-2024";
       const sig = Buffer.from(
         createHmac("sha256", secret).update(payload).digest()
       ).toString("base64url");
-      // Without exp, the code checks `payload.exp && Date.now() > payload.exp` → falsy → returns {id, email}
+      // Without exp, the code now rejects the token
       const result = verifyToken(`${payload}.${sig}`);
-      expect(result).toEqual({ id: "u1", email: "a@b.com" });
+      expect(result).toBeNull();
     });
   });
 

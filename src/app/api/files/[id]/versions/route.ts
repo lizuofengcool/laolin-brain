@@ -63,30 +63,42 @@ export async function POST(
       );
     }
 
+    // Validate filePath to prevent stored path traversal
+    if (filePath !== undefined && filePath !== null) {
+      if (typeof filePath !== 'string' || filePath.length > 1024) {
+        return NextResponse.json(
+          { error: "Invalid filePath" },
+          { status: 400 }
+        );
+      }
+    }
+
     // Verify file exists and belongs to user
     const file = await db.file.findUnique({ where: { id } });
     if (!file || file.userId !== userId) {
       return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
 
-    // Get latest version number
-    const latestVersion = await db.fileVersion.findFirst({
-      where: { fileId: id },
-      orderBy: { version: "desc" },
-    });
+    // Use transaction to prevent race condition on version number
+    const version = await db.$transaction(async (tx) => {
+      const latestVersion = await tx.fileVersion.findFirst({
+        where: { fileId: id },
+        orderBy: { version: "desc" },
+      });
 
-    const nextVersion = (latestVersion?.version || 0) + 1;
+      const nextVersion = (latestVersion?.version || 0) + 1;
 
-    const version = await db.fileVersion.create({
-      data: {
-        fileId: id,
-        fileName,
-        fileSize,
-        filePath: filePath || null,
-        textContent: textContent || null,
-        thumbnailUrl: thumbnailUrl || null,
-        version: nextVersion,
-      },
+      return tx.fileVersion.create({
+        data: {
+          fileId: id,
+          fileName,
+          fileSize,
+          filePath: filePath || null,
+          textContent: textContent || null,
+          thumbnailUrl: thumbnailUrl || null,
+          version: nextVersion,
+        },
+      });
     });
 
     return NextResponse.json(version);

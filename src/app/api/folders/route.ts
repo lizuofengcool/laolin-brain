@@ -33,6 +33,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Validate parentId ownership if provided
+    if (parentId !== null && parentId !== undefined) {
+      if (typeof parentId !== 'string') {
+        return NextResponse.json(
+          { error: "parentId must be a string or null" },
+          { status: 400 }
+        );
+      }
+      const parentFolder = await db.folder.findUnique({ where: { id: parentId } });
+      if (!parentFolder || parentFolder.userId !== userId) {
+        return NextResponse.json(
+          { error: "父文件夹不存在" },
+          { status: 400 }
+        );
+      }
+    }
+
     const folder = await db.folder.create({
       data: {
         userId,

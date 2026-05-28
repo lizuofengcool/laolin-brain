@@ -48,7 +48,7 @@ export async function POST(request: NextRequest) {
 - keyPoints：3-5个关键观察点
 - suggestedTags：3-5个中文标签，简短精炼`;
 
-      userContent = `图片描述/OCR内容：${content || '(无文本内容)'}\n文件名：${fileName}`;
+      userContent = `图片描述/OCR内容：${content || '(无文本内容)'}\n文件名：${fileName.slice(0, 200)}`;
     } else {
       systemPrompt = `你是一个文档分析助手。请为以下文档生成摘要、关键要点和建议标签。
 请严格按照以下JSON格式返回，不要包含任何其他内容：
@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
 - 如果是代码文件，描述功能和主要模块
 - 如果是技术文档，总结技术要点`;
 
-      userContent = `文件名：${fileName}\n\n文档内容：\n${(content || '').slice(0, 8000)}`;
+      userContent = `文件名：${fileName.slice(0, 200)}\n\n文档内容：\n${(content || '').slice(0, 8000)}`;
     }
 
     const completion = await zai.chat.completions.create({

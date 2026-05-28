@@ -78,9 +78,28 @@ export async function PUT(
         data.deletedAt = null;
       }
     }
-    if (body.fileHash !== undefined) data.fileHash = body.fileHash;
-    if (body.folderId !== undefined)
-      data.folderId = body.folderId === "null" ? null : body.folderId;
+    if (body.fileHash !== undefined) {
+      if (body.fileHash !== null) {
+        if (typeof body.fileHash !== 'string' || !/^[a-fA-F0-9]{64}$/.test(body.fileHash)) {
+          return NextResponse.json({ error: 'fileHash must be a 64-character hex string or null' }, { status: 400 });
+        }
+      }
+      data.fileHash = body.fileHash;
+    }
+    if (body.folderId !== undefined) {
+      const folderIdValue = body.folderId === "null" ? null : body.folderId;
+      if (folderIdValue !== null) {
+        if (typeof folderIdValue !== 'string') {
+          return NextResponse.json({ error: 'folderId must be a string or null' }, { status: 400 });
+        }
+        // Verify folder belongs to the same user
+        const folder = await db.folder.findUnique({ where: { id: folderIdValue } });
+        if (!folder || folder.userId !== userId) {
+          return NextResponse.json({ error: '目标文件夹不存在' }, { status: 400 });
+        }
+      }
+      data.folderId = folderIdValue;
+    }
     if (body.fileName !== undefined) {
       if (typeof body.fileName !== 'string' || body.fileName.length > 255) {
         return NextResponse.json({ error: 'fileName 必须为字符串且不超过255个字符' }, { status: 400 });
@@ -130,6 +149,17 @@ export async function DELETE(
         await unlink(file.filePath);
       } catch {
         // File may not exist on disk
+      }
+    }
+
+    // Clean up version file paths from disk
+    const versions = await db.fileVersion.findMany({
+      where: { fileId: id },
+      select: { filePath: true },
+    });
+    for (const v of versions) {
+      if (v.filePath) {
+        try { await unlink(v.filePath); } catch { /* file may not exist */ }
       }
     }
 

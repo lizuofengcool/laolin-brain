@@ -54,15 +54,24 @@ export async function generateEmbedding(text: string): Promise<number[]> {
     const zai = await getZAI();
     const truncatedText = text.length > 4000 ? text.slice(0, 4000) : text;
 
-    const completion = await zai.chat.completions.create({
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        {
-          role: 'user',
-          content: `请将以下文本转换为${EMBEDDING_DIMENSIONS}维向量：\n\n${truncatedText}`,
-        },
-      ],
-    });
+    // Add 60-second timeout to prevent hanging AI calls
+    const controller = new AbortController();
+    const aiTimer = setTimeout(() => controller.abort(), 60_000);
+
+    let completion;
+    try {
+      completion = await zai.chat.completions.create({
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          {
+            role: 'user',
+            content: `请将以下文本转换为${EMBEDDING_DIMENSIONS}维向量：\n\n${truncatedText}`,
+          },
+        ],
+      });
+    } finally {
+      clearTimeout(aiTimer);
+    }
 
     const responseText = completion.choices[0]?.message?.content || '';
 

@@ -17,6 +17,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (query.length > 500) {
+      return NextResponse.json(
+        { error: '查询过长（最多500字符）' },
+        { status: 400 }
+      );
+    }
+
     // Use authenticated userId for security — never trust client-sent userId
     const authenticatedUserId = auth.userId;
 

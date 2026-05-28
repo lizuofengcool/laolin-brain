@@ -321,7 +321,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     const file = files.find((f) => f.id === id);
     try {
       const adapter = getStorageAdapter(storageMode);
-      await adapter.deleteFile(id, user.id);
+      if (adapter.permanentDeleteFile) {
+        await adapter.permanentDeleteFile(id, user.id);
+      } else {
+        await adapter.deleteFile(id, user.id);
+      }
       get().removeFile(id);
       useActivityStore.getState().addActivity({
         type: "delete",
@@ -660,8 +664,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Drag & drop: reorder files within a list
   reorderFiles: (fromIndex: number, toIndex: number) => {
-    set((s) => {
-      const newFiles = [...s.files];
+    const currentFiles = get().files;
+    if (!currentFiles.length || fromIndex >= currentFiles.length || toIndex >= currentFiles.length || fromIndex < 0 || toIndex < 0) return;
+    set(() => {
+      const newFiles = [...currentFiles];
       const [moved] = newFiles.splice(fromIndex, 1);
       newFiles.splice(toIndex, 0, moved);
       return { files: newFiles };

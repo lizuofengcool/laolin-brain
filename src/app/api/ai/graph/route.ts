@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateRequest } from '@/lib/api-auth';
 import ZAI from 'z-ai-web-dev-sdk';
+import { db } from '@/lib/db';
 
 let zaiPromise: Promise<Awaited<ReturnType<typeof ZAI.create>>> | null = null;
 
@@ -134,7 +135,16 @@ export async function POST(request: NextRequest) {
       fileType: f.fileType || 'other',
     })).filter((f: GraphFile) => f.id);
 
-    if (graphFiles.length < 2) {
+    // Verify all file IDs belong to the authenticated user
+    const fileIds = graphFiles.map(f => f.id);
+    const dbFiles = await db.file.findMany({
+      where: { id: { in: fileIds }, isDeleted: false },
+      select: { id: true, userId: true },
+    });
+    const userFileIds = new Set(dbFiles.filter(f => f.userId === auth.userId).map(f => f.id));
+    const ownedFiles = graphFiles.filter(f => userFileIds.has(f.id));
+
+    if (ownedFiles.length < 2) {
       return NextResponse.json(
         { error: '有效文件不足2个' },
         { status: 400 }
@@ -145,7 +155,7 @@ export async function POST(request: NextRequest) {
     try {
       const zai = await getZAI();
 
-      const fileListStr = graphFiles
+      const fileListStr = ownedFiles
         .slice(0, 50)
         .map((f, i) => {
           const contentPreview = (f.textContent || '').slice(0, 150);
@@ -201,7 +211,7 @@ ${fileListStr}
 
       // Validate and ensure all files are represented as nodes
       const existingIds = new Set(nodes.map((n) => n.id));
-      for (const file of graphFiles) {
+      for (const file of ownedFiles) {
         if (!existingIds.has(file.id)) {
           nodes.push({
             id: file.id,
@@ -216,7 +226,7 @@ ${fileListStr}
     } catch (aiError) {
       console.error('AI graph analysis failed, using fallback:', aiError);
       // Fallback to tag-based and type-based relationships
-      const result = buildFallbackGraph(graphFiles);
+      const result = buildFallbackGraph(ownedFiles);
       return NextResponse.json({ ...result, source: 'fallback' });
     }
   } catch (error) {

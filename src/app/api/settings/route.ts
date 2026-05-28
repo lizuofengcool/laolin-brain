@@ -42,7 +42,8 @@ export async function PUT(request: NextRequest) {
       email: user.email,
       storageMode: user.storageMode,
     });
-  } catch {
+  } catch (error) {
+    console.error('Settings update error:', error);
     return NextResponse.json(
       { error: "Failed to update settings" },
       { status: 500 }

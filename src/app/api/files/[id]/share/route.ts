@@ -92,6 +92,14 @@ export async function POST(
       );
     }
 
+    // Validate password minimum length
+    if (typeof password === 'string' && password.length > 0 && password.length < 4) {
+      return NextResponse.json(
+        { error: '密码至少4个字符' },
+        { status: 400 }
+      );
+    }
+
     // Treat empty string password as null; hash non-empty passwords before storage
     const sharePassword = (typeof password === 'string' && password.length > 0) ? hashSharePassword(password) : null;
 
@@ -148,7 +156,6 @@ export async function GET(
     const { id } = await params;
     const { searchParams } = new URL(request.url);
     const passwordParam = searchParams.get("password") || "";
-    const isSessionReaccess = request.headers.get("X-Share-Session") === "true";
 
     // Actually id here is the token, but the route is /api/files/[id]/share
     // Let's look up by token directly
@@ -170,8 +177,7 @@ export async function GET(
     }
 
     // Check password using timing-safe comparison
-    // If X-Share-Session header is present, client has already verified via POST
-    if (share.password && !isSessionReaccess) {
+    if (share.password) {
       if (!passwordParam) {
         return NextResponse.json(
           { error: "需要密码", passwordRequired: true },

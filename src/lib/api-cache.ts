@@ -56,8 +56,17 @@ const DEFAULT_TTL = {
 
 function generateCacheKey(url: string, options?: RequestInit): CacheKey {
   const method = options?.method?.toUpperCase() || "GET";
-  const body = options?.body ? `:${String(options.body).slice(0, 256)}` : "";
-  return `${method}:${url}${body}`;
+  const body = options?.body && typeof options.body === 'string'
+    ? `:${options.body.slice(0, 256)}`
+    : '';
+  const auth = (options?.headers instanceof Headers
+    ? options.headers.get('Authorization') || ''
+    : Array.isArray(options?.headers)
+      ? (options.headers.find((h: [string, string]) => h[0] === 'Authorization')?.[1]) || ''
+      : typeof options?.headers === 'object' && options?.headers !== null
+        ? (options.headers as Record<string, string>)['Authorization'] || ''
+        : '') ;
+  return `${method}:${url}:${auth}${body}`;
 }
 
 // ─── Auto-detect TTL based on URL pattern ───────────────────
