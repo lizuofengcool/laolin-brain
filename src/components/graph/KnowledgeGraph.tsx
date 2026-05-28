@@ -265,7 +265,6 @@ export function KnowledgeGraphView() {
     };
   }, [graphData]);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   function getNodeRadius(node: GraphNode): number {
     const minR = 8;
     const maxR = 24;
