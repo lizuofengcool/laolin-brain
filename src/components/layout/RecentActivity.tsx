@@ -103,7 +103,7 @@ function formatRelativeTime(isoString: string): string {
  * - 空状态 + 最多显示 10 条 + 查看全部
  */
 export function RecentActivity() {
-  const { activities } = useActivityStore();
+  const activities = useActivityStore((s) => s.activities);
   const [showAll, setShowAll] = useState(false);
 
   const displayList = showAll ? activities : activities.slice(0, VISIBLE_COUNT);

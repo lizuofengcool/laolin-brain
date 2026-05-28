@@ -244,4 +244,9 @@ async function processFilesInBackground(
   }
 
   state.isProcessing = false;
+
+  // Clean up the entry from the Map after 60 seconds to prevent memory leak
+  setTimeout(() => {
+    processingState.delete(userId);
+  }, 60_000);
 }

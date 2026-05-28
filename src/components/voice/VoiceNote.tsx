@@ -304,20 +304,34 @@ export function VoiceNote() {
         )}
 
         {/* 识别结果 */}
-        <div className="min-h-[100px] rounded-lg border bg-muted/30 p-3 text-sm whitespace-pre-wrap">
-          {transcript || interimText ? (
-            <>
-              <span>{transcript}</span>
-              {interimText && (
-                <span className="text-muted-foreground italic">{interimText}</span>
-              )}
-            </>
-          ) : (
-            <span className="text-muted-foreground">
-              {isRecording ? "正在聆听..." : "点击「开始录音」按钮，语音内容将显示在这里"}
-            </span>
-          )}
-        </div>
+        {isRecording ? (
+          <div className="min-h-[100px] rounded-lg border bg-muted/30 p-3 text-sm whitespace-pre-wrap">
+            {transcript || interimText ? (
+              <>
+                <span>{transcript}</span>
+                {interimText && (
+                  <span className="text-muted-foreground italic">{interimText}</span>
+                )}
+              </>
+            ) : (
+              <span className="text-muted-foreground">正在聆听...</span>
+            )}
+          </div>
+        ) : transcript || interimText ? (
+          <textarea
+            className="min-h-[100px] w-full rounded-lg border bg-muted/30 p-3 text-sm whitespace-pre-wrap resize-y outline-none focus:ring-2 focus:ring-primary/20"
+            value={transcript}
+            onChange={(e) => setTranscript(e.target.value)}
+          >
+            {interimText && (
+              <span className="text-muted-foreground italic">{interimText}</span>
+            )}
+          </textarea>
+        ) : (
+          <div className="min-h-[100px] rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
+            点击「开始录音」按钮，语音内容将显示在这里
+          </div>
+        )}
 
         <p className="text-xs text-muted-foreground">
           支持中文普通话识别。录音完成后可编辑内容，点击保存将创建 Markdown 笔记文件。

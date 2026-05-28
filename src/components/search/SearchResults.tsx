@@ -545,6 +545,7 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
                       src={file.thumbnailUrl}
                       alt={file.fileName}
                       className="h-12 w-12 rounded-md object-cover shrink-0"
+                      loading="lazy"
                     />
                   ) : (
                     <div

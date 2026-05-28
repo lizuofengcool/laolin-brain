@@ -307,7 +307,7 @@ export function ShareDialog({ file, open, onClose }: ShareDialogProps) {
                         className="overflow-hidden"
                       >
                         <Input
-                          type="text"
+                          type="password"
                           placeholder="输入分享密码"
                           value={password}
                           onChange={(e) => setPassword(e.target.value)}

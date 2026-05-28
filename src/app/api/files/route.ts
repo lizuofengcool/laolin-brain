@@ -25,6 +25,15 @@ export async function POST(request: NextRequest) {
   const { userId: authenticatedUserId } = auth;
 
   try {
+    // Early reject requests over 50MB based on Content-Length
+    const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
+    if (contentLength > 50 * 1024 * 1024) {
+      return NextResponse.json(
+        { error: "Request body exceeds 50MB limit" },
+        { status: 413 }
+      );
+    }
+
     // Check content-type is multipart/form-data
     const contentType = request.headers.get('content-type') || '';
     if (!contentType.includes('multipart/form-data')) {
@@ -51,6 +60,21 @@ export async function POST(request: NextRequest) {
     if (file.size > 50 * 1024 * 1024) {
       return NextResponse.json(
         { error: "File size exceeds 50MB limit" },
+        { status: 413 }
+      );
+    }
+
+    // Per-user storage quota check (5GB)
+    const [{ totalSize }] = await db.$queryRaw<Array<{ totalSize: bigint }>>`
+      SELECT COALESCE(SUM("fileSize"), 0) as "totalSize" FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+    `;
+    const totalUsed = Number(totalSize);
+    const quotaBytes = 5 * 1024 * 1024 * 1024; // 5GB
+    if (totalUsed + file.size > quotaBytes) {
+      const usedMB = Math.round(totalUsed / (1024 * 1024));
+      const quotaMB = Math.round(quotaBytes / (1024 * 1024));
+      return NextResponse.json(
+        { error: `Storage quota exceeded (${usedMB}MB / ${quotaMB}MB used)` },
         { status: 413 }
       );
     }
@@ -127,7 +151,10 @@ export async function POST(request: NextRequest) {
         const base64 = arrayBufferToBase64(new Uint8Array(buffer).buffer as ArrayBuffer);
         const aiRes = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || ""}/api/ai/process-image`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...(request.headers.get("authorization") ? { Authorization: request.headers.get("authorization")! } : {}),
+          },
           body: JSON.stringify({ imageBase64: base64 }),
         });
 
@@ -232,7 +259,10 @@ export async function POST(request: NextRequest) {
           const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "";
           const summaryRes = await fetch(`${baseUrl}/api/ai/summarize`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              ...(request.headers.get("authorization") ? { Authorization: request.headers.get("authorization")! } : {}),
+            },
             body: JSON.stringify({
               content: textContent,
               fileName: file.name,

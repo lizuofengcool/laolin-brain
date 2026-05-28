@@ -75,6 +75,7 @@ export function useSwipe(options: UseSwipeOptions = {}): UseSwipeReturn {
   const [swipeDirection, setSwipeDirection] = useState<SwipeDirection>(null);
   const [isSwiping, setIsSwiping] = useState(false);
   const [swipeDelta, setSwipeDelta] = useState({ x: 0, y: 0 });
+  const swipeDeltaRef = useRef({ x: 0, y: 0 });
 
   // Stable callback refs
   const onSwipeLeftRef = useRef(onSwipeLeft);
@@ -110,6 +111,7 @@ export function useSwipe(options: UseSwipeOptions = {}): UseSwipeReturn {
     setSwipeDirection(null);
     setIsSwiping(false);
     setSwipeDelta({ x: 0, y: 0 });
+    swipeDeltaRef.current = { x: 0, y: 0 };
 
     onSwipeStartRef.current?.(e.clientX, e.clientY);
 
@@ -129,7 +131,9 @@ export function useSwipe(options: UseSwipeOptions = {}): UseSwipeReturn {
     const absDeltaX = Math.abs(deltaX);
     const absDeltaY = Math.abs(deltaY);
 
-    setSwipeDelta({ x: deltaX, y: deltaY });
+    const newDelta = { x: deltaX, y: deltaY };
+    setSwipeDelta(newDelta);
+    swipeDeltaRef.current = newDelta;
 
     // Direction locking: once we determine direction, lock it
     if (!directionLockedRef.current && (absDeltaX > 10 || absDeltaY > 10)) {
@@ -148,8 +152,8 @@ export function useSwipe(options: UseSwipeOptions = {}): UseSwipeReturn {
     if (!isTrackingRef.current) return;
     isTrackingRef.current = false;
 
-    const deltaX = swipeDelta.x;
-    const deltaY = swipeDelta.y;
+    const deltaX = swipeDeltaRef.current.x;
+    const deltaY = swipeDeltaRef.current.y;
     const elapsed = Date.now() - startTimeRef.current;
     const absDeltaX = Math.abs(deltaX);
     const absDeltaY = Math.abs(deltaY);
@@ -189,8 +193,9 @@ export function useSwipe(options: UseSwipeOptions = {}): UseSwipeReturn {
     // Reset delta after a tick
     setTimeout(() => {
       setSwipeDelta({ x: 0, y: 0 });
+      swipeDeltaRef.current = { x: 0, y: 0 };
     }, 50);
-  }, [swipeDelta, minDistance, maxDuration]);
+  }, [minDistance, maxDuration]);
 
   return {
     swipeDirection,

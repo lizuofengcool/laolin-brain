@@ -131,6 +131,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       localStorage.setItem("kb_user", JSON.stringify(user));
     }
     set({ user, token, isAuthenticated: true, currentView: "dashboard" });
+    // Rehydrate user-specific stores
+    useNotificationStore.getState().rehydrate();
+    useActivityStore.getState().rehydrate();
   },
 
   logout: () => {
@@ -139,6 +142,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       localStorage.removeItem("kb_user");
     }
     resetAdapter();
+    useNotificationStore.getState().rehydrate();
+    useActivityStore.getState().rehydrate();
     set({
       user: null,
       token: null,

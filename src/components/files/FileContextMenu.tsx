@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback, useMemo } from "react";
+import { useEffect, useRef, useCallback, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Eye,
@@ -17,10 +17,13 @@ import type { FileData } from "@/lib/storage/base";
 import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
 
+import { ShareDialog } from "./ShareDialog";
+
 interface FileContextMenuProps {
   file: FileData | null;
   position: { x: number; y: number } | null;
   onClose: () => void;
+  onPreview?: (file: FileData) => void;
 }
 
 /** Approximate menu dimensions for viewport boundary detection */
@@ -45,14 +48,16 @@ interface MenuSeparator {
 
 type MenuEntry = MenuItemDef | MenuSeparator;
 
-export function FileContextMenu({ file, position, onClose }: FileContextMenuProps) {
+export function FileContextMenu({ file, position, onClose, onPreview }: FileContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const [shareOpen, setShareOpen] = useState(false);
   const { toggleFavorite, softDeleteFile, renameFile, setCurrentView } = useAppStore();
 
   // ── Actions ──────────────────────────────────────────────
   const handleOpenPreview = useCallback(() => {
+    if (file && onPreview) onPreview(file);
     onClose();
-  }, [onClose]);
+  }, [file, onPreview, onClose]);
 
   const handleToggleFavorite = useCallback(() => {
     if (file) toggleFavorite(file.id);
@@ -96,23 +101,16 @@ export function FileContextMenu({ file, position, onClose }: FileContextMenuProp
   }, [file, renameFile, onClose]);
 
   const handleShare = useCallback(() => {
-    if (file) {
-      // Navigate to search or trigger share dialog — open share via store
-      const store = useAppStore.getState();
-      // We just open a simple copy-link fallback
-      const shareUrl = `${window.location.origin}/share/${file.id}`;
-      navigator.clipboard?.writeText(shareUrl);
-    }
-    onClose();
-  }, [file, onClose]);
+    if (file) setShareOpen(true);
+  }, [file]);
 
   const handleDownload = useCallback(() => {
     if (!file) return;
-    const { token } = useAppStore.getState();
+    const { token, user } = useAppStore.getState();
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    fetch(`/api/files/${file.id}/download?userId=${file.id}`, { headers })
+    fetch(`/api/files/${file.id}/download?userId=${user?.id || ""}`, { headers })
       .then((res) => {
         if (!res.ok) throw new Error("Download failed");
         return res.blob();
@@ -267,9 +265,21 @@ export function FileContextMenu({ file, position, onClose }: FileContextMenuProp
     e.preventDefault();
   }, []);
 
-  if (!file || !position) return null;
+  if (!file || !position) {
+    if (shareOpen) {
+      return (
+        <ShareDialog
+          file={{ id: file?.id || "", fileName: file?.fileName || "" }}
+          open={shareOpen}
+          onClose={() => { setShareOpen(false); onClose(); }}
+        />
+      );
+    }
+    return null;
+  }
 
   return (
+    <>
     <AnimatePresence>
       <motion.div
         ref={menuRef}
@@ -319,5 +329,11 @@ export function FileContextMenu({ file, position, onClose }: FileContextMenuProp
         })}
       </motion.div>
     </AnimatePresence>
+    <ShareDialog
+      file={{ id: file.id, fileName: file.fileName, fileType: file.fileType, fileSize: file.fileSize }}
+      open={shareOpen}
+      onClose={() => setShareOpen(false)}
+    />
+    </>
   );
 }

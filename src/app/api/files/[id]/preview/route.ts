@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { readFile } from "fs/promises";
 import path from "path";
+import { timingSafeEqual } from "crypto";
 import { authenticateRequest } from "@/lib/api-auth";
 
 /**
@@ -36,7 +37,9 @@ export async function GET(
         if (!passwordParam) {
           return NextResponse.json({ error: "需要密码" }, { status: 403 });
         }
-        if (passwordParam !== share.password) {
+        const a = Buffer.from(passwordParam);
+        const b = Buffer.from(share.password);
+        if (a.length !== b.length || !timingSafeEqual(a, b)) {
           return NextResponse.json({ error: "密码错误" }, { status: 403 });
         }
       }

@@ -623,6 +623,7 @@ function FilesView() {
         file={contextMenu.file}
         position={contextMenu.position}
         onClose={hideContextMenu}
+        onPreview={handlePreview}
       />
     </div>
   );
@@ -671,6 +672,9 @@ function SearchView() {
         setSearchQuery(value);
         setSearchTrigger((prev) => prev + 1);
       }, 300);
+    } else {
+      setSearchQuery("");
+      setSearchTrigger((prev) => prev + 1);
     }
   };
 
@@ -737,7 +741,8 @@ function FavoritesView() {
   // Group favorites by file type
   const groupedFavs = useMemo(() => {
     const groups: Record<string, typeof favFiles> = {};
-    for (const f of favFiles) {
+    const visible = favFiles.slice(0, visibleCount);
+    for (const f of visible) {
       const type = f.fileType === "image" ? "image" :
                    f.fileType === "word" || f.fileType === "pdf" || f.fileType === "pptx" ? "document" :
                    f.fileType === "markdown" || f.fileType === "txt" ? "note" : "other";
@@ -745,7 +750,7 @@ function FavoritesView() {
       groups[type].push(f);
     }
     return groups;
-  }, [favFiles]);
+  }, [favFiles, visibleCount]);
 
   const visibleFiles = favFiles.slice(0, visibleCount);
   const hasMore = visibleCount < favFiles.length;
@@ -800,7 +805,7 @@ function FavoritesView() {
                 <h3 className="text-sm font-semibold">{TYPE_GROUP_LABELS[groupType] || groupType}</h3>
                 <Badge variant="secondary" className="text-xs">{groupFiles.length}</Badge>
               </div>
-              <FileGrid files={groupFiles.slice(0, 8)} onPreview={handlePreview} onShowVersions={handleShowVersions} />
+              <FileGrid files={groupFiles} onPreview={handlePreview} onShowVersions={handleShowVersions} />
             </div>
           ))}
           {hasMore && (
@@ -943,6 +948,7 @@ function RecycleBinView() {
                   src={file.thumbnailUrl || file.previewUrl}
                   alt={file.fileName}
                   className="h-10 w-10 rounded-lg object-cover shrink-0"
+                  loading="lazy"
                 />
               ) : (
                 <div className={cn("h-10 w-10 rounded-lg flex items-center justify-center shrink-0", getFileColor(file.fileType))}>

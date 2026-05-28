@@ -403,6 +403,7 @@ export function ImageLightbox({ images, currentIndex, open, onClose }: ImageLigh
                   src={img.thumbnailUrl || img.previewUrl}
                   alt={img.fileName}
                   className="w-full h-full object-cover"
+                  loading="lazy"
                 />
               </button>
             ))}

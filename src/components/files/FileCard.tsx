@@ -73,6 +73,7 @@ const areFileCardPropsEqual = (prev: FileCardProps, next: FileCardProps) => {
 export const FileCard = memo(function FileCard({ file, onPreview, cardSize = "medium", onShowVersions }: FileCardProps) {
   const [shareOpen, setShareOpen] = useState(false);
   const [longPressActive, setLongPressActive] = useState(false);
+  const [imgError, setImgError] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   const {
     tagDialogOpen, setTagDialogOpen, tagInput, setTagInput,
@@ -164,11 +165,19 @@ export const FileCard = memo(function FileCard({ file, onPreview, cardSize = "me
           >
             {isImage ? (
               <>
-                <img
-                  src={file.thumbnailUrl || file.previewUrl}
-                  alt={file.fileName}
-                  className="w-full h-full object-cover"
-                />
+                {imgError ? (
+                  <div className={cn("h-14 w-14 rounded-xl flex items-center justify-center", colorClass)}>
+                    <FileIconDisplay fileType={file.fileType} className="h-7 w-7" />
+                  </div>
+                ) : (
+                  <img
+                    src={file.thumbnailUrl || file.previewUrl}
+                    alt={file.fileName}
+                    className="w-full h-full object-cover"
+                    loading="lazy"
+                    onError={() => setImgError(true)}
+                  />
+                )}
                 {/* Tag overlay on images - bottom left */}
                 {file.tags.length > 0 && (
                   <div className="absolute bottom-2 left-2 flex flex-wrap gap-1 pointer-events-none">
@@ -503,6 +512,7 @@ export interface FileListItemProps {
 export const FileListItem = memo(function FileListItem({ file, onPreview, onShowVersions }: FileListItemProps) {
   const [shareOpen, setShareOpen] = useState(false);
   const [swiped, setSwiped] = useState(false);
+  const [imgError, setImgError] = useState(false);
   const listItemRef = useRef<HTMLDivElement>(null);
   const {
     tagDialogOpen, setTagDialogOpen, tagInput, setTagInput,
@@ -599,7 +609,13 @@ export const FileListItem = memo(function FileListItem({ file, onPreview, onShow
 
         {isImage ? (
           <div className="relative shrink-0">
-            <img src={file.thumbnailUrl || file.previewUrl} alt={file.fileName} className="h-10 w-10 rounded-md object-cover shrink-0" />
+            {imgError ? (
+              <div className={cn("h-10 w-10 rounded-md flex items-center justify-center shrink-0", colorClass)}>
+                <FileIconDisplay fileType={file.fileType} className="h-5 w-5" />
+              </div>
+            ) : (
+              <img src={file.thumbnailUrl || file.previewUrl} alt={file.fileName} className="h-10 w-10 rounded-md object-cover shrink-0" loading="lazy" onError={() => setImgError(true)} />
+            )}
             {/* Tag overlay on image thumbnails */}
             {file.tags.length > 0 && (
               <div className="absolute -bottom-1 -right-1 flex -space-x-0.5">

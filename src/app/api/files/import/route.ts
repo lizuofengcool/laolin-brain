@@ -8,6 +8,15 @@ export async function POST(request: NextRequest) {
   const { userId } = auth;
 
   try {
+    // Early reject requests over 50MB based on Content-Length
+    const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
+    if (contentLength > 50 * 1024 * 1024) {
+      return NextResponse.json(
+        { error: "Request body exceeds 50MB limit" },
+        { status: 413 }
+      );
+    }
+
     const body = await request.json();
     const { files, folders } = body;
 
@@ -50,6 +59,25 @@ export async function POST(request: NextRequest) {
     // Import files (don't use client-supplied IDs)
     for (const file of files) {
       if (!file.fileName || typeof file.fileName !== 'string' || file.fileName.length > 255) continue;
+
+      // Validate textContent size (max 5MB)
+      if (file.textContent && typeof file.textContent === 'string' && file.textContent.length > 5 * 1024 * 1024) {
+        console.error(`Skipping file ${file.fileName}: textContent exceeds 5MB limit`);
+        continue;
+      }
+
+      // Validate tags array (max 50 items, each max 100 chars)
+      if (file.tags && Array.isArray(file.tags)) {
+        if (file.tags.length > 50) {
+          console.error(`Skipping file ${file.fileName}: tags array exceeds 50 items`);
+          continue;
+        }
+        const invalidTag = file.tags.find((t: unknown) => typeof t !== 'string' || (t as string).length > 100);
+        if (invalidTag !== undefined) {
+          console.error(`Skipping file ${file.fileName}: a tag exceeds 100 chars`);
+          continue;
+        }
+      }
 
       try {
         await db.file.create({

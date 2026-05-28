@@ -256,7 +256,7 @@ describe('activity-store - advanced', () => {
     });
 
     it('handles null localStorage value', () => {
-      localStorageMock.getItem.mockReturnValue(null);
+      localStorageMock.getItem.mockReturnValue(null as unknown as string);
 
       // loadActivities returns [] for null
       const result = localStorageMock.getItem('kb_activities_test-user-id');

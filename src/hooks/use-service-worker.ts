@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback, useSyncExternalStore } from 'react';
+import { useEffect, useState, useCallback, useRef, useSyncExternalStore } from 'react';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>;
@@ -27,7 +27,9 @@ function getServerOnlineSnapshot() {
 }
 
 // Initialize online/offline listeners (side-effect free registration)
-if (typeof window !== 'undefined') {
+let listenersRegistered = false;
+if (typeof window !== 'undefined' && !listenersRegistered) {
+  listenersRegistered = true;
   window.addEventListener('online', () => {
     currentOnline = true;
     onlineListeners.forEach((l) => l());
@@ -58,7 +60,8 @@ function getServerPromptSnapshot() {
 }
 
 // Initialize beforeinstallprompt listener
-if (typeof window !== 'undefined') {
+if (typeof window !== 'undefined' && !listenersRegistered) {
+  listenersRegistered = true;
   window.addEventListener('beforeinstallprompt', (e: Event) => {
     e.preventDefault();
     currentPrompt = e as BeforeInstallPromptEvent;
@@ -76,16 +79,16 @@ export function usePWA() {
   // Use useSyncExternalStore for install prompt
   const installPrompt = useSyncExternalStore(subscribePrompt, getPromptSnapshot, getServerPromptSnapshot);
 
-  // Check if already installed (standalone mode) - computed, not state
-  const isInstalled = (() => {
+  // Check if already installed (standalone mode) - lazy state initializer
+  const [isInstalled] = useState(() => {
     if (typeof window === 'undefined') return false;
     return window.matchMedia('(display-mode: standalone)').matches ||
       (navigator as unknown as { standalone?: boolean }).standalone;
-  })();
+  });
 
   const canInstall = !!installPrompt;
 
-  let updateInterval: ReturnType<typeof setInterval> | null = null;
+  const swCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     // Register service worker
@@ -96,20 +99,28 @@ export function usePWA() {
           setRegistration(reg);
 
           // Check for updates periodically
-          updateInterval = setInterval(() => {
+          const updateInterval = setInterval(() => {
             reg.update();
           }, 60 * 60 * 1000); // Every hour
 
           // Listen for new service worker update
-          reg.addEventListener('updatefound', () => {
+          const onUpdateFound = () => {
             const newWorker = reg.installing;
             if (!newWorker) return;
-            newWorker.addEventListener('statechange', () => {
+            const onStateChange = () => {
               if (newWorker.state === 'activated') {
                 setUpdateAvailable(true);
               }
-            });
-          });
+            };
+            newWorker.addEventListener('statechange', onStateChange);
+            // Store statechange cleanup (cannot easily remove without leaking)
+          };
+          reg.addEventListener('updatefound', onUpdateFound);
+
+          swCleanupRef.current = () => {
+            clearInterval(updateInterval);
+            reg.removeEventListener('updatefound', onUpdateFound);
+          };
         })
         .catch((err) => {
           console.warn('[PWA] Service worker registration failed:', err);
@@ -125,7 +136,7 @@ export function usePWA() {
     window.addEventListener('appinstalled', installedHandler);
 
     return () => {
-      if (updateInterval) clearInterval(updateInterval);
+      swCleanupRef.current?.();
       window.removeEventListener('appinstalled', installedHandler);
     };
   }, []);

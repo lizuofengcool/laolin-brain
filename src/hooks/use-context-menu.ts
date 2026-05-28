@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback } from "react";
 import type { FileData } from "@/lib/storage/base";
 
 interface ContextMenuState {
@@ -17,12 +17,6 @@ export function useContextMenu() {
     file: null,
     position: null,
   });
-
-  // Keep a stable ref so we can read current state inside callbacks without stale closure
-  const stateRef = useRef(contextMenu);
-  useEffect(() => {
-    stateRef.current = contextMenu;
-  }, [contextMenu]);
 
   const showContextMenu = useCallback((e: React.MouseEvent, file: FileData) => {
     e.preventDefault();

@@ -14,6 +14,7 @@ export interface Notification {
   read: boolean;
   action?: {
     label: string;
+    onClick?: () => void;
   };
   autoDismiss?: boolean;
   duration?: number;
@@ -29,9 +30,11 @@ interface NotificationState {
   markAllAsRead: () => void;
   clearAll: () => void;
   getUnreadCount: () => number;
+  rehydrate: () => void;
 }
 
 const MAX_NOTIFICATIONS = 50;
+const autoDismissTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function getNotificationStorageKey(): string {
   if (typeof window === "undefined") return "kb_notifications";
@@ -89,15 +92,24 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     // Auto dismiss
     if (notification.autoDismiss !== false) {
       const duration = notification.duration || 5000;
-      setTimeout(() => {
-        get().dismissNotification(id);
-      }, duration);
+      autoDismissTimers.set(
+        id,
+        setTimeout(() => {
+          autoDismissTimers.delete(id);
+          get().dismissNotification(id);
+        }, duration)
+      );
     }
 
     return id;
   },
 
   dismissNotification: (id) => {
+    const timer = autoDismissTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      autoDismissTimers.delete(id);
+    }
     set((state) => {
       const updated = state.notifications.filter((n) => n.id !== id);
       saveNotifications(updated);
@@ -124,12 +136,26 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   clearAll: () => {
+    for (const timer of autoDismissTimers.values()) {
+      clearTimeout(timer);
+    }
+    autoDismissTimers.clear();
     saveNotifications([]);
     set({ notifications: [] });
   },
 
   getUnreadCount: () => {
     return get().notifications.filter((n) => !n.read).length;
+  },
+
+  rehydrate: () => {
+    // Clear any existing auto-dismiss timers
+    for (const timer of autoDismissTimers.values()) {
+      clearTimeout(timer);
+    }
+    autoDismissTimers.clear();
+    const stored = loadNotifications();
+    set({ notifications: stored });
   },
 }));
 

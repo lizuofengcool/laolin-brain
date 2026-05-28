@@ -214,6 +214,13 @@ export async function GET(request: NextRequest) {
       return NextResponse.json([]);
     }
 
+    if (q.length > 500) {
+      return NextResponse.json(
+        { error: "Search query too long (max 500 characters)" },
+        { status: 400 }
+      );
+    }
+
     let results: Array<Record<string, unknown>>;
 
     switch (mode) {
@@ -242,6 +249,9 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(results);
   } catch {
-    return NextResponse.json([], { status: 200 });
+    return NextResponse.json(
+      { error: "Search failed" },
+      { status: 500 }
+    );
   }
 }

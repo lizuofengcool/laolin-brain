@@ -179,7 +179,7 @@ function ToastItem({
                 <button
                   className="mt-2 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
                   onClick={() => {
-                    void notification.action;
+                    if (typeof notification.action?.onClick === 'function') notification.action.onClick();
                     onDismiss(notification.id);
                   }}
                 >

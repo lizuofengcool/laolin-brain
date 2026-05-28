@@ -44,6 +44,26 @@ function getConfigForPath(path: string): RateLimitConfig {
 }
 
 /**
+ * 将路径中的动态段替换为占位符，用于速率限制分组
+ * 例如: /api/files/abc123/preview -> /api/files/:id/preview
+ */
+function normalizeRateLimitPath(path: string): string {
+  return path
+    .replace(/\/api\/files\/[^/]+\/preview\/?$/, '/api/files/:id/preview')
+    .replace(/\/api\/files\/[^/]+\/download\/?$/, '/api/files/:id/download')
+    .replace(/\/api\/files\/[^/]+\/versions\/?$/, '/api/files/:id/versions')
+    .replace(/\/api\/files\/[^/]+\/thumbnail\/?$/, '/api/files/:id/thumbnail')
+    .replace(/\/api\/files\/[^/]+\/share\/?$/, '/api/files/:id/share')
+    .replace(/\/api\/files\/[^/]+\/favorite\/?$/, '/api/files/:id/favorite')
+    .replace(/\/api\/files\/[^/]+\/restore\/?$/, '/api/files/:id/restore')
+    .replace(/\/api\/files\/[^/]+\/?$/, '/api/files/:id')
+    .replace(/\/api\/faces\/groups\/[^/]+\/photos\/?$/, '/api/faces/groups/:id/photos')
+    .replace(/\/api\/faces\/groups\/[^/]+\/?$/, '/api/faces/groups/:id')
+    .replace(/\/api\/folders\/[^/]+\/?$/, '/api/folders/:id')
+    .replace(/\/api\/embeddings\/[^/]+\/?$/, '/api/embeddings/:id');
+}
+
+/**
  * 清理过期的速率限制条目
  */
 function cleanupExpiredEntries(now: number) {
@@ -72,7 +92,8 @@ function checkRateLimit(ip: string, path: string): {
   cleanupExpiredEntries(now);
 
   const config = getConfigForPath(path);
-  const cacheKey = `${ip}:${path}`;
+  const normalizedPath = normalizeRateLimitPath(path);
+  const cacheKey = `${ip}:${normalizedPath}`;
 
   const entry = rateLimitStore.get(cacheKey) || { timestamps: [] };
 

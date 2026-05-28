@@ -9,9 +9,9 @@ import { parsePptx } from '@/lib/parser/ppt';
  */
 function buildSlideBuffer(
   slideXml: Buffer,
-  options?: { compressionMethod?: number; extraEntries?: Array<{ name: string; data: Buffer }> }
+  options?: { compressionMethod?: number; extraEntries?: Array<{ name: string; data: Buffer; compressionMethod?: number }> }
 ): Buffer {
-  const entries = [...(options?.extraEntries ?? [])];
+  const entries: Array<{ name: string; data: Buffer; compressionMethod?: number }> = [...(options?.extraEntries ?? [])];
 
   // CRC-32 helper
   function crc32(buf: Buffer): number {

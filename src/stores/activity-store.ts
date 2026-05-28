@@ -31,6 +31,7 @@ export interface ActivityItem {
 interface ActivityStore {
   activities: ActivityItem[];
   addActivity: (item: Omit<ActivityItem, "id" | "timestamp">) => void;
+  rehydrate: () => void;
 }
 
 /** 从 localStorage 加载活动记录 */
@@ -79,6 +80,11 @@ export const useActivityStore = create<ActivityStore>((set) => {
         persistActivities(updated);
         return { activities: updated };
       });
+    },
+
+    rehydrate: () => {
+      const stored = loadActivities();
+      set({ activities: stored });
     },
   };
 });

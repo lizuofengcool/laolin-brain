@@ -84,6 +84,7 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
                     src={file.thumbnailUrl || file.previewUrl}
                     alt={file.fileName}
                     className="max-w-full max-h-[400px] object-contain cursor-zoom-in"
+                    loading="lazy"
                     onClick={handleOpenLightbox}
                   />
                   {/* Enlarge overlay button */}

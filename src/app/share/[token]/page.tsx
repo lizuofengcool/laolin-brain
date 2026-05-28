@@ -269,6 +269,7 @@ export default function SharePage() {
                   src={fileData.thumbnailUrl}
                   alt={fileData.fileName}
                   className="max-w-full max-h-[600px] object-contain rounded-lg"
+                  loading="lazy"
                 />
               </div>
             ) : fileData.textContent ? (
