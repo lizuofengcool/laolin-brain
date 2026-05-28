@@ -138,7 +138,26 @@ export function FileGrid({ files, onPreview, onShowVersions, onFileContextMenu }
       ) : fileViewMode === "grid" ? (
         <div className={cn("grid gap-4", gridColsMap[cardSize])}>
           {files.map((file) => {
-            const card = (
+            // On mobile, wrap with gesture support (early return)
+            if (isMobile) {
+              return (
+                <GestureGridItem
+                  key={file.id}
+                  file={file}
+                  isSelected={selectedIdsSet.has(file.id)}
+                >
+                  <FileCard
+                    file={file}
+                    onPreview={onPreview}
+                    cardSize={cardSize}
+                    onShowVersions={onShowVersions}
+                  />
+                </GestureGridItem>
+              );
+            }
+
+            // Desktop: create card with context menu
+            return (
               <div
                 key={file.id}
                 onContextMenu={onFileContextMenu ? (e) => onFileContextMenu(e, file) : undefined}
@@ -151,46 +170,12 @@ export function FileGrid({ files, onPreview, onShowVersions, onFileContextMenu }
                 />
               </div>
             );
-
-            // On mobile, wrap with gesture support
-            if (isMobile) {
-              return (
-                <GestureGridItem
-                  key={file.id}
-                  file={file}
-                  isSelected={selectedIdsSet.has(file.id)}
-                >
-                  {/* Remove the key from inner card since GestureGridItem already has it */}
-                  <FileCard
-                    file={file}
-                    onPreview={onPreview}
-                    cardSize={cardSize}
-                    onShowVersions={onShowVersions}
-                  />
-                </GestureGridItem>
-              );
-            }
-
-            return card;
           })}
         </div>
       ) : (
         <div className="border rounded-lg divide-y">
           {files.map((file) => {
-            const listItem = (
-              <div
-                key={file.id}
-                onContextMenu={onFileContextMenu ? (e) => onFileContextMenu(e, file) : undefined}
-              >
-                <FileListItem
-                  file={file}
-                  onPreview={onPreview}
-                  onShowVersions={onShowVersions}
-                />
-              </div>
-            );
-
-            // On mobile, wrap with swipeable support
+            // On mobile, wrap with swipeable support (early return)
             if (isMobile) {
               return (
                 <SwipeableFileItem key={file.id} file={file}>
@@ -203,7 +188,19 @@ export function FileGrid({ files, onPreview, onShowVersions, onFileContextMenu }
               );
             }
 
-            return listItem;
+            // Desktop: create list item with context menu
+            return (
+              <div
+                key={file.id}
+                onContextMenu={onFileContextMenu ? (e) => onFileContextMenu(e, file) : undefined}
+              >
+                <FileListItem
+                  file={file}
+                  onPreview={onPreview}
+                  onShowVersions={onShowVersions}
+                />
+              </div>
+            );
           })}
         </div>
       )}

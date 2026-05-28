@@ -40,16 +40,20 @@ export default function SharePage() {
   const [expired, setExpired] = useState(false);
   const [passwordRequired, setPasswordRequired] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
-  const [passwordError, setPasswordError] = useState(false);
+  const [passwordError, setPasswordError] = useState("");
+  const [passwordVerified, setPasswordVerified] = useState(false);
 
-  const fetchSharedFile = async (pwd: string = "") => {
+  const fetchSharedFile = async () => {
     setLoading(true);
     setError("");
     try {
-      const url = pwd
-        ? `/api/files/${token}/share?password=${encodeURIComponent(pwd)}`
-        : `/api/files/${token}/share`;
-      const res = await fetch(url);
+      // If previously verified, re-fetch with the session token
+      const headers: Record<string, string> = {};
+      if (passwordVerified) {
+        headers["X-Share-Session"] = "true";
+      }
+      const url = `/api/files/${token}/share`;
+      const res = await fetch(url, { headers });
       const data = await res.json();
 
       if (res.status === 410) {
@@ -59,7 +63,7 @@ export default function SharePage() {
 
       if (res.status === 403 && data.passwordRequired) {
         setPasswordRequired(true);
-        setPasswordError(true);
+        setPasswordError(data.error || "");
         return;
       }
 
@@ -77,7 +81,12 @@ export default function SharePage() {
   };
 
   useEffect(() => {
-    if (token) {
+    // Check sessionStorage for a previously verified share token
+    if (token && typeof window !== "undefined") {
+      const sessionKey = `share_verified_${token}`;
+      if (sessionStorage.getItem(sessionKey)) {
+        setPasswordVerified(true);
+      }
       fetchSharedFile();
     }
   }, [token]);
@@ -85,20 +94,45 @@ export default function SharePage() {
   const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!passwordInput.trim()) {
-      setPasswordError(true);
+      setPasswordError("请输入密码");
       return;
     }
-    setPasswordError(false);
+    setPasswordError("");
     const pwd = passwordInput;
     setPasswordInput("");
-    await fetchSharedFile(pwd);
-    // After fetch, if still passwordRequired (fetch failed), set error
-    // fetchSharedFile will handle setting passwordRequired/fileData internally
+
+    // Use POST to submit password (avoids password in URL/URL logs)
+    try {
+      const res = await fetch(`/api/files/${token}/share`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: pwd }),
+      });
+      const data = await res.json();
+
+      if (res.status === 403 && data.passwordRequired) {
+        setPasswordError(data.error || "密码错误");
+        return;
+      }
+
+      if (!res.ok) {
+        setPasswordError(data.error || "验证失败");
+        return;
+      }
+
+      // Store verification in sessionStorage for subsequent requests
+      setPasswordVerified(true);
+      if (typeof window !== "undefined") {
+        sessionStorage.setItem(`share_verified_${token}`, "true");
+      }
+      setFileData(data);
+    } catch {
+      setPasswordError("网络错误，请稍后重试");
+    }
   };
 
   const handleDownload = () => {
     if (!fileData) return;
-    // Get the token from localStorage or use direct download URL
     const downloadUrl = `/api/files/${fileData.id}/download?token=${token}`;
     window.open(downloadUrl, "_blank");
   };
@@ -161,7 +195,7 @@ export default function SharePage() {
                 className={passwordError ? "border-destructive" : ""}
               />
               {passwordError && (
-                <p className="text-xs text-destructive">请输入密码</p>
+                <p className="text-xs text-destructive">{passwordError}</p>
               )}
               <Button type="submit" className="w-full">
                 <ShieldCheck className="h-4 w-4 mr-2" />

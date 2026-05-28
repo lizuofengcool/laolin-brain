@@ -60,6 +60,14 @@ export async function POST(request: NextRequest) {
     for (const file of files) {
       if (!file.fileName || typeof file.fileName !== 'string' || file.fileName.length > 255) continue;
 
+      // Validate fileSize: must be a non-negative number and within 5GB limit
+      if (file.fileSize !== undefined && file.fileSize !== null) {
+        if (typeof file.fileSize !== 'number' || file.fileSize < 0 || file.fileSize > 5 * 1024 * 1024 * 1024) {
+          console.error(`Skipping file ${file.fileName}: invalid fileSize ${file.fileSize}`);
+          continue;
+        }
+      }
+
       // Validate textContent size (max 5MB)
       if (file.textContent && typeof file.textContent === 'string' && file.textContent.length > 5 * 1024 * 1024) {
         console.error(`Skipping file ${file.fileName}: textContent exceeds 5MB limit`);

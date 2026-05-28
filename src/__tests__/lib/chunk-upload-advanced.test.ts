@@ -16,8 +16,10 @@ const mockDelete = vi.fn().mockResolvedValue(undefined);
 const mockGetAll = vi.fn().mockResolvedValue([]);
 const mockTransactionStore = {
   objectStore: vi.fn().mockReturnThis(),
+  get: mockGet,
+  put: mockPut,
   getAll: vi.fn().mockResolvedValue([]),
-  delete: vi.fn().mockResolvedValue(undefined),
+  delete: mockDelete,
 };
 const mockTransaction = vi.fn().mockReturnValue(mockTransactionStore);
 const mockObjectStoreNames = { contains: vi.fn().mockReturnValue(true) };
@@ -113,7 +115,7 @@ describe('chunk-upload', () => {
       expect(mockOpenDB).toHaveBeenCalledWith('chunk-upload-progress', 1, expect.any(Object));
     });
 
-    it('calls db.put with the store name and progress data', async () => {
+    it('calls db.transaction with correct store name and mode', async () => {
       const progress = {
         fileId: 'file-1',
         fileName: 'test.txt',
@@ -123,7 +125,9 @@ describe('chunk-upload', () => {
         lastModified: Date.now(),
       };
       await saveUploadProgress(progress);
-      expect(mockPut).toHaveBeenCalledWith('uploads', progress);
+      // Verifies the transaction-based read-modify-write pattern is used
+      expect(mockTransaction).toHaveBeenCalledWith('uploads', 'readwrite');
+      expect(mockGet).toHaveBeenCalledWith('file-1');
     });
 
     it('handles openDB errors gracefully', async () => {

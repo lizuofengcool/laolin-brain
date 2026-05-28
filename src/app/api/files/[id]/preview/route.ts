@@ -2,8 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { readFile } from "fs/promises";
 import path from "path";
-import { timingSafeEqual } from "crypto";
+import { createHash, timingSafeEqual } from "crypto";
 import { authenticateRequest } from "@/lib/api-auth";
+
+/** Hash a share password with SHA-256 for verification */
+function hashSharePassword(password: string): string {
+  return createHash('sha256').update(password).digest('hex');
+}
 
 /**
  * Serve image files inline (for <img> src) instead of as download
@@ -37,7 +42,8 @@ export async function GET(
         if (!passwordParam) {
           return NextResponse.json({ error: "需要密码" }, { status: 403 });
         }
-        const a = Buffer.from(passwordParam);
+        const hashedInput = hashSharePassword(passwordParam);
+        const a = Buffer.from(hashedInput);
         const b = Buffer.from(share.password);
         if (a.length !== b.length || !timingSafeEqual(a, b)) {
           return NextResponse.json({ error: "密码错误" }, { status: 403 });
@@ -66,12 +72,16 @@ export async function GET(
       };
       const contentType = mimeTypes[ext] || "image/jpeg";
 
-      return new NextResponse(buffer, {
-        headers: {
-          "Content-Type": contentType,
-          "Cache-Control": "public, max-age=86400",
-        },
-      });
+      const headers: Record<string, string> = {
+        "Content-Type": contentType,
+        "Cache-Control": "public, max-age=86400",
+      };
+      // Prevent XSS in SVG files served to <img> tags
+      if (ext === ".svg") {
+        headers["Content-Security-Policy"] = "script-src 'none'";
+      }
+
+      return new NextResponse(buffer, { headers });
     } catch {
       return NextResponse.json({ error: "Preview failed" }, { status: 500 });
     }
@@ -115,12 +125,16 @@ export async function GET(
 
     const contentType = mimeTypes[ext] || "image/jpeg";
 
-    return new NextResponse(buffer, {
-      headers: {
-        "Content-Type": contentType,
-        "Cache-Control": "public, max-age=86400",
-      },
-    });
+    const headers: Record<string, string> = {
+      "Content-Type": contentType,
+      "Cache-Control": "public, max-age=86400",
+    };
+    // Prevent XSS in SVG files served to <img> tags
+    if (ext === ".svg") {
+      headers["Content-Security-Policy"] = "script-src 'none'";
+    }
+
+    return new NextResponse(buffer, { headers });
   } catch {
     return NextResponse.json({ error: "Preview failed" }, { status: 500 });
   }

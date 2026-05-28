@@ -10,67 +10,6 @@ export async function GET(request: NextRequest) {
   const { userId } = auth;
 
   try {
-    // Get all files for user (including deleted for analytics)
-    const allFiles = await db.file.findMany({
-      where: { userId },
-      orderBy: { createdAt: "asc" },
-    });
-
-    const activeFiles = allFiles.filter((f) => !f.isDeleted);
-
-    // File growth by month
-    const monthlyGrowth: Record<string, number> = {};
-    for (const file of allFiles) {
-      const date = new Date(file.createdAt);
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-      monthlyGrowth[key] = (monthlyGrowth[key] || 0) + 1;
-    }
-    const fileGrowth = Object.entries(monthlyGrowth)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([month, count]) => ({ month, count }));
-
-    // Storage by type
-    const storageByType: Record<string, number> = {};
-    for (const file of activeFiles) {
-      storageByType[file.fileType] = (storageByType[file.fileType] || 0) + file.fileSize;
-    }
-
-    // File type distribution by month (for stacked bar)
-    const monthlyTypeDist: Record<string, Record<string, number>> = {};
-    for (const file of activeFiles) {
-      const date = new Date(file.createdAt);
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-      if (!monthlyTypeDist[key]) monthlyTypeDist[key] = {};
-      monthlyTypeDist[key][file.fileType] = (monthlyTypeDist[key][file.fileType] || 0) + 1;
-    }
-    const fileTypeTrend = Object.entries(monthlyTypeDist)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([month, types]) => ({ month, ...types }));
-
-    // Top 10 largest files
-    const topFiles = [...activeFiles]
-      .sort((a, b) => b.fileSize - a.fileSize)
-      .slice(0, 10)
-      .map((f) => ({
-        id: f.id,
-        fileName: f.fileName,
-        fileSize: f.fileSize,
-        fileType: f.fileType,
-      }));
-
-    // Activity data - upload by hour of day and day of week
-    const activityByHour: number[] = new Array(24).fill(0);
-    const activityByDayOfWeek: number[] = new Array(7).fill(0);
-    for (const file of allFiles) {
-      const date = new Date(file.createdAt);
-      activityByHour[date.getHours()]++;
-      activityByDayOfWeek[date.getDay() === 0 ? 6 : date.getDay() - 1]++; // Mon=0
-    }
-
-    // Quick stats
-    const totalSize = activeFiles.reduce((acc, f) => acc + f.fileSize, 0);
-    const avgFileSize = activeFiles.length > 0 ? totalSize / activeFiles.length : 0;
-
     const now = new Date();
     const weekStart = new Date(now);
     weekStart.setDate(weekStart.getDate() - 7);
@@ -78,18 +17,103 @@ export async function GET(request: NextRequest) {
     monthStart.setDate(1);
     monthStart.setHours(0, 0, 0, 0);
 
-    const filesThisWeek = activeFiles.filter(
-      (f) => new Date(f.createdAt) >= weekStart
-    ).length;
-    const filesThisMonth = activeFiles.filter(
-      (f) => new Date(f.createdAt) >= monthStart
-    ).length;
+    // Quick stats via SQL aggregation
+    const [statsRow] = await db.$queryRaw<Array<{ totalCount: bigint; totalSize: bigint }>>`
+      SELECT COUNT(*) as "totalCount", COALESCE(SUM("fileSize"), 0) as "totalSize"
+      FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+    `;
+    const totalFiles = Number(statsRow.totalCount);
+    const totalSize = Number(statsRow.totalSize);
+    const avgFileSize = totalFiles > 0 ? Math.round(totalSize / totalFiles) : 0;
 
-    // Most used tags
+    const [weekRow] = await db.$queryRaw<Array<{ count: bigint }>>`
+      SELECT COUNT(*) as count FROM "File"
+      WHERE "userId" = ${userId} AND "isDeleted" = false AND "createdAt" >= ${weekStart.toISOString()}
+    `;
+    const filesThisWeek = Number(weekRow.count);
+
+    const [monthRow] = await db.$queryRaw<Array<{ count: bigint }>>`
+      SELECT COUNT(*) as count FROM "File"
+      WHERE "userId" = ${userId} AND "isDeleted" = false AND "createdAt" >= ${monthStart.toISOString()}
+    `;
+    const filesThisMonth = Number(monthRow.count);
+
+    // File growth by month (SQL GROUP BY)
+    const monthlyGrowthRaw = await db.$queryRaw<Array<{ month: string; count: bigint }>>`
+      SELECT strftime('%Y-%m', "createdAt") as month, COUNT(*) as count
+      FROM "File" WHERE "userId" = ${userId}
+      GROUP BY month ORDER BY month ASC
+    `;
+    const fileGrowth = monthlyGrowthRaw.map((r) => ({
+      month: r.month,
+      count: Number(r.count),
+    }));
+
+    // Storage by type (SQL GROUP BY)
+    const storageByTypeRaw = await db.$queryRaw<Array<{ fileType: string; totalSize: bigint }>>`
+      SELECT "fileType" as "fileType", COALESCE(SUM("fileSize"), 0) as "totalSize"
+      FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+      GROUP BY "fileType"
+    `;
+    const storageByType: Record<string, number> = {};
+    for (const row of storageByTypeRaw) {
+      storageByType[row.fileType] = Number(row.totalSize);
+    }
+
+    // File type distribution by month (SQL GROUP BY)
+    const monthlyTypeRaw = await db.$queryRaw<Array<{ month: string; fileType: string; count: bigint }>>`
+      SELECT strftime('%Y-%m', "createdAt") as month, "fileType", COUNT(*) as count
+      FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+      GROUP BY month, "fileType" ORDER BY month ASC
+    `;
+    const monthlyTypeMap: Record<string, Record<string, number>> = {};
+    for (const row of monthlyTypeRaw) {
+      if (!monthlyTypeMap[row.month]) monthlyTypeMap[row.month] = {};
+      monthlyTypeMap[row.month][row.fileType] = Number(row.count);
+    }
+    const fileTypeTrend = Object.entries(monthlyTypeMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, types]) => ({ month, ...types }));
+
+    // Top 10 largest files (limited query)
+    const topFilesRaw = await db.$queryRaw<Array<{ id: string; fileName: string; fileSize: number; fileType: string }>>`
+      SELECT "id", "fileName", "fileSize", "fileType"
+      FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+      ORDER BY "fileSize" DESC LIMIT 10
+    `;
+    const topFiles = topFilesRaw;
+
+    // Activity data - by hour and day of week (SQL GROUP BY)
+    const activityHourRaw = await db.$queryRaw<Array<{ hour: number; count: bigint }>>`
+      SELECT CAST(strftime('%H', "createdAt") AS INTEGER) as hour, COUNT(*) as count
+      FROM "File" WHERE "userId" = ${userId}
+      GROUP BY hour
+    `;
+    const activityByHour: number[] = new Array(24).fill(0);
+    for (const row of activityHourRaw) {
+      if (row.hour >= 0 && row.hour < 24) activityByHour[row.hour] = Number(row.count);
+    }
+
+    const activityDayRaw = await db.$queryRaw<Array<{ dow: number; count: bigint }>>`
+      SELECT CAST(strftime('%w', "createdAt") AS INTEGER) as dow, COUNT(*) as count
+      FROM "File" WHERE "userId" = ${userId}
+      GROUP BY dow
+    `;
+    const activityByDayOfWeek: number[] = new Array(7).fill(0);
+    for (const row of activityDayRaw) {
+      // SQLite %w: 0=Sun, convert to Mon=0
+      const idx = row.dow === 0 ? 6 : row.dow - 1;
+      if (idx >= 0 && idx < 7) activityByDayOfWeek[idx] = Number(row.count);
+    }
+
+    // Most used tags - fetch only active files' tags column (limited data)
+    const tagsRaw = await db.$queryRaw<Array<{ tags: string | null }>>`
+      SELECT "tags" FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false AND "tags" IS NOT NULL AND "tags" != '[]'
+    `;
     const tagCount: Record<string, number> = {};
-    for (const file of activeFiles) {
-      if (file.tags) {
-        const tags = safeJsonParseArray(file.tags) as string[];
+    for (const row of tagsRaw) {
+      if (row.tags) {
+        const tags = safeJsonParseArray(row.tags) as string[];
         for (const tag of tags) {
           tagCount[tag] = (tagCount[tag] || 0) + 1;
         }
@@ -100,23 +124,21 @@ export async function GET(request: NextRequest) {
       .slice(0, 10)
       .map(([tag, count]) => ({ tag, count }));
 
-    // Storage prediction (simple linear regression)
+    // Storage prediction (simple linear regression based on recent monthly data)
     const months = fileGrowth.length;
     let predicted1Month = 0;
     let predicted3Months = 0;
     let predicted6Months = 0;
 
     if (months >= 2) {
-      const recentCounts = fileGrowth.slice(-3).map((m) => m.count);
-      const avgMonthlyFiles = recentCounts.reduce((a, b) => a + b, 0) / recentCounts.length;
-      const recentSizeGrowth = activeFiles
-        .filter((f) => {
-          const d = new Date(f.createdAt);
-          const threeMonthsAgo = new Date(now);
-          threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-          return d >= threeMonthsAgo;
-        })
-        .reduce((acc, f) => acc + f.fileSize, 0);
+      // Estimate recent size growth using storage stats
+      const threeMonthsAgo = new Date(now);
+      threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+      const [recentSizeRow] = await db.$queryRaw<Array<{ totalSize: bigint }>>`
+        SELECT COALESCE(SUM("fileSize"), 0) as "totalSize"
+        FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false AND "createdAt" >= ${threeMonthsAgo.toISOString()}
+      `;
+      const recentSizeGrowth = Number(recentSizeRow.totalSize);
       const avgMonthlySize = recentSizeGrowth / 3;
 
       predicted1Month = totalSize + avgMonthlySize;
@@ -124,12 +146,14 @@ export async function GET(request: NextRequest) {
       predicted6Months = totalSize + avgMonthlySize * 6;
     }
 
-    // Storage efficiency score (0-100): lower average size + better tag usage = higher score
-    const tagUsageRatio = activeFiles.length > 0
-      ? activeFiles.filter((f) => f.tags && f.tags.length > 0).length / activeFiles.length
-      : 0;
+    // Storage efficiency score
+    const [taggedRow] = await db.$queryRaw<Array<{ count: bigint }>>`
+      SELECT COUNT(*) as count FROM "File"
+      WHERE "userId" = ${userId} AND "isDeleted" = false AND "tags" IS NOT NULL AND "tags" != '[]'
+    `;
+    const tagUsageRatio = totalFiles > 0 ? Number(taggedRow.count) / totalFiles : 0;
     const efficiencyScore = Math.min(100, Math.round(
-      (tagUsageRatio * 40) + (activeFiles.length > 0 ? 30 : 0) + (topTags.length > 0 ? 30 : 0)
+      (tagUsageRatio * 40) + (totalFiles > 0 ? 30 : 0) + (topTags.length > 0 ? 30 : 0)
     ));
 
     return NextResponse.json({
@@ -142,9 +166,9 @@ export async function GET(request: NextRequest) {
         byDayOfWeek: activityByDayOfWeek,
       },
       stats: {
-        totalFiles: activeFiles.length,
+        totalFiles,
         totalSize,
-        avgFileSize: Math.round(avgFileSize),
+        avgFileSize,
         filesThisWeek,
         filesThisMonth,
         topTags,

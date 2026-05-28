@@ -1,20 +1,86 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash, timingSafeEqual } from "crypto";
 import { authenticateRequest } from "@/lib/api-auth";
-import { timingSafeEqual } from "crypto";
 
-// POST: Generate a share link for a file
+/** Hash a share password with SHA-256 for secure storage */
+function hashSharePassword(password: string): string {
+  return createHash('sha256').update(password).digest('hex');
+}
+
+// POST: Generate a share link for a file (authenticated) OR verify share password (unauthenticated)
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const { id } = await params;
+
+  // Unauthenticated POST with password body = password verification
   const auth = authenticateRequest(request);
-  if (auth instanceof NextResponse) return auth;
+  if (auth instanceof NextResponse) {
+    // Not authenticated — treat as password verification request
+    try {
+      const body = await request.json();
+      const { password } = body;
+
+      if (typeof password !== 'string' || password.length === 0) {
+        return NextResponse.json(
+          { error: "密码不能为空", passwordRequired: true },
+          { status: 400 }
+        );
+      }
+
+      const share = await db.fileShare.findUnique({
+        where: { token: id },
+        include: { file: true },
+      });
+
+      if (!share) {
+        return NextResponse.json({ error: "分享链接不存在" }, { status: 404 });
+      }
+
+      if (share.expiresAt && new Date() > share.expiresAt) {
+        return NextResponse.json({ error: "链接已过期", expired: true }, { status: 410 });
+      }
+
+      if (!share.password) {
+        return NextResponse.json({ error: "该链接不需要密码" }, { status: 400 });
+      }
+
+      const hashedInput = hashSharePassword(password);
+      const a = Buffer.from(hashedInput);
+      const b = Buffer.from(share.password);
+      if (a.length !== b.length || !timingSafeEqual(a, b)) {
+        return NextResponse.json(
+          { error: "密码错误", passwordRequired: true },
+          { status: 403 }
+        );
+      }
+
+      const file = share.file;
+      const baseUrl = request.headers.get("origin") || process.env.APP_URL || "http://localhost:3000";
+      const downloadUrl = `${baseUrl}/api/files/${file.id}/download?token=${id}`;
+
+      return NextResponse.json({
+        id: file.id,
+        fileName: file.fileName,
+        fileType: file.fileType,
+        fileSize: file.fileSize,
+        textContent: file.textContent,
+        thumbnailUrl: file.thumbnailUrl,
+        createdAt: file.createdAt.toISOString(),
+        downloadUrl,
+      });
+    } catch (error) {
+      console.error("Share password verification failed:", error);
+      return NextResponse.json({ error: "验证失败" }, { status: 500 });
+    }
+  }
+
+  // Authenticated POST = create share link
   const { userId } = auth;
 
   try {
-    const { id } = await params;
     const body = await request.json();
     const { expiresIn = 168, password } = body;
 
@@ -26,8 +92,8 @@ export async function POST(
       );
     }
 
-    // Treat empty string password as null
-    const sharePassword = (typeof password === 'string' && password.length > 0) ? password : null;
+    // Treat empty string password as null; hash non-empty passwords before storage
+    const sharePassword = (typeof password === 'string' && password.length > 0) ? hashSharePassword(password) : null;
 
     // Find the file
     const file = await db.file.findUnique({
@@ -82,6 +148,7 @@ export async function GET(
     const { id } = await params;
     const { searchParams } = new URL(request.url);
     const passwordParam = searchParams.get("password") || "";
+    const isSessionReaccess = request.headers.get("X-Share-Session") === "true";
 
     // Actually id here is the token, but the route is /api/files/[id]/share
     // Let's look up by token directly
@@ -103,14 +170,16 @@ export async function GET(
     }
 
     // Check password using timing-safe comparison
-    if (share.password) {
+    // If X-Share-Session header is present, client has already verified via POST
+    if (share.password && !isSessionReaccess) {
       if (!passwordParam) {
         return NextResponse.json(
           { error: "需要密码", passwordRequired: true },
           { status: 403 }
         );
       }
-      const a = Buffer.from(passwordParam);
+      const hashedInput = hashSharePassword(passwordParam);
+      const a = Buffer.from(hashedInput);
       const b = Buffer.from(share.password);
       if (a.length !== b.length || !timingSafeEqual(a, b)) {
         return NextResponse.json(

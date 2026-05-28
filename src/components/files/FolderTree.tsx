@@ -137,6 +137,7 @@ export function FolderTree({ onSelectFolder, selectedFolderId }: FolderTreeProps
   const { folders, setFolders, user, refreshFiles } = useAppStore();
   const [newFolderName, setNewFolderName] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
@@ -154,7 +155,8 @@ export function FolderTree({ onSelectFolder, selectedFolderId }: FolderTreeProps
   };
 
   const createFolder = async () => {
-    if (!newFolderName.trim() || !user) return;
+    if (!newFolderName.trim() || !user || creating) return;
+    setCreating(true);
     try {
       const res = await fetch("/api/folders", {
         method: "POST",
@@ -173,6 +175,8 @@ export function FolderTree({ onSelectFolder, selectedFolderId }: FolderTreeProps
       }
     } catch {
       // ignore
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -242,8 +246,8 @@ export function FolderTree({ onSelectFolder, selectedFolderId }: FolderTreeProps
                 onChange={(e) => setNewFolderName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && createFolder()}
               />
-              <Button onClick={createFolder} size="sm">
-                创建
+              <Button onClick={createFolder} size="sm" disabled={creating}>
+                {creating ? "创建中..." : "创建"}
               </Button>
             </div>
           </DialogContent>

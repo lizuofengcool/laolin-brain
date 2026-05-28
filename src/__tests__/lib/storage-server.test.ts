@@ -87,6 +87,7 @@ describe('ServerStorageAdapter', () => {
 
     expect(mockFetchFn).toHaveBeenCalledWith('/api/files/file-1', {
       headers: { Authorization: 'Bearer test-token' },
+      signal: expect.any(AbortSignal),
     });
     expect(result).toEqual(fileData);
   });
@@ -114,7 +115,7 @@ describe('ServerStorageAdapter', () => {
 
     expect(mockFetchFn).toHaveBeenCalledTimes(1);
     const [url, options] = mockFetchFn.mock.calls[0];
-    expect(url).toBe('/api/search?q=hello%20world&userId=user%201');
+    expect(url).toBe('/api/search?q=hello%20world');
     expect(options.headers).toEqual({ Authorization: 'Bearer test-token' });
     expect(result).toEqual(searchResults);
   });
@@ -164,7 +165,7 @@ describe('ServerStorageAdapter', () => {
 
     expect(mockFetchFn).toHaveBeenCalledTimes(1);
     const [url, options] = mockFetchFn.mock.calls[0];
-    expect(url).toBe('/api/files?userId=user-1');
+    expect(url).toBe('/api/files');
     expect(options.headers).toEqual({ Authorization: 'Bearer test-token' });
     expect(result).toEqual(files);
   });

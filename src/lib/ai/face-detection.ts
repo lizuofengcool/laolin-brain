@@ -9,6 +9,16 @@ async function getZAI() {
   return zaiInstance;
 }
 
+/** Create an AbortController with a 60-second timeout and return both the controller and a cleanup function. */
+function createTimeoutController(timeoutMs: number = 60_000): { controller: AbortController; cleanup: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    controller,
+    cleanup: () => clearTimeout(timer),
+  };
+}
+
 export interface FaceDetection {
   id: string;
   x: number;
@@ -24,6 +34,7 @@ export interface FaceDetection {
  * Returns face bounding boxes, descriptions, and embeddings for clustering.
  */
 export async function detectFaces(imageBase64: string): Promise<FaceDetection[]> {
+  const { controller, cleanup } = createTimeoutController(60_000);
   try {
     const zai = await getZAI();
 
@@ -65,6 +76,7 @@ export async function detectFaces(imageBase64: string): Promise<FaceDetection[]>
           ] as unknown as string,
         },
       ],
+      signal: controller.signal,
     });
 
     const content = completion.choices[0]?.message?.content || '[]';
@@ -89,17 +101,16 @@ export async function detectFaces(imageBase64: string): Promise<FaceDetection[]>
       description: typeof face.description === 'string' ? face.description : '',
       embedding: Array.isArray(face.embedding)
         ? face.embedding.filter((v: unknown) => typeof v === 'number').slice(0, 32)
-        : generateRandomEmbedding(),
+        : [],
     })).filter((f: FaceDetection) => f.width > 0 && f.height > 0);
   } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      console.error('Face detection timed out after 60 seconds');
+      return [];
+    }
     console.error('Face detection failed:', e);
     return [];
+  } finally {
+    cleanup();
   }
-}
-
-/**
- * Generate a random embedding for fallback cases.
- */
-function generateRandomEmbedding(): number[] {
-  return Array.from({ length: 32 }, () => Math.random());
 }

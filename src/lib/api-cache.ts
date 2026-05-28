@@ -23,6 +23,15 @@ const API_CACHE_MAX = 1000;
 const cache = new Map<CacheKey, CacheEntry>();
 
 function cacheEvictFifo(): void {
+  // First, proactively remove expired entries
+  const now = Date.now();
+  for (const [key, entry] of cache) {
+    if (now - entry.timestamp >= entry.ttl) {
+      cache.delete(key);
+    }
+  }
+
+  // If still at capacity, fall back to FIFO eviction
   if (cache.size >= API_CACHE_MAX) {
     const oldestKey = cache.keys().next().value;
     if (oldestKey !== undefined) {

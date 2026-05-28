@@ -2,6 +2,7 @@
 
 import type { FileData } from "@/lib/storage/base";
 import { useAppStore } from "@/stores/app-store";
+import { DB_VERSION } from "@/lib/storage/indexeddb";
 
 /**
  * Download a file from either cloud or local storage
@@ -16,7 +17,7 @@ export async function downloadFile(file: FileData): Promise<void> {
     triggerDownload(blob, file.fileName);
   } else {
     const { openDB } = await import("idb");
-    const db = await openDB("knowledge-base-db", 1);
+    const db = await openDB("knowledge-base-db", DB_VERSION);
     const record = await db.get("files", file.id);
     if (!record?.data) throw new Error("File not found in local storage");
     const binaryStr = atob(record.data);

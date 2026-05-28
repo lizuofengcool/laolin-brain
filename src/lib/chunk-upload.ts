@@ -46,7 +46,18 @@ export async function saveUploadProgress(progress: UploadProgress): Promise<void
         }
       },
     });
-    await db.put(UPLOAD_STORE, progress);
+    // Use transaction for atomic read-modify-write
+    const tx = db.transaction(UPLOAD_STORE, 'readwrite');
+    const store = tx.objectStore(UPLOAD_STORE);
+    const existing = await store.get(progress.fileId);
+    const merged: UploadProgress = {
+      ...progress,
+      uploadedChunks: existing
+        ? [...new Set([...existing.uploadedChunks, ...progress.uploadedChunks])]
+        : progress.uploadedChunks,
+    };
+    await store.put(merged);
+    await tx.done;
   } catch {
     // IndexedDB 不可用，忽略
   }

@@ -10,8 +10,17 @@ export async function generateThumbnail(
     const thumbDir = path.join(process.cwd(), "upload", "thumbnails");
     await mkdir(thumbDir, { recursive: true });
 
-    const thumbName = `thumb_${Date.now()}_${fileName}`;
+    // Sanitize filename to prevent path traversal
+    const safeName = path.basename(fileName);
+    const thumbName = `thumb_${Date.now()}_${safeName}`;
     const thumbPath = path.join(thumbDir, thumbName);
+
+    // Verify the resolved path stays within the thumbnails directory
+    const resolvedThumbPath = path.resolve(thumbPath);
+    const resolvedThumbDir = path.resolve(thumbDir);
+    if (!resolvedThumbPath.startsWith(resolvedThumbDir + path.sep) && resolvedThumbPath !== resolvedThumbDir) {
+      throw new Error("Invalid thumbnail path: path traversal detected");
+    }
 
     // Use sharp to resize to a small thumbnail
     await sharp(buffer)

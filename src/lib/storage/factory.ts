@@ -4,6 +4,7 @@ import { ServerStorageAdapter } from "./server";
 import { isTauriEnvironment } from "./tauri";
 
 let _adapter: StorageAdapter | null = null;
+let _pendingPromise: Promise<StorageAdapter> | null = null;
 
 /**
  * 获取存储适配器（异步版本）
@@ -17,29 +18,35 @@ let _adapter: StorageAdapter | null = null;
 export async function getStorageAdapterAsync(
   mode: string
 ): Promise<StorageAdapter> {
+  // Return existing adapter if already created
   if (_adapter) return _adapter;
 
-  switch (mode) {
-    case "local": {
-      // 桌面端优先使用 Tauri 本地存储（通过 Rust 后端）
-      if (isTauriEnvironment()) {
-        // 动态导入避免在非 Tauri 环境中加载额外依赖
-        const { TauriStorageAdapter } = await import("./tauri");
-        _adapter = new TauriStorageAdapter();
+  // If an async creation is already in progress, await it instead of starting a new one
+  if (_pendingPromise) return _pendingPromise;
+
+  // Start async creation and store the promise to guard against concurrent calls
+  _pendingPromise = (async () => {
+    switch (mode) {
+      case "local": {
+        if (isTauriEnvironment()) {
+          const { TauriStorageAdapter } = await import("./tauri");
+          _adapter = new TauriStorageAdapter();
+          break;
+        }
+        _adapter = new IndexedDBAdapter();
         break;
       }
-      // 浏览器端使用 IndexedDB
-      _adapter = new IndexedDBAdapter();
-      break;
+      case "cloud":
+        _adapter = new ServerStorageAdapter();
+        break;
+      default:
+        _adapter = new IndexedDBAdapter();
     }
-    case "cloud":
-      _adapter = new ServerStorageAdapter();
-      break;
-    default:
-      _adapter = new IndexedDBAdapter();
-  }
+    _pendingPromise = null;
+    return _adapter!;
+  })();
 
-  return _adapter!;
+  return _pendingPromise;
 }
 
 /**
@@ -78,4 +85,5 @@ export function getStorageAdapter(mode: string): StorageAdapter {
 
 export function resetAdapter(): void {
   _adapter = null;
+  _pendingPromise = null;
 }

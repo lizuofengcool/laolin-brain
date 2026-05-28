@@ -62,7 +62,7 @@ describe("renderMarkdown - tables", () => {
     // Test that the alignment parsing produces left, center, right styles
     const md = "| A | B |\n|:---:|---:|\n| x | y |";
     const result = renderMarkdown(md);
-    expect(result).toContain('style="text-align');
+    expect(result).toContain('align="');
   });
 
   it("renders table with multiple rows", () => {

@@ -131,7 +131,7 @@ describe('downloadFile', () => {
       const file = createMockFile({ storageMode: 'local' });
       await downloadFile(file);
 
-      expect(mockOpenDB).toHaveBeenCalledWith('knowledge-base-db', 1);
+      expect(mockOpenDB).toHaveBeenCalledWith('knowledge-base-db', 3);
       expect(mockDBGet).toHaveBeenCalledWith('files', 'file-1');
       expect(mockClick).toHaveBeenCalled();
     });

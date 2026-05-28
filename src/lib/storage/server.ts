@@ -20,6 +20,17 @@ function authHeaders(): Record<string, string> {
 }
 
 /**
+ * Wrapper around fetch with a 15-second timeout via AbortController.
+ */
+function fetchWithTimeout(url: string, options?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() =>
+    clearTimeout(timer)
+  );
+}
+
+/**
  * Check if response is 401 and trigger logout + redirect.
  */
 function handleUnauthorizedResponse(_response: Response): void {
@@ -56,7 +67,7 @@ export class ServerStorageAdapter implements StorageAdapter {
     const formData = new FormData();
     formData.append("file", file);
 
-    const res = await fetch(this.baseUrl, {
+    const res = await fetchWithTimeout(this.baseUrl, {
       method: "POST",
       headers: authHeaders(),
       body: formData,
@@ -67,7 +78,7 @@ export class ServerStorageAdapter implements StorageAdapter {
   }
 
   async deleteFile(fileId: string, _userId: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/${fileId}`, {
+    const res = await fetchWithTimeout(`${this.baseUrl}/${fileId}`, {
       method: "DELETE",
       headers: authHeaders(),
     });
@@ -78,7 +89,7 @@ export class ServerStorageAdapter implements StorageAdapter {
   }
 
   async getFile(fileId: string, _userId: string): Promise<FileData | null> {
-    const res = await fetch(`${this.baseUrl}/${fileId}`, {
+    const res = await fetchWithTimeout(`${this.baseUrl}/${fileId}`, {
       headers: authHeaders(),
     });
     if (res.status === 401) handleUnauthorizedResponse(res);
@@ -86,13 +97,13 @@ export class ServerStorageAdapter implements StorageAdapter {
     return res.json();
   }
 
-  async searchFiles(query: string, userId: string): Promise<FileData[]> {
+  async searchFiles(query: string, _userId: string): Promise<FileData[]> {
     const token = getAuthToken();
-    const url = `/api/search?q=${encodeURIComponent(query)}&userId=${encodeURIComponent(userId)}`;
+    const url = `/api/search?q=${encodeURIComponent(query)}`;
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    const res = await fetch(url, { headers });
+    const res = await fetchWithTimeout(url, { headers });
     if (res.status === 401) handleUnauthorizedResponse(res);
     if (!res.ok) return [];
     return res.json();
@@ -103,7 +114,7 @@ export class ServerStorageAdapter implements StorageAdapter {
     data: Partial<FileData>,
     _userId: string
   ): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/${fileId}`, {
+    const res = await fetchWithTimeout(`${this.baseUrl}/${fileId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(data),
@@ -114,13 +125,13 @@ export class ServerStorageAdapter implements StorageAdapter {
     }
   }
 
-  async getFiles(userId: string): Promise<FileData[]> {
+  async getFiles(_userId: string): Promise<FileData[]> {
     const token = getAuthToken();
-    const url = `${this.baseUrl}?userId=${encodeURIComponent(userId)}`;
+    const url = `${this.baseUrl}`;
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    const res = await fetch(url, { headers });
+    const res = await fetchWithTimeout(url, { headers });
     if (res.status === 401) handleUnauthorizedResponse(res);
     if (!res.ok) return [];
     return res.json();

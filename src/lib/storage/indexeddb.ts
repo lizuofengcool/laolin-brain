@@ -12,10 +12,15 @@ interface KBDBSchema extends DBSchema {
     value: FileVersionData & { userId?: string };
     indexes: { "by-file": string };
   };
+  folders: {
+    key: string;
+    value: { id: string; name: string; userId?: string; parentId?: string; createdAt: Date | string };
+    indexes: { "by-user": string; "by-parent": string };
+  };
 }
 
 const DB_NAME = "knowledge-base-db";
-const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 async function getDB(): Promise<IDBPDatabase<KBDBSchema>> {
   return openDB<KBDBSchema>(DB_NAME, DB_VERSION, {
@@ -32,13 +37,20 @@ async function getDB(): Promise<IDBPDatabase<KBDBSchema>> {
         const versionStore = db.createObjectStore("versions", { keyPath: "id" });
         versionStore.createIndex("by-file", "fileId");
       }
+
+      // Create folders store (new in v3)
+      if (!db.objectStoreNames.contains("folders") && oldVersion < 3) {
+        const folderStore = db.createObjectStore("folders", { keyPath: "id" });
+        folderStore.createIndex("by-user", "userId");
+        folderStore.createIndex("by-parent", "parentId");
+      }
     },
   });
 }
 
 /**
  * Compress an image using Canvas API (no external dependencies)
- * Returns a blob URL that is stable within the same session
+ * Returns a data URL that survives page reloads
  */
 async function compressImageViaCanvas(
   file: File,
@@ -73,7 +85,11 @@ async function compressImageViaCanvas(
       canvas.toBlob(
         (blob) => {
           if (blob) {
-            resolve(URL.createObjectURL(blob));
+            // Convert blob to data URL for persistence across reloads
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = () => reject(new Error("Failed to convert blob to data URL"));
+            reader.readAsDataURL(blob);
           } else {
             reject(new Error("Canvas toBlob failed"));
           }
@@ -91,7 +107,7 @@ async function compressImageViaCanvas(
 }
 
 /**
- * Read file as base64 in chunks to avoid memory issues with large files
+ * Read an entire file as a base64-encoded string using FileReader.
  */
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -260,7 +276,13 @@ export class IndexedDBAdapter implements StorageAdapter {
     userId: string
   ): Promise<void> {
     const db = await getDB();
-    const existingVersions = await db.getAllFromIndex("versions", "by-file", fileId);
+
+    // Use a transaction to atomically read max version and write new version,
+    // preventing duplicate version numbers from concurrent calls.
+    const tx = db.transaction("versions", "readwrite");
+    const store = tx.objectStore("versions");
+    const index = store.index("by-file");
+    const existingVersions = await index.getAll(fileId);
     const maxVersion = existingVersions.length > 0
       ? Math.max(...existingVersions.map((v) => v.version))
       : 0;
@@ -274,7 +296,8 @@ export class IndexedDBAdapter implements StorageAdapter {
       userId,
     };
 
-    await db.put("versions", version);
+    await store.put(version);
+    await tx.done;
   }
 
   async restoreVersion(versionId: string, fileId: string, userId: string): Promise<void> {
@@ -315,9 +338,14 @@ export class IndexedDBAdapter implements StorageAdapter {
       return await compressImageViaCanvas(file, 300, 300, 0.7);
     } catch (err) {
       console.error("Thumbnail generation failed, falling back to original file:", err);
-      // Fallback: use original file as thumbnail (not ideal but works)
+      // Fallback: convert original file to data URL (not ideal but works)
       try {
-        return URL.createObjectURL(file);
+        return await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("Failed to read file"));
+          reader.readAsDataURL(file);
+        });
       } catch {
         return "";
       }

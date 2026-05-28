@@ -379,6 +379,10 @@ self.addEventListener('message', (event) => {
     event.waitUntil(
       Promise.all(ALL_CACHES.map((name) => caches.delete(name)))
         .then(() => {
+          // Also clear API cache to prevent sensitive data leaking across users
+          return caches.delete(API_CACHE);
+        })
+        .then(() => {
           // Re-pre-cache shell after clearing
           return caches.open(SHELL_CACHE).then((cache) => cache.addAll(SHELL_URLS));
         })

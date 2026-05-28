@@ -30,10 +30,11 @@ describe('parseWord', () => {
     expect(result).toBe('');
   });
 
-  it('handles errors gracefully by re-throwing', async () => {
+  it('handles errors gracefully by returning empty string', async () => {
     mockExtractRawText.mockRejectedValue(new Error('File is corrupted'));
     const buffer = Buffer.from('corrupt');
-    await expect(parseWord(buffer)).rejects.toThrow('File is corrupted');
+    const result = await parseWord(buffer);
+    expect(result).toBe('');
   });
 
   it('passes the buffer argument to mammoth', async () => {

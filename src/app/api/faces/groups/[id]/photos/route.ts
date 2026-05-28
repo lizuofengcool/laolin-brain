@@ -40,10 +40,11 @@ export async function GET(
     // Deduplicate file IDs
     const uniqueFileIds = [...new Set(faceInstances.map((f) => f.fileId))];
 
-    // Get files with pagination
+    // Get files with pagination (include userId check to prevent cross-user access)
     const files = await db.file.findMany({
       where: {
         id: { in: uniqueFileIds },
+        userId: auth.userId,
         isDeleted: false,
       },
       orderBy: { createdAt: 'desc' },

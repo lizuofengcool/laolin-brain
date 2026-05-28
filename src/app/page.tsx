@@ -1434,6 +1434,7 @@ export default function Home() {
     currentView,
     isAuthenticated,
     hydrateAuth,
+    _setupCrossTabSync,
     aiChatFile,
     setAiChatFile,
     lightboxOpen,
@@ -1448,9 +1449,14 @@ export default function Home() {
 
   useEffect(() => {
     hydrateAuth();
+    _setupCrossTabSync();
     const id = requestAnimationFrame(() => setMounted(true));
+    // Clean up expired upload progress on app init
+    import("@/lib/chunk-upload").then(({ cleanupExpiredProgress }) => {
+      cleanupExpiredProgress().catch(() => {});
+    });
     return () => cancelAnimationFrame(id);
-  }, [hydrateAuth]);
+  }, [hydrateAuth, _setupCrossTabSync]);
 
   // AI chat panel open state derived from aiChatFile
   const aiChatOpen = !!aiChatFile;

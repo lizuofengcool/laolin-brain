@@ -49,10 +49,12 @@ function computeSimilarityMatrix(faces: FaceInstance[]): number[][] {
  * Faces with similarity > threshold are grouped together.
  */
 export function clusterFaces(faces: FaceInstance[], threshold: number = 0.75): FaceCluster[] {
-  if (faces.length === 0) return [];
+  // Filter out faces with empty embeddings (no valid AI-detected features)
+  const validFaces = faces.filter((f) => f.embedding.length > 0);
+  if (validFaces.length === 0) return [];
 
-  const matrix = computeSimilarityMatrix(faces);
-  const n = faces.length;
+  const matrix = computeSimilarityMatrix(validFaces);
+  const n = validFaces.length;
 
   // Union-Find for grouping
   const parent = Array.from({ length: n }, (_, i) => i);
@@ -94,7 +96,7 @@ export function clusterFaces(faces: FaceInstance[], threshold: number = 0.75): F
   // Build FaceCluster objects
   const clusters: FaceCluster[] = [];
   for (const [, indices] of clusterMap) {
-    const clusterFaces = indices.map((i) => faces[i]);
+    const clusterFacesList = indices.map((i) => validFaces[i]);
 
     // Select the face with the most connections (highest average similarity) as representative
     let bestIdx = indices[0];
@@ -119,9 +121,9 @@ export function clusterFaces(faces: FaceInstance[], threshold: number = 0.75): F
     clusters.push({
       id: crypto.randomUUID(),
       name: null,
-      representativeFace: faces[bestIdx].description,
-      faceInstances: clusterFaces,
-      thumbnailFileId: faces[bestIdx].fileId,
+      representativeFace: validFaces[bestIdx].description,
+      faceInstances: clusterFacesList,
+      thumbnailFileId: validFaces[bestIdx].fileId,
     });
   }
 

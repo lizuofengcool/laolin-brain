@@ -221,7 +221,7 @@ function parseTable(lines: string[], startIndex: number): { html: string; nextLi
   let html = "<table class=\"markdown-table\"><thead><tr>";
   headers.forEach((h, idx) => {
     const align = aligns[idx] || "left";
-    html += `<th style="text-align:${align}">${inlineFormat(h)}</th>`;
+    html += `<th align="${align}">${inlineFormat(h)}</th>`;
   });
   html += "</tr></thead><tbody>";
 
@@ -229,7 +229,7 @@ function parseTable(lines: string[], startIndex: number): { html: string; nextLi
     html += "<tr>";
     row.forEach((cell, idx) => {
       const align = aligns[idx] || "left";
-      html += `<td style="text-align:${align}">${inlineFormat(cell)}</td>`;
+      html += `<td align="${align}">${inlineFormat(cell)}</td>`;
     });
     html += "</tr>";
   });

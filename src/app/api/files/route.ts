@@ -64,14 +64,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Per-user storage quota check (5GB)
-    const [{ totalSize }] = await db.$queryRaw<Array<{ totalSize: bigint }>>`
+    // Per-user storage quota check (5GB) - early check for fast rejection
+    const [{ totalSize: earlyTotalSize }] = await db.$queryRaw<Array<{ totalSize: bigint }>>`
       SELECT COALESCE(SUM("fileSize"), 0) as "totalSize" FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
     `;
-    const totalUsed = Number(totalSize);
+    const earlyTotalUsed = Number(earlyTotalSize);
     const quotaBytes = 5 * 1024 * 1024 * 1024; // 5GB
-    if (totalUsed + file.size > quotaBytes) {
-      const usedMB = Math.round(totalUsed / (1024 * 1024));
+    if (earlyTotalUsed + file.size > quotaBytes) {
+      const usedMB = Math.round(earlyTotalUsed / (1024 * 1024));
       const quotaMB = Math.round(quotaBytes / (1024 * 1024));
       return NextResponse.json(
         { error: `Storage quota exceeded (${usedMB}MB / ${quotaMB}MB used)` },
@@ -231,18 +231,29 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const fileRecord = await db.file.create({
-      data: {
-        userId,
-        fileName: file.name,
-        fileType,
-        fileSize: file.size,
-        filePath,
-        textContent,
-        thumbnailUrl,
-        storageMode: "cloud",
-        tags: JSON.stringify(tags),
-      },
+    // Create new file inside a transaction that re-checks quota to prevent TOCTOU race
+    const fileRecord = await db.$transaction(async (tx) => {
+      // Authoritative quota check inside transaction
+      const [{ totalSize: txTotalSize }] = await tx.$queryRaw<Array<{ totalSize: bigint }>>`
+        SELECT COALESCE(SUM("fileSize"), 0) as "totalSize" FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+      `;
+      if (Number(txTotalSize) + file.size > quotaBytes) {
+        throw new Error("Storage quota exceeded (concurrent upload detected)");
+      }
+
+      return tx.file.create({
+        data: {
+          userId,
+          fileName: file.name,
+          fileType,
+          fileSize: file.size,
+          filePath,
+          textContent,
+          thumbnailUrl,
+          storageMode: "cloud",
+          tags: JSON.stringify(tags),
+        },
+      });
     });
 
     // For images, generate a preview URL (inline serving, not download)

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { FileData } from "@/lib/storage/base";
 import { getStorageAdapter, resetAdapter } from "@/lib/storage/factory";
+import { DB_VERSION } from "@/lib/storage/indexeddb";
 import { useNotificationStore } from "@/stores/notification-store";
 import { useActivityStore } from "@/stores/activity-store";
 
@@ -108,6 +109,9 @@ interface AppState {
 
   // Data import
   importData: (jsonData: string) => Promise<number>;
+
+  // Cross-tab auth sync
+  _setupCrossTabSync: () => void;
 
   // Drag & drop
   reorderFiles: (fromIndex: number, toIndex: number) => void;
@@ -701,7 +705,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (storageMode === "local") {
       try {
         const { openDB } = await import("idb");
-        const db = await openDB("knowledge-base-db", 1);
+        const db = await openDB("knowledge-base-db", DB_VERSION);
         const allFolders = await db.getAll("folders");
         const userFolders = allFolders
           .filter((f: { userId?: string }) => f.userId === user.id)
@@ -788,7 +792,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       } else {
         // Local mode: use IndexedDB directly
         const { openDB } = await import("idb");
-        const db = await openDB("knowledge-base-db", 1);
+        const db = await openDB("knowledge-base-db", DB_VERSION);
         let count = 0;
 
         for (const file of parsed.files) {
@@ -824,5 +828,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       console.error("Import failed:", err);
       throw err;
     }
+  },
+
+  // Cross-tab auth sync: listens for localStorage changes from other tabs
+  _setupCrossTabSync: () => {
+    if (typeof window === "undefined") return;
+    const handler = (event: StorageEvent) => {
+      if (event.key === "kb_token") {
+        if (event.newValue === null) {
+          // Token was cleared by another tab → logout
+          get().logout();
+        } else if (event.newValue) {
+          // Token was set by another tab → hydrate auth
+          get().hydrateAuth();
+        }
+      }
+    };
+    window.addEventListener("storage", handler);
+    return () => window.removeEventListener("storage", handler);
   },
 }));

@@ -149,6 +149,8 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
   const [searched, setSearched] = useState(false);
   const [searchTime, setSearchTime] = useState(0);
   const lastTriggerRef = useRef(0);
+  const prevSearchModeRef = useRef<string>("hybrid");
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Filters
   const [fileTypeFilter, setFileTypeFilter] = useState<FileTypeFilter>("all");
@@ -211,10 +213,20 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
   };
 
   useEffect(() => {
-    if (triggerSearch === lastTriggerRef.current) return;
+    // Bypass guard if searchMode changed since last run
+    const modeChanged = searchMode !== prevSearchModeRef.current;
+    if (triggerSearch === lastTriggerRef.current && !modeChanged) return;
     if (!query.trim()) return;
 
     lastTriggerRef.current = triggerSearch;
+    prevSearchModeRef.current = searchMode;
+
+    // Abort previous in-flight request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     const performSearch = async (q: string) => {
       setSearching(true);
@@ -225,7 +237,8 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
         if (storageMode === "cloud" && user) {
           const modeParam = searchMode;
           const res = await fetch(
-            `/api/search?q=${encodeURIComponent(q)}&userId=${user.id}&mode=${modeParam}`
+            `/api/search?q=${encodeURIComponent(q)}&userId=${user.id}&mode=${modeParam}`,
+            { signal: abortController.signal }
           );
           if (res.ok) {
             const data = await res.json();
@@ -244,15 +257,22 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
           );
           setRawResults(filtered);
         }
-      } catch {
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
         setRawResults([]);
       } finally {
-        setSearchTime(Date.now() - startTime);
-        setSearching(false);
+        if (!abortController.signal.aborted) {
+          setSearchTime(Date.now() - startTime);
+          setSearching(false);
+        }
       }
     };
 
     performSearch(query);
+
+    return () => {
+      abortController.abort();
+    };
   }, [triggerSearch, query, storageMode, user, files, searchMode]);
 
   // Apply filters
