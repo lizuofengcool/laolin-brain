@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
 
     try {
       // Try to extract JSON from the response (it might be wrapped in markdown code blocks)
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      const jsonMatch = responseText.match(/\{[\s\S]*?\}/);
       if (jsonMatch) {
         parsed = JSON.parse(jsonMatch[0]);
       } else {

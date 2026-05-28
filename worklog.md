@@ -1123,3 +1123,26 @@ Stage Summary:
   - 代码质量：settings错误日志、自动化引擎null检查、sanitize去除id通配、API缓存body类型修复+auth包含
   - 存储：activity/notification store反序列化验证、file-helpers atob错误处理+URL延迟释放
 - 最终状态：build 0 errors, 884 tests passing, 累计约381个修复
+---
+Task ID: 11
+Agent: Main Agent (Round 11 Audit + Fix)
+Task: 第11轮代码审计和修复
+
+Work Log:
+- 验证项目状态：build 0 errors, 884 tests passing
+- 启动4个并行审计代理（组件、hooks/stores、安全深度审计、页面/布局）
+- 3个代理返回结果，共发现48个问题（含架构级建议）
+- 去重后筛选可安全修复的14个问题（排除架构重构类如SPA拆分）
+- 启动2个并行修复代理执行修复
+- 构建和测试验证：build 0 errors, 884 tests passing
+
+Stage Summary:
+- 修复14个问题，覆盖：
+  - CRITICAL: PWA安装提示死代码修复、markdown XSS（alt/link text未转义）
+  - HIGH: Zustand选择器优化（防止全store订阅导致过度渲染）、filePath路径遍历防护
+  - 安全: origin头白名单验证、window.open noopener noreferrer、AI路由JSON解析贪婪正则修复
+  - 逻辑: use-gestures状态更新嵌套修复、use-swipe setTimeout清理、SW statechange监听器清理
+  - 数据安全: 登出时清理Service Worker缓存、自动化规则原型污染防护
+  - 验证: share token格式验证
+- 最终状态：build 0 errors, 884 tests passing, 累计约395个修复
+- 未修复（需架构决策）：单文件SPA模式、缺失loading.tsx/error.tsx、noImplicitAny:false等

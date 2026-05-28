@@ -203,6 +203,8 @@ export function usePullToRefresh(
   const startYRef = useRef(0);
   const isAtTopRef = useRef(false);
   const callbackRef = useRef(callback);
+  const pullDistanceRef = useRef(0);
+  const isRefreshingRef = useRef(false);
 
   useEffect(() => {
     callbackRef.current = callback;
@@ -226,7 +228,9 @@ export function usePullToRefresh(
 
       if (diff > 0) {
         const resisted = diff * 0.4;
-        setPullDistance(Math.min(resisted, threshold * 1.5));
+        const distance = Math.min(resisted, threshold * 1.5);
+        setPullDistance(distance);
+        pullDistanceRef.current = distance;
         setIsPulling(resisted > 10);
       }
     },
@@ -234,21 +238,24 @@ export function usePullToRefresh(
   );
 
   const handleTouchEnd = useCallback(async () => {
-    setPullDistance((currentPull) => {
-      if (currentPull >= threshold && !isRefreshing) {
-        setIsRefreshing(true);
-        setIsPulling(false);
-
-        callbackRef.current().finally(() => {
-          setIsRefreshing(false);
-        });
-      } else {
-        setIsPulling(false);
-      }
-      return 0;
-    });
+    const currentPull = pullDistanceRef.current;
+    setPullDistance(0);
     isAtTopRef.current = false;
-  }, [threshold, isRefreshing]);
+
+    if (currentPull >= threshold && !isRefreshingRef.current) {
+      setIsPulling(false);
+      isRefreshingRef.current = true;
+      setIsRefreshing(true);
+      try {
+        await callbackRef.current();
+      } finally {
+        isRefreshingRef.current = false;
+        setIsRefreshing(false);
+      }
+    } else {
+      setIsPulling(false);
+    }
+  }, [threshold]);
 
   const bindEvents = useCallback(
     (el: HTMLElement | null) => {

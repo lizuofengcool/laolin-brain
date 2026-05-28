@@ -91,7 +91,18 @@ export function loadRules(): AutomationRule[] {
           typeof (r as Record<string, unknown>).enabled === 'boolean' &&
           typeof (r as Record<string, unknown>).config === 'object' && (r as Record<string, unknown>).config !== null
         );
-        if (validRules.length > 0) return validRules;
+        // Block prototype pollution keys in config
+        const protoSafeRules = validRules.filter((r) => {
+          const config = (r as unknown as Record<string, unknown>).config;
+          if (config && typeof config === 'object') {
+            const configKeys = Object.keys(config as object);
+            if (configKeys.some(k => k === '__proto__' || k === 'constructor' || k === 'prototype')) {
+              return false;
+            }
+          }
+          return true;
+        });
+        if (protoSafeRules.length > 0) return protoSafeRules;
       }
     }
   } catch {

@@ -98,7 +98,7 @@ ${fileListStr}
     let parsed: { relatedFiles?: Array<{ id: string; reason?: string }> };
 
     try {
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      const jsonMatch = responseText.match(/\{[\s\S]*?\}/);
       if (jsonMatch) {
         parsed = JSON.parse(jsonMatch[0]);
       } else {

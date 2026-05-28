@@ -76,6 +76,7 @@ export function useSwipe(options: UseSwipeOptions = {}): UseSwipeReturn {
   const [isSwiping, setIsSwiping] = useState(false);
   const [swipeDelta, setSwipeDelta] = useState({ x: 0, y: 0 });
   const swipeDeltaRef = useRef({ x: 0, y: 0 });
+  const deltaTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Stable callback refs
   const onSwipeLeftRef = useRef(onSwipeLeft);
@@ -191,11 +192,17 @@ export function useSwipe(options: UseSwipeOptions = {}): UseSwipeReturn {
     onSwipeEndRef.current?.(detectedDirection);
 
     // Reset delta after a tick
-    setTimeout(() => {
+    deltaTimeoutRef.current = setTimeout(() => {
       setSwipeDelta({ x: 0, y: 0 });
       swipeDeltaRef.current = { x: 0, y: 0 };
     }, 50);
   }, [minDistance, maxDuration]);
+
+  useEffect(() => {
+    return () => {
+      if (deltaTimeoutRef.current) clearTimeout(deltaTimeoutRef.current);
+    };
+  }, []);
 
   return {
     swipeDirection,

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import path from "path";
 import { db } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 
@@ -66,6 +67,15 @@ export async function POST(
     // Validate filePath to prevent stored path traversal
     if (filePath !== undefined && filePath !== null) {
       if (typeof filePath !== 'string' || filePath.length > 1024) {
+        return NextResponse.json(
+          { error: "Invalid filePath" },
+          { status: 400 }
+        );
+      }
+      // Reject path traversal attempts
+      const resolvedPath = path.resolve(filePath);
+      const allowedBase = path.resolve(process.cwd(), "upload", userId);
+      if (!resolvedPath.startsWith(allowedBase + path.sep) && resolvedPath !== allowedBase) {
         return NextResponse.json(
           { error: "Invalid filePath" },
           { status: 400 }

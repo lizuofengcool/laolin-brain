@@ -60,8 +60,7 @@ function getServerPromptSnapshot() {
 }
 
 // Initialize beforeinstallprompt listener
-if (typeof window !== 'undefined' && !listenersRegistered) {
-  listenersRegistered = true;
+if (typeof window !== 'undefined') {
   window.addEventListener('beforeinstallprompt', (e: Event) => {
     e.preventDefault();
     currentPrompt = e as BeforeInstallPromptEvent;
@@ -103,6 +102,9 @@ export function usePWA() {
             reg.update();
           }, 60 * 60 * 1000); // Every hour
 
+          let latestNewWorker: ServiceWorker | null = null;
+          let stateChangeHandler: (() => void) | null = null;
+
           // Listen for new service worker update
           const onUpdateFound = () => {
             const newWorker = reg.installing;
@@ -112,14 +114,18 @@ export function usePWA() {
                 setUpdateAvailable(true);
               }
             };
+            stateChangeHandler = onStateChange;
+            latestNewWorker = newWorker;
             newWorker.addEventListener('statechange', onStateChange);
-            // Store statechange cleanup (cannot easily remove without leaking)
           };
           reg.addEventListener('updatefound', onUpdateFound);
 
           swCleanupRef.current = () => {
             clearInterval(updateInterval);
             reg.removeEventListener('updatefound', onUpdateFound);
+            if (latestNewWorker && stateChangeHandler) {
+              latestNewWorker.removeEventListener('statechange', stateChangeHandler);
+            }
           };
         })
         .catch((err) => {

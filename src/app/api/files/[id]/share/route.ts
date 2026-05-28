@@ -58,7 +58,9 @@ export async function POST(
       }
 
       const file = share.file;
-      const baseUrl = request.headers.get("origin") || process.env.APP_URL || "http://localhost:3000";
+      const allowedOrigin = request.headers.get("origin") || "";
+      const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:3000").split(",").map(s => s.trim());
+      const baseUrl = ALLOWED_ORIGINS.includes(allowedOrigin) ? allowedOrigin : (process.env.APP_URL || "http://localhost:3000");
       const downloadUrl = `${baseUrl}/api/files/${file.id}/download?token=${id}`;
 
       return NextResponse.json({
@@ -132,7 +134,9 @@ export async function POST(
       },
     });
 
-    const baseUrl = request.headers.get("origin") || process.env.APP_URL || "http://localhost:3000";
+    const allowedOrigin = request.headers.get("origin") || "";
+    const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:3000").split(",").map(s => s.trim());
+    const baseUrl = ALLOWED_ORIGINS.includes(allowedOrigin) ? allowedOrigin : (process.env.APP_URL || "http://localhost:3000");
     const shareUrl = `${baseUrl}/share/${token}`;
 
     return NextResponse.json({
@@ -196,7 +200,9 @@ export async function GET(
     }
 
     const file = share.file;
-    const baseUrl = request.headers.get("origin") || process.env.APP_URL || "http://localhost:3000";
+    const allowedOrigin = request.headers.get("origin") || "";
+    const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:3000").split(",").map(s => s.trim());
+    const baseUrl = ALLOWED_ORIGINS.includes(allowedOrigin) ? allowedOrigin : (process.env.APP_URL || "http://localhost:3000");
     const downloadUrl = `${baseUrl}/api/files/${file.id}/download?token=${id}`;
 
     return NextResponse.json({

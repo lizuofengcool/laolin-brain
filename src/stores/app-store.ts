@@ -145,6 +145,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       localStorage.removeItem("kb_token");
       localStorage.removeItem("kb_user");
     }
+    // Clear service worker caches on logout
+    if (typeof navigator !== "undefined" && navigator.serviceWorker?.controller) {
+      navigator.serviceWorker.controller.postMessage({ type: "CLEAR_CACHES" });
+    }
     resetAdapter();
     useNotificationStore.getState().rehydrate();
     useActivityStore.getState().rehydrate();

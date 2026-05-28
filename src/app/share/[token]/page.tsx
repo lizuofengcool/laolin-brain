@@ -32,7 +32,8 @@ interface SharedFileData {
 
 export default function SharePage() {
   const params = useParams();
-  const token = typeof params.token === "string" ? params.token : undefined;
+  const rawToken = typeof params.token === "string" ? params.token : undefined;
+  const token = rawToken && /^[a-zA-Z0-9_-]{8,64}$/.test(rawToken) ? rawToken : undefined;
 
   const [fileData, setFileData] = useState<SharedFileData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -134,7 +135,7 @@ export default function SharePage() {
   const handleDownload = () => {
     if (!fileData) return;
     const downloadUrl = `/api/files/${fileData.id}/download?token=${token}`;
-    window.open(downloadUrl, "_blank");
+    window.open(downloadUrl, "_blank", "noopener,noreferrer");
   };
 
   if (loading) {

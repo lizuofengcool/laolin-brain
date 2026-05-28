@@ -11,7 +11,9 @@ import { useAppStore } from "@/stores/app-store";
  * - 1-9: Quick navigate to views (when not in input)
  */
 export function useKeyboardShortcuts() {
-  const { setCurrentView, closeLightbox, lightboxOpen } = useAppStore();
+  const setCurrentView = useAppStore((s) => s.setCurrentView);
+  const closeLightbox = useAppStore((s) => s.closeLightbox);
+  const lightboxOpen = useAppStore((s) => s.lightboxOpen);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {

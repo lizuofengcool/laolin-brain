@@ -135,9 +135,9 @@ function sanitizeUrl(url: string): string {
 
 function inlineFormat(text: string): string {
   // Images ![alt](url)
-  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => `<img src="${sanitizeUrl(url)}" alt="${alt}" class="markdown-image" />`);
+  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => `<img src="${sanitizeUrl(url)}" alt="${escapeHtml(alt)}" class="markdown-image" />`);
   // Links [text](url)
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => `<a href="${sanitizeUrl(url)}" target="_blank" rel="noopener noreferrer" class="markdown-link">${text}</a>`);
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, linkText, url) => `<a href="${sanitizeUrl(url)}" target="_blank" rel="noopener noreferrer" class="markdown-link">${escapeHtml(linkText)}</a>`);
   // Inline code
   text = text.replace(/`([^`]+)`/g, '<code class="markdown-inline-code">$1</code>');
   // Bold + italic ***text*** or ___text___
