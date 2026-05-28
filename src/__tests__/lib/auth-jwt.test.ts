@@ -6,7 +6,7 @@ import {
   isTokenExpired,
 } from "@/lib/auth";
 
-const TOKEN_SECRET = "kb-secure-hmac-secret-key-2024";
+const TOKEN_SECRET = "kb-dev-only-secret-2024";
 
 describe("auth-jwt", () => {
   describe("isTokenExpired", () => {

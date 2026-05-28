@@ -43,6 +43,8 @@ model File {
   folder       Folder?  @relation(fields: [folderId], references: [id], onDelete: SetNull)
   shares       FileShare[]
   versions     FileVersion[]
+  faces        FaceInstance[]
+  embedding    FileEmbedding?
 
   @@index([userId])
   @@index([userId, isDeleted])
@@ -101,6 +103,7 @@ model FileEmbedding {
   userId    String
   embedding String
   createdAt DateTime @default(now())
+  file      File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([fileId])
@@ -116,6 +119,7 @@ model FaceGroup {
   faces     FaceInstance[]
 
   @@index([userId])
+  @@unique([userId, name])
 }
 
 model FaceInstance {
@@ -130,6 +134,7 @@ model FaceInstance {
   bboxH       Int
   createdAt   DateTime  @default(now())
   group       FaceGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  file        File      @relation(fields: [fileId], references: [id], onDelete: Cascade)
 
   @@index([groupId])
   @@index([fileId])

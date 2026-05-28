@@ -55,7 +55,7 @@ describe("automation engine", () => {
     it("has correct default config for auto_organize", () => {
       const org = RULE_TEMPLATES.find((t) => t.type === "auto_organize");
       expect(org!.defaultConfig.rules).toBeInstanceOf(Array);
-      expect(org!.defaultConfig.rules.length).toBeGreaterThan(0);
+      expect((org!.defaultConfig.rules as unknown[]).length).toBeGreaterThan(0);
     });
 
     it("has correct default config for auto_backup", () => {

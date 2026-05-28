@@ -317,7 +317,7 @@ export function UploadZone({ className }: UploadZoneProps) {
         setFailedFiles([]);
       }, 3000);
     },
-    [user, storageMode, addFile, refreshFiles]
+    [user, storageMode, addFile, refreshFiles, failedFiles.length]
   );
 
   const { getRootProps, getInputProps, isDragActive, fileRejections } = useDropzone({

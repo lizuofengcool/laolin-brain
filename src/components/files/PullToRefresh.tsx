@@ -101,7 +101,7 @@ export function PullToRefresh({ children, onRefresh, className, threshold = 80 }
       el.removeEventListener("touchmove", handleTouchMove);
       el.removeEventListener("touchend", handleTouchEnd);
     };
-  }, [containerRef.current, handleTouchStart, handleTouchMove, handleTouchEnd]);
+  }, [handleTouchStart, handleTouchMove, handleTouchEnd]);
 
   const progress = Math.min(pullDistance / threshold, 1);
   const showIndicator = isPulling || isRefreshing;

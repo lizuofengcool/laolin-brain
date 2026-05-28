@@ -85,6 +85,8 @@ export function usePWA() {
 
   const canInstall = !!installPrompt;
 
+  let updateInterval: ReturnType<typeof setInterval> | null = null;
+
   useEffect(() => {
     // Register service worker
     if ('serviceWorker' in navigator) {
@@ -94,7 +96,7 @@ export function usePWA() {
           setRegistration(reg);
 
           // Check for updates periodically
-          setInterval(() => {
+          updateInterval = setInterval(() => {
             reg.update();
           }, 60 * 60 * 1000); // Every hour
 
@@ -123,6 +125,7 @@ export function usePWA() {
     window.addEventListener('appinstalled', installedHandler);
 
     return () => {
+      if (updateInterval) clearInterval(updateInterval);
       window.removeEventListener('appinstalled', installedHandler);
     };
   }, []);

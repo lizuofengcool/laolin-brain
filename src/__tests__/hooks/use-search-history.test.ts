@@ -5,7 +5,7 @@ import { getSearchHistory, addSearchHistory, clearSearchHistory } from '@/hooks/
 const localStorageMock = (() => {
   let store: Record<string, string> = {};
   return {
-    getItem: vi.fn((key: string) => store[key] ?? null),
+    getItem: vi.fn((key: string) => store[key] ?? undefined),
     setItem: vi.fn((key: string, value: string) => { store[key] = value; }),
     removeItem: vi.fn((key: string) => { delete store[key]; }),
     clear: vi.fn(() => { store = {}; }),
@@ -66,7 +66,7 @@ describe('use-search-history', () => {
     });
 
     it('adds item when history is empty', () => {
-      localStorageMock.getItem.mockReturnValue(null);
+      localStorageMock.getItem.mockReturnValue(null as unknown as string);
       addSearchHistory('first');
 
       const setCall = localStorageMock.setItem.mock.calls[0];
@@ -96,7 +96,7 @@ describe('use-search-history', () => {
     });
 
     it('trims the query before adding', () => {
-      localStorageMock.getItem.mockReturnValue(null);
+      localStorageMock.getItem.mockReturnValue(null as unknown as string);
       addSearchHistory('  hello  ');
 
       const setCall = localStorageMock.setItem.mock.calls[0];

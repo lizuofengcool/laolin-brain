@@ -7,7 +7,7 @@ import {
   loadRules,
   saveRules,
 } from "@/lib/automation/engine";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -26,7 +26,6 @@ import {
   RefreshCw,
   Plus,
   Clock,
-  Settings2,
 } from "lucide-react";
 
 interface AutomationRulesProps {

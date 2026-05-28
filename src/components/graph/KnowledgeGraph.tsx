@@ -2,13 +2,10 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useAppStore } from "@/stores/app-store";
-import { getFileColor } from "@/lib/file-utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Loader2, RotateCcw, Eye, EyeOff, Filter, Network } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { FileData } from "@/lib/storage/base";
 
 interface GraphNode {
   id: string;
@@ -268,6 +265,7 @@ export function KnowledgeGraphView() {
     };
   }, [graphData]);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   function getNodeRadius(node: GraphNode): number {
     const minR = 8;
     const maxR = 24;

@@ -1,5 +1,5 @@
 import sharp from "sharp";
-import { writeFile, mkdir, readdir, unlink } from "fs/promises";
+import { mkdir, readdir, unlink } from "fs/promises";
 import path from "path";
 
 export async function generateThumbnail(

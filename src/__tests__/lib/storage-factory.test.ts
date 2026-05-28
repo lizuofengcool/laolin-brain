@@ -22,7 +22,7 @@ describe('storage factory', () => {
     // Reset module to reset the singleton
     vi.resetModules();
     const mod = await import('@/lib/storage/factory');
-    getStorageAdapter = mod.getStorageAdapter;
+    getStorageAdapter = mod.getStorageAdapter as unknown as (mode: string) => { type: string };
     resetAdapter = mod.resetAdapter;
   });
 

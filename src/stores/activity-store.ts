@@ -1,7 +1,13 @@
 import { create } from "zustand";
+import { useAppStore } from "./app-store";
 
-const ACTIVITIES_STORAGE_KEY = "kb_activities";
 const MAX_ACTIVITIES = 50;
+
+function getActivitiesStorageKey(): string {
+  if (typeof window === "undefined") return "kb_activities";
+  const userId = useAppStore.getState().user?.id;
+  return userId ? `kb_activities_${userId}` : "kb_activities";
+}
 
 export type ActivityType =
   | "upload"
@@ -30,7 +36,7 @@ interface ActivityStore {
 /** 从 localStorage 加载活动记录 */
 function loadActivities(): ActivityItem[] {
   try {
-    const stored = localStorage.getItem(ACTIVITIES_STORAGE_KEY);
+    const stored = localStorage.getItem(getActivitiesStorageKey());
     if (stored) {
       return JSON.parse(stored) as ActivityItem[];
     }
@@ -43,7 +49,7 @@ function loadActivities(): ActivityItem[] {
 /** 保存活动记录到 localStorage */
 function persistActivities(activities: ActivityItem[]) {
   try {
-    localStorage.setItem(ACTIVITIES_STORAGE_KEY, JSON.stringify(activities));
+    localStorage.setItem(getActivitiesStorageKey(), JSON.stringify(activities));
   } catch {
     // 静默失败
   }

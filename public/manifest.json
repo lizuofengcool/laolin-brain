@@ -3,6 +3,7 @@
   "short_name": "知识库",
   "description": "一站式智能文档知识库与个人相册管理平台",
   "start_url": "/",
+  "id": "/?source=pwa",
   "scope": "/",
   "lang": "zh-CN",
   "dir": "ltr",
@@ -32,7 +33,6 @@
     }
   ],
   "categories": ["productivity", "utilities"],
-  "screenshots": [],
   "shortcuts": [
     {
       "name": "搜索文件",
@@ -62,16 +62,8 @@
     }
   ],
   "share_target": {
-    "action": "/api/files/import",
-    "method": "POST",
-    "enctype": "multipart/form-data",
-    "params": {
-      "files": [
-        {
-          "name": "file",
-          "accept": ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "image/*"]
-        }
-      ]
-    }
+    "_comment": "Disabled: share_target sends multipart/form-data to /api/files/import which expects JSON. Re-enable after creating a dedicated share-receive endpoint that parses multipart/form-data.",
+    "_original_action": "/api/files/import",
+    "_original_enctype": "multipart/form-data"
   }
 }

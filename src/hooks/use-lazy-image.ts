@@ -18,6 +18,8 @@ interface UseLazyImageReturn {
   isLoading: boolean;
   /** The actual src to pass to <img>; empty until visible */
   src: string;
+  /** Callback to attach to img onLoad */
+  handleLoad: () => void;
 }
 
 /**
@@ -76,5 +78,6 @@ export function useLazyImage(src: string, options: UseLazyImageOptions = {}): Us
     isLoaded,
     isLoading,
     src: isVisible ? src : "",
+    handleLoad,
   };
 }

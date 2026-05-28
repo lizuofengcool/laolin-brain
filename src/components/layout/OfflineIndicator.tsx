@@ -1,7 +1,7 @@
 'use client';
 
 import { usePWA } from '@/hooks/use-service-worker';
-import { WifiOff, Wifi } from 'lucide-react';
+import { WifiOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export function OfflineIndicator() {

@@ -22,7 +22,6 @@ import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/stores/app-store';
 import { getStorageAdapter } from '@/lib/storage/factory';
-import type { FileData } from '@/lib/storage/base';
 
 interface TagInfo {
   name: string;

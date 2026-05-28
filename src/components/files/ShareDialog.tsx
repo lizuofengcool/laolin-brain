@@ -37,7 +37,7 @@ import {
 import { toast } from "@/hooks/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
 import { getFileColor, formatSize, FileIconDisplay } from "@/lib/file-utils";
-import type { FileData } from "@/lib/storage/base";
+import { useAppStore } from "@/stores/app-store";
 
 interface ShareDialogProps {
   file: {
@@ -125,7 +125,10 @@ export function ShareDialog({ file, open, onClose }: ShareDialogProps) {
     try {
       const res = await fetch(`/api/files/${file.id}/share`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${useAppStore.getState().token}`,
+        },
         body: JSON.stringify({
           expiresIn: parseInt(expiresIn),
           password: passwordEnabled ? password : undefined,
@@ -199,10 +202,6 @@ export function ShareDialog({ file, open, onClose }: ShareDialogProps) {
     setCopied(false);
     setError(null);
   }, []);
-
-  const getExpiryLabel = (val: string) => {
-    return expiryOptions.find((o) => o.value === val)?.label ?? val;
-  };
 
   if (!file) return null;
 

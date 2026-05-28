@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Users,
   ScanFace,
@@ -41,6 +41,7 @@ export default function FaceGroups({ onSelectGroup }: FaceGroupsProps) {
   const [progress, setProgress] = useState({ processed: 0, total: 0 });
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchGroups = useCallback(async () => {
     if (!user) return;
@@ -59,6 +60,12 @@ export default function FaceGroups({ onSelectGroup }: FaceGroupsProps) {
 
   useEffect(() => {
     fetchGroups();
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    };
   }, [fetchGroups]);
 
   const imageFiles = files.filter(
@@ -97,16 +104,19 @@ export default function FaceGroups({ onSelectGroup }: FaceGroupsProps) {
 
                 if (!statusData.isProcessing) {
                   clearInterval(pollInterval);
+                  pollIntervalRef.current = null;
                   setProcessing(false);
                   fetchGroups();
                 }
               }
             } catch {
               clearInterval(pollInterval);
+              pollIntervalRef.current = null;
               setProcessing(false);
               fetchGroups();
             }
           }, 2000);
+          pollIntervalRef.current = pollInterval;
         } else {
           setProcessing(false);
         }

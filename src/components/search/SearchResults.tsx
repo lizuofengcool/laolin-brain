@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import type { FileData } from "@/lib/storage/base";
 import { useAppStore } from "@/stores/app-store";
 import { Loader2, File, Filter, Search, X, Sparkles, Type, Blend, ScanFace } from "lucide-react";

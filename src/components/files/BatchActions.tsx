@@ -59,7 +59,7 @@ export function BatchActions({ open, onClose }: BatchActionsProps) {
       if (user) {
         try {
           const adapter = (await import("@/lib/storage/factory")).getStorageAdapter(storageMode);
-          await adapter.updateFile(file.id, { tags: updatedTags } as any, user.id);
+          await adapter.updateFile(file.id, { tags: updatedTags } as Partial<import("@/lib/storage/base").FileData>, user.id);
           successCount++;
         } catch {
           // ignore
@@ -89,7 +89,7 @@ export function BatchActions({ open, onClose }: BatchActionsProps) {
       if (user) {
         try {
           const adapter = (await import("@/lib/storage/factory")).getStorageAdapter(storageMode);
-          await adapter.updateFile(file.id, { folderId: selectedFolderId } as any, user.id);
+          await adapter.updateFile(file.id, { folderId: selectedFolderId } as Partial<import("@/lib/storage/base").FileData>, user.id);
           successCount++;
         } catch {
           // ignore

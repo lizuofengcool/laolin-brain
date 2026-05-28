@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Palette } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,7 +30,7 @@ export function ThemeCustomizer() {
   const [selectedColor, setSelectedColor] = useState(THEME_COLORS[0].name);
   const [mounted, setMounted] = useState(false);
 
-  const applyThemeColor = (colorName: string) => {
+  const applyThemeColor = useCallback((colorName: string) => {
     const theme = THEME_COLORS.find((t) => t.name === colorName);
     if (!theme) return;
 
@@ -44,7 +44,7 @@ export function ThemeCustomizer() {
     root.style.setProperty("--sidebar-primary", isDark ? theme.dark : theme.light);
 
     root.classList.add("theme-customized");
-  };
+  }, []);
 
   /* eslint-disable react-hooks/set-state-in-effect -- setMounted is a hydration guard pattern */
   useEffect(() => {

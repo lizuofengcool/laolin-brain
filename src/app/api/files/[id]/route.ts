@@ -133,7 +133,14 @@ export async function DELETE(
       }
     }
 
-    await db.file.delete({ where: { id } });
+    // Cascade delete associated records in a transaction
+    // Note: FileVersion and FileShare have onDelete: Cascade in Prisma schema
+    // FileEmbedding and FaceInstance are not related via Prisma, so we delete manually
+    await db.$transaction([
+      db.fileEmbedding.deleteMany({ where: { fileId: id } }),
+      db.faceInstance.deleteMany({ where: { fileId: id } }),
+      db.file.delete({ where: { id } }),
+    ]);
 
     return NextResponse.json({ success: true });
   } catch (error) {

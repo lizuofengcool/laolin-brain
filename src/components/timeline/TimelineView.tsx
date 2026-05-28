@@ -1,15 +1,15 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useMemo } from "react";
 import type { FileData } from "@/lib/storage/base";
 import { useAppStore } from "@/stores/app-store";
 import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { CalendarDays, FileText, Clock } from "lucide-react";
+import { CalendarDays } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatSize, getFileColor, FileIconDisplay } from "@/lib/file-utils";
 import { motion } from "framer-motion";
 import { Maximize2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 
 interface TimelineGroup {
   yearMonth: string;

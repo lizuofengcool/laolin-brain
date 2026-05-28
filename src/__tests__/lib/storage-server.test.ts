@@ -5,7 +5,7 @@ import { ServerStorageAdapter } from '@/lib/storage/server';
 const localStorageMock = (() => {
   let store: Record<string, string> = {};
   return {
-    getItem: vi.fn((key: string) => store[key] ?? null),
+    getItem: vi.fn((key: string) => store[key] ?? undefined),
     setItem: vi.fn((key: string, value: string) => { store[key] = value; }),
     removeItem: vi.fn((key: string) => { delete store[key]; }),
     clear: vi.fn(() => { store = {}; }),
@@ -180,7 +180,7 @@ describe('ServerStorageAdapter', () => {
   });
 
   it('omits Authorization header when no token in localStorage', async () => {
-    localStorageMock.getItem.mockReturnValue(null);
+    localStorageMock.getItem.mockReturnValue(null as unknown as string);
     mockFetchFn = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve([]),

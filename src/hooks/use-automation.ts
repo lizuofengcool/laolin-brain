@@ -18,8 +18,6 @@ import { toast } from "@/hooks/use-toast";
  * - Can be called on file upload events
  */
 export function useAutomation() {
-  const files = useAppStore((s) => s.files);
-  const permanentDeleteFile = useAppStore((s) => s.permanentDeleteFile);
   const cleanupIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const rulesRef = useRef<AutomationRule[]>([]);
 

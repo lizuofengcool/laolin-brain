@@ -17,6 +17,25 @@ const IMAGE_CACHE = 'kb-images-v2';
 
 const ALL_CACHES = [CACHE_NAME, SHELL_CACHE, API_CACHE, IMAGE_CACHE];
 
+// Cache size limits to prevent unbounded growth
+const CACHE_LIMITS = {
+  [CACHE_NAME]: 500,
+  [API_CACHE]: 50,
+  [IMAGE_CACHE]: 200,
+  [SHELL_CACHE]: 50,
+};
+
+// Trim cache to maxItems by deleting oldest entries
+async function trimCache(cacheName, maxItems) {
+  const cache = await caches.open(cacheName);
+  const keys = await cache.keys();
+  if (keys.length <= maxItems) return;
+  const deleteCount = keys.length - maxItems;
+  for (let i = 0; i < deleteCount; i++) {
+    await cache.delete(keys[i]);
+  }
+}
+
 // Offline fallback HTML page
 const OFFLINE_HTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>离线模式</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#09090b;color:#fafafa;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}.container{text-align:center}.icon{font-size:48px;margin-bottom:16px}.title{font-size:20px;font-weight:600;margin-bottom:8px}.desc{font-size:14px;color:#a1a1aa;max-width:300px;margin:0 auto}.btn{margin-top:24px;padding:10px 24px;background:#2563eb;color:#fff;border:none;border-radius:8px;font-size:14px;cursor:pointer}</style></head><body><div class="container"><div class="icon">📡</div><div class="title">离线模式</div><p class="desc">网络连接不可用，已缓存的文件仍可访问。请检查网络后重试。</p><button class="btn" onclick="location.reload()">重新连接</button></div></body></html>`;
 
@@ -162,6 +181,12 @@ self.addEventListener('fetch', (event) => {
 
 // ─── API: Network-first with cache fallback ───────────────────────
 async function handleAPIRequest(request) {
+  // Skip caching for auth endpoints
+  const url = new URL(request.url);
+  if (url.pathname.startsWith('/api/auth/')) {
+    return fetch(request);
+  }
+
   try {
     const response = await fetch(request);
     if (response.ok) {
@@ -176,7 +201,9 @@ async function handleAPIRequest(request) {
         headers,
       });
       // Cache in background (don't block the response)
-      caches.open(API_CACHE).then((cache) => cache.put(request, newResponse));
+      caches.open(API_CACHE).then((cache) => {
+        return cache.put(request, newResponse).then(() => trimCache(API_CACHE, CACHE_LIMITS[API_CACHE]));
+      });
     }
     return response;
   } catch (error) {
@@ -205,7 +232,7 @@ async function handleImageRequest(request) {
   const fetchPromise = fetch(request)
     .then((response) => {
       if (response.ok) {
-        cache.put(request, response.clone());
+        cache.put(request, response.clone()).then(() => trimCache(IMAGE_CACHE, CACHE_LIMITS[IMAGE_CACHE]));
       }
       return response;
     })
@@ -261,7 +288,9 @@ async function handleStaticRequest(request) {
     const response = await fetch(request);
     if (response.ok) {
       const clone = response.clone();
-      caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+      caches.open(CACHE_NAME).then((cache) => {
+        return cache.put(request, clone).then(() => trimCache(CACHE_NAME, CACHE_LIMITS[CACHE_NAME]));
+      });
     }
     return response;
   } catch {
@@ -285,7 +314,10 @@ async function processUploadQueue() {
       const db = await openUploadDB();
       const tx = db.transaction('uploads', 'readonly');
       const store = tx.objectStore('uploads');
-      const pending = await store.getAll();
+      const pending = await new Promise((resolve, reject) => {
+        tx.oncomplete = () => resolve(store.getAll().result);
+        tx.onerror = () => reject(tx.error);
+      });
       db.close();
 
       for (const item of pending) {
@@ -321,19 +353,20 @@ function openUploadDB() {
   });
 }
 
-function removeFromUploadQueue(id) {
-  return new Promise(async (resolve) => {
-    try {
-      const db = await openUploadDB();
-      const tx = db.transaction('uploads', 'readwrite');
-      const store = tx.objectStore('uploads');
-      store.delete(id);
-      db.close();
-    } catch {
-      // Ignore errors
-    }
-    resolve();
-  });
+async function removeFromUploadQueue(id) {
+  try {
+    const db = await openUploadDB();
+    const tx = db.transaction('uploads', 'readwrite');
+    const store = tx.objectStore('uploads');
+    store.delete(id);
+    await new Promise((resolve, reject) => {
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch {
+    // Ignore errors
+  }
 }
 
 // ─── Message Handler ──────────────────────────────────────────────

@@ -93,7 +93,7 @@ export function clusterFaces(faces: FaceInstance[], threshold: number = 0.75): F
 
   // Build FaceCluster objects
   const clusters: FaceCluster[] = [];
-  for (const [root, indices] of clusterMap) {
+  for (const [, indices] of clusterMap) {
     const clusterFaces = indices.map((i) => faces[i]);
 
     // Select the face with the most connections (highest average similarity) as representative
@@ -109,9 +109,9 @@ export function clusterFaces(faces: FaceInstance[], threshold: number = 0.75): F
           count++;
         }
       }
-      const avgSim = count > 0 ? totalSim / count : 0;
-      if (avgSim > bestAvgSim) {
-        bestAvgSim = avgSim;
+      const _avgSim = count > 0 ? totalSim / count : 0;
+      if (_avgSim > bestAvgSim) {
+        bestAvgSim = _avgSim;
         bestIdx = idx;
       }
     }
@@ -190,7 +190,7 @@ export function findBestCluster(
       if (sim > maxSim) maxSim = sim;
     }
 
-    const avgSim = totalSim / cluster.faceInstances.length;
+    const _avgSim = totalSim / cluster.faceInstances.length;
 
     // Use max similarity for matching (more permissive)
     if (maxSim > bestSim) {

@@ -1,6 +1,7 @@
 "use client";
 
 import { create } from "zustand";
+import { useAppStore } from "./app-store";
 
 export type NotificationType = "success" | "error" | "info" | "warning";
 
@@ -30,13 +31,18 @@ interface NotificationState {
   getUnreadCount: () => number;
 }
 
-const STORAGE_KEY = "kb_notifications";
 const MAX_NOTIFICATIONS = 50;
+
+function getNotificationStorageKey(): string {
+  if (typeof window === "undefined") return "kb_notifications";
+  const userId = useAppStore.getState().user?.id;
+  return userId ? `kb_notifications_${userId}` : "kb_notifications";
+}
 
 function loadNotifications(): Notification[] {
   if (typeof window === "undefined") return [];
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(getNotificationStorageKey());
     if (stored) {
       const parsed = JSON.parse(stored);
       if (Array.isArray(parsed)) return parsed.slice(0, MAX_NOTIFICATIONS);
@@ -51,7 +57,7 @@ function saveNotifications(notifications: Notification[]) {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(
-      STORAGE_KEY,
+      getNotificationStorageKey(),
       JSON.stringify(notifications.slice(0, MAX_NOTIFICATIONS))
     );
   } catch {

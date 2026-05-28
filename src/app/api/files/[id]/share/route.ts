@@ -58,7 +58,7 @@ export async function POST(
       },
     });
 
-    const baseUrl = request.headers.get("origin") || process.env.NEXTAUTH_URL || "";
+    const baseUrl = request.headers.get("origin") || process.env.APP_URL || "http://localhost:3000";
     const shareUrl = `${baseUrl}/share/${token}`;
 
     return NextResponse.json({
@@ -121,8 +121,8 @@ export async function GET(
     }
 
     const file = share.file;
-    const baseUrl = request.headers.get("origin") || process.env.NEXTAUTH_URL || "";
-    const downloadUrl = `${baseUrl}/api/files/${file.id}/download`;
+    const baseUrl = request.headers.get("origin") || process.env.APP_URL || "http://localhost:3000";
+    const downloadUrl = `${baseUrl}/api/files/${file.id}/download?token=${id}`;
 
     return NextResponse.json({
       id: file.id,

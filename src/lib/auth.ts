@@ -1,7 +1,7 @@
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 
-const TOKEN_SECRET = "kb-secure-hmac-secret-key-2024";
+const TOKEN_SECRET = process.env.TOKEN_SECRET || "kb-dev-only-secret-2024";
 const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**

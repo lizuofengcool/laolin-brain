@@ -5,9 +5,7 @@ import {
   User,
   Mail,
   Shield,
-  Clock,
   HardDrive,
-  FileText,
   Image as ImageIcon,
   Star,
   Trash2,
@@ -19,18 +17,12 @@ import {
   BarChart3,
   Network,
   ScanFace,
-  Download,
-  FolderInput,
   Zap,
-  Volume2,
-  Archive,
   ChevronRight,
   LogOut,
   Moon,
   Sun,
-  Globe,
   Info,
-  Share2,
 } from "lucide-react";
 import { AvatarUploader } from "./AvatarUploader";
 import { RecentActivity } from "./RecentActivity";

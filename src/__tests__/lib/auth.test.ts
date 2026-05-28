@@ -144,7 +144,7 @@ describe("auth utilities", () => {
     it("returns null for a token missing exp field", () => {
       const payload = Buffer.from(JSON.stringify({ id: "u1", email: "a@b.com" })).toString("base64url");
       // Use a real signature so signature check passes
-      const secret = "kb-secure-hmac-secret-key-2024";
+      const secret = "kb-dev-only-secret-2024";
       const sig = Buffer.from(
         createHmac("sha256", secret).update(payload).digest()
       ).toString("base64url");

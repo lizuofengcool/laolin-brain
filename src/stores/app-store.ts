@@ -81,7 +81,7 @@ interface AppState {
 
   // Storage mode
   storageMode: string;
-  setStorageMode: (mode: string) => Promise<void>;
+  setStorageMode: (mode: string, skipWarning?: boolean) => Promise<void>;
 
   // Folders
   folders: FolderItem[];
@@ -161,8 +161,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         // Simple client-side check: parse the base64 payload and check exp
         try {
           const parts = token.split(".");
-          if (parts.length === 3) {
-            const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+          if (parts.length === 2) {
+            const payload = JSON.parse(atob(parts[0].replace(/-/g, "+").replace(/_/g, "/")));
             if (payload.exp && Date.now() > payload.exp) {
               // Token expired
               localStorage.removeItem("kb_token");
@@ -598,9 +598,18 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Storage
   storageMode: "local",
-  setStorageMode: async (mode) => {
-    const { user } = get();
+  setStorageMode: async (mode, skipWarning) => {
+    const { user, storageMode } = get();
     if (!user) return;
+
+    // Warn if switching between modes and files exist (files won't carry over)
+    if (!skipWarning && storageMode !== mode && user) {
+      const activeFiles = get().files.filter((f) => !f.isDeleted);
+      if (activeFiles.length > 0) {
+        console.warn(`[Storage] Switching from "${storageMode}" to "${mode}" — ${activeFiles.length} files may not carry over.`);
+      }
+    }
+
     resetAdapter();
 
     if (mode === "cloud" && user) {
@@ -656,7 +665,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!user) return;
     const file = files.find((f) => f.id === fileId);
     const targetFolder = folderId ? folders.find((f) => f.id === folderId) : null;
-    const previousFolderId = file?.folderId || undefined;
     try {
       const adapter = getStorageAdapter(storageMode);
       await adapter.updateFile(fileId, { folderId: folderId || null } as Partial<import("@/lib/storage/base").FileData>, user.id);

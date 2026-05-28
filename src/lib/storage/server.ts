@@ -19,6 +19,21 @@ function authHeaders(): Record<string, string> {
   return {};
 }
 
+/**
+ * Check if response is 401 and trigger logout + redirect.
+ */
+function handleUnauthorizedResponse(_response: Response): void {
+  if (typeof window === "undefined") return;
+  // Dynamic import to avoid circular dependency at module level
+  import("@/stores/app-store").then(({ useAppStore }) => {
+    const state = useAppStore.getState();
+    if (state.isAuthenticated) {
+      state.logout();
+      window.location.href = "/";
+    }
+  });
+}
+
 export class ServerStorageAdapter implements StorageAdapter {
   private baseUrl: string;
 
@@ -46,6 +61,7 @@ export class ServerStorageAdapter implements StorageAdapter {
       headers: authHeaders(),
       body: formData,
     });
+    if (res.status === 401) handleUnauthorizedResponse(res);
     if (!res.ok) throw new Error("Upload failed");
     return res.json();
   }
@@ -55,6 +71,7 @@ export class ServerStorageAdapter implements StorageAdapter {
       method: "DELETE",
       headers: authHeaders(),
     });
+    if (res.status === 401) handleUnauthorizedResponse(res);
     if (!res.ok) {
       throw new Error(`Failed to delete file: ${res.status}`);
     }
@@ -64,6 +81,7 @@ export class ServerStorageAdapter implements StorageAdapter {
     const res = await fetch(`${this.baseUrl}/${fileId}`, {
       headers: authHeaders(),
     });
+    if (res.status === 401) handleUnauthorizedResponse(res);
     if (!res.ok) return null;
     return res.json();
   }
@@ -75,6 +93,7 @@ export class ServerStorageAdapter implements StorageAdapter {
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
     const res = await fetch(url, { headers });
+    if (res.status === 401) handleUnauthorizedResponse(res);
     if (!res.ok) return [];
     return res.json();
   }
@@ -89,6 +108,7 @@ export class ServerStorageAdapter implements StorageAdapter {
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(data),
     });
+    if (res.status === 401) handleUnauthorizedResponse(res);
     if (!res.ok) {
       throw new Error(`Failed to update file: ${res.status}`);
     }
@@ -101,6 +121,7 @@ export class ServerStorageAdapter implements StorageAdapter {
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
     const res = await fetch(url, { headers });
+    if (res.status === 401) handleUnauthorizedResponse(res);
     if (!res.ok) return [];
     return res.json();
   }
