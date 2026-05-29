@@ -69,9 +69,12 @@ export function RelatedFiles({ currentFile, onFileClick }: RelatedFilesProps) {
         return;
       }
 
+      const token = useAppStore.getState().token;
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch("/api/ai/related", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           fileId: currentFile.id,
           files: fileList,

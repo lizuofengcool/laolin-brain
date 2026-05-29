@@ -34,11 +34,11 @@ const RATE_LIMITS: Record<string, RateLimitConfig> = {
 };
 
 /**
- * 根据请求路径匹配速率限制配置
+ * 根据请求路径和方法匹配速率限制配置
  */
-function getConfigForPath(path: string): RateLimitConfig {
+function getConfigForPath(path: string, method: string): RateLimitConfig {
   if (path.startsWith('/api/auth/')) return RATE_LIMITS.auth;
-  if (path.startsWith('/api/files') && path.includes('upload')) return RATE_LIMITS.upload;
+  if (path === '/api/files' && method === 'POST') return RATE_LIMITS.upload;
   if (path.startsWith('/api/ai/')) return RATE_LIMITS.ai;
   return RATE_LIMITS.default;
 }
@@ -83,7 +83,7 @@ function cleanupExpiredEntries(now: number) {
  * 检查速率限制
  * @returns { allowed: boolean, remaining: number, resetAfterMs: number }
  */
-function checkRateLimit(ip: string, path: string): {
+function checkRateLimit(ip: string, path: string, method: string): {
   allowed: boolean;
   remaining: number;
   resetAfterMs: number;
@@ -91,8 +91,9 @@ function checkRateLimit(ip: string, path: string): {
   const now = Date.now();
   cleanupExpiredEntries(now);
 
-  const config = getConfigForPath(path);
-  const normalizedPath = normalizeRateLimitPath(path);
+  const config = getConfigForPath(path, method);
+  // Strip query params to prevent per-query rate limit bypass
+  const normalizedPath = normalizeRateLimitPath(path.split('?')[0]);
   const cacheKey = `${ip}:${normalizedPath}`;
 
   const entry = rateLimitStore.get(cacheKey) || { timestamps: [] };
@@ -124,7 +125,7 @@ export async function middleware(request: NextRequest) {
 
   const forwarded = request.headers.get('x-forwarded-for');
   const ip = forwarded ? forwarded.split(',')[0].trim() : '127.0.0.1';
-  const result = checkRateLimit(ip, path);
+  const result = checkRateLimit(ip, path, request.method);
 
   if (!result.allowed) {
     return NextResponse.json(

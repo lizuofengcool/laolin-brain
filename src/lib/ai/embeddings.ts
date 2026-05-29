@@ -68,6 +68,7 @@ export async function generateEmbedding(text: string): Promise<number[]> {
             content: `请将以下文本转换为${EMBEDDING_DIMENSIONS}维向量：\n\n${truncatedText}`,
           },
         ],
+        signal: controller.signal,
       });
     } finally {
       clearTimeout(aiTimer);

@@ -1270,3 +1270,23 @@ Stage Summary:
 - 新增文件：0个
 - 单元测试：884/884 通过
 - 构建状态：✅ 通过（0 TypeScript 错误）
+
+---
+Task ID: 13
+Agent: Main Agent
+Task: 第N+1轮全面Bug扫描 — 发现并修复10个bug
+
+Work Log:
+- 对上一轮未覆盖的区域进行深度扫描
+- Bug #1 [CRITICAL]: parser/image.ts generateThumbnail写入upload/thumbnails/，但thumbnail API从upload/{userId}/thumbnails/读取 → 云模式所有图片缩略图404
+- Bug #2 [CRITICAL]: 7处client-side fetch缺少Authorization header（FolderTree createFolder/deleteFolder、file-helpers downloadFile、RelatedFiles fetchRelated、AIChatPanel sendMessage、app-store setStorageMode/importData）
+- Bug #3 [HIGH]: share/route.ts 密码保护分享的downloadUrl缺少password参数 → 下载403
+- Bug #4 [HIGH]: ai/embeddings.ts AbortController创建了但signal未传给zai.chat.completions.create() → 60秒超时失效
+- Bug #6 [MEDIUM]: middleware.ts upload速率限制检测path.includes('upload')永远不匹配 → 改为path+method匹配
+- Bug #10 [LOW]: middleware.ts 搜索API的query string导致每个query独立限流key → strip query params
+- 修复file-helpers.test.ts的断言（新增headers参数）
+
+Stage Summary:
+- 修改文件：10个（parser/image.ts, files/route.ts, FolderTree.tsx, file-helpers.ts, RelatedFiles.tsx, AIChatPanel.tsx, app-store.ts, share/route.ts, embeddings.ts, middleware.ts, file-helpers.test.ts）
+- 单元测试：884/884 通过
+- 构建状态：✅ 通过（0 TypeScript 错误）

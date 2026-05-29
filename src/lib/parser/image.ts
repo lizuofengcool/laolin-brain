@@ -4,10 +4,13 @@ import path from "path";
 
 export async function generateThumbnail(
   buffer: Buffer,
-  fileName: string
+  fileName: string,
+  userId?: string
 ): Promise<string> {
   try {
-    const thumbDir = path.join(process.cwd(), "upload", "thumbnails");
+    const thumbDir = userId
+      ? path.join(process.cwd(), "upload", userId, "thumbnails")
+      : path.join(process.cwd(), "upload", "thumbnails");
     await mkdir(thumbDir, { recursive: true });
 
     // Sanitize filename to prevent path traversal

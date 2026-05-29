@@ -158,9 +158,12 @@ export function FolderTree({ onSelectFolder, selectedFolderId }: FolderTreeProps
     if (!newFolderName.trim() || !user || creating) return;
     setCreating(true);
     try {
+      const token = useAppStore.getState().token;
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch("/api/folders", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           userId: user.id,
           name: newFolderName.trim(),
@@ -182,7 +185,10 @@ export function FolderTree({ onSelectFolder, selectedFolderId }: FolderTreeProps
 
   const deleteFolder = async (id: string) => {
     try {
-      const res = await fetch(`/api/folders/${id}`, { method: "DELETE" });
+      const token = useAppStore.getState().token;
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const res = await fetch(`/api/folders/${id}`, { method: "DELETE", headers });
       if (res.ok) {
         setFolders(folders.filter((f) => f.id !== id));
         if (selectedFolderId === id) {

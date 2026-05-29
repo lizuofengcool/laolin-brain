@@ -74,7 +74,7 @@ describe('downloadFile', () => {
       const file = createMockFile();
       await downloadFile(file);
 
-      expect(mockFetch).toHaveBeenCalledWith('/api/files/file-1/download');
+      expect(mockFetch).toHaveBeenCalledWith('/api/files/file-1/download', { headers: {} });
       expect(mockCreateObjectURL).toHaveBeenCalledWith(mockBlob);
       expect(mockClick).toHaveBeenCalled();
       // revokeObjectURL is now delayed via setTimeout

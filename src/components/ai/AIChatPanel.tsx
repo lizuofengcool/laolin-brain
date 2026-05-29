@@ -90,6 +90,10 @@ export function AIChatPanel({ open, onOpenChange }: AIChatPanelProps) {
     try {
       let answer = "";
 
+      const token = useAppStore.getState().token;
+      const aiHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) aiHeaders["Authorization"] = `Bearer ${token}`;
+
       if (aiChatFile.fileType === "image") {
         // For images, try to get the base64 from thumbnail URL or fetch file
         let imageBase64 = "";
@@ -117,7 +121,7 @@ export function AIChatPanel({ open, onOpenChange }: AIChatPanelProps) {
         } else {
           const res = await fetch("/api/ai/ask", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: aiHeaders,
             body: JSON.stringify({
               type: "image",
               content: imageBase64,
@@ -139,7 +143,7 @@ export function AIChatPanel({ open, onOpenChange }: AIChatPanelProps) {
         } else {
           const res = await fetch("/api/ai/ask", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: aiHeaders,
             body: JSON.stringify({
               type: "document",
               content,

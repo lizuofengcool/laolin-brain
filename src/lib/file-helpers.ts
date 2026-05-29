@@ -11,7 +11,10 @@ export async function downloadFile(file: FileData): Promise<void> {
   const { storageMode } = useAppStore.getState();
 
   if (storageMode === "cloud") {
-    const res = await fetch(`/api/files/${file.id}/download`);
+    const token = useAppStore.getState().token;
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(`/api/files/${file.id}/download`, { headers });
     if (!res.ok) throw new Error("Download failed");
     const blob = await res.blob();
     triggerDownload(blob, file.fileName);

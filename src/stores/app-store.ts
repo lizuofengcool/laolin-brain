@@ -637,9 +637,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     if (mode === "cloud" && user) {
       try {
+        const token = get().token;
         const res = await fetch("/api/settings", {
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
           body: JSON.stringify({ userId: user.id, storageMode: mode }),
         });
         if (res.ok) {
@@ -787,9 +791,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       if (storageMode === "cloud" && user) {
         // Cloud mode: use API
+        const token = get().token;
         const res = await fetch("/api/files/import", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
           body: JSON.stringify({
             userId: user.id,
             files: parsed.files,

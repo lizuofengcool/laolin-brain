@@ -144,7 +144,7 @@ export async function POST(request: NextRequest) {
     // Generate thumbnail for images
     let thumbnailUrl: string | undefined;
     if (fileType === "image") {
-      thumbnailUrl = await generateThumbnail(buffer, file.name);
+      thumbnailUrl = await generateThumbnail(buffer, file.name, userId);
 
       // AI processing for images (OCR + description) - fire and forget
       try {
