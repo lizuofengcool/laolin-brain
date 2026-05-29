@@ -66,7 +66,33 @@ const FILE_TYPE_LABELS: Record<string, string> = {
 
 export function KnowledgeGraphView() {
   const files = useAppStore((s) => s.files);
+  const storageMode = useAppStore((s) => s.storageMode);
   const router = useRouter();
+
+  if (storageMode === 'local') {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-500/20 flex items-center justify-center">
+            <Network className="w-5 h-5 text-cyan-600" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold tracking-tight">知识图谱</h2>
+            <p className="text-sm text-muted-foreground">可视化文件之间的关系</p>
+          </div>
+        </div>
+        <div className="flex flex-col items-center justify-center py-24 text-center">
+          <div className="w-20 h-20 rounded-full bg-muted flex items-center justify-center mb-4">
+            <Network className="w-10 h-10 text-muted-foreground" />
+          </div>
+          <h3 className="text-lg font-semibold mb-2">知识图谱需要云端模式</h3>
+          <p className="text-sm text-muted-foreground max-w-sm">
+            知识图谱功能依赖服务器端 AI 分析，请切换到云端模式后使用。
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const [loading, setLoading] = useState(false);
   const [graphData, setGraphData] = useState<{ nodes: GraphNode[]; edges: GraphEdge[] } | null>(null);

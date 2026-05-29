@@ -5,6 +5,8 @@ import { DB_VERSION } from "@/lib/storage/indexeddb";
 import { useNotificationStore } from "@/stores/notification-store";
 import { useActivityStore } from "@/stores/activity-store";
 
+let _embeddingTimer: ReturnType<typeof setTimeout> | null = null;
+
 export type ViewType = "login" | "dashboard" | "files" | "search" | "settings" | "profile" | "timeline" | "favorites" | "recycleBin" | "albums" | "faceGroups" | "tags" | "analytics" | "knowledgeGraph";
 
 export interface UserInfo {
@@ -97,6 +99,10 @@ interface AppState {
   aiChatFile: FileData | null;
   setAiChatFile: (file: FileData | null) => void;
 
+  // AI Settings
+  autoAiProcessing: boolean;
+  setAutoAiProcessing: (v: boolean) => void;
+
   // Image Lightbox
   lightboxOpen: boolean;
   lightboxImages: FileData[];
@@ -116,6 +122,11 @@ interface AppState {
   // Drag & drop
   reorderFiles: (fromIndex: number, toIndex: number) => void;
   moveFileToFolder: (fileId: string, folderId: string | null) => Promise<void>;
+
+  // Embedding generation
+  embeddingQueue: string[];
+  queueEmbedding: (fileId: string) => void;
+  processEmbeddingQueue: () => Promise<void>;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -198,6 +209,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           isAuthenticated: true,
           currentView: "dashboard",
           storageMode: user.storageMode || "local",
+          autoAiProcessing: JSON.parse(localStorage.getItem("kb_auto_ai") || "true"),
         });
         get().refreshFiles();
         get().refreshFolders();
@@ -218,6 +230,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       fileName: file.fileName,
       fileId: file.id,
     });
+    // Queue for delayed batch embedding generation
+    get().queueEmbedding(file.id);
   },
   removeFile: (id) => set((s) => ({ files: s.files.filter((f) => f.id !== id) })),
   updateFile: (id, data) =>
@@ -602,6 +616,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   aiChatFile: null,
   setAiChatFile: (file) => set({ aiChatFile: file }),
 
+  // AI Settings
+  autoAiProcessing: true, // enabled by default
+  setAutoAiProcessing: (v) => {
+    set({ autoAiProcessing: v });
+    if (typeof window !== "undefined") {
+      localStorage.setItem("kb_auto_ai", JSON.stringify(v));
+    }
+  },
+
   // Image Lightbox
   lightboxOpen: false,
   lightboxImages: [],
@@ -851,6 +874,42 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (err) {
       console.error("Import failed:", err);
       throw err;
+    }
+  },
+
+  // Embedding generation
+  embeddingQueue: [],
+  queueEmbedding: (fileId) => {
+    const { embeddingQueue } = get();
+    if (!embeddingQueue.includes(fileId)) {
+      set({ embeddingQueue: [...embeddingQueue, fileId] });
+    }
+    // Debounce: process after 30 seconds of no new additions
+    if (_embeddingTimer) clearTimeout(_embeddingTimer);
+    _embeddingTimer = setTimeout(() => {
+      get().processEmbeddingQueue();
+    }, 30000);
+  },
+  processEmbeddingQueue: async () => {
+    const { embeddingQueue, storageMode, autoAiProcessing, user } = get();
+    if (embeddingQueue.length === 0 || !autoAiProcessing || storageMode !== 'cloud' || !user) {
+      set({ embeddingQueue: [] });
+      return;
+    }
+    const queue = [...embeddingQueue];
+    set({ embeddingQueue: [] });
+    try {
+      const token = get().token;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch('/api/embeddings/generate', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ fileIds: queue }),
+      });
+      if (!res.ok) console.error('Embedding generation failed:', await res.text());
+    } catch (err) {
+      console.error('Embedding generation failed:', err);
     }
   },
 

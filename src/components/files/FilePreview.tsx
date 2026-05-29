@@ -19,6 +19,7 @@ import {
   Loader2,
   Maximize2,
   History,
+  ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -33,11 +34,18 @@ interface FilePreviewProps {
 }
 
 export function FilePreview({ file, open, onClose }: FilePreviewProps) {
-  const { setAiChatFile, openLightbox, files } = useAppStore();
+  const { setAiChatFile, openLightbox, files, storageMode } = useAppStore();
   const [downloading, setDownloading] = useState(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
 
   if (!file) return null;
+
+  const getFileUrl = () => {
+    if (!file) return '';
+    if (file.previewUrl) return file.previewUrl;
+    if (file.filePath) return `/api/files/${file.id}/preview`;
+    return '';
+  };
 
   const handleDownload = async () => {
     if (!file) return;
@@ -166,16 +174,35 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
                   放大查看
                 </Button>
               )}
-              <Button
-                variant="outline"
-                className="flex-1 min-w-[100px]"
-                onClick={() => {
-                  setAiChatFile(file);
-                }}
-              >
-                <Sparkles className="h-4 w-4 mr-2" />
-                AI 解读
-              </Button>
+              {storageMode === 'local' ? (
+                <Button
+                  variant="outline"
+                  className="flex-1 min-w-[100px]"
+                  disabled
+                  title="AI 解读功能需要切换到云端模式"
+                >
+                  <Sparkles className="h-4 w-4 mr-2" />
+                  AI 解读
+                  <span className="text-[10px] ml-1 text-muted-foreground">（需云端）</span>
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  className="flex-1 min-w-[100px]"
+                  onClick={() => {
+                    setAiChatFile(file);
+                  }}
+                >
+                  <Sparkles className="h-4 w-4 mr-2" />
+                  AI 解读
+                </Button>
+              )}
+              {(file.fileType === 'pdf' || file.fileType === 'word' || file.fileType === 'pptx') && getFileUrl() && (
+                <Button variant="outline" className="flex-1 min-w-[100px]" onClick={() => window.open(getFileUrl(), '_blank')}>
+                  <ExternalLink className="h-4 w-4 mr-2" />
+                  在新标签页打开
+                </Button>
+              )}
               <Button
                 variant="outline"
                 className="flex-1 min-w-[100px]"

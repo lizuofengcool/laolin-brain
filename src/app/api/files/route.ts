@@ -9,6 +9,17 @@ import { generateThumbnail } from "@/lib/parser/image";
 import { authenticateRequest } from "@/lib/api-auth";
 import { safeJsonParseArray } from "@/lib/safe-json-parse";
 
+// AI processing rate limit: max 10 files per user per 5 minutes
+const aiProcessingTimestamps = new Map<string, number[]>();
+function checkAiRateLimit(userId: string): boolean {
+  const now = Date.now();
+  const window = 5 * 60 * 1000; // 5 minutes
+  const timestamps = aiProcessingTimestamps.get(userId) || [];
+  const recent = timestamps.filter(t => now - t < window);
+  aiProcessingTimestamps.set(userId, recent);
+  return recent.length < 10;
+}
+
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = "";
@@ -56,6 +67,8 @@ export async function POST(request: NextRequest) {
 
     // Use authenticated userId instead of client-sent userId
     const userId = authenticatedUserId;
+    // Parse query params for AI skip control
+    const searchParams = new URL(request.url).searchParams;
 
     if (file.size > 50 * 1024 * 1024) {
       return NextResponse.json(
@@ -146,29 +159,42 @@ export async function POST(request: NextRequest) {
     if (fileType === "image") {
       thumbnailUrl = await generateThumbnail(buffer, file.name, userId);
 
-      // AI processing for images (OCR + description) - fire and forget
-      try {
-        const base64 = arrayBufferToBase64(new Uint8Array(buffer).buffer as ArrayBuffer);
-        const aiRes = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || ""}/api/ai/process-image`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(request.headers.get("authorization") ? { Authorization: request.headers.get("authorization")! } : {}),
-          },
-          body: JSON.stringify({ imageBase64: base64 }),
-        });
+      // Check if AI processing should be skipped
+      const skipAi = searchParams.get("skipAi") === "true";
+      const skipAiDueToRateLimit = !checkAiRateLimit(userId);
 
-        if (aiRes.ok) {
-          const aiData = await aiRes.json();
-          if (aiData.ocrText) {
-            textContent = aiData.ocrText;
+      if (skipAi) {
+        console.log(`AI processing skipped for user ${userId} (skipAi=true)`);
+      } else if (skipAiDueToRateLimit) {
+        console.log(`AI processing rate limit reached for user ${userId}, skipping auto-processing`);
+      }
+
+      // AI processing for images (OCR + description) - fire and forget
+      if (!skipAi && !skipAiDueToRateLimit) {
+        try {
+          aiProcessingTimestamps.get(userId)?.push(Date.now());
+          const base64 = arrayBufferToBase64(new Uint8Array(buffer).buffer as ArrayBuffer);
+          const aiRes = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || ""}/api/ai/process-image`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...(request.headers.get("authorization") ? { Authorization: request.headers.get("authorization")! } : {}),
+            },
+            body: JSON.stringify({ imageBase64: base64 }),
+          });
+
+          if (aiRes.ok) {
+            const aiData = await aiRes.json();
+            if (aiData.ocrText) {
+              textContent = aiData.ocrText;
+            }
+            if (aiData.tags && aiData.tags.length > 0) {
+              tags = aiData.tags;
+            }
           }
-          if (aiData.tags && aiData.tags.length > 0) {
-            tags = aiData.tags;
-          }
+        } catch (e) {
+          console.error("AI image processing failed:", e);
         }
-      } catch (e) {
-        console.error("AI image processing failed:", e);
       }
     }
 
@@ -271,10 +297,14 @@ export async function POST(request: NextRequest) {
 
     // Auto-generate AI summary for document files (fire-and-forget)
     const docTypes = ["word", "pdf", "pptx", "markdown", "txt"];
-    if (docTypes.includes(fileType) && textContent) {
+    const skipAiParam = new URL(request.url).searchParams.get("skipAi") === "true";
+    const skipDocAiDueToRateLimit = !checkAiRateLimit(userId);
+
+    if (docTypes.includes(fileType) && textContent && !skipAiParam && !skipDocAiDueToRateLimit) {
       // Run in background without blocking the response
       (async () => {
         try {
+          aiProcessingTimestamps.get(userId)?.push(Date.now());
           const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "";
           const summaryRes = await fetch(`${baseUrl}/api/ai/summarize`, {
             method: "POST",
@@ -308,6 +338,10 @@ export async function POST(request: NextRequest) {
           console.error("Auto-summary failed for", file.name, ":", e);
         }
       })();
+    } else if (skipAiParam) {
+      console.log(`AI summary skipped for user ${userId} (skipAi=true)`);
+    } else if (skipDocAiDueToRateLimit) {
+      console.log(`AI summary rate limit reached for user ${userId}, skipping auto-processing`);
     }
 
     return NextResponse.json({

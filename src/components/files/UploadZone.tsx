@@ -48,7 +48,7 @@ export function UploadZone({ className }: UploadZoneProps) {
   const [aiStatus, setAiStatus] = useState("");
   const [uploadedCount, setUploadedCount] = useState(0);
   const [failedFiles, setFailedFiles] = useState<string[]>([]);
-  const { user, storageMode, addFile, refreshFiles } = useAppStore();
+  const { user, storageMode, addFile, refreshFiles, autoAiProcessing } = useAppStore();
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
@@ -129,7 +129,8 @@ export function UploadZone({ className }: UploadZoneProps) {
               headers["Authorization"] = `Bearer ${token}`;
             }
 
-            const res = await fetch("/api/files", {
+            const uploadUrl = autoAiProcessing ? "/api/files" : "/api/files?skipAi=true";
+            const res = await fetch(uploadUrl, {
               method: "POST",
               headers,
               body: formData,
@@ -172,11 +173,11 @@ export function UploadZone({ className }: UploadZoneProps) {
             const result = await localAdapter.uploadFile(file, user.id);
             console.log("[UploadZone] uploadFile result:", result.id, result.fileName, result.fileType);
 
-            // AI processing for images in local mode
+            // AI processing for images in local mode (only if autoAiProcessing is enabled)
             let aiTags: string[] = [];
             let aiTextContent = result.textContent;
 
-            if (result.fileType === "image") {
+            if (result.fileType === "image" && autoAiProcessing) {
               try {
                 setAiStatus("AI 正在分析图片...");
                 const base64 = await fileToBase64(file);
@@ -326,7 +327,7 @@ export function UploadZone({ className }: UploadZoneProps) {
         setFailedFiles([]);
       }, 3000);
     },
-    [user, storageMode, addFile, refreshFiles]
+    [user, storageMode, addFile, refreshFiles, autoAiProcessing]
   );
 
   const { getRootProps, getInputProps, isDragActive, fileRejections } = useDropzone({

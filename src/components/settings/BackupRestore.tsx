@@ -1,11 +1,32 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Download, Upload, Archive, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { Download, Upload, Archive, CheckCircle2, AlertCircle, Loader2, Clock, Shield } from 'lucide-react';
 import { useAppStore } from '@/stores/app-store';
 import JSZip from 'jszip';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+
+const AUTO_BACKUP_KEY = 'kb_auto_backup';
+const LAST_BACKUP_KEY = 'kb_last_backup';
+
+/** Simple hash function for backup integrity checking */
+const simpleHash = (str: string): string => {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0;
+  }
+  return hash.toString(36);
+};
 
 /**
  * ZIP 备份与恢复组件
@@ -16,8 +37,71 @@ export function BackupRestore() {
   const { exportData, importData } = useAppStore();
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'warning'; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [autoBackupInterval, setAutoBackupInterval] = useState<'never' | 'daily' | 'weekly'>('never');
+  const [lastBackupTime, setLastBackupTime] = useState<string | null>(null);
+
+  // Load auto-backup settings on mount
+  useEffect(() => {
+    const saved = localStorage.getItem(AUTO_BACKUP_KEY);
+    if (saved) setAutoBackupInterval(saved as 'never' | 'daily' | 'weekly');
+    const lastTime = localStorage.getItem(LAST_BACKUP_KEY);
+    if (lastTime) setLastBackupTime(lastTime);
+  }, []);
+
+  // Trigger auto-backup function
+  const triggerAutoBackup = useCallback(async () => {
+    try {
+      const data = await useAppStore.getState().exportData();
+      // Save to localStorage with timestamp and checksum for integrity
+      const backup = JSON.stringify({
+        version: '2.0',
+        data,
+        timestamp: new Date().toISOString(),
+        checksum: simpleHash(data),
+      });
+      localStorage.setItem('kb_auto_backup_data', backup);
+      localStorage.setItem(LAST_BACKUP_KEY, new Date().toISOString());
+      setLastBackupTime(new Date().toISOString());
+      console.log('Auto-backup completed');
+    } catch (err) {
+      console.error('Auto-backup failed:', err);
+    }
+  }, []);
+
+  // Auto-backup scheduler
+  useEffect(() => {
+    if (autoBackupInterval === 'never') return;
+
+    const checkAndBackup = () => {
+      if (!lastBackupTime) {
+        // Never backed up, trigger immediately
+        triggerAutoBackup();
+        return;
+      }
+      const last = new Date(lastBackupTime).getTime();
+      const now = Date.now();
+      const interval = autoBackupInterval === 'daily'
+        ? 24 * 60 * 60 * 1000
+        : 7 * 24 * 60 * 60 * 1000;
+      if (now - last >= interval) {
+        triggerAutoBackup();
+      }
+    };
+
+    checkAndBackup();
+    const timer = setInterval(checkAndBackup, 60 * 60 * 1000); // check every hour
+
+    return () => clearInterval(timer);
+  }, [autoBackupInterval, lastBackupTime, triggerAutoBackup]);
+
+  // Persist auto-backup interval changes
+  const handleAutoBackupChange = (value: string) => {
+    const interval = value as 'never' | 'daily' | 'weekly';
+    setAutoBackupInterval(interval);
+    localStorage.setItem(AUTO_BACKUP_KEY, interval);
+  };
 
   /**
    * 导出所有数据为 ZIP 文件
@@ -106,6 +190,23 @@ export function BackupRestore() {
 
       // 解析并验证格式
       const parsed = JSON.parse(jsonStr);
+
+      // Integrity check: if the backup has a checksum field, verify it
+      if (parsed.checksum && parsed.timestamp) {
+        const expectedHash = parsed.checksum;
+        const actualHash = simpleHash(typeof parsed.data === 'string' ? parsed.data : JSON.stringify(parsed.data));
+        if (expectedHash !== actualHash) {
+          console.warn('Backup integrity check failed');
+          setMessage({
+            type: 'warning',
+            text: '备份数据完整性校验失败，数据可能已损坏。是否继续导入？',
+          });
+          setIsImporting(false);
+          if (fileInputRef.current) fileInputRef.current.value = '';
+          return;
+        }
+      }
+
       if (parsed.data) {
         // 新版 ZIP 格式：data 字段包含实际数据
         jsonStr = JSON.stringify(parsed.data);
@@ -146,13 +247,40 @@ export function BackupRestore() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* 自动备份设置 */}
+        <div className="rounded-lg border p-3 space-y-3">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Clock className="h-4 w-4" />
+            自动备份
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <Select value={autoBackupInterval} onValueChange={handleAutoBackupChange}>
+              <SelectTrigger className="w-[160px]">
+                <SelectValue placeholder="选择备份频率" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="never">从不</SelectItem>
+                <SelectItem value="daily">每天</SelectItem>
+                <SelectItem value="weekly">每周</SelectItem>
+              </SelectContent>
+            </Select>
+            {lastBackupTime && autoBackupInterval !== 'never' && (
+              <span className="text-xs text-muted-foreground">
+                上次备份: {new Date(lastBackupTime).toLocaleString('zh-CN')}
+              </span>
+            )}
+          </div>
+        </div>
+
         {/* 状态消息 */}
         {message && (
           <div
             className={`flex items-center gap-2 rounded-lg p-3 text-sm ${
               message.type === 'success'
                 ? 'bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-400'
-                : 'bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-400'
+                : message.type === 'warning'
+                  ? 'bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-400'
+                  : 'bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-400'
             }`}
           >
             {message.type === 'success' ? (
@@ -204,8 +332,9 @@ export function BackupRestore() {
           </div>
         </div>
 
-        <p className="text-xs text-muted-foreground">
-          支持 .zip 和 .json 两种备份格式。恢复操作会将备份数据与现有数据合并。
+        <p className="text-xs text-muted-foreground flex items-center gap-1">
+          <Shield className="h-3 w-3" />
+          支持 .zip 和 .json 两种备份格式。恢复操作会将备份数据与现有数据合并。自动备份包含数据完整性校验。
         </p>
       </CardContent>
     </Card>
