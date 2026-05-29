@@ -14,10 +14,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { motion } from "framer-motion";
+import { Switch } from "@/components/ui/switch";
 import {
   User, Mail, Shield, Clock, Settings,
   Download, FolderInput, CheckSquare, X,
-  Zap, Info, BarChart3, HardDrive,
+  Zap, Info, BarChart3, HardDrive, Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -31,7 +32,7 @@ const VoiceNote = dynamic(
 );
 
 export function SettingsViewContent() {
-  const { user, exportData, importData, storageMode } = useAppStore();
+  const { user, exportData, importData, storageMode, autoAiProcessing, setAutoAiProcessing } = useAppStore();
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
@@ -324,6 +325,32 @@ export function SettingsViewContent() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.2 }}
           >
+            {/* AI Auto-Processing Toggle */}
+            <Card className="shadow-sm">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base font-semibold flex items-center gap-2">
+                  <Sparkles className="h-4 w-4" />
+                  AI 自动处理
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm">
+                      开启后，上传文件时自动进行 AI 摘要、标签生成和 OCR 识别。
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      关闭后可节省 AI 调用次数。
+                    </p>
+                  </div>
+                  <Switch
+                    checked={autoAiProcessing}
+                    onCheckedChange={setAutoAiProcessing}
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
             {/* Automation Rules */}
             <Card className="shadow-sm">
               <CardHeader className="pb-3">

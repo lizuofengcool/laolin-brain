@@ -154,6 +154,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   logout: () => {
+    if (_embeddingTimer) { clearTimeout(_embeddingTimer); _embeddingTimer = null; }
     if (typeof window !== "undefined") {
       localStorage.removeItem("kb_token");
       localStorage.removeItem("kb_user");
@@ -891,6 +892,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }, 30000);
   },
   processEmbeddingQueue: async () => {
+    if (_embeddingTimer) { clearTimeout(_embeddingTimer); _embeddingTimer = null; }
     const { embeddingQueue, storageMode, autoAiProcessing, user } = get();
     if (embeddingQueue.length === 0 || !autoAiProcessing || storageMode !== 'cloud' || !user) {
       set({ embeddingQueue: [] });

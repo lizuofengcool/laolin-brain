@@ -153,6 +153,12 @@ export function UploadZone({ className }: UploadZoneProps) {
                 isFavorite: false,
                 createdAt: new Date(),
               });
+              if (data.aiSkipped) {
+                toast({
+                  title: "AI处理已跳过",
+                  description: "AI调用频率已达上限，文件已保存",
+                });
+              }
               succeeded++;
             } else {
               const errData = await res.json().catch(() => ({}));

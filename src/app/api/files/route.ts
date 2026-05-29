@@ -156,21 +156,23 @@ export async function POST(request: NextRequest) {
 
     // Generate thumbnail for images
     let thumbnailUrl: string | undefined;
+    let aiSkipped = false;
+    const skipAiParam = searchParams.get("skipAi") === "true";
     if (fileType === "image") {
       thumbnailUrl = await generateThumbnail(buffer, file.name, userId);
 
       // Check if AI processing should be skipped
-      const skipAi = searchParams.get("skipAi") === "true";
       const skipAiDueToRateLimit = !checkAiRateLimit(userId);
+      if (skipAiDueToRateLimit) aiSkipped = true;
 
-      if (skipAi) {
+      if (skipAiParam) {
         console.log(`AI processing skipped for user ${userId} (skipAi=true)`);
       } else if (skipAiDueToRateLimit) {
         console.log(`AI processing rate limit reached for user ${userId}, skipping auto-processing`);
       }
 
       // AI processing for images (OCR + description) - fire and forget
-      if (!skipAi && !skipAiDueToRateLimit) {
+      if (!skipAiParam && !skipAiDueToRateLimit) {
         try {
           aiProcessingTimestamps.get(userId)?.push(Date.now());
           const base64 = arrayBufferToBase64(new Uint8Array(buffer).buffer as ArrayBuffer);
@@ -262,6 +264,7 @@ export async function POST(request: NextRequest) {
         previewUrl,
         tags: tags.length > 0 ? tags : safeJsonParseArray(existingFile.tags),
         isVersionUpdate: true,
+        aiSkipped,
       });
     }
 
@@ -297,8 +300,8 @@ export async function POST(request: NextRequest) {
 
     // Auto-generate AI summary for document files (fire-and-forget)
     const docTypes = ["word", "pdf", "pptx", "markdown", "txt"];
-    const skipAiParam = new URL(request.url).searchParams.get("skipAi") === "true";
     const skipDocAiDueToRateLimit = !checkAiRateLimit(userId);
+    if (skipDocAiDueToRateLimit) aiSkipped = true;
 
     if (docTypes.includes(fileType) && textContent && !skipAiParam && !skipDocAiDueToRateLimit) {
       // Run in background without blocking the response
@@ -354,6 +357,7 @@ export async function POST(request: NextRequest) {
       thumbnailUrl: fileRecord.thumbnailUrl || previewUrl,
       previewUrl,
       tags: tags,
+      aiSkipped: aiSkipped ? true : undefined,
     });
   } catch (error) {
     console.error("Upload error:", error);

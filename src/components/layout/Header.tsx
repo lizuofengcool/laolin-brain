@@ -1,11 +1,13 @@
 "use client";
 
-import { Search, Sun, Moon, Languages, User, Settings, Star, Trash2, Tag, BarChart3, ImageIcon, ScanFace, CalendarDays, Network } from "lucide-react";
+import { Search, Sun, Moon, Languages, User, Settings, Star, Trash2, Tag, BarChart3, ImageIcon, ScanFace, CalendarDays, Network, WifiOff } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { useAppStore } from "@/stores/app-store";
 import { useAvatar } from "@/hooks/use-avatar";
+import { useOfflineQueue } from "@/hooks/use-offline-queue";
 import { useRouter } from "next/navigation";
 import {
   DropdownMenu,
@@ -24,6 +26,7 @@ export function Header() {
   const { setTheme, resolvedTheme } = useTheme();
   const { locale, setLocale } = useI18n();
   const { avatar } = useAvatar();
+  const { pendingCount } = useOfflineQueue();
   const router = useRouter();
 
   const handleSearch = (e: React.FormEvent) => {
@@ -87,6 +90,14 @@ export function Header() {
 
         {/* Notification bell */}
         <NotificationBell />
+
+        {/* Offline queue indicator */}
+        {pendingCount > 0 && (
+          <Badge variant="secondary" className="text-xs gap-1">
+            <WifiOff className="h-3 w-3" />
+            {pendingCount} 待同步
+          </Badge>
+        )}
 
         {/* My profile dropdown */}
         <DropdownMenu>

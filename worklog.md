@@ -1466,3 +1466,32 @@ Work Log:
 
 Stage Summary:
 - Embedding batch strategy and offline queue implemented
+
+---
+Task ID: polish
+Agent: feature-polish
+Task: Polish feature integrations (UI controls, timer cleanup, client feedback)
+
+Work Log:
+- Added AI auto-processing toggle in settings page (SettingsViewContent.tsx automation tab)
+  - New Card with Switch component for autoAiProcessing store state
+  - Uses Sparkles icon, includes description text about AI call savings
+- Integrated offline queue indicator in Header.tsx
+  - Imported useOfflineQueue hook and Badge component
+  - Shows "N 待同步" badge with WifiOff icon when pendingCount > 0
+  - Positioned between NotificationBell and user profile dropdown
+- Added embedding queue timer cleanup on logout (app-store.ts)
+  - logout action now clears _embeddingTimer with clearTimeout
+  - processEmbeddingQueue action clears _embeddingTimer at start
+- Added AI rate limit client feedback (route.ts + UploadZone.tsx)
+  - API returns aiSkipped field when AI processing is skipped due to rate limit
+  - UploadZone shows toast notification "AI处理已跳过" when aiSkipped is true
+  - Refactored skipAi variable to module scope for proper scoping
+- Verified auto-backup timer cleanup (BackupRestore.tsx)
+  - Already has proper clearInterval in useEffect return
+  - Already has Select dropdown (从不/每天/每周) and last backup time display
+
+Stage Summary:
+- 5 feature polish items completed
+- Modified files: SettingsViewContent.tsx, Header.tsx, app-store.ts, route.ts, UploadZone.tsx
+- Build: ✅ passed with 0 TypeScript errors
