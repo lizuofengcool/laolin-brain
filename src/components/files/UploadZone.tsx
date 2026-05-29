@@ -151,10 +151,9 @@ export function UploadZone({ className }: UploadZoneProps) {
             console.log("[UploadZone] Using local (IndexedDB) mode");
             let adapter;
             try {
-              const { getStorageAdapter, resetAdapter } = await import(
+              const { getStorageAdapter } = await import(
                 "@/lib/storage/factory"
               );
-              resetAdapter();
               adapter = getStorageAdapter("local");
             } catch (adapterErr) {
               console.error("[UploadZone] Failed to get local adapter:", adapterErr);

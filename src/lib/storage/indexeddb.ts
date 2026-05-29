@@ -209,7 +209,20 @@ export class IndexedDBAdapter implements StorageAdapter {
     const db = await getDB();
     const record = await db.get("files", fileId);
     if (!record) return null;
-    const { data: _, userId: __, ...fileData } = record;
+    const { userId: _, data, ...fileData } = record as (FileData & { data?: string; userId?: string });
+    // If no thumbnailUrl but we have raw data, reconstruct a preview URL
+    if (!fileData.thumbnailUrl && data) {
+      if (data.startsWith('data:')) {
+        fileData.thumbnailUrl = data;
+      } else {
+        // Reconstruct data URL from raw base64
+        const mimeMap: Record<string, string> = {
+          image: 'image/jpeg', pdf: 'application/pdf', word: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        };
+        const mime = mimeMap[fileData.fileType] || 'application/octet-stream';
+        fileData.thumbnailUrl = `data:${mime};base64,${data}`;
+      }
+    }
     return fileData;
   }
 
@@ -219,8 +232,8 @@ export class IndexedDBAdapter implements StorageAdapter {
     return allFiles.filter(
       (f) =>
         f.fileName.toLowerCase().includes(q) ||
-        f.textContent?.toLowerCase().includes(q) ||
-        f.tags.some((t) => t.toLowerCase().includes(q))
+        (f.textContent && f.textContent.toLowerCase().includes(q)) ||
+        (Array.isArray(f.tags) && f.tags.some((t: string) => t.toLowerCase().includes(q)))
     );
   }
 
@@ -243,10 +256,25 @@ export class IndexedDBAdapter implements StorageAdapter {
       const allFiles = await db.getAll("files");
       return allFiles
         .filter((f) => f.userId === userId)
-        .map(({ data: _, userId: __, ...fileData }) => ({
-          ...fileData,
-          createdAt: new Date(fileData.createdAt),
-        }))
+        .map((record) => {
+          const { data, userId: _, ...fileData } = record;
+          // Ensure thumbnailUrl is populated from stored data if missing
+          if (!fileData.thumbnailUrl && data) {
+            if (data.startsWith('data:')) {
+              fileData.thumbnailUrl = data;
+            } else {
+              const mimeMap: Record<string, string> = {
+                image: 'image/jpeg', pdf: 'application/pdf',
+              };
+              const mime = mimeMap[fileData.fileType] || 'application/octet-stream';
+              fileData.thumbnailUrl = `data:${mime};base64,${data}`;
+            }
+          }
+          return {
+            ...fileData,
+            createdAt: new Date(fileData.createdAt),
+          };
+        })
         .sort(
           (a, b) =>
             new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -327,6 +355,31 @@ export class IndexedDBAdapter implements StorageAdapter {
     if (version && version.fileId === fileId) {
       await db.delete("versions", versionId);
     }
+  }
+
+  /**
+   * Get raw file data as a data URL (for preview/download in local mode).
+   * Returns the raw base64 data reconstructed as a data URL.
+   */
+  async getFileData(fileId: string, _userId: string): Promise<string> {
+    const db = await getDB();
+    const record = await db.get("files", fileId) as (FileData & { data?: string; userId?: string }) | undefined;
+    if (!record) throw new Error("File not found");
+    const rawData = record.data;
+    if (!rawData) throw new Error("File data not found in IndexedDB");
+    // If already a data URL, return as-is
+    if (rawData.startsWith('data:')) return rawData;
+    // Reconstruct data URL from raw base64
+    const mimeMap: Record<string, string> = {
+      image: 'image/jpeg', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+      webp: 'image/webp', gif: 'image/gif', svg: 'image/svg+xml',
+      pdf: 'application/pdf',
+      word: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      txt: 'text/plain', markdown: 'text/markdown', md: 'text/markdown',
+    };
+    const ext = record.fileName.split('.').pop()?.toLowerCase() || '';
+    const mime = mimeMap[ext] || mimeMap[record.fileType] || 'application/octet-stream';
+    return `data:${mime};base64,${rawData}`;
   }
 
   /**
