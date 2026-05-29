@@ -62,7 +62,7 @@ export default function FaceGroupPhotos({
   }, [fetchPhotos]);
 
   const handlePhotoClick = (photo: FileData, index: number) => {
-    openLightbox(photos, index);
+    openLightbox(enrichedPhotos, index);
   };
 
   // Merge fetched photos with store files to get full data

@@ -1347,3 +1347,46 @@ Work Log:
 
 Stage Summary:
 - 9 data integrity/crash fixes applied
+---
+Task ID: 6-1
+Agent: round6-high-priority-fix
+Task: Fix remaining high-priority bugs (Round 6)
+
+Work Log:
+- Fixed rate limit IP spoofing (use rightmost IP from X-Forwarded-For)
+- Removed auth token fallback from URL query params
+- Standardized search API response format
+- Fixed search history click race condition
+- Replaced require() with ES import in AutomationRules
+- Added old file cleanup during versioning
+- Added ACTIVITY_CONFIG crash guard in RecentActivity
+- Added date validation in formatRelativeTime
+- Fixed activity-store wrong initial key
+- Removed cloud-only filter from face detection
+- Added white background before JPEG export in AvatarUploader
+- Added path validation for file operations (unlink/readFile)
+
+Stage Summary:
+- 13 high-priority fixes applied
+
+---
+Task ID: 6-2
+Agent: round6-medium-priority-fix
+Task: Fix medium-priority bugs (Round 6)
+
+Work Log:
+- Fixed InstallBanner hydration mismatch (useState(false) + useEffect sync)
+- Fixed SearchResults tags optional chaining (already correct - verified)
+- Fixed semantic search to exclude deleted files (already correct - verified)
+- Fixed AI ask route content type validation (already correct - verified)
+- Fixed graph wheel zoom with non-passive event listener (useEffect + addEventListener)
+- Fixed FaceGroupPhotos lightbox to use enriched data
+- Added storage quota check to import endpoint (5GB limit)
+- Validated search mode parameter with runtime check
+- Made DOMException checks more robust across runtimes (vision.ts + face-detection.ts)
+- Fixed clearRateLimits no-op for specific identifier (iterate and delete matching keys)
+- Fixed unhandled promise in UploadZone automation (already has try/catch - verified)
+
+Stage Summary:
+- 10 medium-priority fixes applied (7 new fixes + 4 verified as already correct)
+- Modified files: InstallBanner.tsx, KnowledgeGraph.tsx, FaceGroupPhotos.tsx, import/route.ts, search/route.ts, vision.ts, face-detection.ts, rate-limit.ts

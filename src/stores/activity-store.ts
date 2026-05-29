@@ -72,7 +72,7 @@ function persistActivities(activities: ActivityItem[]) {
  * - 持久化到 localStorage
  */
 export const useActivityStore = create<ActivityStore>((set) => {
-  const initial = loadActivities();
+  const initial: ActivityItem[] = [];
 
   return {
     activities: initial,

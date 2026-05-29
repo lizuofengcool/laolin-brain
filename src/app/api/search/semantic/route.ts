@@ -103,7 +103,7 @@ export async function POST(request: NextRequest) {
       .filter((f) => f.similarityScore > 0.1) // Filter out very low relevance results
       .sort((a, b) => b.similarityScore - a.similarityScore);
 
-    return NextResponse.json({ results });
+    return NextResponse.json(results);
   } catch (error) {
     console.error('Semantic search error:', error);
     return NextResponse.json(

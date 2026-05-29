@@ -43,14 +43,15 @@ describe('authenticateRequest', () => {
     expect(mockVerifyToken).toHaveBeenCalledWith('valid-token');
   });
 
-  it('returns userId and email when token is in query param', () => {
+  it('returns 401 when token is only in query param (URL tokens are not accepted for security)', () => {
     mockVerifyToken.mockReturnValue({ id: 'user-456', email: 'query@test.com' });
     const request = new Request('http://localhost/api/test?token=query-token', {}) as unknown as Parameters<typeof authenticateRequest>[0];
 
     const result = authenticateRequest(request);
 
-    expect(result).toEqual({ userId: 'user-456', email: 'query@test.com' });
-    expect(mockVerifyToken).toHaveBeenCalledWith('query-token');
+    // URL query param tokens are rejected for security (token leakage risk)
+    expect(result).toHaveProperty('_type', 'NextResponse');
+    expect(result).toHaveProperty('status', 401);
   });
 
   it('returns 401 response when no token is provided', () => {

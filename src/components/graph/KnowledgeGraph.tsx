@@ -305,14 +305,20 @@ export function KnowledgeGraphView() {
     [activeFiles, router]
   );
 
-  // Mouse wheel zoom
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    setViewTransform((prev) => ({
-      ...prev,
-      scale: Math.max(0.3, Math.min(3, prev.scale * delta)),
-    }));
+  // Mouse wheel zoom - non-passive listener to allow preventDefault
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? 0.9 : 1.1;
+      setViewTransform((prev) => ({
+        ...prev,
+        scale: Math.max(0.3, Math.min(3, prev.scale * delta)),
+      }));
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
   }, []);
 
   // Mouse down for drag or pan
@@ -493,7 +499,6 @@ export function KnowledgeGraphView() {
             ref={containerRef}
             className="relative w-full overflow-hidden rounded-lg"
             style={{ minHeight: 500, height: "calc(100vh - 280px)", maxHeight: 700 }}
-            onWheel={handleWheel}
           >
             {loading ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">

@@ -104,7 +104,7 @@ export async function detectFaces(imageBase64: string): Promise<FaceDetection[]>
         : [],
     })).filter((f: FaceDetection) => f.width > 0 && f.height > 0);
   } catch (e) {
-    if (e instanceof DOMException && e.name === 'AbortError') {
+    if ((e instanceof DOMException && e.name === 'AbortError') || (e as { name?: string })?.name === 'AbortError') {
       console.error('Face detection timed out after 60 seconds');
       return [];
     }

@@ -77,6 +77,7 @@ const ACTIVITY_CONFIG: Record<
 
 /** 相对时间格式化 */
 function formatRelativeTime(isoString: string): string {
+  if (!isoString || isNaN(new Date(isoString).getTime())) return '';
   const now = Date.now();
   const then = new Date(isoString).getTime();
   const diffMs = now - then;
@@ -154,6 +155,7 @@ export function RecentActivity() {
             <div className="space-y-0">
               {displayList.map((item) => {
                 const config = ACTIVITY_CONFIG[item.type];
+                if (!config) return null;
                 const Icon = config.icon;
 
                 return (

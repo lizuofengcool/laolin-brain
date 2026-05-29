@@ -93,8 +93,11 @@ export function rateLimit(identifier: string, path: string): RateLimitResult {
  */
 export function clearRateLimits(identifier?: string): void {
   if (identifier) {
-    // LRU cache 不支持前缀删除，这里简单跳过
-    // 生产环境可改用 Redis SCAN 命令
+    for (const key of limiterCache.keys()) {
+      if (key.startsWith(identifier + ':')) {
+        limiterCache.delete(key);
+      }
+    }
   } else {
     limiterCache.clear();
   }

@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
         userId,
         fileType: 'image',
         isDeleted: false,
-        storageMode: 'cloud',
+
         filePath: { not: null },
       },
       select: { id: true, filePath: true },

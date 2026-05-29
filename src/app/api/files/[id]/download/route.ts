@@ -55,6 +55,12 @@ export async function GET(
         return NextResponse.json({ error: "File not found" }, { status: 404 });
       }
 
+      const uploadDir = path.resolve('./uploads');
+      const resolvedPath = path.resolve(file.filePath);
+      if (!resolvedPath.startsWith(uploadDir)) {
+        return NextResponse.json({ error: 'Invalid file path' }, { status: 400 });
+      }
+
       const buffer = await readFile(file.filePath);
       const ext = path.extname(file.fileName).toLowerCase();
       const mimeTypes: Record<string, string> = {
@@ -96,6 +102,12 @@ export async function GET(
     // Ownership check
     if (file.userId !== userId) {
       return NextResponse.json({ error: "无权访问此文件" }, { status: 403 });
+    }
+
+    const uploadDir = path.resolve('./uploads');
+    const resolvedPath = path.resolve(file.filePath);
+    if (!resolvedPath.startsWith(uploadDir)) {
+      return NextResponse.json({ error: 'Invalid file path' }, { status: 400 });
     }
 
     const buffer = await readFile(file.filePath);

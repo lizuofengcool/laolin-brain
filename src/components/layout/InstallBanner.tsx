@@ -13,8 +13,12 @@ function getWasDismissed(): boolean {
 
 export function InstallBanner() {
   const { canInstall, install } = usePWA();
-  const [dismissed, setDismissed] = useState(getWasDismissed);
+  const [dismissed, setDismissed] = useState(false);
   const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    setDismissed(getWasDismissed());
+  }, []);
 
   useEffect(() => {
     if (dismissed) return;

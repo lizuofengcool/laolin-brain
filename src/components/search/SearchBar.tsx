@@ -53,7 +53,7 @@ export function SearchBar({ value, onChange, onSearch, suggestions = [] }: Searc
     addSearchHistory(item);
     setHistory(getSearchHistory());
     setShowHistory(false);
-    onSearch();
+    // Don't call onSearch() — onChange triggers parent's debounced search
   };
 
   const handleClearHistory = () => {

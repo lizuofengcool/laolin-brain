@@ -6,6 +6,7 @@ import {
   RULE_TEMPLATES,
   loadRules,
   saveRules,
+  getDefaultRules,
 } from "@/lib/automation/engine";
 import { Card, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -68,8 +69,6 @@ export default function AutomationRules({ compact = false }: AutomationRulesProp
   };
 
   const resetRules = () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { getDefaultRules } = require("@/lib/automation/engine") as { getDefaultRules: () => AutomationRule[] };
     updateRules(getDefaultRules());
     toast({ title: "已重置", description: "自动化规则已恢复默认设置" });
   };

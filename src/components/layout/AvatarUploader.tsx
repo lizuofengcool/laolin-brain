@@ -52,6 +52,10 @@ export function AvatarUploader({ size = 64, showRemove = true }: AvatarUploaderP
             return;
           }
 
+          // Fill white background before clipping to avoid black corners in JPEG
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, MAX_SIZE, MAX_SIZE);
+
           // 绘制圆形裁剪
           ctx.beginPath();
           ctx.arc(MAX_SIZE / 2, MAX_SIZE / 2, MAX_SIZE / 2, 0, Math.PI * 2);

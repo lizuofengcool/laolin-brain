@@ -34,6 +34,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Check storage quota before importing
+    const [{ totalSize: currentTotal }] = await db.$queryRaw<Array<{ totalSize: bigint }>>`
+      SELECT COALESCE(SUM("fileSize"), 0) as "totalSize" FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+    `;
+    const quotaBytes = 5 * 1024 * 1024 * 1024; // 5GB
+    let totalImportSize = 0;
+
     let importedCount = 0;
 
     // Import folders (don't use client-supplied IDs)
@@ -68,6 +75,13 @@ export async function POST(request: NextRequest) {
     // Import files (don't use client-supplied IDs)
     for (const file of files) {
       if (!file.fileName || typeof file.fileName !== 'string' || file.fileName.length > 255) continue;
+
+      // Track import size for quota check
+      if (file.fileSize) totalImportSize += file.fileSize;
+      if (Number(currentTotal) + totalImportSize > quotaBytes) {
+        console.error(`Storage quota exceeded during import, stopping`);
+        break;
+      }
 
       // Validate fileSize: must be a non-negative number and within 5GB limit
       if (file.fileSize !== undefined && file.fileSize !== null) {

@@ -46,7 +46,7 @@ export async function describeImage(imageBase64: string): Promise<string> {
     });
     return completion.choices[0]?.message?.content || '';
   } catch (e) {
-    if (e instanceof DOMException && e.name === 'AbortError') {
+    if ((e instanceof DOMException && e.name === 'AbortError') || (e as { name?: string })?.name === 'AbortError') {
       console.error('Image description timed out after 30 seconds');
       return '';
     }
@@ -86,7 +86,7 @@ export async function extractTextFromImage(
     });
     return completion.choices[0]?.message?.content || '';
   } catch (e) {
-    if (e instanceof DOMException && e.name === 'AbortError') {
+    if ((e instanceof DOMException && e.name === 'AbortError') || (e as { name?: string })?.name === 'AbortError') {
       console.error('OCR timed out after 30 seconds');
       return '';
     }
@@ -121,7 +121,7 @@ export async function askAboutDocument(
     });
     return completion.choices[0]?.message?.content || '无法回答此问题。';
   } catch (e) {
-    if (e instanceof DOMException && e.name === 'AbortError') {
+    if ((e instanceof DOMException && e.name === 'AbortError') || (e as { name?: string })?.name === 'AbortError') {
       console.error('Document Q&A timed out after 30 seconds');
       return 'AI 响应超时，请稍后再试。';
     }
@@ -162,7 +162,7 @@ export async function askAboutImage(
     });
     return completion.choices[0]?.message?.content || '无法回答此问题。';
   } catch (e) {
-    if (e instanceof DOMException && e.name === 'AbortError') {
+    if ((e instanceof DOMException && e.name === 'AbortError') || (e as { name?: string })?.name === 'AbortError') {
       console.error('Image Q&A timed out after 30 seconds');
       return 'AI 响应超时，请稍后再试。';
     }

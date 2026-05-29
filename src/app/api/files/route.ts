@@ -217,6 +217,14 @@ export async function POST(request: NextRequest) {
         ? `/api/files/${fileRecord.id}/preview`
         : undefined;
 
+      // Clean up old file from disk after versioning
+      try {
+        const { unlink } = await import('fs/promises');
+        if (existingFile.filePath) {
+          await unlink(existingFile.filePath).catch(() => {});
+        }
+      } catch {}
+
       return NextResponse.json({
         id: fileRecord.id,
         fileName: fileRecord.fileName,

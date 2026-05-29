@@ -208,7 +208,9 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const q = searchParams.get("q") || "";
-    const mode = (searchParams.get("mode") || "hybrid") as SearchMode;
+    const rawMode = searchParams.get("mode") || "hybrid";
+    const validModes = ["keyword", "semantic", "hybrid"] as const;
+    const mode: SearchMode = validModes.includes(rawMode as typeof validModes[number]) ? (rawMode as SearchMode) : "hybrid";
 
     if (!q) {
       return NextResponse.json([]);

@@ -17,14 +17,7 @@ export function authenticateRequest(
   // Try Authorization header first
   let token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
 
-  // Fallback to query param
-  // SECURITY NOTE: Tokens in URLs can appear in browser history, server logs, and referrer headers.
-  // This fallback exists for share download functionality but should be removed once
-  // share downloads are migrated to use Authorization headers.
-  if (!token) {
-    const { searchParams } = new URL(request.url);
-    token = searchParams.get("token") || undefined;
-  }
+  // Only accept token from Authorization header (not URL params to prevent leakage)
 
   if (!token) {
     return NextResponse.json(

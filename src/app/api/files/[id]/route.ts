@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { unlink } from "fs/promises";
+import path from "path";
 import { authenticateRequest } from "@/lib/api-auth";
 import { safeJsonParseArray } from "@/lib/safe-json-parse";
 
@@ -145,6 +146,11 @@ export async function DELETE(
     }
 
     if (file.filePath) {
+      const uploadDir = path.resolve('./uploads');
+      const resolvedPath = path.resolve(file.filePath);
+      if (!resolvedPath.startsWith(uploadDir)) {
+        return NextResponse.json({ error: 'Invalid file path' }, { status: 400 });
+      }
       try {
         await unlink(file.filePath);
       } catch {
@@ -159,6 +165,8 @@ export async function DELETE(
     });
     for (const v of versions) {
       if (v.filePath) {
+        const resolvedVPath = path.resolve(v.filePath);
+        if (!resolvedVPath.startsWith(path.resolve('./uploads'))) continue;
         try { await unlink(v.filePath); } catch { /* file may not exist */ }
       }
     }
