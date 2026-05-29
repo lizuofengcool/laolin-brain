@@ -190,10 +190,16 @@ export function FolderTree({ onSelectFolder, selectedFolderId }: FolderTreeProps
       if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch(`/api/folders/${id}`, { method: "DELETE", headers });
       if (res.ok) {
-        // Remove the folder and all child folders
-        const childIds = folders.filter(f => f.parentId === id).map(f => f.id);
+        // Remove the folder and all descendant folders recursively
+        const getDescendantIds = (parentId: string): string[] => {
+          const children = folders.filter(f => f.parentId === parentId);
+          const ids = children.map(f => f.id);
+          for (const child of children) ids.push(...getDescendantIds(child.id));
+          return ids;
+        };
+        const allDescendantIds = getDescendantIds(id);
         removeFolder(id);
-        childIds.forEach(cid => removeFolder(cid));
+        allDescendantIds.forEach(cid => removeFolder(cid));
         if (selectedFolderId === id) {
           onSelectFolder(null);
           refreshFiles();

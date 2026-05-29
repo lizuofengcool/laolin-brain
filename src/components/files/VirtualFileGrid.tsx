@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useCallback, useMemo, useState } from "react";
+import { useRef, useCallback, useState } from "react";
 import type { MouseEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { FileData } from "@/lib/storage/base";
@@ -81,9 +81,6 @@ export function VirtualFileGrid({ files, onPreview, onShowVersions, onFileContex
   });
 
   const totalHeight = rowVirtualizer.getTotalSize();
-
-  // Memoise the files array reference to avoid re-renders
-  const stableFiles = useMemo(() => files, [files]);
 
   if (files.length === 0) {
     return (
@@ -167,8 +164,8 @@ export function VirtualFileGrid({ files, onPreview, onShowVersions, onFileContex
         >
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
             const startIdx = virtualRow.index * cols;
-            const endIdx = Math.min(startIdx + cols, stableFiles.length);
-            const rowFiles = stableFiles.slice(startIdx, endIdx);
+            const endIdx = Math.min(startIdx + cols, files.length);
+            const rowFiles = files.slice(startIdx, endIdx);
 
             return (
               <div

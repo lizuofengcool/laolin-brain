@@ -118,7 +118,6 @@ export function useFileActions(file: FileData) {
     const nameWithoutExt = renameInput.trim().replace(/\.[^.]+$/, "");
     const newName = nameWithoutExt + ext;
     await renameFile(file.id, newName);
-    toast({ title: "重命名成功", description: `${file.fileName} → ${newName}` });
     setRenameDialogOpen(false);
   }, [file.id, file.fileName, renameInput, renameFile]);
 

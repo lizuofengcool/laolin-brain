@@ -23,9 +23,10 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
-  const confirmedRef = useRef(false);
-  const handleConfirm = () => { confirmedRef.current = true; onConfirm(); };
-  const handleOpenChange = (v: boolean) => { if (!v) { if (!confirmedRef.current) onCancel(); confirmedRef.current = false; } };
+  const actionTakenRef = useRef(false);
+  const handleConfirm = () => { actionTakenRef.current = true; onConfirm(); };
+  const handleCancelClick = () => { actionTakenRef.current = true; onCancel(); };
+  const handleOpenChange = (v: boolean) => { if (!v && !actionTakenRef.current) onCancel(); actionTakenRef.current = false; };
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -35,7 +36,7 @@ export function ConfirmDialog({
         </DialogHeader>
         <p className="text-sm text-muted-foreground">{description}</p>
         <DialogFooter>
-          <Button variant="outline" onClick={onCancel}>取消</Button>
+          <Button variant="outline" onClick={handleCancelClick}>取消</Button>
           <Button variant="destructive" onClick={handleConfirm}>确认</Button>
         </DialogFooter>
       </DialogContent>
