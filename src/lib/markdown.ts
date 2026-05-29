@@ -135,9 +135,9 @@ function sanitizeUrl(url: string): string {
 
 function inlineFormat(text: string): string {
   // Images ![alt](url)
-  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => `<img src="${sanitizeUrl(url)}" alt="${escapeHtml(alt)}" class="markdown-image" />`);
+  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => `<img src="${escapeHtml(sanitizeUrl(url))}" alt="${escapeHtml(alt)}" class="markdown-image" />`);
   // Links [text](url)
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, linkText, url) => `<a href="${sanitizeUrl(url)}" target="_blank" rel="noopener noreferrer" class="markdown-link">${escapeHtml(linkText)}</a>`);
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, linkText, url) => `<a href="${escapeHtml(sanitizeUrl(url))}" target="_blank" rel="noopener noreferrer" class="markdown-link">${escapeHtml(linkText)}</a>`);
   // Inline code (must be processed BEFORE bold/italic to prevent inner formatting)
   text = text.replace(/`([^`]+)`/g, (_, code) => `<code class="markdown-inline-code">${escapeHtml(code)}</code>`);
   // Bold + italic ***text*** or ___text___

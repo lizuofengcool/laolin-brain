@@ -41,7 +41,7 @@ export async function GET(request: NextRequest) {
     // File growth by month (SQL GROUP BY)
     const monthlyGrowthRaw = await db.$queryRaw<Array<{ month: string; count: bigint }>>`
       SELECT strftime('%Y-%m', "createdAt") as month, COUNT(*) as count
-      FROM "File" WHERE "userId" = ${userId}
+      FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
       GROUP BY month ORDER BY month ASC
     `;
     const fileGrowth = monthlyGrowthRaw.map((r) => ({
@@ -86,7 +86,7 @@ export async function GET(request: NextRequest) {
     // Activity data - by hour and day of week (SQL GROUP BY)
     const activityHourRaw = await db.$queryRaw<Array<{ hour: number; count: bigint }>>`
       SELECT CAST(strftime('%H', "createdAt") AS INTEGER) as hour, COUNT(*) as count
-      FROM "File" WHERE "userId" = ${userId}
+      FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
       GROUP BY hour
     `;
     const activityByHour: number[] = new Array(24).fill(0);
@@ -96,7 +96,7 @@ export async function GET(request: NextRequest) {
 
     const activityDayRaw = await db.$queryRaw<Array<{ dow: number; count: bigint }>>`
       SELECT CAST(strftime('%w', "createdAt") AS INTEGER) as dow, COUNT(*) as count
-      FROM "File" WHERE "userId" = ${userId}
+      FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
       GROUP BY dow
     `;
     const activityByDayOfWeek: number[] = new Array(7).fill(0);

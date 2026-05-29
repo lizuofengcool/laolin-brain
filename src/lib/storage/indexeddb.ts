@@ -115,7 +115,7 @@ function fileToBase64(file: File): Promise<string> {
     reader.onload = () => {
       const result = reader.result as string;
       // Remove data URL prefix
-      const base64 = result.split(",")[1];
+      const base64 = result.split(",")[1] ?? "";
       resolve(base64);
     };
     reader.onerror = reject;
@@ -230,17 +230,21 @@ export class IndexedDBAdapter implements StorageAdapter {
     _userId: string
   ): Promise<void> {
     const db = await getDB();
-    const existing = await db.get("files", fileId);
+    // Use a readwrite transaction to prevent lost updates from concurrent calls
+    const tx = db.transaction("files", "readwrite");
+    const store = tx.objectStore("files");
+    const existing = await store.get(fileId);
     if (existing) {
       const updated = { ...existing, ...data };
-      await db.put("files", updated);
+      await store.put(updated);
     }
+    await tx.done;
   }
 
   async getFiles(userId: string): Promise<FileData[]> {
     try {
       const db = await getDB();
-      const allFiles = await db.getAll("files");
+      const allFiles = await db.getAllFromIndex("files", "by-user", userId);
       return allFiles
         .filter((f) => f.userId === userId)
         .map(({ data: _, userId: __, ...fileData }) => ({
@@ -307,10 +311,12 @@ export class IndexedDBAdapter implements StorageAdapter {
       throw new Error("Version not found");
     }
 
-    // Update the file with version data
-    const existingFile = await db.get("files", fileId);
+    // Use a readwrite transaction to atomically read the file and write the update
+    const tx = db.transaction("files", "readwrite");
+    const store = tx.objectStore("files");
+    const existingFile = await store.get(fileId);
     if (existingFile) {
-      await db.put("files", {
+      await store.put({
         ...existingFile,
         fileName: version.fileName,
         fileSize: version.fileSize,
@@ -319,6 +325,7 @@ export class IndexedDBAdapter implements StorageAdapter {
         thumbnailUrl: version.thumbnailUrl,
       });
     }
+    await tx.done;
   }
 
   async deleteVersion(versionId: string, fileId: string, _userId: string): Promise<void> {

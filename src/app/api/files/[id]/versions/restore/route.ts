@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 import { safeJsonParseArray } from "@/lib/safe-json-parse";
+import { unlink } from "fs/promises";
+import { join } from "path";
 
 export async function POST(
   request: NextRequest,
@@ -71,6 +73,16 @@ export async function POST(
         },
       });
     });
+
+    // Clean up orphaned physical file (old file on disk is superseded)
+    // Do this outside the transaction so it doesn't block the DB response
+    if (file.filePath && file.filePath !== version.filePath) {
+      const uploadsDir = join(process.cwd(), 'db', 'uploads');
+      const oldFilePath = join(uploadsDir, file.filePath);
+      unlink(oldFilePath).catch(() => {
+        // Ignore if file doesn't exist (expected for cloud-stored or virtual files)
+      });
+    }
 
     return NextResponse.json({
       ...updatedFile,

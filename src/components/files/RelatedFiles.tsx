@@ -15,8 +15,18 @@ interface RelatedFilesProps {
   onFileClick: (file: FileData) => void;
 }
 
-// Cache for related file results
+// Cache for related file results (bounded LRU with max 100 entries)
 const relatedCache = new Map<string, { ids: string[]; reasons: Record<string, string> }>();
+const MAX_CACHE_SIZE = 100;
+
+function cacheSet(key: string, value: { ids: string[]; reasons: Record<string, string> }) {
+  if (relatedCache.size >= MAX_CACHE_SIZE) {
+    // Delete oldest entry (first key in Map iteration order)
+    const firstKey = relatedCache.keys().next().value;
+    if (firstKey !== undefined) relatedCache.delete(firstKey);
+  }
+  relatedCache.set(key, value);
+}
 
 export function RelatedFiles({ currentFile, onFileClick }: RelatedFilesProps) {
   const { files } = useAppStore();
@@ -72,8 +82,8 @@ export function RelatedFiles({ currentFile, onFileClick }: RelatedFilesProps) {
         const data = await res.json();
         setRelatedIds(data.relatedFiles || []);
         setReasons(data.reasons || {});
-        // Cache results
-        relatedCache.set(currentFile.id, {
+        // Cache results (bounded LRU)
+        cacheSet(currentFile.id, {
           ids: data.relatedFiles || [],
           reasons: data.reasons || {},
         });

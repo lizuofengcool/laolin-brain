@@ -62,9 +62,11 @@ function loadNotifications(): Notification[] {
 function saveNotifications(notifications: Notification[]) {
   if (typeof window === "undefined") return;
   try {
+    // Only persist non-auto-dismiss notifications (timers can't be restored)
+    const persistable = notifications.filter((n) => n.autoDismiss === false);
     localStorage.setItem(
       getNotificationStorageKey(),
-      JSON.stringify(notifications.slice(0, MAX_NOTIFICATIONS))
+      JSON.stringify(persistable.slice(0, MAX_NOTIFICATIONS))
     );
   } catch {
     // ignore
@@ -158,7 +160,10 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     }
     autoDismissTimers.clear();
     const stored = loadNotifications();
-    set({ notifications: stored });
+    // Filter out auto-dismissable notifications on rehydration
+    // (timers cannot be reliably restored after page refresh)
+    const active = stored.filter((n) => n.autoDismiss === false);
+    set({ notifications: active });
   },
 }));
 
@@ -166,6 +171,10 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
 if (typeof window !== "undefined") {
   const stored = loadNotifications();
   if (stored.length > 0) {
-    useNotificationStore.setState({ notifications: stored });
+    // Filter out auto-dismissable notifications (timers lost on page refresh)
+    const active = stored.filter((n) => n.autoDismiss === false);
+    if (active.length > 0) {
+      useNotificationStore.setState({ notifications: active });
+    }
   }
 }

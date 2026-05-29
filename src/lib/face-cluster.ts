@@ -147,7 +147,7 @@ export function addFaceToCluster(
     const representative = cluster.faceInstances[0];
     const sim = cosineSimilarity(face.embedding, representative.embedding);
     if (sim >= threshold) {
-      cluster.faceInstances.push(face);
+      cluster.faceInstances = [...cluster.faceInstances, face];
       return true;
     }
 
@@ -159,7 +159,7 @@ export function addFaceToCluster(
     }
 
     if (maxSim >= threshold) {
-      cluster.faceInstances.push(face);
+      cluster.faceInstances = [...cluster.faceInstances, face];
       return true;
     }
   }

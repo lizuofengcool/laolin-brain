@@ -320,13 +320,9 @@ export function VoiceNote() {
         ) : transcript || interimText ? (
           <textarea
             className="min-h-[100px] w-full rounded-lg border bg-muted/30 p-3 text-sm whitespace-pre-wrap resize-y outline-none focus:ring-2 focus:ring-primary/20"
-            value={transcript}
+            value={transcript + (interimText ? `\n${interimText}` : '')}
             onChange={(e) => setTranscript(e.target.value)}
-          >
-            {interimText && (
-              <span className="text-muted-foreground italic">{interimText}</span>
-            )}
-          </textarea>
+          />
         ) : (
           <div className="min-h-[100px] rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
             点击「开始录音」按钮，语音内容将显示在这里

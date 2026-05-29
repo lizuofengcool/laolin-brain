@@ -39,6 +39,29 @@ function computeLCS(oldLines: string[], newLines: string[]): DiffLine[] {
   const m = oldLines.length;
   const n = newLines.length;
 
+  // Safety limit: fall back to line-by-line comparison for large files
+  // to avoid O(n*m) memory allocation that can crash the browser
+  const MAX_DIFF_LINES = 5000;
+  if (m > MAX_DIFF_LINES || n > MAX_DIFF_LINES) {
+    const diffLines: DiffLine[] = [];
+    const maxLen = Math.max(m, n);
+    for (let i = 0; i < maxLen; i++) {
+      const oldLine = i < m ? oldLines[i] : undefined;
+      const newLine = i < n ? newLines[i] : undefined;
+      if (oldLine !== undefined && newLine !== undefined && oldLine === newLine) {
+        diffLines.push({ type: 'unchanged', content: oldLine, oldLineNum: i + 1, newLineNum: i + 1 });
+      } else {
+        if (oldLine !== undefined) {
+          diffLines.push({ type: 'remove', content: oldLine, oldLineNum: i + 1 });
+        }
+        if (newLine !== undefined) {
+          diffLines.push({ type: 'add', content: newLine, newLineNum: i + 1 });
+        }
+      }
+    }
+    return diffLines;
+  }
+
   // Build DP table
   const dp: number[][] = Array.from({ length: m + 1 }, () =>
     Array(n + 1).fill(0)

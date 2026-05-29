@@ -5,6 +5,7 @@ import { isTauriEnvironment } from "./tauri";
 
 let _adapter: StorageAdapter | null = null;
 let _pendingPromise: Promise<StorageAdapter> | null = null;
+let _pendingMode: string | null = null;
 let _generation = 0;
 
 /**
@@ -22,12 +23,13 @@ export async function getStorageAdapterAsync(
   // Return existing adapter if still valid (generation hasn't changed)
   if (_adapter) return _adapter;
 
-  // If an async creation is already in progress, await it
-  if (_pendingPromise) return _pendingPromise;
+  // If an async creation is already in progress for the same mode, await it
+  if (_pendingPromise && _pendingMode === mode) return _pendingPromise;
 
   const gen = ++_generation;
 
   // Start async creation and store the promise to guard against concurrent calls
+  _pendingMode = mode;
   _pendingPromise = (async () => {
     switch (mode) {
       case "local": {
@@ -46,6 +48,7 @@ export async function getStorageAdapterAsync(
         _adapter = new IndexedDBAdapter();
     }
     _pendingPromise = null;
+    _pendingMode = null;
     // If adapter was reset during creation, discard and retry
     if (gen !== _generation) {
       _adapter = null;
@@ -95,4 +98,5 @@ export function resetAdapter(): void {
   _generation++;
   _adapter = null;
   _pendingPromise = null;
+  _pendingMode = null;
 }

@@ -44,13 +44,13 @@ describe("formatSize (extended)", () => {
     expect(formatSize(1572864)).toBe("1.5 MB");
   });
 
-  it("returns '1024.0 MB' for 1 GB (no GB unit)", () => {
-    expect(formatSize(1073741824)).toBe("1024.0 MB");
+  it("returns '1.00 GB' for 1 GB", () => {
+    expect(formatSize(1073741824)).toBe("1.00 GB");
   });
 
-  it("handles very large numbers", () => {
-    // 10 GB = 10240 MB
-    expect(formatSize(10737418240)).toBe("10240.0 MB");
+  it("handles very large numbers in GB", () => {
+    // 10 GB
+    expect(formatSize(10737418240)).toBe("10.00 GB");
   });
 });
 

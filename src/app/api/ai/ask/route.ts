@@ -48,6 +48,12 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
+      if (typeof content !== 'string' || content.length > 26_600_000) {
+        return NextResponse.json(
+          { error: 'imageBase64 exceeds maximum size limit (20MB)' },
+          { status: 400 }
+        );
+      }
       const answer = await askAboutImage(content, question);
       return NextResponse.json({ answer });
     }

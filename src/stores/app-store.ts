@@ -111,7 +111,7 @@ interface AppState {
   importData: (jsonData: string) => Promise<number>;
 
   // Cross-tab auth sync
-  _setupCrossTabSync: () => void;
+  _setupCrossTabSync: () => (() => void) | void;
 
   // Drag & drop
   reorderFiles: (fromIndex: number, toIndex: number) => void;

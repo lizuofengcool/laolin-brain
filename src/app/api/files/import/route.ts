@@ -88,6 +88,18 @@ export async function POST(request: NextRequest) {
       }
 
       try {
+        // Validate folderId ownership if provided
+        let validFolderId = file.folderId || null;
+        if (validFolderId) {
+          const folderExists = await db.folder.findFirst({
+            where: { id: validFolderId, userId },
+            select: { id: true },
+          });
+          if (!folderExists) {
+            validFolderId = null; // Silently ignore invalid folder reference
+          }
+        }
+
         await db.file.create({
           data: {
             userId,
@@ -96,7 +108,7 @@ export async function POST(request: NextRequest) {
             fileSize: file.fileSize || 0,
             textContent: file.textContent || null,
             storageMode: "cloud",
-            folderId: file.folderId || null,
+            folderId: validFolderId,
             tags: JSON.stringify(file.tags || []),
             isFavorite: file.isFavorite || false,
             summary: file.summary || null,

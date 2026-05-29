@@ -49,13 +49,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   useEffect(() => {
     hydrateAuth();
-    _setupCrossTabSync();
+    const cleanupSync = _setupCrossTabSync();
     const id = requestAnimationFrame(() => setMounted(true));
     // Clean up expired upload progress on app init
     import("@/lib/chunk-upload").then(({ cleanupExpiredProgress }) => {
       cleanupExpiredProgress().catch(() => {});
     });
-    return () => cancelAnimationFrame(id);
+    return () => {
+      cleanupSync?.();
+      cancelAnimationFrame(id);
+    };
   }, [hydrateAuth, _setupCrossTabSync]);
 
   // AI chat panel open state derived from aiChatFile

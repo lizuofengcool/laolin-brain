@@ -23,8 +23,8 @@ describe('formatSize', () => {
     expect(formatSize(1048576)).toBe('1.0 MB');
   });
 
-  it('returns MB for 1073741824 bytes (1 GB shown as MB)', () => {
-    expect(formatSize(1073741824)).toBe('1024.0 MB');
+  it('returns GB for 1073741824 bytes (1 GB)', () => {
+    expect(formatSize(1073741824)).toBe('1.00 GB');
   });
 });
 

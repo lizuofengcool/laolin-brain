@@ -237,7 +237,8 @@ async function handleImageRequest(request) {
       return response;
     })
     .catch(() => {
-      // If network fails and we have cache, that's fine
+      // Network failed — return null so caller can handle appropriately
+      return null;
     });
 
   if (cached) {
@@ -245,11 +246,11 @@ async function handleImageRequest(request) {
   }
 
   // No cache, wait for network
-  try {
-    return await fetchPromise;
-  } catch {
-    return new Response('', { status: 404 });
+  const response = await fetchPromise;
+  if (response) {
+    return response;
   }
+  return new Response('', { status: 404 });
 }
 
 // ─── Shell: Cache-first for navigation with offline fallback ──────
@@ -315,8 +316,10 @@ async function processUploadQueue() {
       const tx = db.transaction('uploads', 'readonly');
       const store = tx.objectStore('uploads');
       const pending = await new Promise((resolve, reject) => {
-        tx.oncomplete = () => resolve(store.getAll().result);
-        tx.onerror = () => reject(tx.error);
+        // Use getAll() as a proper IDB request BEFORE transaction completes
+        const req = store.getAll();
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
       });
       db.close();
 
@@ -378,10 +381,6 @@ self.addEventListener('message', (event) => {
   if (event.data?.type === 'CLEAR_CACHES') {
     event.waitUntil(
       Promise.all(ALL_CACHES.map((name) => caches.delete(name)))
-        .then(() => {
-          // Also clear API cache to prevent sensitive data leaking across users
-          return caches.delete(API_CACHE);
-        })
         .then(() => {
           // Re-pre-cache shell after clearing
           return caches.open(SHELL_CACHE).then((cache) => cache.addAll(SHELL_URLS));

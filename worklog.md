@@ -1197,3 +1197,49 @@ Stage Summary:
 - 11个问题全部修复
 - 修改文件: markdown.ts, UploadZone.tsx, BackupRestore.tsx, use-lazy-image.ts, ShareDialog.tsx, use-avatar.ts, ImageLightbox.tsx, use-gestures.ts
 - 884测试通过，构建编译成功
+
+---
+Task ID: round5-bugfix
+Agent: Main Agent
+Task: 第五轮全面代码审查 — 4个并行代理扫描API/Store/组件/存储+中间件
+
+Work Log:
+- 启动4个并行Explore代理全面审查代码（opus模型）
+- Agent 1 (API路由): 发现34个bug（6高/12中/8低）
+- Agent 2 (Store+Hooks+Lib): 发现18个bug（4高/7中/7低）
+- Agent 3 (组件): 发现20个bug（6高/8中/6低）
+- Agent 4 (存储+中间件+SW): 发现20个bug（7高/7中/6低）
+- 去重后修复18个高优先级bug
+
+修复的18个Bug：
+
+**🔴 HIGH (8个)**
+1. markdown.ts XSS: URL未转义导致`<img src>`和`<a href>`可被注入 — 添加escapeHtml()
+2. layout.tsx: _setupCrossTabSync()返回值未捕获，storage事件监听器泄漏 — 捕获cleanup并调用
+3. face-cluster.ts: addFaceToCluster直接push修改输入对象 — 改为不可变赋值
+4. indexeddb.ts: updateFile非原子操作（get+put分开），并发更新丢失 — 用readwrite事务
+5. indexeddb.ts: restoreVersion非原子操作 — 用readwrite事务
+6. indexeddb.ts: getFiles使用getAll()加载全部记录，忽略by-user索引 — 改为getAllFromIndex()
+7. factory.ts: 并发调用不同mode返回错误适配器 — 添加_pendingMode检查
+8. sw.js: Background sync的getAll().result在oncomplete中读取（可能undefined） — 改为正确IDB请求
+
+**🟠 MEDIUM (7个)**
+9. analytics/route.ts: 月度增长查询缺少isDeleted=false — 添加过滤
+10. analytics/route.ts: 按小时/星期活动查询缺少isDeleted=false — 添加过滤
+11. VoiceNote.tsx: textarea子元素不会被渲染（interimText丢失） — 改为value拼接
+12. DiffViewer.tsx: O(n*m) LCS算法大文件可导致浏览器崩溃 — 添加5000行安全限制
+13. RelatedFiles.tsx: 模块级Map无限增长内存泄漏 — 添加LRU限制100条
+14. ai/ask/route.ts: image类型无大小验证 — 添加26MB限制
+15. files/import/route.ts: folderId无所有权验证 — 添加查询验证
+16. versions/restore/route.ts: 版本恢复旧物理文件未清理磁盘泄漏 — 添加unlink
+
+**🟡 LOW (3个)**
+17. notification-store.ts: 自动消失通知在页面刷新后永久残留 — 持久化时过滤自动消失通知
+18. file-utils.tsx: formatSize不支持GB — 添加GB单位
+19. sw.js: CLEAR_CACHES重复删除API_CACHE — 移除冗余删除
+
+Stage Summary:
+- 修改文件：markdown.ts, layout.tsx, face-cluster.ts, indexeddb.ts, factory.ts, sw.js, analytics/route.ts, VoiceNote.tsx, DiffViewer.tsx, RelatedFiles.tsx, ai/ask/route.ts, files/import/route.ts, versions/restore/route.ts, notification-store.ts, file-utils.tsx
+- 修改测试：storage-indexeddb.test.ts, file-utils.test.ts, file-utils-extended.test.tsx
+- 测试：884/884 通过 ✅
+- 构建：next build 0 错误 ✅

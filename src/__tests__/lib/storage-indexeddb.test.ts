@@ -7,6 +7,7 @@ const mockPut = vi.fn().mockResolvedValue(undefined);
 const mockDelete = vi.fn().mockResolvedValue(undefined);
 const mockGet = vi.fn().mockResolvedValue(undefined);
 const mockGetAll = vi.fn().mockResolvedValue([]);
+const mockGetAllFromIndex = vi.fn().mockResolvedValue([]);
 
 const mockTransaction = vi.fn().mockImplementation(() => ({
   done: Promise.resolve(),
@@ -31,6 +32,7 @@ const mockDB = {
   delete: mockDelete,
   get: mockGet,
   getAll: mockGetAll,
+  getAllFromIndex: mockGetAllFromIndex,
   transaction: mockTransaction,
   objectStore: mockObjectStore,
   close: vi.fn(),
@@ -53,6 +55,7 @@ describe('IndexedDBAdapter', () => {
     mockDelete.mockResolvedValue(undefined);
     mockGet.mockResolvedValue(undefined);
     mockGetAll.mockResolvedValue([]);
+    mockGetAllFromIndex.mockResolvedValue([]);
   });
 
   describe('uploadFile', () => {
@@ -106,7 +109,7 @@ describe('IndexedDBAdapter', () => {
           userId: 'user-2',
         },
       ];
-      mockGetAll.mockResolvedValue(files);
+      mockGetAllFromIndex.mockResolvedValue(files);
 
       const result = await adapter.getFiles('user-1');
 
@@ -119,7 +122,7 @@ describe('IndexedDBAdapter', () => {
     });
 
     it('returns empty array when no files for user', async () => {
-      mockGetAll.mockResolvedValue([
+      mockGetAllFromIndex.mockResolvedValue([
         {
           id: '1',
           fileName: 'other.txt',
@@ -162,7 +165,7 @@ describe('IndexedDBAdapter', () => {
           userId: 'user-1',
         },
       ];
-      mockGetAll.mockResolvedValue(files);
+      mockGetAllFromIndex.mockResolvedValue(files);
 
       const result = await adapter.getFiles('user-1');
       expect(result[0].id).toBe('2'); // newer first
@@ -205,7 +208,7 @@ describe('IndexedDBAdapter', () => {
           textContent: 'report notes',
         },
       ];
-      mockGetAll.mockResolvedValue(files);
+      mockGetAllFromIndex.mockResolvedValue(files);
 
       const results = await adapter.searchFiles('report', 'user-1');
       // Should match by fileName 'report.pdf' or textContent 'report notes'
@@ -239,7 +242,7 @@ describe('IndexedDBAdapter', () => {
           textContent: 'shopping list',
         },
       ];
-      mockGetAll.mockResolvedValue(files);
+      mockGetAllFromIndex.mockResolvedValue(files);
 
       const results = await adapter.searchFiles('meeting', 'user-1');
       expect(results).toHaveLength(1);
@@ -271,7 +274,7 @@ describe('IndexedDBAdapter', () => {
           userId: 'user-1',
         },
       ];
-      mockGetAll.mockResolvedValue(files);
+      mockGetAllFromIndex.mockResolvedValue(files);
 
       const results = await adapter.searchFiles('work', 'user-1');
       expect(results).toHaveLength(1);
@@ -279,7 +282,7 @@ describe('IndexedDBAdapter', () => {
     });
 
     it('returns empty when no match', async () => {
-      mockGetAll.mockResolvedValue([
+      mockGetAllFromIndex.mockResolvedValue([
         {
           id: '1',
           fileName: 'doc1.txt',
