@@ -62,6 +62,8 @@ export function UploadZone({ className }: UploadZoneProps) {
       const total = acceptedFiles.length;
       let completed = 0;
       let succeeded = 0;
+      // Track failures locally to avoid stale closure issue with setFailedFiles
+      let localFailedCount = 0;
 
       for (const file of acceptedFiles) {
         if (file.size > 50 * 1024 * 1024) {
@@ -71,6 +73,7 @@ export function UploadZone({ className }: UploadZoneProps) {
             variant: "destructive",
           });
           setFailedFiles((prev) => [...prev, file.name]);
+          localFailedCount++;
           completed++;
           continue;
         }
@@ -89,6 +92,7 @@ export function UploadZone({ className }: UploadZoneProps) {
               variant: "destructive",
             });
             setFailedFiles((prev) => [...prev, file.name]);
+            localFailedCount++;
             completed++;
             setProgress(Math.round((completed / total) * 100));
             continue;
@@ -145,6 +149,7 @@ export function UploadZone({ className }: UploadZoneProps) {
                 variant: "destructive",
               });
               setFailedFiles((prev) => [...prev, file.name]);
+              localFailedCount++;
             }
           } else {
             // ─── Local Mode ─────────────────────────────
@@ -237,6 +242,7 @@ export function UploadZone({ className }: UploadZoneProps) {
             variant: "destructive",
           });
           setFailedFiles((prev) => [...prev, file.name]);
+          localFailedCount++;
         }
 
         completed++;
@@ -252,14 +258,14 @@ export function UploadZone({ className }: UploadZoneProps) {
       if (succeeded > 0) {
         toast({
           title: "上传完成",
-          description: failedFiles.length > 0
-            ? `成功 ${succeeded} 个，失败 ${failedFiles.length} 个`
+          description: localFailedCount > 0
+            ? `成功 ${succeeded} 个，失败 ${localFailedCount} 个`
             : `成功上传 ${succeeded} 个文件`,
         });
-      } else if (failedFiles.length > 0) {
+      } else if (localFailedCount > 0) {
         toast({
           title: "上传失败",
-          description: `全部 ${failedFiles.length} 个文件上传失败`,
+          description: `全部 ${localFailedCount} 个文件上传失败`,
           variant: "destructive",
         });
       }
@@ -317,7 +323,7 @@ export function UploadZone({ className }: UploadZoneProps) {
         setFailedFiles([]);
       }, 3000);
     },
-    [user, storageMode, addFile, refreshFiles, failedFiles.length]
+    [user, storageMode, addFile, refreshFiles]
   );
 
   const { getRootProps, getInputProps, isDragActive, fileRejections } = useDropzone({

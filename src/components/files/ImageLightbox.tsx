@@ -48,6 +48,37 @@ export function ImageLightbox({ images, currentIndex, open, onClose }: ImageLigh
     };
   }, [open, currentIndex]);
 
+  const currentImage = images[index];
+  const hasMultiple = images.length > 1;
+
+  const goToPrev = useCallback(() => {
+    setIndex((prev) => (prev > 0 ? prev - 1 : images.length - 1));
+    setScale(1);
+    setRotation(0);
+    setTranslate({ x: 0, y: 0 });
+  }, [images.length]);
+
+  const goToNext = useCallback(() => {
+    setIndex((prev) => (prev < images.length - 1 ? prev + 1 : 0));
+    setScale(1);
+    setRotation(0);
+    setTranslate({ x: 0, y: 0 });
+  }, [images.length]);
+
+  const zoomIn = useCallback(() => {
+    setScale((prev) => Math.min(prev * 1.3, 10));
+  }, []);
+
+  const zoomOut = useCallback(() => {
+    setScale((prev) => Math.max(prev / 1.3, 0.1));
+  }, []);
+
+  const resetZoom = useCallback(() => {
+    setScale(1);
+    setRotation(0);
+    setTranslate({ x: 0, y: 0 });
+  }, []);
+
   // Keyboard shortcuts
   useEffect(() => {
     if (!open) return;
@@ -84,38 +115,7 @@ export function ImageLightbox({ images, currentIndex, open, onClose }: ImageLigh
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [open, index, images.length]);
-
-  const currentImage = images[index];
-  const hasMultiple = images.length > 1;
-
-  const goToPrev = useCallback(() => {
-    setIndex((prev) => (prev > 0 ? prev - 1 : images.length - 1));
-    setScale(1);
-    setRotation(0);
-    setTranslate({ x: 0, y: 0 });
-  }, [images.length]);
-
-  const goToNext = useCallback(() => {
-    setIndex((prev) => (prev < images.length - 1 ? prev + 1 : 0));
-    setScale(1);
-    setRotation(0);
-    setTranslate({ x: 0, y: 0 });
-  }, [images.length]);
-
-  const zoomIn = useCallback(() => {
-    setScale((prev) => Math.min(prev * 1.3, 10));
-  }, []);
-
-  const zoomOut = useCallback(() => {
-    setScale((prev) => Math.max(prev / 1.3, 0.1));
-  }, []);
-
-  const resetZoom = useCallback(() => {
-    setScale(1);
-    setRotation(0);
-    setTranslate({ x: 0, y: 0 });
-  }, []);
+  }, [open, index, images.length, goToPrev, goToNext, zoomIn, zoomOut, resetZoom]);
 
   const rotateImage = useCallback(() => {
     setRotation((prev) => (prev + 90) % 360);

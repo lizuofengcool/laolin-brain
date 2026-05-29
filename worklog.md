@@ -1173,3 +1173,27 @@ Stage Summary:
 - 浏览器前进/后退自然工作
 - 支持loading.tsx和error.tsx
 - 构建输出显示所有路由正确注册
+---
+Task ID: 7
+Agent: Main Agent
+Task: 全面代码审查 - 发现并修复11个问题
+
+Work Log:
+- 使用Explore agent全面扫描~150+ TypeScript/TSX文件
+- 发现11个问题（1高+2中+8低）
+- 修复 [HIGH] markdown.ts内联代码未转义XSS漏洞: inline code内容现在使用escapeHtml转义
+- 修复 [HIGH] markdown.ts内联代码后处理保护: 在bold/italic处理后再对code内容做一次escapeHtml保护
+- 修复 [MED] UploadZone stale closure: failedFiles.length从闭包中读取始终为0 → 改用localFailedCount本地计数器
+- 修复 [MED] UploadZone unnecessary re-render: 从useCallback deps中移除failedFiles.length
+- 修复 [LOW] BackupRestore: URL.revokeObjectURL改为60秒延迟（与file-helpers.ts保持一致）
+- 修复 [LOW] use-lazy-image.ts: 删除未使用的hasAutoTriggered ref和死代码useEffect
+- 修复 [LOW] ShareDialog: 添加客户端密码最小4字符验证+错误提示
+- 修复 [LOW] use-avatar.ts: 添加512KB大小限制防止localStorage超限
+- 修复 [LOW] ImageLightbox: 键盘useEffect添加goToPrev/goToNext/zoomIn/zoomOut/resetZoom到deps，重新排序避免TDZ
+- 修复 [LOW] use-gestures.ts: handleTouchMove使用isRefreshingRef替代stale state
+- 884单元测试全部通过，next build编译成功（0代码错误）
+
+Stage Summary:
+- 11个问题全部修复
+- 修改文件: markdown.ts, UploadZone.tsx, BackupRestore.tsx, use-lazy-image.ts, ShareDialog.tsx, use-avatar.ts, ImageLightbox.tsx, use-gestures.ts
+- 884测试通过，构建编译成功

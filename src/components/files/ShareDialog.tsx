@@ -318,6 +318,9 @@ export function ShareDialog({ file, open, onClose }: ShareDialogProps) {
                           <Lock className="h-3 w-3" />
                           访问者需要输入密码才能查看文件
                         </p>
+                        {password.length > 0 && password.length < 4 && (
+                          <p className="text-xs text-destructive mt-1">密码至少需要 4 个字符</p>
+                        )}
                       </motion.div>
                     )}
                   </AnimatePresence>
@@ -342,7 +345,7 @@ export function ShareDialog({ file, open, onClose }: ShareDialogProps) {
                   className="w-full"
                   size="lg"
                   onClick={generateShareLink}
-                  disabled={loading || (passwordEnabled && !password.trim())}
+                  disabled={loading || (passwordEnabled && (!password.trim() || password.trim().length < 4))}
                 >
                   {loading ? (
                     <>

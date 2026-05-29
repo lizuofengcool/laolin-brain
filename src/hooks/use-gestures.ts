@@ -222,7 +222,8 @@ export function usePullToRefresh(
 
   const handleTouchMove = useCallback(
     (e: TouchEvent) => {
-      if (isRefreshing || !isAtTopRef.current) return;
+      // Use ref to avoid stale closure between setIsRefreshing(true) and re-render
+      if (isRefreshingRef.current || !isAtTopRef.current) return;
 
       const diff = e.touches[0].clientY - startYRef.current;
 
@@ -234,7 +235,7 @@ export function usePullToRefresh(
         setIsPulling(resisted > 10);
       }
     },
-    [isRefreshing, threshold]
+    [threshold]
   );
 
   const handleTouchEnd = useCallback(async () => {

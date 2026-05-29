@@ -34,7 +34,6 @@ export function useLazyImage(src: string, options: UseLazyImageOptions = {}): Us
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isVisible, setIsVisible] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
-  const hasAutoTriggered = useRef(false);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -59,13 +58,6 @@ export function useLazyImage(src: string, options: UseLazyImageOptions = {}): Us
       return () => clearTimeout(id);
     }
   }, [threshold, rootMargin]);
-
-  // Auto-trigger loading once visible
-  useEffect(() => {
-    if (isVisible && !hasAutoTriggered.current) {
-      hasAutoTriggered.current = true;
-    }
-  }, [isVisible]);
 
   const handleLoad = useCallback(() => {
     setIsLoaded(true);

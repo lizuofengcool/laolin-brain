@@ -138,8 +138,8 @@ function inlineFormat(text: string): string {
   text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => `<img src="${sanitizeUrl(url)}" alt="${escapeHtml(alt)}" class="markdown-image" />`);
   // Links [text](url)
   text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, linkText, url) => `<a href="${sanitizeUrl(url)}" target="_blank" rel="noopener noreferrer" class="markdown-link">${escapeHtml(linkText)}</a>`);
-  // Inline code
-  text = text.replace(/`([^`]+)`/g, '<code class="markdown-inline-code">$1</code>');
+  // Inline code (must be processed BEFORE bold/italic to prevent inner formatting)
+  text = text.replace(/`([^`]+)`/g, (_, code) => `<code class="markdown-inline-code">${escapeHtml(code)}</code>`);
   // Bold + italic ***text*** or ___text___
   text = text.replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>");
   text = text.replace(/___(.+?)___/g, "<strong><em>$1</em></strong>");
@@ -149,6 +149,11 @@ function inlineFormat(text: string): string {
   // Italic *text* or _text_
   text = text.replace(/\*(.+?)\*/g, "<em>$1</em>");
   text = text.replace(/_(.+?)_/g, "<em>$1</em>");
+
+  // Protect inline code content from bold/italic that leaked in after code replacement
+  // (e.g. `**bold**` should show literal **bold**, not render bold inside code)
+  text = text.replace(/<code class="markdown-inline-code">(.*?)<\/code>/g,
+    (_, codeContent) => `<code class="markdown-inline-code">${escapeHtml(codeContent)}</code>`);
   // Strikethrough ~~text~~
   text = text.replace(/~~(.+?)~~/g, "<del>$1</del>");
 

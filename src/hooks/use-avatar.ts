@@ -27,9 +27,14 @@ export function useAvatar() {
     }
   }, []);
 
-  // 保存头像到 localStorage
+  // 保存头像到 localStorage（限制 512KB 防止超限）
   const setAvatar = useCallback((base64: string) => {
     try {
+      // Base64 字符串约 1.33x 原始大小，512KB base64 ≈ 384KB 原始数据
+      if (base64.length > 512 * 1024) {
+        console.warn("[useAvatar] Avatar data too large, skipping localStorage write");
+        return;
+      }
       localStorage.setItem(AVATAR_STORAGE_KEY, base64);
       setAvatarState(base64);
     } catch {

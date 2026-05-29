@@ -64,7 +64,7 @@ export function BackupRestore() {
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
 
       setMessage({ type: 'success', text: '备份文件已生成并下载' });
     } catch (err) {
