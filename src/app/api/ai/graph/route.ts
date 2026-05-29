@@ -196,7 +196,7 @@ ${fileListStr}
       let parsed: { nodes?: GraphNode[]; edges?: GraphEdge[] };
 
       try {
-        const jsonMatch = responseText.match(/\{[\s\S]*?\}/);
+        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           parsed = JSON.parse(jsonMatch[0]);
         } else {

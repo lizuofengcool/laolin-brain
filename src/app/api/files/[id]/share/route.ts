@@ -61,7 +61,7 @@ export async function POST(
       const allowedOrigin = request.headers.get("origin") || "";
       const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:3000").split(",").map(s => s.trim());
       const baseUrl = ALLOWED_ORIGINS.includes(allowedOrigin) ? allowedOrigin : (process.env.APP_URL || "http://localhost:3000");
-      const downloadUrl = `${baseUrl}/api/files/${file.id}/download?token=${id}&password=${encodeURIComponent(password)}`;
+      const downloadUrl = `${baseUrl}/api/files/${file.id}/download?token=${id}`;
 
       return NextResponse.json({
         id: file.id,

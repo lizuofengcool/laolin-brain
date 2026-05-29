@@ -46,7 +46,10 @@ export default function FaceGroups({ onSelectGroup }: FaceGroupsProps) {
   const fetchGroups = useCallback(async () => {
     if (!user) return;
     try {
-      const res = await fetch(`/api/faces/groups?userId=${user.id}`);
+      const token = useAppStore.getState().token;
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const res = await fetch(`/api/faces/groups?userId=${user.id}`, { headers });
       if (res.ok) {
         const data = await res.json();
         setGroups(data);
@@ -78,9 +81,12 @@ export default function FaceGroups({ onSelectGroup }: FaceGroupsProps) {
     setProgress({ processed: 0, total: 0 });
 
     try {
+      const token = useAppStore.getState().token;
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch("/api/faces/process-all", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ userId: user.id }),
       });
 
@@ -92,8 +98,12 @@ export default function FaceGroups({ onSelectGroup }: FaceGroupsProps) {
           // Poll for progress
           const pollInterval = setInterval(async () => {
             try {
+              const token = useAppStore.getState().token;
+              const authHeaders: Record<string, string> = {};
+              if (token) authHeaders["Authorization"] = `Bearer ${token}`;
               const statusRes = await fetch(
-                `/api/faces/process-all?userId=${user.id}`
+                `/api/faces/process-all?userId=${user.id}`,
+                { headers: authHeaders }
               );
               if (statusRes.ok) {
                 const statusData = await statusRes.json();
@@ -134,9 +144,12 @@ export default function FaceGroups({ onSelectGroup }: FaceGroupsProps) {
     }
 
     try {
+      const token = useAppStore.getState().token;
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch(`/api/faces/groups/${groupId}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ name: editName.trim() }),
       });
 
@@ -156,8 +169,12 @@ export default function FaceGroups({ onSelectGroup }: FaceGroupsProps) {
 
   const handleDelete = async (groupId: string) => {
     try {
+      const token = useAppStore.getState().token;
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch(`/api/faces/groups/${groupId}`, {
         method: "DELETE",
+        headers,
       });
 
       if (res.ok) {

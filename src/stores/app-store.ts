@@ -176,8 +176,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         // Simple client-side check: parse the base64 payload and check exp
         try {
           const parts = token.split(".");
-          if (parts.length === 2) {
-            const payload = JSON.parse(atob(parts[0].replace(/-/g, "+").replace(/_/g, "/")));
+          if (parts.length === 3) {
+            const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
             if (payload.exp && Date.now() > payload.exp) {
               // Token expired
               localStorage.removeItem("kb_token");

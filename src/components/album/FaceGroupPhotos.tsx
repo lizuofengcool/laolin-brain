@@ -37,8 +37,12 @@ export default function FaceGroupPhotos({
   const fetchPhotos = useCallback(async () => {
     setLoading(true);
     try {
+      const token = useAppStore.getState().token;
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch(
-        `/api/faces/groups/${groupId}/photos?page=${page}&limit=${pageSize}`
+        `/api/faces/groups/${groupId}/photos?page=${page}&limit=${pageSize}`,
+        { headers }
       );
       if (res.ok) {
         const data = await res.json();

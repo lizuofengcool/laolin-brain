@@ -21,7 +21,7 @@ import { NotificationBell } from "@/components/layout/NotificationBell";
 
 export function Header() {
   const { user, searchQuery, setSearchQuery, logout } = useAppStore();
-  const { theme, setTheme } = useTheme();
+  const { setTheme, resolvedTheme } = useTheme();
   const { locale, setLocale } = useI18n();
   const { avatar } = useAvatar();
   const router = useRouter();
@@ -34,7 +34,7 @@ export function Header() {
   };
 
   const toggleTheme = () => {
-    setTheme(theme === "dark" ? "light" : "dark");
+    setTheme(resolvedTheme === "dark" ? "light" : "dark");
   };
 
   return (
@@ -59,7 +59,7 @@ export function Header() {
           size="icon"
           className="h-9 w-9"
           onClick={toggleTheme}
-          title={theme === "dark" ? "切换亮色模式" : "切换暗色模式"}
+          title={resolvedTheme === "dark" ? "切换亮色模式" : "切换暗色模式"}
         >
           <Sun className="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
           <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />

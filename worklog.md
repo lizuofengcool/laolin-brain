@@ -1290,3 +1290,60 @@ Stage Summary:
 - 修改文件：10个（parser/image.ts, files/route.ts, FolderTree.tsx, file-helpers.ts, RelatedFiles.tsx, AIChatPanel.tsx, app-store.ts, share/route.ts, embeddings.ts, middleware.ts, file-helpers.test.ts）
 - 单元测试：884/884 通过
 - 构建状态：✅ 通过（0 TypeScript 错误）
+---
+Task ID: 5-3a
+Agent: security-fix-agent
+Task: Fix security and auth bugs (Round 5)
+
+Work Log:
+- Fixed JWT token expiry check (parts.length 2→3, parts[0]→parts[1])
+- Added Authorization headers to FaceGroups.tsx (5 fetch calls), FaceGroupPhotos.tsx (1 fetch call), KnowledgeGraph.tsx (1 fetch call)
+- Added stale ZAI promise retry logic in summarize and related routes
+- Removed plaintext password from share download URL
+- Added import parentId ownership validation
+
+Stage Summary:
+- 6 security/auth fixes applied
+---
+Task ID: 5-3c
+Agent: runtime-state-fix-agent
+Task: Fix runtime and state bugs (Round 5)
+
+Work Log:
+- Fixed search case sensitivity with mode: "insensitive"
+- Fixed tags undefined crash in SearchResults with optional chaining
+- Fixed semantic search to exclude deleted files
+- Fixed Graph Math.max spread stack overflow with reduce
+- Fixed KnowledgeGraph excessive API calls with null guard
+- Fixed KnowledgeGraph getNodeRadius null assertion
+- Fixed StorageSwitch race condition + error handling
+- Fixed BatchActions optimistic update rollback
+- Fixed Header theme toggle for "system" mode
+- Fixed server.ts inconsistent auth headers
+- Fixed server.ts abort signal composition
+- Fixed AIChatPanel loading not reset on file change
+- Fixed embeddings ZAI race condition
+- Fixed AI ask route content type validation
+- Fixed BackupRestore fragile setTimeout
+
+Stage Summary:
+- 15 runtime/state fixes applied
+
+---
+Task ID: 5-3b
+Agent: data-integrity-fix-agent
+Task: Fix data integrity and crash bugs (Round 5)
+
+Work Log:
+- Fixed factory adapter mode tracking to prevent wrong adapter being returned
+- Fixed batchGenerateEmbeddings to store results in input order
+- Fixed non-greedy regex to greedy in related/graph/summarize routes
+- Fixed null user crash in TagManagement persistFileTags
+- Fixed PullToRefresh permanently stuck state using refs
+- Fixed ConfirmDialog double-fire onCancel/onConfirm
+- Fixed VoiceNote dual SpeechRecognition instances
+- Fixed FolderTree stale state race condition with functional updates
+- Fixed ThemeCustomizer primary-foreground copy-paste error
+
+Stage Summary:
+- 9 data integrity/crash fixes applied

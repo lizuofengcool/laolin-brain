@@ -33,6 +33,9 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
+      if (typeof content !== 'string') {
+        return NextResponse.json({ error: 'content must be a string for document type' }, { status: 400 });
+      }
       // Truncate content to 50000 chars to avoid excessive token usage
       const truncatedContent = typeof content === 'string' && content.length > 50000
         ? content.slice(0, 50000)

@@ -1,13 +1,16 @@
 import ZAI from 'z-ai-web-dev-sdk';
 import { cosineSimilarity } from '@/lib/math-utils';
 
-let zaiInstance: Awaited<ReturnType<typeof ZAI.create>> | null = null;
+let zaiPromise: Promise<Awaited<ReturnType<typeof ZAI.create>>> | null = null;
 
-async function getZAI() {
-  if (!zaiInstance) {
-    zaiInstance = await ZAI.create();
+function getZAI() {
+  if (!zaiPromise) {
+    zaiPromise = ZAI.create().catch((err) => {
+      zaiPromise = null;
+      throw err;
+    });
   }
-  return zaiInstance;
+  return zaiPromise;
 }
 
 // In-memory cache for embeddings (max 500 entries, FIFO eviction)
@@ -164,26 +167,25 @@ export async function batchGenerateEmbeddings(
   texts: string[],
   concurrency: number = 3
 ): Promise<number[][]> {
-  const results: number[][] = [];
-  const queue = [...texts];
+  const results: (number[] | undefined)[] = new Array(texts.length).fill(undefined);
+  const queue = texts.map((text, i) => ({ text, i }));
 
   const worker = async (): Promise<void> => {
     while (queue.length > 0) {
-      const text = queue.shift();
-      if (text !== undefined) {
-        const embedding = await generateEmbedding(text);
-        results.push(embedding);
+      const item = queue.shift();
+      if (item !== undefined) {
+        const embedding = await generateEmbedding(item.text);
+        results[item.i] = embedding;
       }
     }
   };
 
-  // Launch workers with concurrency limit
   const workers = Array.from({ length: Math.min(concurrency, texts.length) }, () =>
     worker()
   );
   await Promise.all(workers);
 
-  return results;
+  return results.map((r, i) => r ?? createZeroVector());
 }
 
 /**

@@ -54,6 +54,7 @@ export function BatchActions({ open, onClose }: BatchActionsProps) {
       if (currentTags.includes(newTag)) continue;
 
       const updatedTags = [...currentTags, newTag];
+      const originalTags = file.tags ? [...file.tags] : [];
       useAppStore.getState().updateFile(file.id, { tags: updatedTags });
 
       if (user) {
@@ -62,7 +63,7 @@ export function BatchActions({ open, onClose }: BatchActionsProps) {
           await adapter.updateFile(file.id, { tags: updatedTags } as Partial<import("@/lib/storage/base").FileData>, user.id);
           successCount++;
         } catch {
-          // ignore
+          useAppStore.getState().updateFile(file.id, { tags: originalTags });
         }
       }
     }

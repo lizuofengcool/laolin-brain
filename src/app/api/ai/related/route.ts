@@ -7,7 +7,10 @@ let zaiPromise: Promise<Awaited<ReturnType<typeof ZAI.create>>> | null = null;
 
 function getZAI() {
   if (!zaiPromise) {
-    zaiPromise = ZAI.create();
+    zaiPromise = ZAI.create().catch((err) => {
+      zaiPromise = null;
+      throw err;
+    });
   }
   return zaiPromise;
 }
@@ -98,7 +101,7 @@ ${fileListStr}
     let parsed: { relatedFiles?: Array<{ id: string; reason?: string }> };
 
     try {
-      const jsonMatch = responseText.match(/\{[\s\S]*?\}/);
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         parsed = JSON.parse(jsonMatch[0]);
       } else {

@@ -25,9 +25,11 @@ function authHeaders(): Record<string, string> {
 function fetchWithTimeout(url: string, options?: RequestInit): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
-  return fetch(url, { ...options, signal: controller.signal }).finally(() =>
-    clearTimeout(timer)
-  );
+  const combinedSignal = options?.signal
+    ? AbortSignal.any([options.signal, controller.signal])
+    : controller.signal;
+  return fetch(url, { ...options, signal: combinedSignal })
+    .finally(() => clearTimeout(timer));
 }
 
 /**
@@ -98,12 +100,9 @@ export class ServerStorageAdapter implements StorageAdapter {
   }
 
   async searchFiles(query: string, _userId: string): Promise<FileData[]> {
-    const token = getAuthToken();
     const url = `/api/search?q=${encodeURIComponent(query)}`;
-    const headers: Record<string, string> = {};
-    if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    const res = await fetchWithTimeout(url, { headers });
+    const res = await fetchWithTimeout(url, { headers: authHeaders() });
     if (res.status === 401) handleUnauthorizedResponse(res);
     if (!res.ok) return [];
     return res.json();
@@ -126,12 +125,9 @@ export class ServerStorageAdapter implements StorageAdapter {
   }
 
   async getFiles(_userId: string): Promise<FileData[]> {
-    const token = getAuthToken();
     const url = `${this.baseUrl}`;
-    const headers: Record<string, string> = {};
-    if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    const res = await fetchWithTimeout(url, { headers });
+    const res = await fetchWithTimeout(url, { headers: authHeaders() });
     if (res.status === 401) handleUnauthorizedResponse(res);
     if (!res.ok) return [];
     return res.json();

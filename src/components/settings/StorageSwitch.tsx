@@ -30,6 +30,8 @@ export function StorageSwitch() {
     setSwitching(true);
     try {
       await setStorageMode(pendingMode);
+    } catch (err) {
+      console.error('Storage switch failed:', err);
     } finally {
       setSwitching(false);
       setPendingMode(null);
@@ -133,7 +135,7 @@ export function StorageSwitch() {
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={cancelSwitch}>取消</Button>
-            <Button onClick={confirmSwitch}>确认切换</Button>
+            <Button onClick={confirmSwitch} disabled={switching}>确认切换</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

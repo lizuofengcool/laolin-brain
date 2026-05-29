@@ -134,7 +134,7 @@ interface FolderTreeProps {
 }
 
 export function FolderTree({ onSelectFolder, selectedFolderId }: FolderTreeProps) {
-  const { folders, setFolders, user, refreshFiles } = useAppStore();
+  const { folders, addFolder, removeFolder, user, refreshFiles } = useAppStore();
   const [newFolderName, setNewFolderName] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -172,12 +172,12 @@ export function FolderTree({ onSelectFolder, selectedFolderId }: FolderTreeProps
       });
       if (res.ok) {
         const folder = await res.json();
-        setFolders([...folders, folder]);
+        addFolder(folder);
         setNewFolderName("");
         setDialogOpen(false);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("创建文件夹失败:", err);
     } finally {
       setCreating(false);
     }
@@ -190,14 +190,17 @@ export function FolderTree({ onSelectFolder, selectedFolderId }: FolderTreeProps
       if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch(`/api/folders/${id}`, { method: "DELETE", headers });
       if (res.ok) {
-        setFolders(folders.filter((f) => f.id !== id));
+        // Remove the folder and all child folders
+        const childIds = folders.filter(f => f.parentId === id).map(f => f.id);
+        removeFolder(id);
+        childIds.forEach(cid => removeFolder(cid));
         if (selectedFolderId === id) {
           onSelectFolder(null);
           refreshFiles();
         }
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("删除文件夹失败:", err);
     }
     setDeleteConfirmId(null);
   };

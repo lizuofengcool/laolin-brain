@@ -49,6 +49,7 @@ export function AIChatPanel({ open, onOpenChange }: AIChatPanelProps) {
 
   useEffect(() => {
     if (open && aiChatFile) {
+      setLoading(false);
       // Add welcome message
       const isImage = aiChatFile.fileType === "image";
       setMessages([

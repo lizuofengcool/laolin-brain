@@ -58,9 +58,9 @@ describe('storage factory - advanced', () => {
       expect(adapter.type).toBe('indexeddb');
     });
 
-    it('returns same instance (singleton)', () => {
+    it('returns same instance only when mode matches (singleton)', () => {
       const a1 = getStorageAdapter('local');
-      const a2 = getStorageAdapter('cloud');
+      const a2 = getStorageAdapter('local');
       expect(a1).toBe(a2);
     });
 
@@ -139,18 +139,20 @@ describe('storage factory - advanced', () => {
       expect(adapter.type).toBe('tauri');
     });
 
-    it('uses singleton: returns cached adapter after first creation', async () => {
+    it('uses singleton: returns cached adapter when mode matches', async () => {
       const a1 = await getStorageAdapterAsync('local');
-      const a2 = await getStorageAdapterAsync('cloud');
+      const a2 = await getStorageAdapterAsync('local');
       expect(a1).toBe(a2);
     });
 
-    it('returns cached adapter if already initialized (even with different mode)', async () => {
+    it('returns correct adapter for each mode (mode-aware)', async () => {
       const cloud = await getStorageAdapterAsync('cloud');
       expect(cloud.type).toBe('server');
 
+      resetAdapter();
       const local = await getStorageAdapterAsync('local');
-      expect(local).toBe(cloud);
+      expect(local.type).toBe('indexeddb');
+      expect(local).not.toBe(cloud);
     });
 
     it('resetAdapter allows async to create new instance', async () => {
@@ -179,20 +181,24 @@ describe('storage factory - advanced', () => {
   // ─── Mode switching ───────────────────────────────────────
 
   describe('mode switching behavior', () => {
-    it('cannot switch mode once adapter is created (sync)', () => {
-      const adapter = getStorageAdapter('local');
-      expect(adapter.type).toBe('indexeddb');
+    it('sync returns correct adapter for requested mode', () => {
+      const localAdapter = getStorageAdapter('local');
+      expect(localAdapter.type).toBe('indexeddb');
 
-      const sameAdapter = getStorageAdapter('cloud');
-      expect(sameAdapter).toBe(adapter);
+      resetAdapter();
+      const cloudAdapter = getStorageAdapter('cloud');
+      expect(cloudAdapter.type).toBe('server');
+      expect(cloudAdapter).not.toBe(localAdapter);
     });
 
-    it('cannot switch mode once adapter is created (async)', async () => {
-      const adapter = await getStorageAdapterAsync('cloud');
-      expect(adapter.type).toBe('server');
+    it('async returns correct adapter for requested mode', async () => {
+      const cloudAdapter = await getStorageAdapterAsync('cloud');
+      expect(cloudAdapter.type).toBe('server');
 
-      const sameAdapter = await getStorageAdapterAsync('local');
-      expect(sameAdapter).toBe(adapter);
+      resetAdapter();
+      const localAdapter = await getStorageAdapterAsync('local');
+      expect(localAdapter.type).toBe('indexeddb');
+      expect(localAdapter).not.toBe(cloudAdapter);
     });
 
     it('resetAdapter then switch mode (sync)', () => {
@@ -210,8 +216,10 @@ describe('storage factory - advanced', () => {
       const syncAdapter = getStorageAdapter('local');
       expect(syncAdapter.type).toBe('indexeddb');
 
+      resetAdapter();
       const asyncAdapter = await getStorageAdapterAsync('cloud');
-      expect(asyncAdapter).toBe(syncAdapter);
+      expect(asyncAdapter.type).toBe('server');
+      expect(asyncAdapter).not.toBe(syncAdapter);
 
       resetAdapter();
       const newAsync = await getStorageAdapterAsync('cloud');

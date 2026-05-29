@@ -22,6 +22,8 @@ export function PullToRefresh({ children, onRefresh, className, threshold = 80 }
   const startYRef = useRef(0);
   const isAtTopRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const isPullingRef = useRef(false);
+  const pullDistanceRef = useRef(0);
 
   const { isOnline } = usePWA();
 
@@ -47,14 +49,16 @@ export function PullToRefresh({ children, onRefresh, className, threshold = 80 }
       if (diff > 0) {
         const resisted = diff * 0.4;
         setPullDistance(Math.min(resisted, threshold * 1.5));
+        pullDistanceRef.current = Math.min(resisted, threshold * 1.5);
         setIsPulling(resisted > 10);
+        isPullingRef.current = resisted > 10;
       }
     },
     [isRefreshing, threshold]
   );
 
   const handleTouchEnd = useCallback(async () => {
-    if (isPulling && pullDistance >= threshold && !isRefreshing) {
+    if (isPullingRef.current && pullDistanceRef.current >= threshold && !isRefreshing) {
       // Check offline status before triggering refresh
       if (!isOnline) {
         toast({
@@ -84,7 +88,7 @@ export function PullToRefresh({ children, onRefresh, className, threshold = 80 }
       setPullDistance(0);
     }
     isAtTopRef.current = false;
-  }, [isPulling, pullDistance, threshold, isRefreshing, onRefresh, isOnline]);
+  }, [threshold, isRefreshing, onRefresh, isOnline]);
 
   useEffect(() => {
     if (!isTouchDevice()) return;

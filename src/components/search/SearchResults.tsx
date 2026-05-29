@@ -262,7 +262,7 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
               !f.isDeleted &&
               (f.fileName.toLowerCase().includes(lower) ||
               f.textContent?.toLowerCase().includes(lower) ||
-              f.tags.some((t) => t.toLowerCase().includes(lower)))
+              (f.tags?.some((t) => t.toLowerCase().includes(lower)) ?? false))
           );
           setRawResults(filtered);
         }
@@ -309,7 +309,7 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
         (f) =>
           f.fileName.toLowerCase().includes(lower) ||
           f.textContent?.toLowerCase().includes(lower) ||
-          f.tags.some((t) => t.toLowerCase().includes(lower))
+          (f.tags?.some((t) => t.toLowerCase().includes(lower)) ?? false)
       );
     }
 

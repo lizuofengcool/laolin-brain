@@ -39,7 +39,7 @@ export function ThemeCustomizer() {
 
     const primary = isDark ? theme.dark : theme.light;
     root.style.setProperty("--primary", primary);
-    root.style.setProperty("--primary-foreground", isDark ? "oklch(0.985 0 0)" : "oklch(0.985 0 0)");
+    root.style.setProperty("--primary-foreground", isDark ? "oklch(0.985 0 0)" : "oklch(0.205 0 0)");
     root.style.setProperty("--ring", isDark ? theme.dark : theme.light);
     root.style.setProperty("--sidebar-primary", isDark ? theme.dark : theme.light);
 

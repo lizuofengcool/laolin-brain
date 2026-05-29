@@ -105,9 +105,12 @@ export function KnowledgeGraphView() {
         tags: f.tags,
         fileType: f.fileType,
       }));
+      const token = useAppStore.getState().token;
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch("/api/ai/graph", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ files: filesForGraph }),
       });
       if (res.ok) {
@@ -122,8 +125,10 @@ export function KnowledgeGraphView() {
   }, [activeFiles]);
 
   useEffect(() => {
-    loadGraph();
-  }, [loadGraph]);
+    if (!graphData) {
+      loadGraph();
+    }
+  }, [loadGraph, graphData]);
 
   // Force simulation
   useEffect(() => {
@@ -148,7 +153,7 @@ export function KnowledgeGraphView() {
     simNodesRef.current = nodes;
 
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-    const maxConnections = Math.max(1, ...nodes.map((n) => n.size));
+    const maxConnections = nodes.reduce((max, n) => Math.max(max, n.size), 1);
 
     function tick() {
       const alpha = 0.3;
@@ -267,9 +272,10 @@ export function KnowledgeGraphView() {
   }, [graphData]);
 
   function getNodeRadius(node: GraphNode): number {
+    if (!graphData) return 10;
     const minR = 8;
     const maxR = 24;
-    const maxConn = Math.max(1, ...graphData!.nodes.map((n) => n.size));
+    const maxConn = graphData.nodes.reduce((max, n) => Math.max(max, n.size), 1);
     const normalized = node.size / maxConn;
     return minR + normalized * (maxR - minR);
   }

@@ -4,6 +4,7 @@ import { ServerStorageAdapter } from "./server";
 import { isTauriEnvironment } from "./tauri";
 
 let _adapter: StorageAdapter | null = null;
+let _adapterMode: string | null = null;
 let _pendingPromise: Promise<StorageAdapter> | null = null;
 let _pendingMode: string | null = null;
 let _generation = 0;
@@ -21,7 +22,7 @@ export async function getStorageAdapterAsync(
   mode: string
 ): Promise<StorageAdapter> {
   // Return existing adapter if still valid (generation hasn't changed)
-  if (_adapter) return _adapter;
+  if (_adapter && _adapterMode === mode) return _adapter;
 
   // If an async creation is already in progress for the same mode, await it
   if (_pendingPromise && _pendingMode === mode) return _pendingPromise;
@@ -35,16 +36,20 @@ export async function getStorageAdapterAsync(
       case "local": {
         if (isTauriEnvironment()) {
           const { TauriStorageAdapter } = await import("./tauri");
+          _adapterMode = mode;
           _adapter = new TauriStorageAdapter();
           break;
         }
+        _adapterMode = mode;
         _adapter = new IndexedDBAdapter();
         break;
       }
       case "cloud":
+        _adapterMode = mode;
         _adapter = new ServerStorageAdapter();
         break;
       default:
+        _adapterMode = mode;
         _adapter = new IndexedDBAdapter();
     }
     _pendingPromise = null;
@@ -68,7 +73,7 @@ export async function getStorageAdapterAsync(
  * 后续调用（若适配器已由异步版本初始化）会正确返回 Tauri 适配器。
  */
 export function getStorageAdapter(mode: string): StorageAdapter {
-  if (_adapter) return _adapter;
+  if (_adapter && _adapterMode === mode) return _adapter;
 
   switch (mode) {
     case "local": {
@@ -81,13 +86,16 @@ export function getStorageAdapter(mode: string): StorageAdapter {
           '当前降级为 IndexedDB 适配器。'
         );
       }
+      _adapterMode = mode;
       _adapter = new IndexedDBAdapter();
       break;
     }
     case "cloud":
+      _adapterMode = mode;
       _adapter = new ServerStorageAdapter();
       break;
     default:
+      _adapterMode = mode;
       _adapter = new IndexedDBAdapter();
   }
 
@@ -97,6 +105,7 @@ export function getStorageAdapter(mode: string): StorageAdapter {
 export function resetAdapter(): void {
   _generation++;
   _adapter = null;
+  _adapterMode = null;
   _pendingPromise = null;
   _pendingMode = null;
 }

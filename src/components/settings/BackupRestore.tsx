@@ -120,10 +120,8 @@ export function BackupRestore() {
       });
 
       // 刷新页面以显示最新数据
-      setTimeout(() => {
-        useAppStore.getState().refreshFiles();
-        useAppStore.getState().refreshFolders();
-      }, 500);
+      useAppStore.getState().refreshFiles();
+      useAppStore.getState().refreshFolders();
     } catch (err) {
       console.error('备份恢复失败:', err);
       setMessage({

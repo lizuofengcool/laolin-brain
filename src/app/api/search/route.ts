@@ -53,7 +53,7 @@ async function semanticSearch(
   }
 
   const fileEmbeddings = await db.fileEmbedding.findMany({
-    where: { userId },
+    where: { userId, file: { isDeleted: false } },
   });
 
   if (fileEmbeddings.length === 0) {

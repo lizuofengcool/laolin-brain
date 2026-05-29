@@ -41,12 +41,21 @@ export async function POST(request: NextRequest) {
       for (const folder of folders) {
         if (!folder.name || typeof folder.name !== 'string' || folder.name.length > 255) continue;
 
+        // Validate parentId ownership
+        let parentId = folder.parentId || null;
+        if (parentId) {
+          const parentFolder = await db.folder.findUnique({ where: { id: parentId } });
+          if (!parentFolder || parentFolder.userId !== userId) {
+            parentId = null;
+          }
+        }
+
         try {
           await db.folder.create({
             data: {
               userId,
               name: folder.name,
-              parentId: folder.parentId || null,
+              parentId,
               createdAt: folder.createdAt ? new Date(folder.createdAt) : new Date(),
             },
           });

@@ -120,6 +120,9 @@ export function VoiceNote() {
       setInterimText("");
     };
 
+    if (recognitionRef.current) {
+      recognitionRef.current.abort();
+    }
     recognitionRef.current = recognition;
     recognition.start();
   }, [isSupported]);
