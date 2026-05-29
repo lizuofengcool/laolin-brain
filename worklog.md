@@ -1495,3 +1495,26 @@ Stage Summary:
 - 5 feature polish items completed
 - Modified files: SettingsViewContent.tsx, Header.tsx, app-store.ts, route.ts, UploadZone.tsx
 - Build: ✅ passed with 0 TypeScript errors
+
+---
+Task ID: P0-P2-Implementation
+Agent: Main Agent (parallel subagents)
+Task: 实现全部推荐决策项 P0+P1+P2（9个功能）
+
+Work Log:
+- P0-①: 新增 core-path.spec.ts（完整用户旅程E2E测试）+ edge-cases.spec.ts（边界用例测试）
+- P0-②: 创建服务端备份API /api/backup（GET导出+POST导入+checksum校验）+ checksum.ts工具 + 14个单元测试
+- P0-③: middleware.ts添加Content-Length 100MB检查 + files/route.ts添加checkBodySize双层防护
+- P1-④: AIChatPanel本地模式降级增强（一键切换云端+功能说明）+ FilePreview AI按钮点击提示toast
+- P1-⑤: FilePreview添加PDF iframe原生渲染预览
+- P1-⑥: use-offline-queue.ts修复isOnline硬编码（真实navigator.onLine+事件监听）+ OfflineIndicator添加pending count显示+同步状态动画
+- P2-⑦: ecosystem.config.js增强（日志+重启策略）+ scripts/deploy.sh一键部署脚本 + docs/DEPLOY.md完善（架构/环境变量/运维/排障）
+- P2-⑧: ai-usage.ts每日用户AI用量追踪（200次/天）+ /api/ai/usage端点 + SettingsView添加AI用量进度条
+- P2-⑨: 确认Embedding 30s debounce批量生成已在app-store.ts中实现完善
+
+Stage Summary:
+- 新增文件: 7个（2 E2E测试, 1 checksum工具, 1 备份API, 1 AI用量工具, 1 AI用量API, 1 部署脚本）
+- 修改文件: 9个（middleware, files/route, AIChatPanel, FilePreview, use-offline-queue, OfflineIndicator, SettingsViewContent, ecosystem.config.js, DEPLOY.md）
+- TypeScript: 0错误
+- 单元测试: 898/898 通过（新增14个checksum测试）
+- Next.js build: 0错误

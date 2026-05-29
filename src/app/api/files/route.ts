@@ -9,6 +9,26 @@ import { generateThumbnail } from "@/lib/parser/image";
 import { authenticateRequest } from "@/lib/api-auth";
 import { safeJsonParseArray } from "@/lib/safe-json-parse";
 
+/**
+ * 检查请求体大小是否超过限制（纵深防御）
+ * 基于 Content-Length 头部进行预检，避免接收超大请求体
+ * @returns 如果超限返回 413 响应，否则返回 null（允许继续）
+ */
+function checkBodySize(request: NextRequest, maxSizeMB: number): NextResponse | null {
+  const contentLength = request.headers.get('content-length');
+  if (contentLength !== null) {
+    const size = parseInt(contentLength, 10);
+    if (!isNaN(size) && size > maxSizeMB * 1024 * 1024) {
+      return NextResponse.json(
+        { error: `请求体过大，最大允许 ${maxSizeMB}MB` },
+        { status: 413 },
+      );
+    }
+  }
+  // Content-Length 缺失时不拒绝——解析 formData 后通过 file.size 做精确校验
+  return null;
+}
+
 // AI processing rate limit: max 10 files per user per 5 minutes
 const aiProcessingTimestamps = new Map<string, number[]>();
 function checkAiRateLimit(userId: string): boolean {
@@ -36,14 +56,10 @@ export async function POST(request: NextRequest) {
   const { userId: authenticatedUserId } = auth;
 
   try {
-    // Early reject requests over 50MB based on Content-Length
-    const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
-    if (contentLength > 50 * 1024 * 1024) {
-      return NextResponse.json(
-        { error: "Request body exceeds 50MB limit" },
-        { status: 413 }
-      );
-    }
+    // 纵深防御：在接收请求体之前，基于 Content-Length 预检请求体大小
+    // middleware 已做第一层拦截（100MB），此处作为第二层防护
+    const bodySizeResponse = checkBodySize(request, 100);
+    if (bodySizeResponse) return bodySizeResponse;
 
     // Check content-type is multipart/form-data
     const contentType = request.headers.get('content-type') || '';

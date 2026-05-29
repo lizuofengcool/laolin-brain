@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateRequest } from '@/lib/api-auth';
+import { checkAiUsage, AI_DAILY_LIMIT } from '@/lib/ai-usage';
 import ZAI from 'z-ai-web-dev-sdk';
 
 let zaiPromise: Promise<Awaited<ReturnType<typeof ZAI.create>>> | null = null;
@@ -17,6 +18,15 @@ function getZAI() {
 export async function POST(request: NextRequest) {
   const auth = authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
+
+  // Per-user daily AI usage check
+  const usage = checkAiUsage(auth.userId);
+  if (!usage.allowed) {
+    return NextResponse.json(
+      { error: `AI调用已达每日限额(${AI_DAILY_LIMIT}次)，请明天再试`, resetTime: usage.resetTime },
+      { status: 429, headers: { 'X-Ai-Usage-Remaining': '0' } },
+    );
+  }
 
   try {
     const body = await request.json();
@@ -100,6 +110,8 @@ export async function POST(request: NextRequest) {
       summary: parsed.summary || '无法生成摘要',
       keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints : [],
       suggestedTags: Array.isArray(parsed.suggestedTags) ? parsed.suggestedTags : [],
+    }, {
+      headers: { 'X-Ai-Usage-Remaining': String(usage.remaining) },
     });
   } catch (error) {
     console.error('Summarize API error:', error);

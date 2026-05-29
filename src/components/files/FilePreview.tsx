@@ -24,6 +24,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
+import { useNotificationStore } from "@/stores/notification-store";
 import { formatSize, FileIconDisplay } from "@/lib/file-utils";
 import { FileVersions } from "./FileVersions";
 
@@ -104,6 +105,13 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
                     <Maximize2 className="h-4 w-4" />
                   </button>
                 </>
+              ) : file.fileType === "pdf" && getFileUrl() ? (
+                <iframe
+                  src={getFileUrl()}
+                  className="w-full rounded-lg border"
+                  style={{ height: '500px' }}
+                  title={file.fileName}
+                />
               ) : file.textContent ? (
                 <div className="p-4 w-full max-h-[400px] overflow-y-auto">
                   <pre className="text-sm whitespace-pre-wrap font-mono">
@@ -177,8 +185,16 @@ export function FilePreview({ file, open, onClose }: FilePreviewProps) {
               {storageMode === 'local' ? (
                 <Button
                   variant="outline"
-                  className="flex-1 min-w-[100px]"
-                  disabled
+                  className="flex-1 min-w-[100px] opacity-70"
+                  onClick={() => {
+                    useNotificationStore.getState().addNotification({
+                      type: 'info',
+                      title: '提示',
+                      message: 'AI功能需要切换到云端模式，可在设置中切换',
+                      autoDismiss: true,
+                      duration: 4000,
+                    });
+                  }}
                   title="AI 解读功能需要切换到云端模式"
                 >
                   <Sparkles className="h-4 w-4 mr-2" />

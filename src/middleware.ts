@@ -116,12 +116,55 @@ function checkRateLimit(ip: string, path: string, method: string): {
   return { allowed, remaining, resetAfterMs };
 }
 
+// 上传端点的最大请求体大小（纵深防御，route handler 中还有实际业务校验）
+const UPLOAD_MAX_BODY_SIZE = 100 * 1024 * 1024; // 100MB
+
+// 需要进行请求体大小检查的上传端点
+const UPLOAD_BODY_CHECK_ENDPOINTS: Array<{ path: string; method: string }> = [
+  { path: '/api/files', method: 'POST' },
+];
+
+/**
+ * 检查请求体大小是否超过限制（纵深防御措施）
+ * 在速率限制之前拦截超大请求，防止恶意上传耗尽服务器资源
+ * 注意：实际文件大小校验还在 route handler 中执行
+ */
+function checkBodySizeLimit(
+  request: NextRequest,
+  path: string,
+  method: string,
+): NextResponse | null {
+  const needsCheck = UPLOAD_BODY_CHECK_ENDPOINTS.some(
+    ep => ep.path === path && ep.method === method,
+  );
+  if (!needsCheck) return null;
+
+  const contentLength = request.headers.get('content-length');
+  if (contentLength !== null) {
+    const size = parseInt(contentLength, 10);
+    if (!isNaN(size) && size > UPLOAD_MAX_BODY_SIZE) {
+      return NextResponse.json(
+        { error: `请求体过大，最大允许 ${Math.round(UPLOAD_MAX_BODY_SIZE / 1024 / 1024)}MB` },
+        { status: 413 },
+      );
+    }
+  }
+  // Content-Length 缺失时不拒绝（部分客户端/代理不发送此头部），
+  // 由 route handler 在解析 formData 后做精确校验
+
+  return null;
+}
+
 export async function middleware(request: NextRequest) {
   // 仅对 /api 路径生效
   const path = request.nextUrl.pathname;
   if (!path.startsWith('/api/')) {
     return NextResponse.next();
   }
+
+  // 纵深防御：在速率限制之前先检查请求体大小，拦截超大请求
+  const bodySizeResponse = checkBodySizeLimit(request, path, request.method);
+  if (bodySizeResponse) return bodySizeResponse;
 
   const forwarded = request.headers.get('x-forwarded-for');
   const ip = forwarded ? forwarded.split(',').pop()?.trim() || '127.0.0.1' : '127.0.0.1';

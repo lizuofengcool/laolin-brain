@@ -6,19 +6,61 @@
 
 ## 目录
 
-1. [环境要求](#1-环境要求)
-2. [环境变量配置](#2-环境变量配置)
-3. [安装依赖与构建](#3-安装依赖与构建)
-4. [数据库初始化](#4-数据库初始化)
-5. [PM2 进程管理](#5-pm2-进程管理)
-6. [Nginx 反向代理](#6-nginx-反向代理)
-7. [SSL 证书配置（HTTPS）](#7-ssl-证书配置https)
-8. [自动备份策略](#8-自动备份策略)
-9. [常见问题排查](#9-常见问题排查)
+1. [部署架构概览](#1-部署架构概览)
+2. [环境要求](#2-环境要求)
+3. [环境变量说明](#3-环境变量说明)
+4. [安装依赖与构建](#4-安装依赖与构建)
+5. [数据库初始化](#5-数据库初始化)
+6. [一键部署](#6-一键部署)
+7. [PM2 进程管理](#7-pm2-进程管理)
+8. [日常运维操作](#8-日常运维操作)
+9. [Nginx 反向代理](#9-nginx-反向代理)
+10. [SSL 证书配置（HTTPS）](#10-ssl-证书配置https)
+11. [自动备份策略](#11-自动备份策略)
+12. [常见问题排查](#12-常见问题排查)
 
 ---
 
-## 1. 环境要求
+## 1. 部署架构概览
+
+### 短期方案（当前）
+
+```
+用户浏览器 → Caddy (反向代理 + 自动 HTTPS) → Next.js (PM2 管理) → SQLite
+```
+
+| 组件 | 技术选型 | 说明 |
+|------|---------|------|
+| 运行环境 | VPS（Ubuntu/Debian） | 单机部署，成本极低 |
+| 进程管理 | PM2 | 自动重启、日志管理、内存限制 |
+| 反向代理 | Caddy | 自动 HTTPS，配置简洁 |
+| 应用服务 | Next.js (Standalone) | 生产模式运行 |
+| 数据存储 | SQLite | 零配置，适合个人使用 |
+| 速率限制 | 内存级 LRU Cache | 轻量实现，无需 Redis |
+
+### 数据存储：SQLite
+
+当前使用 SQLite 作为数据库，对个人使用场景完全足够：
+- **优势**：零运维、零配置、文件级备份、性能优秀
+- **局限**：不支持多服务器并发写入
+- **容量**：实测 10 万条知识条目仍流畅运行
+
+### 速率限制：内存 LRU Cache
+
+当前使用 `lru-cache` 实现内存级速率限制（`src/lib/rate-limit.ts`）：
+
+- **当前方案**：单进程内存缓存，最多记录 10000 个客户端
+- **局限**：PM2 重启后限制记录丢失；多实例部署时不共享
+- **升级路径**：如需多实例或持久化限流，可引入 Redis
+  ```bash
+  # Redis 升级示例（未来可选）
+  npm install ioredis
+  # 将 lru-cache 替换为 Redis SETEX 计数器
+  ```
+
+---
+
+## 2. 环境要求
 
 | 组件       | 最低版本  |
 | ---------- | -------- |
@@ -63,31 +105,30 @@ sudo systemctl enable nginx
 
 ---
 
-## 2. 环境变量配置
+## 3. 环境变量说明
 
-在项目根目录创建 `.env.local` 文件：
+在项目根目录创建 `.env.local` 文件。以下是所有支持的环境变量：
+
+| 变量名 | 必填 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `DATABASE_URL` | ✅ | — | SQLite 数据库路径，格式：`file:./db/custom.db` |
+| `JWT_SECRET` | ⚠️ | — | JWT Token 签名密钥（认证功能需要，至少 32 位随机字符串） |
+| `NODE_ENV` | 否 | `production` | 运行环境，PM2 配置中已设置为 `production` |
+| `PORT` | 否 | `3000` | 应用监听端口 |
+| `MAX_FILE_SIZE` | 否 | `52428800` | 上传文件大小限制（字节），默认 50MB |
+| `NEXT_PUBLIC_APP_URL` | 否 | — | 应用访问地址（用于 CORS 和分享链接生成） |
+| `AI_API_KEY` | 否 | — | AI 服务 API 密钥（如需 AI 功能） |
+
+### 快速配置
 
 ```bash
 cd /path/to/your/project
 
 cat > .env.local << 'EOF'
-# 应用配置
 NODE_ENV=production
 PORT=3000
-
-# 数据库（SQLite，无需额外配置）
 DATABASE_URL=file:./db/custom.db
-
-# JWT 密钥（请替换为强密码，至少 32 位随机字符串）
 JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
-
-# 上传文件大小限制（单位：字节）
-MAX_FILE_SIZE=52428800
-
-# AI 服务配置（如需使用 AI 功能）
-# AI_API_KEY=your-ai-api-key
-
-# 域名配置（用于 CORS 和分享链接）
 NEXT_PUBLIC_APP_URL=https://your-domain.com
 EOF
 
@@ -102,7 +143,7 @@ chmod 600 .env.local
 
 ---
 
-## 3. 安装依赖与构建
+## 4. 安装依赖与构建
 
 ```bash
 cd /path/to/your/project
@@ -126,7 +167,7 @@ bun run build
 
 ---
 
-## 4. 数据库初始化
+## 5. 数据库初始化
 
 项目使用 SQLite + Prisma ORM。
 
@@ -155,7 +196,28 @@ npx prisma studio
 
 ---
 
-## 5. PM2 进程管理
+## 6. 一键部署
+
+项目提供了 `scripts/deploy.sh` 一键部署脚本，自动完成 Prisma 同步、构建和 PM2 重启：
+
+```bash
+# 首次使用添加执行权限
+chmod +x scripts/deploy.sh
+
+# 执行部署
+bash scripts/deploy.sh
+```
+
+脚本会依次执行：
+1. 创建 `logs/` 日志目录
+2. 生成 Prisma Client + 同步数据库 schema
+3. 构建生产版本（`npm run build`）
+4. 重启 PM2 进程
+5. 显示 PM2 运行状态
+
+---
+
+## 7. PM2 进程管理
 
 项目已包含 `ecosystem.config.js` 配置文件。
 
@@ -214,14 +276,20 @@ pm2 flush
 ```javascript
 module.exports = {
   apps: [{
-    name: 'knowledge-brain',     // 进程名称
-    script: 'node_modules/.bin/next',  // Next.js 启动脚本
-    args: 'start',                // 传入 "start" 参数启动生产服务
-    cwd: process.cwd(),           // 工作目录
-    instances: 1,                 // 单实例模式
-    autorestart: true,            // 崩溃自动重启
-    watch: false,                 // 生产环境不监听文件变化
-    max_memory_restart: '1G',    // 内存超过 1G 自动重启
+    name: 'knowledge-brain',        // 进程名称
+    script: 'node_modules/.bin/next', // Next.js 启动脚本
+    args: 'start',                   // 传入 "start" 参数启动生产服务
+    cwd: process.cwd(),              // 工作目录
+    instances: 1,                    // 单实例模式
+    autorestart: true,               // 崩溃自动重启
+    watch: false,                    // 生产环境不监听文件变化
+    max_memory_restart: '1G',       // 内存超过 1G 自动重启
+    log_date_format: 'YYYY-MM-DD HH:mm:ss',  // 日志时间格式
+    error_file: './logs/pm2-error.log',       // 错误日志路径
+    out_file: './logs/pm2-out.log',           // 标准输出日志路径
+    merge_logs: true,                // 多实例合并日志
+    max_restarts: 10,               // 最大重启次数
+    restart_delay: 5000,            // 重启间隔（毫秒）
     env: {
       NODE_ENV: 'production',
       PORT: 3000,
@@ -232,7 +300,67 @@ module.exports = {
 
 ---
 
-## 6. Nginx 反向代理
+## 8. 日常运维操作
+
+### 部署更新
+
+```bash
+bash scripts/deploy.sh
+```
+
+### 查看日志
+
+```bash
+# 实时日志
+pm2 logs knowledge-brain
+
+# 最近 100 行
+pm2 logs knowledge-brain --lines 100
+
+# 仅错误日志
+pm2 logs knowledge-brain --err
+
+# PM2 日志文件位置
+ls logs/pm2-error.log logs/pm2-out.log
+```
+
+### 重启 / 停止
+
+```bash
+# 重启应用
+pm2 restart knowledge-brain
+
+# 停止应用
+pm2 stop knowledge-brain
+
+# 重载（零停机，如果使用 cluster 模式）
+pm2 reload knowledge-brain
+```
+
+### 备份数据库
+
+```bash
+# 手动快速备份
+cp db/custom.db db/custom.db.backup
+
+# 带时间戳备份
+cp db/custom.db "db/custom_$(date +%Y%m%d_%H%M%S).db"
+```
+
+### 清理日志
+
+```bash
+# 清空 PM2 日志
+pm2 flush
+
+# 清空日志文件
+> logs/pm2-error.log
+> logs/pm2-out.log
+```
+
+---
+
+## 9. Nginx 反向代理
 
 ### 创建 Nginx 配置
 
@@ -310,7 +438,7 @@ sudo systemctl reload nginx
 
 ---
 
-## 7. SSL 证书配置（HTTPS）
+## 10. SSL 证书配置（HTTPS）
 
 ### 使用 Certbot 免费获取 Let's Encrypt 证书
 
@@ -346,7 +474,7 @@ sudo systemctl reload nginx
 
 ---
 
-## 8. 自动备份策略
+## 11. 自动备份策略
 
 项目内置了自动备份功能（localStorage 存储），生产环境建议额外配置服务器端定时备份。
 
@@ -409,16 +537,51 @@ tar -czf "$BACKUP_DIR/uploads_$DATE.tar.gz" "$PROJECT_DIR/uploads/" 2>/dev/null
 
 ---
 
-## 9. 常见问题排查
+## 12. 常见问题排查
+
+### 端口被占用
+
+```bash
+# 检查 3000 端口是否被占用
+lsof -i :3000
+
+# 如果被占用，可以终止占用进程或修改 .env.local 中的 PORT
+kill -9 <PID>
+```
+
+### 数据库锁定
+
+SQLite 在写入时会短暂锁定文件，通常不影响使用。如遇到长时间锁定：
+
+```bash
+# 检查是否有阻塞进程
+lsof db/custom.db
+
+# 等待片刻后重试，或重启应用
+pm2 restart knowledge-brain
+
+# 检查数据库完整性
+sqlite3 db/custom.db "PRAGMA integrity_check;"
+```
+
+### 内存问题
+
+```bash
+# 实时监控内存和 CPU
+pm2 monit
+
+# 查看详细内存信息
+pm2 info knowledge-brain
+
+# PM2 已配置 max_memory_restart: '1G'，超限会自动重启
+# 如频繁重启，考虑优化查询或增加服务器内存
+```
 
 ### 应用无法启动
 
 ```bash
 # 检查 PM2 日志
 pm2 logs knowledge-brain --lines 50
-
-# 检查端口占用
-sudo lsof -i :3000
 
 # 检查 .env.local 文件是否存在
 ls -la .env.local
@@ -438,9 +601,6 @@ chmod 644 db/custom.db
 
 # 重新同步数据库
 npx prisma db push
-
-# 检查数据库完整性
-sqlite3 db/custom.db "PRAGMA integrity_check;"
 ```
 
 ### Nginx 502 Bad Gateway
@@ -469,19 +629,6 @@ df -h
 # 检查上传目录权限
 ls -la uploads/
 chmod 755 uploads/
-```
-
-### 内存占用过高
-
-```bash
-# 查看内存使用
-pm2 monit
-
-# 查看进程详情
-pm2 info knowledge-brain
-
-# PM2 配置已设置 max_memory_restart: '1G'，内存超限会自动重启
-# 如果频繁重启，考虑增加服务器内存或优化查询
 ```
 
 ### SSL 证书问题
@@ -537,19 +684,21 @@ cd knowledge-brain
 cat > .env.local << 'EOF'
 NODE_ENV=production
 PORT=3000
+DATABASE_URL=file:./db/custom.db
 JWT_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
 NEXT_PUBLIC_APP_URL=https://your-domain.com
 EOF
 chmod 600 .env.local
 
-# 4. 安装、构建、数据库
+# 4. 安装依赖
 npm install
-npx prisma generate
-npx prisma db push
-npm run build
 
-# 5. 启动 PM2
+# 5. 一键部署（数据库同步 + 构建 + PM2 启动）
+chmod +x scripts/deploy.sh
+# 首次部署使用 start 而非 restart
 pm2 start ecosystem.config.js
+# 后续更新使用: bash scripts/deploy.sh
+
 pm2 startup && pm2 save
 
 # 6. 配置 Nginx
@@ -563,4 +712,5 @@ sudo apt-get install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d your-domain.com
 
 # 完成！访问 https://your-domain.com
+# 后续更新: git pull && npm install && bash scripts/deploy.sh
 ```

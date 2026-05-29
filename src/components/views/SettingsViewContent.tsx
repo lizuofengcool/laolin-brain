@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { motion } from "framer-motion";
@@ -32,8 +33,9 @@ const VoiceNote = dynamic(
 );
 
 export function SettingsViewContent() {
-  const { user, exportData, importData, storageMode, autoAiProcessing, setAutoAiProcessing } = useAppStore();
+  const { user, token, exportData, importData, storageMode, autoAiProcessing, setAutoAiProcessing } = useAppStore();
   const [exporting, setExporting] = useState(false);
+  const [aiUsage, setAiUsage] = useState<{ used: number; limit: number; remaining: number } | null>(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -61,6 +63,17 @@ export function SettingsViewContent() {
       setExporting(false);
     }
   };
+
+  // Fetch AI usage status on mount
+  useEffect(() => {
+    if (!token) return;
+    fetch('/api/ai/usage', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => { if (data) setAiUsage(data); })
+      .catch(() => {});
+  }, [token]);
 
   // Auto-dismiss export error after 5s
   useEffect(() => {
@@ -325,7 +338,7 @@ export function SettingsViewContent() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.2 }}
           >
-            {/* AI Auto-Processing Toggle */}
+            {/* AI Auto-Processing Toggle & Usage */}
             <Card className="shadow-sm">
               <CardHeader className="pb-3">
                 <CardTitle className="text-base font-semibold flex items-center gap-2">
@@ -333,7 +346,7 @@ export function SettingsViewContent() {
                   AI 自动处理
                 </CardTitle>
               </CardHeader>
-              <CardContent>
+              <CardContent className="space-y-4">
                 <div className="flex items-center justify-between gap-4">
                   <div className="flex-1 min-w-0">
                     <p className="text-sm">
@@ -348,6 +361,19 @@ export function SettingsViewContent() {
                     onCheckedChange={setAutoAiProcessing}
                   />
                 </div>
+                {/* AI usage indicator */}
+                {aiUsage && (
+                  <div className="space-y-2 pt-2 border-t">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">今日 AI 调用</span>
+                      <span className="font-medium">{aiUsage.used} / {aiUsage.limit}</span>
+                    </div>
+                    <Progress value={(aiUsage.used / aiUsage.limit) * 100} />
+                    <p className="text-xs text-muted-foreground">
+                      剩余 {aiUsage.remaining} 次，每日零点重置
+                    </p>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
