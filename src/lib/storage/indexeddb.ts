@@ -220,7 +220,7 @@ export class IndexedDBAdapter implements StorageAdapter {
       (f) =>
         f.fileName.toLowerCase().includes(q) ||
         f.textContent?.toLowerCase().includes(q) ||
-        f.tags.some((t) => t.toLowerCase().includes(q))
+        (f.tags || []).some((t) => t.toLowerCase().includes(q))
     );
   }
 

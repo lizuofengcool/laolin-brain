@@ -19,6 +19,12 @@ export async function DELETE(
       return NextResponse.json({ error: "文件夹不存在" }, { status: 404 });
     }
 
+    // Move files out of this folder before deleting to prevent orphaning
+    await db.file.updateMany({
+      where: { folderId: id },
+      data: { folderId: null },
+    });
+
     await db.folder.delete({ where: { id } });
     return NextResponse.json({ success: true });
   } catch {

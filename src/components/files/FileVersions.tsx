@@ -58,12 +58,16 @@ export function FileVersions({ file, open, onClose }: FileVersionsProps) {
     setLoading(true);
     try {
       const adapter = getStorageAdapter(storageMode);
+      const token = useAppStore.getState().token;
+      const authHeaders: Record<string, string> = {};
+      if (token) authHeaders["Authorization"] = `Bearer ${token}`;
+
       if (adapter.getVersions) {
         const v = await adapter.getVersions(file.id, user.id);
         setVersions(v);
       } else {
         // Fallback: fetch from API
-        const res = await fetch(`/api/files/${file.id}/versions`);
+        const res = await fetch(`/api/files/${file.id}/versions`, { headers: authHeaders });
         if (res.ok) {
           const data = await res.json();
           setVersions(data);
@@ -92,13 +96,17 @@ export function FileVersions({ file, open, onClose }: FileVersionsProps) {
     setRestoring(version.id);
     try {
       const adapter = getStorageAdapter(storageMode);
+      const token = useAppStore.getState().token;
+      const authHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) authHeaders["Authorization"] = `Bearer ${token}`;
+
       if (adapter.restoreVersion) {
         await adapter.restoreVersion(version.id, file.id, user.id);
       } else {
         // Fallback: use API
         const res = await fetch(`/api/files/${version.id}/versions/restore`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: authHeaders,
           body: JSON.stringify({ fileId: file.id }),
         });
         if (!res.ok) throw new Error("Restore failed");
@@ -114,6 +122,8 @@ export function FileVersions({ file, open, onClose }: FileVersionsProps) {
       });
 
       await refreshFiles();
+      // Refresh versions list to show the newly created backup version
+      await fetchVersions();
       toast({
         title: "版本已恢复",
         description: `已恢复到第 ${version.version} 版`,
@@ -135,13 +145,17 @@ export function FileVersions({ file, open, onClose }: FileVersionsProps) {
     setDeleting(version.id);
     try {
       const adapter = getStorageAdapter(storageMode);
+      const token = useAppStore.getState().token;
+      const authHeaders: Record<string, string> = {};
+      if (token) authHeaders["Authorization"] = `Bearer ${token}`;
+
       if (adapter.deleteVersion) {
         await adapter.deleteVersion(version.id, file.id, user.id);
       } else {
         // Fallback: use API
         const res = await fetch(
           `/api/files/${file.id}/versions?versionId=${version.id}`,
-          { method: "DELETE" }
+          { method: "DELETE", headers: authHeaders }
         );
         if (!res.ok) throw new Error("Delete failed");
       }

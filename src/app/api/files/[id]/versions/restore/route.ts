@@ -77,7 +77,8 @@ export async function POST(
     // Clean up orphaned physical file (old file on disk is superseded)
     // Do this outside the transaction so it doesn't block the DB response
     if (file.filePath && file.filePath !== version.filePath) {
-      const uploadsDir = join(process.cwd(), 'db', 'uploads');
+      // Files are stored under upload/{userId}/, reconstruct the path
+      const uploadsDir = join(process.cwd(), 'upload', userId);
       const oldFilePath = join(uploadsDir, file.filePath);
       unlink(oldFilePath).catch(() => {
         // Ignore if file doesn't exist (expected for cloud-stored or virtual files)

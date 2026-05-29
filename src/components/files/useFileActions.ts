@@ -66,15 +66,21 @@ export function useFileActions(file: FileData) {
       .split(/[,，]/)
       .map((t) => t.trim())
       .filter((t) => t.length > 0);
+    const oldTags = file.tags;
     updateFile(file.id, { tags: newTags });
     const { user, storageMode } = useAppStore.getState();
     if (user) {
       const adapter = getStorageAdapter(storageMode);
-      adapter.updateFile(file.id, { tags: newTags }, user.id).catch(console.error);
+      adapter.updateFile(file.id, { tags: newTags }, user.id).catch((err) => {
+        console.error("Failed to save tags:", err);
+        // Revert optimistic update on failure
+        updateFile(file.id, { tags: oldTags });
+        toast({ title: "标签更新失败", variant: "destructive" });
+      });
     }
     toast({ title: "标签已更新", description: `已为 ${file.fileName} 更新标签` });
     setTagDialogOpen(false);
-  }, [file.id, file.fileName, tagInput, updateFile]);
+  }, [file.id, file.fileName, file.tags, tagInput, updateFile]);
 
   const handleMoveToFolder = useCallback((e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -84,15 +90,21 @@ export function useFileActions(file: FileData) {
   }, [file.folderId, refreshFolders]);
 
   const handleSaveFolder = useCallback(() => {
+    const oldFolderId = file.folderId;
     updateFile(file.id, { folderId: selectedFolderId || undefined });
     const { user, storageMode } = useAppStore.getState();
     if (user) {
       const adapter = getStorageAdapter(storageMode);
-      adapter.updateFile(file.id, { folderId: selectedFolderId || null } as Partial<FileData>, user.id).catch(console.error);
+      adapter.updateFile(file.id, { folderId: selectedFolderId || null } as Partial<FileData>, user.id).catch((err) => {
+        console.error("Failed to move file:", err);
+        // Revert optimistic update on failure
+        updateFile(file.id, { folderId: oldFolderId });
+        toast({ title: "移动失败", variant: "destructive" });
+      });
     }
     toast({ title: "已移动", description: `文件已移至${selectedFolderId ? "文件夹" : "根目录"}` });
     setFolderDialogOpen(false);
-  }, [file.id, selectedFolderId, updateFile]);
+  }, [file.id, file.folderId, selectedFolderId, updateFile]);
 
   const handleRename = useCallback((e?: React.MouseEvent) => {
     if (e) e.stopPropagation();

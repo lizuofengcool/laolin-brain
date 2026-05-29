@@ -178,7 +178,12 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
   // Fetch embedding status when user is available
   useEffect(() => {
     if (storageMode === "cloud" && user) {
-      fetch(`/api/embeddings/generate?userId=${user.id}`)
+      const abortController = new AbortController();
+      const token = useAppStore.getState().token;
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      fetch(`/api/embeddings/generate?userId=${user.id}`, { headers, signal: abortController.signal })
         .then((res) => res.json())
         .then((data) => {
           if (data.totalFiles !== undefined) {
@@ -186,6 +191,7 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
           }
         })
         .catch(() => {});
+      return () => abortController.abort();
     }
   }, [storageMode, user]);
 
@@ -193,14 +199,17 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
   const handleGenerateEmbeddings = async () => {
     if (!user || generating) return;
     setGenerating(true);
+    const token = useAppStore.getState().token;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
     try {
       await fetch("/api/embeddings/generate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ userId: user.id }),
       });
       // Refresh embedding status
-      const res = await fetch(`/api/embeddings/generate?userId=${user.id}`);
+      const res = await fetch(`/api/embeddings/generate?userId=${user.id}`, { headers });
       const data = await res.json();
       if (data.totalFiles !== undefined) {
         setEmbeddingStatus(data);

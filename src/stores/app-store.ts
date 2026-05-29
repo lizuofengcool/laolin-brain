@@ -325,6 +325,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { user, storageMode, files } = get();
     if (!user) return;
     const file = files.find((f) => f.id === id);
+    const fileName = file?.fileName;
     try {
       const adapter = getStorageAdapter(storageMode);
       if (adapter.permanentDeleteFile) {
@@ -335,7 +336,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().removeFile(id);
       useActivityStore.getState().addActivity({
         type: "delete",
-        fileName: file?.fileName || "未知文件",
+        fileName: fileName || "未知文件",
         fileId: id,
       });
     } catch (err) {
@@ -346,6 +347,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Empty recycle bin
   emptyRecycleBin: async () => {
     const deletedFiles = get().files.filter((f) => f.isDeleted);
+    if (deletedFiles.length === 0) return;
+    // Capture file names before concurrent deletion (avoids stale reads)
+    const fileNames = new Map(deletedFiles.map((f) => [f.id, f.fileName]));
     try {
       const results = await Promise.allSettled(deletedFiles.map((file) => get().permanentDeleteFile(file.id)));
       const succeeded = results.filter((r) => r.status === "fulfilled").length;

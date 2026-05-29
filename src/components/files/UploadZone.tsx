@@ -65,6 +65,18 @@ export function UploadZone({ className }: UploadZoneProps) {
       // Track failures locally to avoid stale closure issue with setFailedFiles
       let localFailedCount = 0;
 
+      // Pre-initialize local adapter outside the loop to avoid repeated reset/import
+      let localAdapter: Awaited<ReturnType<typeof import("@/lib/storage/factory").getStorageAdapter>> | null = null;
+      if (storageMode !== "cloud") {
+        try {
+          const { getStorageAdapter, resetAdapter } = await import("@/lib/storage/factory");
+          resetAdapter();
+          localAdapter = getStorageAdapter("local");
+        } catch (adapterErr) {
+          console.error("[UploadZone] Failed to get local adapter:", adapterErr);
+        }
+      }
+
       for (const file of acceptedFiles) {
         if (file.size > 50 * 1024 * 1024) {
           toast({
@@ -153,20 +165,11 @@ export function UploadZone({ className }: UploadZoneProps) {
             }
           } else {
             // ─── Local Mode ─────────────────────────────
-            console.log("[UploadZone] Using local (IndexedDB) mode");
-            let adapter;
-            try {
-              const { getStorageAdapter, resetAdapter } = await import(
-                "@/lib/storage/factory"
-              );
-              resetAdapter();
-              adapter = getStorageAdapter("local");
-            } catch (adapterErr) {
-              console.error("[UploadZone] Failed to get local adapter:", adapterErr);
+            if (!localAdapter) {
               throw new Error("无法初始化本地存储");
             }
-            console.log("[UploadZone] Local adapter ready, calling uploadFile");
-            const result = await adapter.uploadFile(file, user.id);
+            console.log("[UploadZone] Using local (IndexedDB) mode");
+            const result = await localAdapter.uploadFile(file, user.id);
             console.log("[UploadZone] uploadFile result:", result.id, result.fileName, result.fileType);
 
             // AI processing for images in local mode
@@ -228,7 +231,7 @@ export function UploadZone({ className }: UploadZoneProps) {
             }
             if (Object.keys(persistData).length > 0) {
               try {
-                await adapter.updateFile(result.id, persistData, user.id);
+                await localAdapter.updateFile(result.id, persistData, user.id);
               } catch {
                 // ignore
               }
@@ -293,15 +296,15 @@ export function UploadZone({ className }: UploadZoneProps) {
                     // Find or create target folder
                     const folders = useAppStore.getState().folders;
                     let targetFolder = folders.find((fd) => fd.name === rule.folderName);
-                    if (!targetFolder) {
-                      const newFolder = adapter.createFolder ? await adapter.createFolder(rule.folderName, user!.id) : null;
+                    if (!targetFolder && localAdapter) {
+                      const newFolder = localAdapter.createFolder ? await localAdapter.createFolder(rule.folderName, user!.id) : null;
                       if (newFolder) {
                         useAppStore.getState().addFolder(newFolder);
                         targetFolder = newFolder;
                       }
                     }
-                    if (targetFolder) {
-                      await adapter.updateFile(file.id, { folderId: targetFolder.id }, user!.id);
+                    if (targetFolder && localAdapter) {
+                      await localAdapter.updateFile(file.id, { folderId: targetFolder.id }, user!.id);
                       useAppStore.getState().updateFile(file.id, { folderId: targetFolder.id });
                     }
                   }

@@ -246,10 +246,7 @@ export function NotificationBell() {
                 </div>
               ) : (
                 <AnimatePresence initial={false}>
-                  {notifications
-                    .slice()
-                    .sort((a, b) => b.timestamp - a.timestamp)
-                    .map((n) => (
+                  {notifications.map((n) => (
                       <NotificationItem
                         key={n.id}
                         notification={n}

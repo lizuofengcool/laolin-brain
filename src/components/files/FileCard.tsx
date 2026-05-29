@@ -678,31 +678,31 @@ export const FileListItem = memo(function FileListItem({ file, onPreview, onShow
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => onPreview(file)}>预览</DropdownMenuItem>
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onPreview(file); }}>预览</DropdownMenuItem>
                   {isImage && (
-                    <DropdownMenuItem onClick={handleOpenLightbox}>放大查看</DropdownMenuItem>
+                    <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleOpenLightbox(); }}>放大查看</DropdownMenuItem>
                   )}
-                  <DropdownMenuItem onClick={handleAIChat}>
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleAIChat(e); }}>
                     <Sparkles className="h-4 w-4 mr-2" />AI 解读
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={handleEditTags}>
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleEditTags(); }}>
                     <Tag className="h-4 w-4 mr-2" />编辑标签
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={handleRename}>
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleRename(); }}>
                     <Pencil className="h-4 w-4 mr-2" />重命名
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={handleMoveToFolder}>
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleMoveToFolder(); }}>
                     <FolderInput className="h-4 w-4 mr-2" />移动到文件夹
                   </DropdownMenuItem>
                   {onShowVersions && (
-                    <DropdownMenuItem onClick={() => onShowVersions(file)}>
+                    <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onShowVersions(file); }}>
                       <History className="h-4 w-4 mr-2" />版本历史
                     </DropdownMenuItem>
                   )}
                   <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setShareOpen(true); }}>
                     <Share2 className="h-4 w-4 mr-2" />分享链接
                   </DropdownMenuItem>
-                  <DropdownMenuItem className="text-destructive" onClick={handleDelete}>
+                  <DropdownMenuItem className="text-destructive" onClick={(e) => { e.stopPropagation(); handleDelete(); }}>
                     <Trash2 className="h-4 w-4 mr-2" />删除
                   </DropdownMenuItem>
                 </DropdownMenuContent>

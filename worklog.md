@@ -1243,3 +1243,30 @@ Stage Summary:
 - 修改测试：storage-indexeddb.test.ts, file-utils.test.ts, file-utils-extended.test.tsx
 - 测试：884/884 通过 ✅
 - 构建：next build 0 错误 ✅
+
+---
+Task ID: 12
+Agent: Main Agent
+Task: 第N轮全面Bug扫描 — 发现并修复11个bug
+
+Work Log:
+- 使用 Explore subagent 对整个代码库进行深度扫描
+- 扫描范围：stores, API routes, components, lib/storage, hooks
+- 发现11个bug（2严重 + 4高危 + 4中等 + 1低危）
+- Bug #1 [CRITICAL]: versions/restore/route.ts 版本恢复清理旧文件路径错误（db/uploads → upload/userId），导致磁盘泄漏
+- Bug #2 [CRITICAL]: SearchResults.tsx 和 FileVersions.tsx 多个 fetch 调用缺少 Authorization header，导致 401 静默失败
+- Bug #3 [HIGH]: indexeddb.ts searchFiles 的 tags.some() 在 tags 为 undefined 时崩溃 → (f.tags || []).some()
+- Bug #4 [HIGH]: folders/[id]/route.ts 删除文件夹时未将文件 folderId 置 null，导致文件变为不可见孤儿
+- Bug #5 [HIGH]: useFileActions.ts handleSaveTags/handleSaveFolder 服务端失败时未回滚本地乐观更新
+- Bug #6 [HIGH]: FileCard.tsx FileListItem 下拉菜单项缺少 e.stopPropagation()，触发预览
+- Bug #7 [MEDIUM]: UploadZone.tsx 在 for 循环内重复 resetAdapter/getStorageAdapter → 提取到循环外
+- Bug #8 [MEDIUM]: FileVersions.tsx 恢复版本后未刷新版本列表 → 添加 fetchVersions()
+- Bug #9 [MEDIUM]: app-store.ts emptyRecycleBin 并发删除时读取过时文件名 → 提前捕获 fileName
+- Bug #10 [MEDIUM]: SearchResults.tsx embedding status fetch 无 AbortController → 添加 abort + cleanup
+- Bug #11 [LOW]: NotificationBell.tsx 通知已按插入顺序排序，冗余 .sort() 调用 → 移除
+
+Stage Summary:
+- 修改文件：8个（versions/restore/route.ts, SearchResults.tsx, FileVersions.tsx, indexeddb.ts, folders/[id]/route.ts, useFileActions.ts, FileCard.tsx, UploadZone.tsx, app-store.ts, NotificationBell.tsx）
+- 新增文件：0个
+- 单元测试：884/884 通过
+- 构建状态：✅ 通过（0 TypeScript 错误）
