@@ -22,7 +22,10 @@ import { useI18n, LOCALES, type Locale } from "@/lib/i18n";
 import { NotificationBell } from "@/components/layout/NotificationBell";
 
 export function Header() {
-  const { user, searchQuery, setSearchQuery, logout } = useAppStore();
+  const user = useAppStore((s) => s.user);
+  const searchQuery = useAppStore((s) => s.searchQuery);
+  const setSearchQuery = useAppStore((s) => s.setSearchQuery);
+  const logout = useAppStore((s) => s.logout);
   const { setTheme, resolvedTheme } = useTheme();
   const { locale, setLocale } = useI18n();
   const { avatar } = useAvatar();

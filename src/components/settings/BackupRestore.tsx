@@ -17,15 +17,13 @@ import {
 const AUTO_BACKUP_KEY = 'kb_auto_backup';
 const LAST_BACKUP_KEY = 'kb_last_backup';
 
-/** Simple hash function for backup integrity checking */
-const simpleHash = (str: string): string => {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash |= 0;
-  }
-  return hash.toString(36);
+/** SHA-256 hash function for backup integrity checking (matches server-side checksum.ts) */
+const simpleHash = async (str: string): Promise<string> => {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(str);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 };
 
 /**
@@ -55,11 +53,12 @@ export function BackupRestore() {
     try {
       const data = await useAppStore.getState().exportData();
       // Save to localStorage with timestamp and checksum for integrity
+      const checksum = await simpleHash(data);
       const backup = JSON.stringify({
         version: '2.0',
         data,
         timestamp: new Date().toISOString(),
-        checksum: simpleHash(data),
+        checksum,
       });
       localStorage.setItem('kb_auto_backup_data', backup);
       localStorage.setItem(LAST_BACKUP_KEY, new Date().toISOString());
@@ -194,7 +193,7 @@ export function BackupRestore() {
       // Integrity check: if the backup has a checksum field, verify it
       if (parsed.checksum && parsed.timestamp) {
         const expectedHash = parsed.checksum;
-        const actualHash = simpleHash(typeof parsed.data === 'string' ? parsed.data : JSON.stringify(parsed.data));
+        const actualHash = await simpleHash(typeof parsed.data === 'string' ? parsed.data : JSON.stringify(parsed.data));
         if (expectedHash !== actualHash) {
           console.warn('Backup integrity check failed');
           setMessage({

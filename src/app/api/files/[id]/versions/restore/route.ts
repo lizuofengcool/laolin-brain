@@ -78,8 +78,8 @@ export async function POST(
     // Do this outside the transaction so it doesn't block the DB response
     if (file.filePath && file.filePath !== version.filePath) {
       // Files are stored under upload/{userId}/, reconstruct the path
-      const uploadsDir = join(process.cwd(), 'upload', userId);
-      const oldFilePath = join(uploadsDir, file.filePath);
+      const uploadDir = join(process.cwd(), 'upload', userId);
+      const oldFilePath = join(uploadDir, file.filePath);
       unlink(oldFilePath).catch(() => {
         // Ignore if file doesn't exist (expected for cloud-stored or virtual files)
       });

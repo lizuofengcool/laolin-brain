@@ -172,15 +172,29 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── Checksum verification (if provided) ──
-    if (body.checksum) {
-      const isValid = verifyChecksum(data, body.checksum);
-      if (!isValid) {
-        return NextResponse.json(
-          { error: "备份数据完整性校验失败，数据可能已被篡改" },
-          { status: 400 }
-        );
-      }
+    // File/folder count limits to prevent abuse
+    const MAX_IMPORT_FILES = 10000;
+    if (data.files && data.files.length > MAX_IMPORT_FILES) {
+      return NextResponse.json({ error: `备份数据文件数超过限制（最大 ${MAX_IMPORT_FILES}）` }, { status: 400 });
+    }
+    if (data.folders && data.folders.length > MAX_IMPORT_FILES) {
+      return NextResponse.json({ error: `备份数据文件夹数超过限制（最大 ${MAX_IMPORT_FILES}）` }, { status: 400 });
+    }
+
+    // ── Checksum verification (mandatory) ──
+    if (!body.checksum) {
+      return NextResponse.json(
+        { error: "缺少 checksum 字段，备份数据完整性校验为必填项" },
+        { status: 400 }
+      );
+    }
+
+    const isValid = verifyChecksum(data, body.checksum);
+    if (!isValid) {
+      return NextResponse.json(
+        { error: "备份数据完整性校验失败，数据可能已被篡改" },
+        { status: 400 }
+      );
     }
 
     // ── Import within a Prisma transaction for safety ──

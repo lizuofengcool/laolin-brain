@@ -19,6 +19,7 @@ import {
   ScanFace,
   Settings,
 } from "lucide-react";
+
 import { useMemo } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAppStore, type ViewType } from "@/stores/app-store";
@@ -43,7 +44,13 @@ const navItems: { icon: typeof LayoutDashboard; label: string; view: ViewType; p
 ];
 
 export function Sidebar() {
-  const { sidebarOpen, setSidebarOpen, logout, user, files } = useAppStore();
+  const sidebarOpen = useAppStore((s) => s.sidebarOpen);
+  const setSidebarOpen = useAppStore((s) => s.setSidebarOpen);
+  const logout = useAppStore((s) => s.logout);
+  const user = useAppStore((s) => s.user);
+  const files = useAppStore((s) => s.files);
+  const favCount = useAppStore((s) => s.files.filter((f) => f.isFavorite && !f.isDeleted).length);
+  const recycleCount = useAppStore((s) => s.files.filter((f) => f.isDeleted).length);
   const pathname = usePathname();
   const router = useRouter();
 
@@ -54,10 +61,6 @@ export function Sidebar() {
       .slice(0, 5),
     [files]
   );
-
-  // Compute dynamic badge counts
-  const favCount = useMemo(() => files.filter((f) => f.isFavorite && !f.isDeleted).length, [files]);
-  const recycleCount = useMemo(() => files.filter((f) => f.isDeleted).length, [files]);
 
   const getBadgeCount = (view: ViewType) => {
     if (view === "favorites") return favCount;

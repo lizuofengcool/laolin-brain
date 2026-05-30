@@ -38,7 +38,6 @@ import { useFileActions } from "./useFileActions";
 import { useAppStore } from "@/stores/app-store";
 import { getFileColor, formatSize, getFileTypeBadge, isDocumentType, FileIconDisplay } from "@/lib/file-utils";
 import { ShareDialog } from "./ShareDialog";
-import { motion } from "framer-motion";
 import { useSwipeLeft, useLongPress, useSwipeRight, isTouchDevice } from "@/hooks/use-gestures";
 
 export type CardSize = "small" | "medium" | "large";
@@ -124,10 +123,7 @@ export const FileCard = memo(function FileCard({ file, onPreview, cardSize = "me
 
   return (
     <>
-      <motion.div
-        whileHover={{ y: -2 }}
-        transition={{ duration: 0.2 }}
-      >
+      <div className="transition-transform duration-200 hover:-translate-y-0.5">
         <Card
           ref={cardRef}
           className={cn(
@@ -350,7 +346,7 @@ export const FileCard = memo(function FileCard({ file, onPreview, cardSize = "me
             )}
           </div>
         </Card>
-      </motion.div>
+      </div>
 
       {/* Dialogs */}
       <ShareDialog

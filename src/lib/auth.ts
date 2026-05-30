@@ -1,11 +1,11 @@
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 
-const TOKEN_SECRET = process.env.TOKEN_SECRET;
-if (!TOKEN_SECRET && process.env.NODE_ENV === 'production') {
-  throw new Error('FATAL: TOKEN_SECRET environment variable is required in production');
+const _tokenSecret = process.env.TOKEN_SECRET;
+if (!_tokenSecret) {
+  throw new Error('FATAL: TOKEN_SECRET environment variable is required');
 }
-const _TOKEN_SECRET = TOKEN_SECRET || 'kb-dev-only-secret-do-not-use-in-prod-2024';
+const TOKEN_SECRET: string = _tokenSecret;
 const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
@@ -91,7 +91,7 @@ export function isTokenExpired(token: string): boolean {
  * Create HMAC-SHA256 signature for a payload string.
  */
 function createHmacSignature(payload: string): Buffer {
-  return crypto.createHmac("sha256", _TOKEN_SECRET).update(payload).digest();
+  return crypto.createHmac("sha256", TOKEN_SECRET).update(payload).digest();
 }
 
 /**

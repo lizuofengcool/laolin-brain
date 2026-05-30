@@ -155,8 +155,11 @@ export function KnowledgeGraphView() {
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
     const maxConnections = nodes.reduce((max, n) => Math.max(max, n.size), 1);
 
+    let alpha = 0.3;
+    const alphaDecay = 0.995;
+    const coolingThreshold = 0.01;
+
     function tick() {
-      const alpha = 0.3;
       const repulsionStrength = 2000;
       const attractionStrength = 0.005;
       const centerStrength = 0.01;
@@ -215,10 +218,22 @@ export function KnowledgeGraphView() {
         node.x = Math.max(margin, Math.min(width - margin, node.x));
         node.y = Math.max(margin, Math.min(height - margin, node.y));
       }
+
+      // Check kinetic energy for early stop
+      let kineticEnergy = 0;
+      for (const node of nodes) {
+        kineticEnergy += node.vx * node.vx + node.vy * node.vy;
+      }
+      if (kineticEnergy < coolingThreshold) {
+        iterations = maxIterations;
+        return;
+      }
+
+      alpha *= alphaDecay;
     }
 
     let iterations = 0;
-    const maxIterations = 200;
+    const maxIterations = 500;
 
     function animate() {
       if (iterations < maxIterations) {

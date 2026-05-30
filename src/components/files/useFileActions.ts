@@ -11,20 +11,17 @@ import { toast } from "@/hooks/use-toast";
  * Used by both FileCard (grid) and FileListItem (list) to eliminate code duplication.
  */
 export function useFileActions(file: FileData) {
-  const {
-    toggleFavorite,
-    softDeleteFile,
-    setAiChatFile,
-    updateFile,
-    folders,
-    refreshFolders,
-    renameFile,
-    batchMode,
-    batchSelectedIds,
-    toggleBatchSelect,
-    openLightbox,
-    files,
-  } = useAppStore();
+  const toggleFavorite = useAppStore((s) => s.toggleFavorite);
+  const softDeleteFile = useAppStore((s) => s.softDeleteFile);
+  const setAiChatFile = useAppStore((s) => s.setAiChatFile);
+  const updateFile = useAppStore((s) => s.updateFile);
+  const folders = useAppStore((s) => s.folders);
+  const refreshFolders = useAppStore((s) => s.refreshFolders);
+  const renameFile = useAppStore((s) => s.renameFile);
+  const batchMode = useAppStore((s) => s.batchMode);
+  const batchSelectedIds = useAppStore((s) => s.batchSelectedIds);
+  const toggleBatchSelect = useAppStore((s) => s.toggleBatchSelect);
+  const openLightbox = useAppStore((s) => s.openLightbox);
 
   // Dialog states
   const [tagDialogOpen, setTagDialogOpen] = useState(false);
@@ -123,10 +120,11 @@ export function useFileActions(file: FileData) {
 
   const handleOpenLightbox = useCallback((e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    const allImages = files.filter((f) => f.fileType === "image" && !f.isDeleted && (f.thumbnailUrl || f.previewUrl));
+    const { files: allFiles } = useAppStore.getState();
+    const allImages = allFiles.filter((f) => f.fileType === "image" && !f.isDeleted && (f.thumbnailUrl || f.previewUrl));
     const currentIndex = allImages.findIndex((f) => f.id === file.id);
     openLightbox(allImages, currentIndex >= 0 ? currentIndex : 0);
-  }, [files, file.id, openLightbox]);
+  }, [file.id, openLightbox]);
 
   const handleCardClick = useCallback(() => {
     if (batchMode) {

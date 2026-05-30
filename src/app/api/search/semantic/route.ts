@@ -49,6 +49,7 @@ export async function POST(request: NextRequest) {
     // Fetch all embeddings for this user
     const fileEmbeddings = await db.fileEmbedding.findMany({
       where: { userId: authenticatedUserId },
+      take: 5000,
     });
 
     if (fileEmbeddings.length === 0) {

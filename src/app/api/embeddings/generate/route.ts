@@ -50,6 +50,7 @@ export async function POST(request: NextRequest) {
           userId,
         },
         select: { fileId: true },
+        take: 5000,
       });
 
       const existingSet = new Set(existingEmbeddings.map((e) => e.fileId));
@@ -59,6 +60,7 @@ export async function POST(request: NextRequest) {
       const existingEmbeddings = await db.fileEmbedding.findMany({
         where: { userId },
         select: { fileId: true },
+        take: 5000,
       });
 
       const existingSet = new Set(existingEmbeddings.map((e) => e.fileId));

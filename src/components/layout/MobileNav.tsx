@@ -1,6 +1,5 @@
 "use client";
 
-import { useMemo } from "react";
 import {
   LayoutDashboard,
   FolderOpen,
@@ -21,11 +20,9 @@ const mainNavItems: { icon: typeof LayoutDashboard; label: string; path: string 
 ];
 
 export function MobileNav() {
-  const { files } = useAppStore();
+  const favCount = useAppStore((s) => s.files.filter((f) => f.isFavorite && !f.isDeleted).length);
   const pathname = usePathname();
   const router = useRouter();
-
-  const favCount = useMemo(() => files.filter((f) => f.isFavorite && !f.isDeleted).length, [files]);
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 md:hidden border-t bg-card/95 backdrop-blur-sm pb-[env(safe-area-inset-bottom)]">

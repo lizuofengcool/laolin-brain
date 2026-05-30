@@ -8,7 +8,10 @@ let zaiPromise: Promise<Awaited<ReturnType<typeof ZAI.create>>> | null = null;
 
 function getZAI() {
   if (!zaiPromise) {
-    zaiPromise = ZAI.create();
+    zaiPromise = ZAI.create().catch((err) => {
+      zaiPromise = null;
+      throw err;
+    });
   }
   return zaiPromise;
 }

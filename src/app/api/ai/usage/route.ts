@@ -10,12 +10,20 @@ export async function GET(request: NextRequest) {
   const auth = authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const status = getAiUsageStatus(auth.userId);
+  try {
+    const status = getAiUsageStatus(auth.userId);
 
-  return NextResponse.json({
-    used: status.used,
-    limit: status.limit,
-    remaining: status.remaining,
-    dailyLimit: AI_DAILY_LIMIT,
-  });
+    return NextResponse.json({
+      used: status.used,
+      limit: status.limit,
+      remaining: status.remaining,
+      dailyLimit: AI_DAILY_LIMIT,
+    });
+  } catch (error) {
+    console.error('AI usage API error:', error);
+    return NextResponse.json(
+      { error: '获取AI用量信息失败' },
+      { status: 500 }
+    );
+  }
 }
