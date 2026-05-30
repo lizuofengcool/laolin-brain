@@ -35,37 +35,6 @@ interface FaceGroupsProps {
 
 export default function FaceGroups({ onSelectGroup }: FaceGroupsProps) {
   const { user, files, storageMode } = useAppStore();
-
-  if (storageMode === 'local') {
-    return (
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20 flex items-center justify-center">
-              <ScanFace className="w-5 h-5 text-violet-600" />
-            </div>
-            <div>
-              <h2 className="text-xl font-bold tracking-tight">人脸识别</h2>
-              <p className="text-sm text-muted-foreground">
-                智能识别和分组照片中的人物
-              </p>
-            </div>
-          </div>
-        </div>
-        <div className="flex flex-col items-center justify-center py-24 px-4">
-          <div className="w-24 h-24 rounded-full bg-muted flex items-center justify-center mb-6">
-            <ScanFace className="w-12 h-12 text-muted-foreground" />
-          </div>
-          <h3 className="text-lg font-semibold text-foreground mb-2">
-            人脸识别需要云端模式
-          </h3>
-          <p className="text-sm text-muted-foreground text-center max-w-md">
-            AI 人脸识别功能依赖服务器端 API 调用，请切换到云端模式后使用。
-          </p>
-        </div>
-      </div>
-    );
-  }
   const [groups, setGroups] = useState<FaceGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
@@ -105,6 +74,38 @@ export default function FaceGroups({ onSelectGroup }: FaceGroupsProps) {
   const imageFiles = files.filter(
     (f) => f.fileType === "image" && !f.isDeleted
   );
+
+  // Local mode fallback UI
+  if (storageMode === 'local') {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20 flex items-center justify-center">
+              <ScanFace className="w-5 h-5 text-violet-600" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold tracking-tight">人脸识别</h2>
+              <p className="text-sm text-muted-foreground">
+                智能识别和分组照片中的人物
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-col items-center justify-center py-24 px-4">
+          <div className="w-24 h-24 rounded-full bg-muted flex items-center justify-center mb-6">
+            <ScanFace className="w-12 h-12 text-muted-foreground" />
+          </div>
+          <h3 className="text-lg font-semibold text-foreground mb-2">
+            人脸识别需要云端模式
+          </h3>
+          <p className="text-sm text-muted-foreground text-center max-w-md">
+            AI 人脸识别功能依赖服务器端 API 调用，请切换到云端模式后使用。
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const handleScanFaces = async () => {
     if (!user || processing) return;

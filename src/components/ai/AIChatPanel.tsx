@@ -42,50 +42,6 @@ function fileToBase64(file: File): Promise<string> {
 
 export function AIChatPanel({ open, onOpenChange }: AIChatPanelProps) {
   const { aiChatFile, storageMode } = useAppStore();
-
-  const handleSwitchToCloud = () => {
-    useAppStore.getState().setStorageMode('cloud');
-    onOpenChange(false);
-  };
-
-  if (storageMode === 'local') {
-    return (
-      <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent className="w-full sm:max-w-lg p-0 flex flex-col">
-          <SheetHeader className="p-4 pb-2 border-b shrink-0">
-            <SheetTitle className="flex items-center gap-2 text-base">
-              <Sparkles className="h-4 w-4 text-primary" />
-              AI 解读
-            </SheetTitle>
-          </SheetHeader>
-          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
-            <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4">
-              <Sparkles className="w-8 h-8 text-muted-foreground" />
-            </div>
-            <h3 className="text-lg font-semibold mb-2">当前为本地模式，AI功能需要云端支持</h3>
-            <p className="text-sm text-muted-foreground max-w-sm mb-6">
-              AI 解读功能依赖服务器端 API 调用，请切换到云端模式后使用。
-            </p>
-            <div className="bg-muted/50 rounded-lg p-4 max-w-sm mb-6 text-left">
-              <p className="text-sm font-medium mb-2">切换后可使用：</p>
-              <ul className="space-y-1.5">
-                {['AI 摘要', '智能问答', 'OCR 识别'].map((feature) => (
-                  <li key={feature} className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <CheckCircle2 className="h-3.5 w-3.5 text-primary shrink-0" />
-                    {feature}
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <Button onClick={handleSwitchToCloud}>
-              <Cloud className="h-4 w-4 mr-2" />
-              切换到云端模式
-            </Button>
-          </div>
-        </SheetContent>
-      </Sheet>
-    );
-  }
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -223,6 +179,51 @@ export function AIChatPanel({ open, onOpenChange }: AIChatPanelProps) {
       setLoading(false);
     }
   };
+
+  // Local mode fallback UI
+  const handleSwitchToCloud = () => {
+    useAppStore.getState().setStorageMode('cloud');
+    onOpenChange(false);
+  };
+
+  if (storageMode === 'local') {
+    return (
+      <Sheet open={open} onOpenChange={onOpenChange}>
+        <SheetContent className="w-full sm:max-w-lg p-0 flex flex-col">
+          <SheetHeader className="p-4 pb-2 border-b shrink-0">
+            <SheetTitle className="flex items-center gap-2 text-base">
+              <Sparkles className="h-4 w-4 text-primary" />
+              AI 解读
+            </SheetTitle>
+          </SheetHeader>
+          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
+            <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4">
+              <Sparkles className="w-8 h-8 text-muted-foreground" />
+            </div>
+            <h3 className="text-lg font-semibold mb-2">当前为本地模式，AI功能需要云端支持</h3>
+            <p className="text-sm text-muted-foreground max-w-sm mb-6">
+              AI 解读功能依赖服务器端 API 调用，请切换到云端模式后使用。
+            </p>
+            <div className="bg-muted/50 rounded-lg p-4 max-w-sm mb-6 text-left">
+              <p className="text-sm font-medium mb-2">切换后可使用：</p>
+              <ul className="space-y-1.5">
+                {['AI 摘要', '智能问答', 'OCR 识别'].map((feature) => (
+                  <li key={feature} className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-primary shrink-0" />
+                    {feature}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <Button onClick={handleSwitchToCloud}>
+              <Cloud className="h-4 w-4 mr-2" />
+              切换到云端模式
+            </Button>
+          </div>
+        </SheetContent>
+      </Sheet>
+    );
+  }
 
   if (!aiChatFile) return null;
 
