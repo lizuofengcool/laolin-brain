@@ -1,10 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { askAboutDocument, askAboutImage } from '@/lib/ai/vision';
 import { authenticateRequest } from '@/lib/api-auth';
+import { checkAiUsage, AI_DAILY_LIMIT } from '@/lib/ai-usage';
 
 export async function POST(request: NextRequest) {
   const auth = authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
+
+  // Per-user daily AI usage check
+  const usage = checkAiUsage(auth.userId);
+  if (!usage.allowed) {
+    return NextResponse.json(
+      { error: `AI调用已达每日限额(${AI_DAILY_LIMIT}次)，请明天再试`, resetTime: usage.resetTime },
+      { status: 429, headers: { 'X-Ai-Usage-Remaining': '0' } },
+    );
+  }
 
   try {
     const body = await request.json();
@@ -41,7 +51,9 @@ export async function POST(request: NextRequest) {
         ? content.slice(0, 50000)
         : content;
       const answer = await askAboutDocument(truncatedContent, question);
-      return NextResponse.json({ answer });
+      const response = NextResponse.json({ answer });
+      response.headers.set('X-Ai-Usage-Remaining', String(usage.remaining));
+      return response;
     }
 
     if (type === 'image') {
@@ -58,7 +70,9 @@ export async function POST(request: NextRequest) {
         );
       }
       const answer = await askAboutImage(content, question);
-      return NextResponse.json({ answer });
+      const response = NextResponse.json({ answer });
+      response.headers.set('X-Ai-Usage-Remaining', String(usage.remaining));
+      return response;
     }
 
     return NextResponse.json(

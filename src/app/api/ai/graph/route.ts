@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateRequest } from '@/lib/api-auth';
+import { checkAiUsage, AI_DAILY_LIMIT } from '@/lib/ai-usage';
 import ZAI from 'z-ai-web-dev-sdk';
 import { db } from '@/lib/db';
 
@@ -108,6 +109,15 @@ function buildFallbackGraph(files: GraphFile[]): { nodes: GraphNode[]; edges: Gr
 export async function POST(request: NextRequest) {
   const auth = authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
+
+  // Per-user daily AI usage check
+  const usage = checkAiUsage(auth.userId);
+  if (!usage.allowed) {
+    return NextResponse.json(
+      { error: `AI调用已达每日限额(${AI_DAILY_LIMIT}次)，请明天再试`, resetTime: usage.resetTime },
+      { status: 429, headers: { 'X-Ai-Usage-Remaining': '0' } },
+    );
+  }
 
   try {
     const body = await request.json();
@@ -222,12 +232,16 @@ ${fileListStr}
         }
       }
 
-      return NextResponse.json({ nodes, edges, source: 'ai' });
+      const aiResponse = NextResponse.json({ nodes, edges, source: 'ai' });
+      aiResponse.headers.set('X-Ai-Usage-Remaining', String(usage.remaining));
+      return aiResponse;
     } catch (aiError) {
       console.error('AI graph analysis failed, using fallback:', aiError);
       // Fallback to tag-based and type-based relationships
       const result = buildFallbackGraph(ownedFiles);
-      return NextResponse.json({ ...result, source: 'fallback' });
+      const fallbackResponse = NextResponse.json({ ...result, source: 'fallback' });
+      fallbackResponse.headers.set('X-Ai-Usage-Remaining', String(usage.remaining));
+      return fallbackResponse;
     }
   } catch (error) {
     console.error('Graph API error:', error);
