@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 import { simpleHash, verifyChecksum } from "@/lib/checksum";
+import { randomUUID } from "crypto";
 
 // ─── TypeScript types ───────────────────────────────────────────────
 
@@ -202,24 +203,18 @@ export async function POST(request: NextRequest) {
       let imported = 0;
       let skipped = 0;
 
-      // 1. Insert folders (skip existing by id)
+      // 1. Insert folders with new IDs (prevent ID conflicts on re-import)
+      const folderIdMap = new Map<string, string>();
       for (const folder of data.folders) {
-        // Check if folder with this id already exists for this user
-        const existing = await tx.folder.findUnique({
-          where: { id: folder.id },
-        });
-
-        if (existing) {
-          skipped++;
-          continue;
-        }
+        const newId = randomUUID();
+        folderIdMap.set(folder.id, newId);
 
         // Also skip if the unique constraint [userId, name, parentId] would conflict
         const conflict = await tx.folder.findFirst({
           where: {
             userId,
             name: folder.name,
-            parentId: folder.parentId ?? null,
+            parentId: folder.parentId ? folderIdMap.get(folder.parentId) || null : null,
           },
         });
 
@@ -230,10 +225,10 @@ export async function POST(request: NextRequest) {
 
         await tx.folder.create({
           data: {
-            id: folder.id,
+            id: newId,
             userId,
             name: folder.name,
-            parentId: folder.parentId ?? null,
+            parentId: folder.parentId ? folderIdMap.get(folder.parentId) || null : null,
             createdAt: new Date(folder.createdAt),
             updatedAt: new Date(folder.updatedAt),
           },
@@ -241,21 +236,13 @@ export async function POST(request: NextRequest) {
         imported++;
       }
 
-      // 2. Insert files (skip existing by id)
+      // 2. Insert files with new IDs (prevent ID conflicts on re-import)
       for (const file of data.files) {
-        // Check if file with this id already exists for this user
-        const existing = await tx.file.findUnique({
-          where: { id: file.id },
-        });
-
-        if (existing) {
-          skipped++;
-          continue;
-        }
+        const newId = randomUUID();
 
         await tx.file.create({
           data: {
-            id: file.id,
+            id: newId,
             userId,
             fileName: file.fileName,
             fileType: file.fileType,
@@ -263,7 +250,7 @@ export async function POST(request: NextRequest) {
             filePath: file.filePath ?? null,
             textContent: file.textContent ?? null,
             thumbnailUrl: file.thumbnailUrl ?? null,
-            folderId: file.folderId ?? null,
+            folderId: file.folderId ? folderIdMap.get(file.folderId) || null : null,
             tags: file.tags ?? "",
             isFavorite: file.isFavorite ?? false,
             isDeleted: file.isDeleted ?? false,

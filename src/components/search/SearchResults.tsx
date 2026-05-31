@@ -547,7 +547,9 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
       ) : (
         <>
           <p className="text-sm text-muted-foreground">
-            找到 {filteredResults.length} 个结果
+            {filteredResults.length > 100
+              ? `显示前 100 个，共 ${filteredResults.length} 个结果`
+              : `找到 ${filteredResults.length} 个结果`}
             {searchTime > 0 && <span className="ml-2">（{searchTime}ms）</span>}
             {searchMode !== "keyword" && (
               <span className="ml-1 text-xs">
@@ -559,7 +561,7 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
             )}
           </p>
           <div className="space-y-2">
-            {filteredResults.map((file) => {
+            {filteredResults.slice(0, 100).map((file) => {
               const colorClass = getFileColor(file.fileType);
               const enhancedFile = file as EnhancedFileData;
 

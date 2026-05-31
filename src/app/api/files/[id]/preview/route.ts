@@ -59,6 +59,13 @@ export async function GET(
         return NextResponse.json({ error: "Not an image file" }, { status: 400 });
       }
 
+      // Validate file path to prevent path traversal attacks
+      const resolvedPath = path.resolve(file.filePath);
+      const uploadDir = path.resolve(path.join(process.cwd(), 'upload'));
+      if (!resolvedPath.startsWith(uploadDir + path.sep) && resolvedPath !== uploadDir) {
+        return NextResponse.json({ error: 'Invalid file path' }, { status: 400 });
+      }
+
       const buffer = await readFile(file.filePath);
       const ext = path.extname(file.fileName).toLowerCase();
       const mimeTypes: Record<string, string> = {
@@ -78,7 +85,7 @@ export async function GET(
       };
       // Prevent XSS in SVG files served to <img> tags
       if (ext === ".svg") {
-        headers["Content-Security-Policy"] = "script-src 'none'";
+        headers["Content-Security-Policy"] = "script-src 'none'; style-src 'none'";
       }
 
       return new NextResponse(buffer, { headers });
@@ -131,7 +138,7 @@ export async function GET(
     };
     // Prevent XSS in SVG files served to <img> tags
     if (ext === ".svg") {
-      headers["Content-Security-Policy"] = "script-src 'none'";
+      headers["Content-Security-Policy"] = "script-src 'none'; style-src 'none'";
     }
 
     return new NextResponse(buffer, { headers });

@@ -76,6 +76,7 @@ export async function GET(request: NextRequest) {
     const folders = await db.folder.findMany({
       where: { userId },
       orderBy: { createdAt: "asc" },
+      take: 500,
     });
 
     return NextResponse.json(folders);

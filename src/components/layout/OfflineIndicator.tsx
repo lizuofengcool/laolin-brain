@@ -1,29 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { usePWA } from '@/hooks/use-service-worker';
 import { useOfflineQueue } from '@/hooks/use-offline-queue';
-import { getOfflineQueueCount } from '@/lib/offline-queue';
 import { WifiOff, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export function OfflineIndicator() {
   const { isOnline } = usePWA();
-  const { isSyncing } = useOfflineQueue();
-  const [pendingCount, setPendingCount] = useState(0);
-
-  // Periodically check offline queue count for responsive display
-  useEffect(() => {
-    const checkCount = async () => {
-      try {
-        const count = await getOfflineQueueCount();
-        setPendingCount(count);
-      } catch {}
-    };
-    checkCount();
-    const interval = setInterval(checkCount, 10000);
-    return () => clearInterval(interval);
-  }, []);
+  const { isSyncing, pendingCount } = useOfflineQueue();
 
   return (
     <AnimatePresence mode="wait">

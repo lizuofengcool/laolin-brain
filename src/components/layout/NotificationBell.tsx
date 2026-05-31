@@ -133,7 +133,7 @@ export function NotificationBell() {
   const [isOpen, setIsOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const unreadCount = useNotificationStore((s) =>
-    s.notifications.filter((n) => !n.read).length
+    s.notifications.reduce((c, n) => c + (n.read ? 0 : 1), 0)
   );
   const notifications = useNotificationStore((s) => s.notifications);
   const markAsRead = useNotificationStore((s) => s.markAsRead);

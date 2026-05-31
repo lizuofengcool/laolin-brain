@@ -101,8 +101,6 @@ export function KnowledgeGraphView() {
       const filesForGraph = activeFiles.map((f) => ({
         id: f.id,
         fileName: f.fileName,
-        textContent: f.textContent,
-        tags: f.tags,
         fileType: f.fileType,
       }));
       const token = useAppStore.getState().token;

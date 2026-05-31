@@ -9,6 +9,32 @@ import { generateThumbnail } from "@/lib/parser/image";
 import { authenticateRequest } from "@/lib/api-auth";
 import { safeJsonParseArray } from "@/lib/safe-json-parse";
 
+// Magic bytes for common file types (security: validate actual content matches declared type)
+const MAGIC_BYTES: Record<string, number[]> = {
+  'image/jpeg': [0xFF, 0xD8, 0xFF],
+  'image/png': [0x89, 0x50, 0x4E, 0x47],
+  'image/gif': [0x47, 0x49, 0x46, 0x38],
+  'image/webp': [0x52, 0x49, 0x46, 0x46], // RIFF header
+  'image/svg+xml': [], // SVG is text-based, skip magic check
+  'application/pdf': [0x25, 0x50, 0x44, 0x46],
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': [0x50, 0x4B, 0x03, 0x04], // ZIP-based
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': [0x50, 0x4B, 0x03, 0x04],
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': [0x50, 0x4B, 0x03, 0x04],
+  'application/zip': [0x50, 0x4B, 0x03, 0x04],
+  'text/plain': [], // Text files have no reliable magic bytes
+  'text/markdown': [], // Text files have no reliable magic bytes
+};
+
+function validateMagicBytes(buffer: Buffer, declaredMimeType: string): boolean {
+  const expected = MAGIC_BYTES[declaredMimeType];
+  if (!expected || expected.length === 0) return true; // Skip text-based types
+  if (buffer.length < expected.length) return false;
+  for (let i = 0; i < expected.length; i++) {
+    if (buffer[i] !== expected[i]) return false;
+  }
+  return true;
+}
+
 /**
  * 检查请求体大小是否超过限制（纵深防御）
  * 基于 Content-Length 头部进行预检，避免接收超大请求体
@@ -56,6 +82,20 @@ export async function POST(request: NextRequest) {
   const { userId: authenticatedUserId } = auth;
 
   try {
+    // Cleanup stale aiProcessingTimestamps (older than 1 hour)
+    const AI_TS_MAX_AGE = 60 * 60 * 1000; // 1 hour
+    if (aiProcessingTimestamps.size > 0) {
+      for (const [uid, timestamps] of aiProcessingTimestamps) {
+        const now = Date.now();
+        const filtered = timestamps.filter((ts: number) => now - ts < AI_TS_MAX_AGE);
+        if (filtered.length === 0) {
+          aiProcessingTimestamps.delete(uid);
+        } else if (filtered.length < timestamps.length) {
+          aiProcessingTimestamps.set(uid, filtered);
+        }
+      }
+    }
+
     // 纵深防御：在接收请求体之前，基于 Content-Length 预检请求体大小
     // middleware 已做第一层拦截（100MB），此处作为第二层防护
     const bodySizeResponse = checkBodySize(request, 100);
@@ -135,6 +175,10 @@ export async function POST(request: NextRequest) {
       fileType = "txt";
 
     const buffer = Buffer.from(await file.arrayBuffer());
+    // Validate magic bytes to prevent MIME type spoofing
+    if (!validateMagicBytes(buffer, file.type)) {
+      return NextResponse.json({ error: '文件内容与声明的类型不匹配' }, { status: 400 });
+    }
     // Sanitize filename to prevent path traversal
     const safeName = path.basename(file.name);
     const uniqueName = `${Date.now()}_${safeName}`;
@@ -394,6 +438,11 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const folderId = searchParams.get("folderId");
 
+    // Pagination support
+    const page = parseInt(searchParams.get('page') || '1', 10);
+    const limit = Math.min(parseInt(searchParams.get('limit') || '100', 10), 500);
+    const skip = (page - 1) * limit;
+
     // Use authenticated userId
     const userId = authenticatedUserId;
 
@@ -412,6 +461,8 @@ export async function GET(request: NextRequest) {
     const files = await db.file.findMany({
       where,
       orderBy: { createdAt: "desc" },
+      take: limit,
+      skip,
     });
 
     return NextResponse.json(
