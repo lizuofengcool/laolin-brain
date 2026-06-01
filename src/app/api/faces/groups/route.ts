@@ -10,9 +10,11 @@ export async function GET(request: NextRequest) {
   try {
     const groups = await db.faceGroup.findMany({
       where: { userId },
+      take: 100,
       include: {
         faces: {
           select: { fileId: true },
+          take: 50,
         },
       },
       orderBy: { createdAt: 'desc' },

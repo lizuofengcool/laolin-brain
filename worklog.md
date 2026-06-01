@@ -1537,3 +1537,30 @@ Stage Summary:
 - 修复 2 个路径遍历安全漏洞
 - TypeScript 0 错误、ESLint 0 错误、898 测试全通过
 - 项目当前状态：所有已知 bug 已修复，安全审查通过
+
+---
+Task ID: 3
+Agent: Main Agent
+Task: 全面审查 + 修复 API 安全问题 + 前端竞态条件
+
+Work Log:
+- 修复 next build 失败：.env 添加 TOKEN_SECRET
+- next build 成功通过
+- API 安全审计（33 个 API 路由）：发现 13 个问题（0 P0，0 P1，9 P2，4 P3）
+- 前端组件审计（33 个组件）：发现 17 个问题（0 P0，3 P1，9 P2，5 P3）
+- 修复 P2: backup import fileType/summary/keyPoints/textContent/thumbnailUrl 验证
+- 修复 P2: versions POST textContent(1MB)/thumbnailUrl(1024) 验证
+- 修复 P2: versions GET take:50 分页限制
+- 修复 P2: face groups take:100 + faces take:50 限制
+- 修复 P2: face group photos faceInstance take:5000 限制
+- 修复 P2: analytics tags SQL LIMIT 5000
+- 修复 P2: file import fileType 枚举验证
+- 修复 P1: AIChatPanel sendMessage 添加 AbortController
+- 修复 P1: FaceGroupPhotos fetchPhotos 添加 AbortController + cleanup
+- 修复 P1: UploadZone statusTimerRef 清理 + useEffect cleanup
+
+Stage Summary:
+- 修复 13 个问题（API 输入验证 + 前端竞态条件/timer cleanup）
+- TypeScript 0 错误、ESLint 0 错误、898 测试全通过
+- next build 成功
+- 未修复项（设计决策/P3低优先级）：X-Forwarded-For（部署层关注）、share textContent（share 预览需要）、Sidebar/MobileNav selector 优化（需要 store 架构调整）

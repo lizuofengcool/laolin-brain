@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 
+const VALID_FILE_TYPES = ["image", "pdf", "word", "pptx", "markdown", "txt", "other"];
+
 export async function POST(request: NextRequest) {
   const auth = authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
@@ -127,7 +129,7 @@ export async function POST(request: NextRequest) {
           data: {
             userId,
             fileName: file.fileName,
-            fileType: file.fileType || "other",
+            fileType: VALID_FILE_TYPES.includes(file.fileType) ? file.fileType : "other",
             fileSize: file.fileSize || 0,
             textContent: file.textContent || null,
             storageMode: "cloud",

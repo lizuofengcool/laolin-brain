@@ -4,6 +4,8 @@ import { authenticateRequest } from "@/lib/api-auth";
 import { simpleHash, verifyChecksum } from "@/lib/checksum";
 import { randomUUID } from "crypto";
 
+const VALID_FILE_TYPES = ["image", "pdf", "word", "pptx", "markdown", "txt", "other"];
+
 // ─── TypeScript types ───────────────────────────────────────────────
 
 interface BackupFile {
@@ -245,19 +247,19 @@ export async function POST(request: NextRequest) {
             id: newId,
             userId,
             fileName: file.fileName,
-            fileType: file.fileType,
+            fileType: VALID_FILE_TYPES.includes(file.fileType) ? file.fileType : 'other',
             fileSize: file.fileSize,
             filePath: file.filePath ?? null,
-            textContent: file.textContent ?? null,
-            thumbnailUrl: file.thumbnailUrl ?? null,
+            textContent: typeof file.textContent === 'string' && file.textContent.length <= 1 * 1024 * 1024 ? file.textContent : null,
+            thumbnailUrl: typeof file.thumbnailUrl === 'string' && file.thumbnailUrl.length <= 1024 ? file.thumbnailUrl : null,
             folderId: file.folderId ? folderIdMap.get(file.folderId) || null : null,
             tags: file.tags ?? "",
             isFavorite: file.isFavorite ?? false,
             isDeleted: file.isDeleted ?? false,
             deletedAt: file.deletedAt ? new Date(file.deletedAt) : null,
             fileHash: file.fileHash ?? null,
-            summary: file.summary ?? null,
-            keyPoints: file.keyPoints ?? "",
+            summary: typeof file.summary === 'string' && file.summary.length <= 2000 ? file.summary : null,
+            keyPoints: typeof file.keyPoints === 'string' && file.keyPoints.length <= 5000 ? file.keyPoints : "",
             createdAt: new Date(file.createdAt),
             updatedAt: new Date(file.updatedAt),
           },

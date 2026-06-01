@@ -108,7 +108,7 @@ export async function GET(request: NextRequest) {
 
     // Most used tags - fetch only active files' tags column (limited data)
     const tagsRaw = await db.$queryRaw<Array<{ tags: string | null }>>`
-      SELECT "tags" FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false AND "tags" IS NOT NULL AND "tags" != '[]'
+      SELECT "tags" FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false AND "tags" IS NOT NULL AND "tags" != '[]' LIMIT 5000
     `;
     const tagCount: Record<string, number> = {};
     for (const row of tagsRaw) {

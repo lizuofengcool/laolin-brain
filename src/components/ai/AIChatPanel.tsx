@@ -74,6 +74,8 @@ export function AIChatPanel({ open, onOpenChange }: AIChatPanelProps) {
     }
   }, [messages]);
 
+  const abortRef = useRef<AbortController | null>(null);
+
   const sendMessage = async () => {
     if (!input.trim() || loading || !aiChatFile) return;
 
@@ -87,6 +89,11 @@ export function AIChatPanel({ open, onOpenChange }: AIChatPanelProps) {
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setLoading(true);
+
+    // Abort any in-flight request
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     try {
       let answer = "";
@@ -123,6 +130,7 @@ export function AIChatPanel({ open, onOpenChange }: AIChatPanelProps) {
           const res = await fetch("/api/ai/ask", {
             method: "POST",
             headers: aiHeaders,
+            signal: controller.signal,
             body: JSON.stringify({
               type: "image",
               content: imageBase64,
@@ -145,6 +153,7 @@ export function AIChatPanel({ open, onOpenChange }: AIChatPanelProps) {
           const res = await fetch("/api/ai/ask", {
             method: "POST",
             headers: aiHeaders,
+            signal: controller.signal,
             body: JSON.stringify({
               type: "document",
               content,
@@ -167,7 +176,9 @@ export function AIChatPanel({ open, onOpenChange }: AIChatPanelProps) {
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, assistantMessage]);
-    } catch {
+    } catch (err) {
+      // Ignore aborted requests silently
+      if (controller.signal.aborted) return;
       const errorMessage: ChatMessage = {
         id: `error_${Date.now()}`,
         role: "assistant",

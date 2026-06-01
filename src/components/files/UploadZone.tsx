@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useState, useRef, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
 import { Upload, Cloud, HardDrive, Sparkles, Loader2, CheckCircle2, FileWarning } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
@@ -49,6 +49,14 @@ export function UploadZone({ className }: UploadZoneProps) {
   const [uploadedCount, setUploadedCount] = useState(0);
   const [failedFiles, setFailedFiles] = useState<string[]>([]);
   const { user, storageMode, addFile, refreshFiles, autoAiProcessing } = useAppStore();
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+    };
+  }, []);
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
@@ -327,8 +335,9 @@ export function UploadZone({ className }: UploadZoneProps) {
         // Automation is optional, don't fail upload
       }
 
-      // Clear status after a delay
-      setTimeout(() => {
+      // Clear status after a delay (with cleanup ref)
+      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+      statusTimerRef.current = setTimeout(() => {
         setUploadedCount(0);
         setFailedFiles([]);
       }, 3000);

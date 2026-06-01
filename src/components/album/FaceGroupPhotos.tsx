@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   ArrowLeft,
   Loader2,
@@ -33,16 +33,20 @@ export default function FaceGroupPhotos({
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
   const pageSize = 20;
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchPhotos = useCallback(async () => {
     setLoading(true);
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       const token = useAppStore.getState().token;
       const headers: Record<string, string> = {};
       if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch(
         `/api/faces/groups/${groupId}/photos?page=${page}&limit=${pageSize}`,
-        { headers }
+        { headers, signal: controller.signal }
       );
       if (res.ok) {
         const data = await res.json();
@@ -51,14 +55,21 @@ export default function FaceGroupPhotos({
         setTotal(data.total || 0);
       }
     } catch (err) {
-      console.error("Failed to fetch face group photos:", err);
+      if (!controller.signal.aborted) {
+        console.error("Failed to fetch face group photos:", err);
+      }
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
   }, [groupId, page]);
 
   useEffect(() => {
     fetchPhotos();
+    return () => {
+      if (abortRef.current) abortRef.current.abort();
+    };
   }, [fetchPhotos]);
 
   const handlePhotoClick = (photo: FileData, index: number) => {

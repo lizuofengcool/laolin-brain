@@ -23,6 +23,7 @@ export async function GET(
     const versions = await db.fileVersion.findMany({
       where: { fileId: id },
       orderBy: { version: "desc" },
+      take: 50,
     });
 
     return NextResponse.json(versions);
@@ -62,6 +63,26 @@ export async function POST(
         { error: "fileSize 必须为0-5GB之间的数字" },
         { status: 400 }
       );
+    }
+
+    // Validate textContent length
+    if (textContent !== undefined && textContent !== null) {
+      if (typeof textContent !== 'string' || textContent.length > 1 * 1024 * 1024) {
+        return NextResponse.json(
+          { error: "textContent 不能超过1MB" },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Validate thumbnailUrl format
+    if (thumbnailUrl !== undefined && thumbnailUrl !== null) {
+      if (typeof thumbnailUrl !== 'string' || thumbnailUrl.length > 1024) {
+        return NextResponse.json(
+          { error: "thumbnailUrl 格式无效" },
+          { status: 400 }
+        );
+      }
     }
 
     // Validate filePath to prevent stored path traversal

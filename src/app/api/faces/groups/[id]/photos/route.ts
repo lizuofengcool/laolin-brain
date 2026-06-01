@@ -31,10 +31,11 @@ export async function GET(
       return NextResponse.json({ error: "分组不存在" }, { status: 404 });
     }
 
-    // Get all face instances in this group
+    // Get face instances in this group (limit to prevent unbounded reads)
     const faceInstances = await db.faceInstance.findMany({
       where: { groupId: id },
       select: { fileId: true },
+      take: 5000,
     });
 
     // Deduplicate file IDs
