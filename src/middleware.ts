@@ -166,6 +166,20 @@ export async function middleware(request: NextRequest) {
   const bodySizeResponse = checkBodySizeLimit(request, path, request.method);
   if (bodySizeResponse) return bodySizeResponse;
 
+  // CSRF 防护：对非浏览器的可变请求进行 Origin 校验
+  // 浏览器会在跨站请求中发送 Origin 头，同源请求则 Origin 与 Host 一致。
+  // 非浏览器客户端（curl、服务端 fetch 等）通常不发送 Origin，直接放行。
+  if (request.method === 'POST' || request.method === 'PUT' || request.method === 'DELETE') {
+    const origin = request.headers.get('origin');
+    const host = request.headers.get('host');
+    if (origin && host) {
+      const originHost = origin.replace(/^https?:\/\//, '');
+      if (originHost !== host) {
+        return NextResponse.json({ error: 'Origin not allowed' }, { status: 403 });
+      }
+    }
+  }
+
   const forwarded = request.headers.get('x-forwarded-for');
   const ip = forwarded ? forwarded.split(',').pop()?.trim() || '127.0.0.1' : '127.0.0.1';
   const result = checkRateLimit(ip, path, request.method);

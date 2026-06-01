@@ -166,6 +166,7 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
     coverage: number;
   } | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(100);
 
   // Reset filters on new search
   useEffect(() => {
@@ -173,6 +174,7 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
     setDateRange("all");
     setSortBy("relevance");
     setWithinQuery("");
+    setVisibleCount(100);
   }, [triggerSearch]);
 
   // Fetch embedding status when user is available
@@ -547,8 +549,8 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
       ) : (
         <>
           <p className="text-sm text-muted-foreground">
-            {filteredResults.length > 100
-              ? `显示前 100 个，共 ${filteredResults.length} 个结果`
+            {visibleCount < filteredResults.length
+              ? `显示前 ${Math.min(visibleCount, filteredResults.length)} 个，共 ${filteredResults.length} 个结果`
               : `找到 ${filteredResults.length} 个结果`}
             {searchTime > 0 && <span className="ml-2">（{searchTime}ms）</span>}
             {searchMode !== "keyword" && (
@@ -561,7 +563,7 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
             )}
           </p>
           <div className="space-y-2">
-            {filteredResults.slice(0, 100).map((file) => {
+            {filteredResults.slice(0, visibleCount).map((file) => {
               const colorClass = getFileColor(file.fileType);
               const enhancedFile = file as EnhancedFileData;
 
@@ -626,6 +628,17 @@ export function SearchResults({ query, triggerSearch, onPreview }: SearchResults
                 </div>
               );
             })}
+            {visibleCount < filteredResults.length && (
+              <div className="pt-2">
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => setVisibleCount((prev) => prev + 100)}
+                >
+                  加载更多（剩余 {filteredResults.length - visibleCount} 个）
+                </Button>
+              </div>
+            )}
           </div>
         </>
       )}
