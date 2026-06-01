@@ -1,8 +1,7 @@
 module.exports = {
   apps: [{
     name: 'knowledge-brain',
-    script: 'node_modules/.bin/next',
-    args: 'start',
+    script: '.next/standalone/server.js',
     cwd: process.cwd(),
     instances: 1,
     autorestart: true,
@@ -17,6 +16,8 @@ module.exports = {
     env: {
       NODE_ENV: 'production',
       PORT: 3000,
+      DATABASE_URL: 'file:/home/z/my-project/db/custom.db',
+      TOKEN_SECRET: 'kb-local-dev-secret-change-in-production',
     },
   }],
 };
