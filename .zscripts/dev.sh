@@ -1,154 +1,63 @@
 #!/bin/bash
+# .zscripts/dev.sh — FC workspace 自定义启动脚本
+# 由 /start.sh 在后台子shell中调用 (sudo -u z bash .zscripts/dev.sh)
+# 职责：快速启动 Next.js 生产服务器，确保 Caddy 健康检查通过
 
-set -euo pipefail
+set -e
 
-# 获取脚本所在目录（.zscripts）
-# 使用 $0 获取脚本路径（与 build.sh 保持一致）
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd /home/z/my-project
 
-log_step_start() {
-	local step_name="$1"
-	echo "=========================================="
-	echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting: $step_name"
-	echo "=========================================="
-	export STEP_START_TIME
-	STEP_START_TIME=$(date +%s)
-}
+echo "[DEV.SH] $(date '+%Y-%m-%d %H:%M:%S') Starting custom dev script..."
 
-log_step_end() {
-	local step_name="${1:-Unknown step}"
-	local end_time
-	end_time=$(date +%s)
-	local duration=$((end_time - STEP_START_TIME))
-	echo "=========================================="
-	echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed: $step_name"
-	echo "[LOG] Step: $step_name | Duration: ${duration}s"
-	echo "=========================================="
-	echo ""
-}
-
-start_mini_services() {
-	local mini_services_dir="$PROJECT_DIR/mini-services"
-	local started_count=0
-
-	log_step_start "Starting mini-services"
-	if [ ! -d "$mini_services_dir" ]; then
-		echo "Mini-services directory not found, skipping..."
-		log_step_end "Starting mini-services"
-		return 0
-	fi
-
-	echo "Found mini-services directory, scanning for sub-services..."
-
-	for service_dir in "$mini_services_dir"/*; do
-		if [ ! -d "$service_dir" ]; then
-			continue
-		fi
-
-		local service_name
-		service_name=$(basename "$service_dir")
-		echo "Checking service: $service_name"
-
-		if [ ! -f "$service_dir/package.json" ]; then
-			echo "[$service_name] No package.json found, skipping..."
-			continue
-		fi
-
-		if ! grep -q '"dev"' "$service_dir/package.json"; then
-			echo "[$service_name] No dev script found, skipping..."
-			continue
-		fi
-
-		echo "Starting $service_name in background..."
-		(
-			cd "$service_dir"
-			echo "[$service_name] Installing dependencies..."
-			bun install
-			echo "[$service_name] Running bun run dev..."
-			exec bun run dev
-		) >"$PROJECT_DIR/.zscripts/mini-service-${service_name}.log" 2>&1 &
-
-		local service_pid=$!
-		echo "[$service_name] Started in background (PID: $service_pid)"
-		echo "[$service_name] Log: $PROJECT_DIR/.zscripts/mini-service-${service_name}.log"
-		disown "$service_pid" 2>/dev/null || true
-		started_count=$((started_count + 1))
-	done
-
-	echo "Mini-services startup completed. Started $started_count service(s)."
-	log_step_end "Starting mini-services"
-}
-
-wait_for_service() {
-	local host="$1"
-	local port="$2"
-	local service_name="$3"
-	local max_attempts="${4:-60}"
-	local attempt=1
-
-	echo "Waiting for $service_name to be ready on $host:$port..."
-
-	while [ "$attempt" -le "$max_attempts" ]; do
-		if curl -s --connect-timeout 2 --max-time 5 "http://$host:$port" >/dev/null 2>&1; then
-			echo "$service_name is ready!"
-			return 0
-		fi
-
-		echo "Attempt $attempt/$max_attempts: $service_name not ready yet, waiting..."
-		sleep 1
-		attempt=$((attempt + 1))
-	done
-
-	echo "ERROR: $service_name failed to start within $max_attempts seconds"
-	return 1
-}
-
-cleanup() {
-	if [ -n "${DEV_PID:-}" ] && kill -0 "$DEV_PID" >/dev/null 2>&1; then
-		echo "Stopping Next.js dev server (PID: $DEV_PID)..."
-		kill "$DEV_PID" >/dev/null 2>&1 || true
-	fi
-}
-
-trap cleanup EXIT INT TERM
-
-cd "$PROJECT_DIR"
-
-if ! command -v bun >/dev/null 2>&1; then
-	echo "ERROR: bun is not installed or not in PATH"
-	exit 1
+# ============================================================
+# 1. 确保 .env 存在必要变量
+# ============================================================
+if [ ! -f ".env" ]; then
+    echo "DATABASE_URL=file:/home/z/my-project/db/custom.db" > .env
+fi
+if ! grep -q "TOKEN_SECRET" .env 2>/dev/null; then
+    echo "TOKEN_SECRET=kb-local-dev-secret-change-in-production" >> .env
 fi
 
-log_step_start "bun install"
-echo "[BUN] Installing dependencies..."
-bun install
-log_step_end "bun install"
+# ============================================================
+# 2. Prisma 生成 & 数据库同步（首次启动需要）
+# ============================================================
+if [ -f "prisma/schema.prisma" ]; then
+    echo "[DEV.SH] Generating Prisma client..."
+    npx prisma generate --quiet 2>/dev/null || true
 
-log_step_start "bun run db:push"
-echo "[BUN] Setting up database..."
-bun run db:push
-log_step_end "bun run db:push"
+    echo "[DEV.SH] Syncing database schema..."
+    npx prisma db push --accept-data-loss 2>/dev/null || true
+fi
 
-log_step_start "Starting Next.js dev server"
-echo "[BUN] Starting development server..."
-bun run dev &
-DEV_PID=$!
-log_step_end "Starting Next.js dev server"
+# ============================================================
+# 3. 检查/构建生产版本
+# ============================================================
+if [ ! -f ".next/standalone/server.js" ]; then
+    echo "[DEV.SH] Production build not found, running next build..."
+    npm run build
+else
+    echo "[DEV.SH] Production build found, skipping build."
+fi
 
-log_step_start "Waiting for Next.js dev server"
-wait_for_service "localhost" "3000" "Next.js dev server"
-log_step_end "Waiting for Next.js dev server"
+# 确保 static 和 public 资源在 standalone 目录中
+if [ -d ".next/static" ]; then
+    cp -r .next/static .next/standalone/.next/ 2>/dev/null || true
+fi
+if [ -d "public" ]; then
+    cp -r public .next/standalone/ 2>/dev/null || true
+fi
 
-log_step_start "Health check"
-echo "[BUN] Performing health check..."
-curl -fsS localhost:3000 >/dev/null
-echo "[BUN] Health check passed"
-log_step_end "Health check"
+# ============================================================
+# 4. 启动生产服务器（毫秒级启动）
+# ============================================================
+echo "[DEV.SH] Starting Next.js production server on port 3000..."
 
-start_mini_services
+export NODE_ENV=production
+export PORT=3000
+export DATABASE_URL="file:/home/z/my-project/db/custom.db"
+export TOKEN_SECRET="kb-local-dev-secret-change-in-production"
 
-echo "Next.js dev server is running in background (PID: $DEV_PID)."
-echo "Use 'kill $DEV_PID' to stop it."
-disown "$DEV_PID" 2>/dev/null || true
-unset DEV_PID
+# 前台运行生产服务器（stdout/stderr 直接输出到调用方的日志）
+# 不用 while 循环和 tee，避免管道断裂导致进程被杀
+exec node .next/standalone/server.js

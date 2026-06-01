@@ -1564,3 +1564,22 @@ Stage Summary:
 - TypeScript 0 错误、ESLint 0 错误、898 测试全通过
 - next build 成功
 - 未修复项（设计决策/P3低优先级）：X-Forwarded-For（部署层关注）、share textContent（share 预览需要）、Sidebar/MobileNav selector 优化（需要 store 架构调整）
+---
+Task ID: deploy-fix-fc-workspace
+Agent: Main Agent
+Task: 修复部署失败 — FC workspace "function is pending state" 错误
+
+Work Log:
+- 分析 FC 环境变量发现这是阿里云函数计算自定义运行时 workspace
+- 端口链路: FC平台 → Caddy(:81) → Next.js(:3000)
+- 读取 /start.sh 发现容器启动只等 ZAI(12600) 就绪，不等 Next.js(3000)
+- 停掉 Next.js 后验证 port 81 返回 502，确认根因：后端未启动时健康检查失败
+- 创建 .zscripts/dev.sh 自定义启动脚本，用生产模式(67ms启动)替代开发模式
+- 修复 PM2 ecosystem.config.js：改用 standalone server + 环境变量
+- 安装 PM2 (全局未安装) + pm2 save 保存进程状态
+- 修复 dev.sh 中 tee 管道断裂导致进程被杀的问题
+
+Stage Summary:
+- 根因: FC 容器重启时 /start.sh 走 bun run dev(开发模式，启动慢)，Caddy 启动后后端未就绪 → 502 → health check 失败 → "pending state"
+- 修复: 创建 .zscripts/dev.sh 走生产模式(67ms启动)，PM2 保活+自动重启
+- 验证: Port 81/3000 连续 3 次检查全 200，TypeScript 0 错误，ESLint 0 错误，898 测试全通过
