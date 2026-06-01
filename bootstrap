@@ -1,0 +1,21 @@
+#!/bin/bash
+# ============================================================
+# 阿里云函数计算 Custom Runtime 启动脚本
+# FC 要求启动命令必须在前台运行，监听 0.0.0.0:9000
+# ============================================================
+
+set -e
+
+# 工作目录：FC 会将代码放在 /code/
+export NODE_ENV=production
+
+# 如果没有设置 PORT，FC 默认使用 9000
+export PORT="${PORT:-9000}"
+export HOSTNAME="0.0.0.0"
+
+# 确保 upload 和 db 目录存在（首次部署时可能没有）
+mkdir -p /code/upload/thumbnails
+mkdir -p /code/db
+
+echo "Starting Next.js standalone server on port ${PORT}..."
+exec node /code/.next/standalone/server.js
