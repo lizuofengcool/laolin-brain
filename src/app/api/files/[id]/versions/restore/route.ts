@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 import { safeJsonParseArray } from "@/lib/safe-json-parse";
 import { unlink } from "fs/promises";
+import path from "path";
 
 export async function POST(
   request: NextRequest,
@@ -76,10 +77,14 @@ export async function POST(
     // Clean up orphaned physical file (old file on disk is superseded)
     // Do this outside the transaction so it doesn't block the DB response
     if (file.filePath && file.filePath !== version.filePath) {
-      // file.filePath is already an absolute path, use it directly
-      unlink(file.filePath).catch(() => {
-        // Ignore if file doesn't exist (expected for cloud-stored or virtual files)
-      });
+      // Validate path before unlink to prevent path traversal
+      const resolvedOldPath = path.resolve(file.filePath);
+      const uploadDir = path.resolve(path.join(process.cwd(), 'upload'));
+      if (resolvedOldPath.startsWith(uploadDir + path.sep)) {
+        unlink(file.filePath).catch(() => {
+          // Ignore if file doesn't exist (expected for cloud-stored or virtual files)
+        });
+      }
     }
 
     return NextResponse.json({

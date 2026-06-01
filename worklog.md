@@ -1518,3 +1518,22 @@ Stage Summary:
 - TypeScript: 0错误
 - 单元测试: 898/898 通过（新增14个checksum测试）
 - Next.js build: 0错误
+
+---
+Task ID: 2
+Agent: Main Agent
+Task: 验证之前改动 + 修复新发现的安全问题
+
+Work Log:
+- 确认 store 拆分已完成（app-store.ts 已是 27 行 re-export shim，5 个 slice 分离）
+- TypeScript 0 错误、ESLint 0 错误、898 测试全通过
+- 审查最近 3 次提交的全部改动（middleware CSRF、SearchResults 分页、OfflineIndicator 去重、NotificationBell selector 优化、backup import 新 ID、magic bytes 验证、preview 路径遍历、SVG CSP、version restore 路径修复等）
+- 发现问题 1：preview/route.ts 正常认证流程缺少路径遍历检查（只有分享链接流程加了）
+- 发现问题 2：versions/restore/route.ts unlink 旧文件时缺少路径遍历验证
+- 修复 preview/route.ts 正常认证流程添加路径遍历防护
+- 修复 versions/restore/route.ts unlink 前添加路径遍历验证
+
+Stage Summary:
+- 修复 2 个路径遍历安全漏洞
+- TypeScript 0 错误、ESLint 0 错误、898 测试全通过
+- 项目当前状态：所有已知 bug 已修复，安全审查通过
