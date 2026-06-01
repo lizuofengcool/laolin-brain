@@ -1,8 +1,31 @@
 import { PrismaClient } from '@prisma/client'
+import path from 'path'
+import fs from 'fs'
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
 }
+
+/**
+ * Ensure the database directory exists.
+ * For SQLite, Prisma needs the parent directory to exist before creating the database file.
+ * This is critical for cloud function environments where the directory might not exist.
+ */
+function ensureDbDir(): void {
+  const dbUrl = process.env.DATABASE_URL || 'file:./db/custom.db'
+  // Extract file path from DATABASE_URL (format: "file:/path/to/db" or "file:./db/custom.db")
+  const filePath = dbUrl.replace(/^file:/, '')
+  const dbDir = path.dirname(filePath)
+  if (dbDir && !fs.existsSync(dbDir)) {
+    try {
+      fs.mkdirSync(dbDir, { recursive: true })
+    } catch {
+      // Ignore mkdir errors (e.g., read-only filesystem in serverless)
+    }
+  }
+}
+
+ensureDbDir()
 
 export const db =
   globalForPrisma.prisma ??
