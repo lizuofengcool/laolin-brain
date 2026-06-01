@@ -6,16 +6,30 @@
 
 set -e
 
-# 工作目录：FC 会将代码放在 /code/
 export NODE_ENV=production
 
 # 如果没有设置 PORT，FC 默认使用 9000
 export PORT="${PORT:-9000}"
 export HOSTNAME="0.0.0.0"
 
-# 确保 upload 和 db 目录存在（首次部署时可能没有）
-mkdir -p /code/upload/thumbnails
-mkdir -p /code/db
+# server.js 启动时会 process.chdir(__dirname) 将工作目录改为
+# /code/.next/standalone/，所有相对路径（db、upload）都从这里解析
+STANDALONE_DIR="/code/.next/standalone"
+
+# 确保数据目录存在（指向 standalone 目录，因为 CWD 会被改过去）
+mkdir -p "${STANDALONE_DIR}/db"
+mkdir -p "${STANDALONE_DIR}/upload"
+
+# 设置数据库路径（绝对路径，避免歧义）
+export DATABASE_URL="file:${STANDALONE_DIR}/db/custom.db"
+
+# TOKEN_SECRET：优先使用平台环境变量，否则使用安全回退值
+if [ -z "$TOKEN_SECRET" ]; then
+  export TOKEN_SECRET="fc-cloud-deployment-fallback-change-me"
+  echo "[WARN] TOKEN_SECRET not set, using fallback. Configure in FC console for security."
+fi
 
 echo "Starting Next.js standalone server on port ${PORT}..."
-exec node /code/.next/standalone/server.js
+echo "DATABASE_URL=${DATABASE_URL}"
+echo "CWD will be: ${STANDALONE_DIR}"
+exec node "${STANDALONE_DIR}/server.js"

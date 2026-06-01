@@ -14,7 +14,7 @@ const nextConfig: NextConfig = {
       bodySizeLimit: "50mb",
     },
   },
-  serverExternalPackages: [],
+  serverExternalPackages: ['sharp'],
   async headers() {
     return [
       {
