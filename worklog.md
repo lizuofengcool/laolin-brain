@@ -2277,3 +2277,125 @@ Status: ✅ 完成
 - 已完成：回调处理逻辑实现
 - 已完成：前端支付流程集成
 - TypeScript类型检查：0错误
+
+---
+
+## 2026-06-24 SaaS化多租户架构完善 - 批量任务
+
+### 任务1：多租户数据访问层统一封装
+
+**目标**: 创建统一的租户数据访问层，确保所有数据库查询都自动带上tenantId过滤
+
+**完成的工作**:
+
+**src/lib/db/tenant-db.ts** - 租户数据访问类
+- TenantDb类，封装所有业务表的CRUD操作
+- 自动添加tenantId过滤条件
+- 支持的表：file、folder、fileVersion、fileEmbedding、faceGroup、faceInstance、fileShare、syncLog、syncQueue、order、subscription、tenant、storageConfig
+- 提供createTenantDb工厂函数
+- 导出rawDb原始Prisma客户端（用于管理后台等跨租户操作）
+- FileVersion和FaceInstance表通过关联表过滤tenantId
+
+**src/lib/db/tenant-context.ts** - 租户上下文
+- getTenantIdFromRequest - 从请求中获取租户ID
+- getTenantDbFromRequest - 从请求中获取租户数据库访问实例
+- getTenantIdFromUserId - 从userId获取租户ID
+- getTenantDbFromUserId - 从userId获取租户数据库访问实例
+
+**src/lib/db/index.ts** - 统一导出
+- 将原db.ts移动到db/index.ts，保持向后兼容
+- 导出TenantDb、createTenantDb、rawDb
+- 导出租户上下文相关函数
+
+**架构优势**:
+- 数据隔离在底层强制实现，不靠程序员自觉
+- 不破坏现有代码结构，可以逐步迁移
+- TypeScript类型安全
+- 支持事务
+- 提供原始Prisma客户端的逃生口
+
+Status: ✅ 完成
+- TypeScript类型检查：0错误
+
+---
+
+### 任务2：Tauri桌面端多租户适配
+
+**目标**: 让Tauri桌面端也支持多租户架构
+
+**完成的工作**:
+
+**src-tauri/src/db.rs** - 数据库表升级
+- files表添加tenant_id字段（默认值为空字符串）
+- file_versions表添加tenant_id字段（默认值为空字符串）
+- folders表添加tenant_id字段（默认值为空字符串）
+- 保持向后兼容，现有数据库会自动添加字段
+
+**后续待完成**:
+- 修改所有查询添加tenant_id过滤
+- 修改所有创建添加tenant_id
+- 修改Rust命令接口，接收tenant_id参数
+- 修改数据结构，添加tenant_id字段
+
+Status: 🚧 进行中
+- 已完成：数据库表结构升级
+- 待完成：查询和创建操作适配、命令接口更新
+
+---
+
+### 任务3：剩余API路由多租户升级检查
+
+**目标**: 全面检查所有API路由，确保全部支持多租户
+
+**已检查的路由**:
+- ✅ /api/backup/ - 已支持多租户
+- ✅ /api/embeddings/generate/ - 已支持多租户
+- ✅ /api/faces/detect/ - 已支持多租户
+- ✅ /api/faces/process-all/ - 已支持多租户
+- ✅ /api/files/import/ - 已支持多租户
+- ✅ /api/files/ - 已支持多租户
+- ✅ /api/folders/ - 已支持多租户
+- ✅ /api/billing/ - 已支持多租户
+- ✅ /api/cloud-sync/ - 已支持多租户
+- ✅ /api/payment/ - 已支持多租户
+- ✅ /api/saas/ - 已支持多租户
+- ✅ /api/admin/ - 管理后台，跨租户访问（已授权）
+
+**待迁移的路由**:
+- /api/ai/ 下的所有路由
+- /api/files/[id]/ 下的路由
+- /api/folders/[id]/ 路由
+- /api/search/ 路由
+- /api/settings/ 路由
+- /api/analytics/ 路由
+- 其他辅助路由
+
+Status: 🚧 进行中
+- 核心业务路由已全部支持多租户
+- 剩余路由将逐步迁移到新的tenant-db数据访问层
+
+---
+
+### 任务4：测试用例补充
+
+**状态**: ⏳ 待开始
+
+**计划实现**:
+- 付费系统测试 - 订阅创建、订单创建、配额检查等
+- 云同步测试 - 增量同步、冲突检测、队列管理等
+- 多租户隔离测试 - 确保不同租户数据不互通
+- 支付回调测试 - 签名验证、幂等性等
+
+---
+
+### 任务5：文档更新
+
+**状态**: 🚧 进行中
+
+**已完成**:
+- 更新worklog.md，记录本次批量开发的工作内容
+
+**待完成**:
+- 更新README.md - 更新功能列表、技术栈、SaaS特性说明
+- 更新DEPLOY.md - 更新部署说明，添加环境变量配置说明
+
