@@ -7,6 +7,52 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ==================== SaaS 多租户核心模型 ====================
+
+model Tenant {
+  id          String   @id @default(cuid())
+  name        String   // 租户名称
+  plan        String   @default("free") // 套餐：free / pro / enterprise
+  status      String   @default("active") // 状态：active / suspended / cancelled
+  storageQuota BigInt  @default(5368709120) // 存储配额（字节），默认 5GB
+  aiQuota     Int      @default(200) // AI 调用配额（次/天）
+  aiUsed      Int      @default(0) // 今日已用 AI 次数
+  aiResetDate DateTime? // AI 配额重置日期
+  storageUsed BigInt   @default(0) // 已用存储（字节）
+  region      String   @default("cn") // 数据区域：cn / us / eu
+  storageProvider String @default("local") // 存储提供商：local / aliyun / r2
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  currentPeriodEnd DateTime? // 当前订阅周期结束时间
+  trialEndsAt DateTime? // 试用结束时间
+
+  // 关联
+  users           TenantUser[]
+  files           File[]
+  folders         Folder[]
+  subscriptions   Subscription[]
+  orders          Order[]
+  storageConfigs  StorageConfig[]
+  faceGroups      FaceGroup[]
+
+  @@index([status])
+  @@index([plan])
+}
+
+model TenantUser {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String
+  role      String   @default("owner") // 角色：owner / admin / member
+  joinedAt  DateTime @default(now())
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@index([userId])
+}
+
 model User {
   id          String   @id @default(cuid())
   name        String
@@ -15,12 +61,88 @@ model User {
   storageMode String   @default("local")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-  files       File[]
-  folders     Folder[]
+
+  // 关联
+  tenantMemberships TenantUser[]
+  files             File[]
+  folders           Folder[]
+
+  // 便捷方法：获取当前激活的租户
+  @@map("users")
 }
+
+// ==================== 订阅与计费 ====================
+
+model Subscription {
+  id          String   @id @default(cuid())
+  tenantId    String
+  plan        String   // 套餐：free / pro / enterprise
+  status      String   @default("active") // active / cancelled / past_due
+  price       Decimal  @default(0)
+  interval    String   @default("month") // month / year
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  cancelAtPeriodEnd  Boolean  @default(false)
+  canceledAt  DateTime?
+  startedAt   DateTime
+  endedAt     DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orders      Order[]
+
+  @@index([tenantId])
+  @@index([status])
+}
+
+model Order {
+  id          String   @id @default(cuid())
+  tenantId    String
+  subscriptionId String?
+  orderNo     String   @unique // 订单号
+  amount      Decimal  // 金额（分）
+  currency    String   @default("cny")
+  status      String   @default("pending") // pending / paid / failed / refunded
+  payMethod   String? // 支付方式：alipay / wechat
+  payTime     DateTime?
+  transactionId String? // 第三方交易号
+  plan        String
+  interval    String
+  quantity    Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([orderNo])
+}
+
+// ==================== 存储配置 ====================
+
+model StorageConfig {
+  id          String   @id @default(cuid())
+  tenantId    String
+  provider    String   // aliyun / r2 / local
+  config      String   // JSON 格式的配置信息（加密存储）
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@unique([tenantId, provider])
+}
+
+// ==================== 业务模型（已升级为多租户） ====================
 
 model File {
   id           String   @id @default(cuid())
+  tenantId     String
   userId       String
   fileName     String
   fileType     String
@@ -37,8 +159,12 @@ model File {
   fileHash     String?
   summary      String?
   keyPoints    String   @default("")
+  syncStatus   String   @default("local") // local / synced / pending / conflict
+  lastSyncAt   DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   folder       Folder?  @relation(fields: [folderId], references: [id], onDelete: SetNull)
   shares       FileShare[]
@@ -46,13 +172,15 @@ model File {
   faces        FaceInstance[]
   embedding    FileEmbedding?
 
-  @@index([userId])
-  @@index([userId, isDeleted])
+  @@index([tenantId])
+  @@index([tenantId, isDeleted])
+  @@index([tenantId, userId])
   @@index([folderId])
-  @@index([userId, isFavorite])
+  @@index([tenantId, isFavorite])
   @@index([fileHash])
   @@index([createdAt])
   @@index([fileType])
+  @@index([syncStatus])
 }
 
 model FileVersion {
@@ -66,24 +194,29 @@ model FileVersion {
   version      Int
   createdAt    DateTime @default(now())
   file         File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
   @@index([fileId])
 }
 
 model Folder {
   id        String   @id @default(cuid())
+  tenantId  String
   userId    String
   name      String
   parentId  String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   files     File[]
   parent    Folder?  @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
   children  Folder[] @relation("FolderTree")
 
-  @@index([userId])
+  @@index([tenantId])
+  @@index([tenantId, userId])
   @@index([parentId])
-  @@unique([userId, name, parentId])
+  @@unique([tenantId, name, parentId])
 }
 
 model FileShare {
@@ -94,23 +227,27 @@ model FileShare {
   expiresAt DateTime?
   createdAt DateTime @default(now())
   file      File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
   @@index([token])
 }
 
 model FileEmbedding {
   id        String   @id @default(cuid())
   fileId    String   @unique
+  tenantId  String
   userId    String
   embedding String
   createdAt DateTime @default(now())
   file      File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
 
-  @@index([userId])
+  @@index([tenantId])
+  @@index([tenantId, userId])
   @@index([fileId])
 }
 
 model FaceGroup {
   id        String        @id @default(cuid())
+  tenantId  String
   userId    String
   name      String?
   thumbnail String?
@@ -118,8 +255,11 @@ model FaceGroup {
   updatedAt DateTime      @updatedAt
   faces     FaceInstance[]
 
-  @@index([userId])
-  @@unique([userId, name])
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@unique([tenantId, name])
 }
 
 model FaceInstance {
@@ -138,4 +278,24 @@ model FaceInstance {
 
   @@index([groupId])
   @@index([fileId])
+}
+
+// ==================== 同步相关 ====================
+
+model SyncLog {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String
+  syncType  String   // full / incremental
+  status    String   // success / failed / in_progress
+  filesSynced Int    @default(0)
+  filesTotal Int     @default(0)
+  bytesSynced BigInt @default(0)
+  errorMessage String?
+  startedAt DateTime
+  endedAt   DateTime?
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([startedAt])
 }

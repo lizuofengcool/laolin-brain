@@ -1750,3 +1750,89 @@ Status: ✅ 已完成
 - 新增依赖：@aws-sdk/client-s3、@aws-sdk/s3-request-presigner
 - TypeScript：0 错误
 - 下一步：提交代码到 Gitee → 测试功能 → 增量同步优化
+
+---
+Task ID: saas-multi-tenant
+Agent: Main Agent
+Task: SaaS 多租户架构升级（Phase 1）
+
+Work Log:
+- 需求分析：用户要求现在就做 SaaS，不等商业验证，桌面端要有离线功能
+- 合规分析：Cloudflare R2 存在合规风险（美国公司、CLOUD Act、数据出境）
+- 技术选型：
+  - 国内存储：阿里云 OSS（等保三级、合规性好、生态完善）
+  - 多租户方案：逻辑隔离（共享数据库 + tenantId）
+  - 存储隔离：路径隔离（tenants/{tenantId}/ 前缀）
+  - 同步策略：离线优先（本地 SQLite 为主，云端为备）
+
+- 数据库 schema 升级（prisma/schema.prisma）：
+  - 新增 Tenant 模型：租户基本信息、套餐、配额、状态
+  - 新增 TenantUser 模型：租户-用户关联，支持多用户
+  - 新增 Subscription 模型：订阅管理、周期、状态
+  - 新增 Order 模型：订单管理、支付状态
+  - 新增 StorageConfig 模型：存储配置（按租户配置）
+  - 新增 SyncLog 模型：同步日志
+  - 所有业务表增加 tenantId 字段
+  - File 表增加 syncStatus 和 lastSyncAt 用于同步
+  - 所有索引升级为 tenantId 前缀
+
+- 新增阿里云 OSS 存储适配器（src/lib/cloud-sync/aliyun-oss.ts）：
+  - OSSClient 初始化和配置
+  - 上传加密后的备份文件
+  - 下载并解密备份文件
+  - 列出备份列表
+  - 删除备份
+  - 上传/下载单个文件（增量同步用）
+  - 生成预签名 URL
+  - 获取文件元信息
+  - 连接测试
+  - 多租户路径隔离：tenants/{tenantId}/backups/ 和 tenants/{tenantId}/files/
+
+- 创建租户服务（src/lib/saas/tenant.service.ts）：
+  - 套餐配置：免费版（1GB/50次AI）、专业版（50GB/500次AI/39元）、企业版（500GB/5000次AI/199元）
+  - 创建租户（自动创建默认订阅）
+  - 获取租户信息
+  - 检查租户访问权限
+  - 获取用户租户列表
+  - 添加用户到租户
+  - 存储配额检查和更新
+  - AI 配额检查和消耗
+  - 套餐升级/降级
+  - 获取当前订阅
+  - 检查租户状态
+
+- 创建订单和支付服务（src/lib/saas/billing.service.ts）：
+  - 生成订单号
+  - 创建订单（支持月付/年付，年付买10送2）
+  - 获取订单信息
+  - 获取租户订单列表
+  - 处理支付成功回调（事务性）
+  - 取消订阅（到期后失效）
+  - 恢复订阅
+  - 检查订阅是否即将到期（7天内）
+  - 获取支付参数（预留支付宝/微信对接）
+
+- 升级同步引擎支持多租户（src/lib/cloud-sync/sync-engine.ts）：
+  - 存储提供者工厂模式：根据租户配置动态选择 OSS/R2
+  - 完整备份/恢复：支持多租户数据隔离
+  - 增量同步：基于文件哈希和修改时间
+  - 同步状态管理：local/synced/pending/conflict
+  - 同步日志记录
+
+- 创建 SaaS API 路由：
+  - GET /api/saas/tenant - 获取租户信息、状态、订阅
+
+Stage Summary:
+- 架构升级：从单用户升级为多租户 SaaS 架构
+- 合规性：新增阿里云 OSS 国内存储，满足数据合规要求
+- 核心功能：租户管理、订阅管理、订单管理、配额控制
+- 离线优先：桌面端本地 SQLite 为主，云端为备，支持离线使用
+- 数据隔离：逻辑隔离 + 路径隔离 + 端到端加密，三层防护
+- 新增文件：10+ 个（schema + service + adapter + API）
+- 新增依赖：ali-oss（阿里云 OSS SDK）
+- 下一步：完善 SaaS API → 前端会员页面 → 支付接入 → 提交代码
+
+Status: 🚧 进行中
+- 已完成：数据库 schema、租户服务、订单服务、OSS 适配器、同步引擎升级
+- 待完成：更多 API 路由、前端 UI、支付接入、运营后台
+- 预计 Phase 1 完成时间：1-2 天
