@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
 import {
   Cloud,
   CloudUpload,
@@ -18,6 +19,11 @@ import {
   Settings,
   Clock,
   HardDrive,
+  RefreshCw,
+  AlertTriangle,
+  ListTodo,
+  Play,
+  X,
 } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 
@@ -27,6 +33,39 @@ interface BackupInfo {
   folderCount: number;
   totalSize: number;
   version: string;
+}
+
+interface SyncStatusInfo {
+  lastSyncTime: string | null;
+  totalFiles: number;
+  syncedFiles: number;
+  pendingFiles: number;
+  conflictFiles: number;
+  isSyncing: boolean;
+  lastError: string | null;
+  overallStatus: 'idle' | 'syncing' | 'error' | 'offline';
+  queueSize: number;
+}
+
+interface ConflictFile {
+  id: string;
+  fileName: string;
+  fileSize: number;
+  updatedAt: string;
+  fileHash: string | null;
+}
+
+interface QueueItem {
+  id: string;
+  operation: 'upload' | 'update' | 'delete';
+  fileId: string | null;
+  fileName: string | null;
+  status: 'pending' | 'processing' | 'failed' | 'completed';
+  retryCount: number;
+  maxRetries: number;
+  errorMessage: string | null;
+  priority: number;
+  createdAt: string;
 }
 
 interface CloudSyncProps {
@@ -39,6 +78,13 @@ export function CloudSync({ className }: CloudSyncProps) {
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [isCreatingBackup, setIsCreatingBackup] = useState(false);
   const [isRestoring, setIsRestoring] = useState<string | null>(null);
+
+  // 同步状态
+  const [syncStatus, setSyncStatus] = useState<SyncStatusInfo | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [conflicts, setConflicts] = useState<ConflictFile[]>([]);
+  const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [isResolvingConflict, setIsResolvingConflict] = useState<string | null>(null);
 
   // 配置表单状态
   const [configForm, setConfigForm] = useState({
@@ -58,6 +104,83 @@ export function CloudSync({ className }: CloudSyncProps) {
     checkConfigStatus();
   }, []);
 
+  // 加载同步状态
+  const loadSyncStatus = useCallback(async () => {
+    if (!isConfigured) return;
+
+    try {
+      const res = await fetch('/api/cloud-sync/status');
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setSyncStatus(data.data.status);
+      }
+    } catch (error) {
+      console.error('加载同步状态失败:', error);
+    }
+  }, [isConfigured]);
+
+  // 加载冲突列表
+  const loadConflicts = useCallback(async () => {
+    if (!isConfigured) return;
+
+    try {
+      const res = await fetch('/api/cloud-sync/conflicts');
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setConflicts(data.data);
+      }
+    } catch (error) {
+      console.error('加载冲突列表失败:', error);
+    }
+  }, [isConfigured]);
+
+  // 加载备份列表
+  const loadBackups = useCallback(async () => {
+    if (!isConfigured) return;
+
+    try {
+      const res = await fetch('/api/cloud-sync/backups');
+      const data = await res.json();
+      if (res.ok) {
+        setBackups(data.backups || []);
+      }
+    } catch (error) {
+      console.error('加载备份列表失败:', error);
+    }
+  }, [isConfigured]);
+
+  // 加载队列
+  const loadQueue = useCallback(async () => {
+    if (!isConfigured) return;
+
+    try {
+      const res = await fetch('/api/cloud-sync/queue');
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setQueue(data.data);
+      }
+    } catch (error) {
+      console.error('加载队列失败:', error);
+    }
+  }, [isConfigured]);
+
+  // 配置完成后加载数据
+  useEffect(() => {
+    if (isConfigured) {
+      loadBackups();
+      loadSyncStatus();
+      loadConflicts();
+      loadQueue();
+
+      // 定时刷新同步状态
+      const interval = setInterval(() => {
+        loadSyncStatus();
+      }, 5000);
+
+      return () => clearInterval(interval);
+    }
+  }, [isConfigured, loadBackups, loadSyncStatus, loadConflicts, loadQueue]);
+
   const checkConfigStatus = async () => {
     try {
       const res = await fetch('/api/cloud-sync/config');
@@ -70,18 +193,6 @@ export function CloudSync({ className }: CloudSyncProps) {
       console.error('检查云同步配置失败:', error);
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const loadBackups = async () => {
-    try {
-      const res = await fetch('/api/cloud-sync/backups');
-      const data = await res.json();
-      if (res.ok) {
-        setBackups(data.backups || []);
-      }
-    } catch (error) {
-      console.error('加载备份列表失败:', error);
     }
   };
 
@@ -102,7 +213,6 @@ export function CloudSync({ className }: CloudSyncProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(configForm),
       });
-
       const data = await res.json();
       if (res.ok) {
         toast({
@@ -146,7 +256,6 @@ export function CloudSync({ className }: CloudSyncProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: encryptionPassword }),
       });
-
       const data = await res.json();
       if (res.ok) {
         toast({
@@ -154,6 +263,7 @@ export function CloudSync({ className }: CloudSyncProps) {
           description: `已备份 ${data.backup.fileCount} 个文件和 ${data.backup.folderCount} 个文件夹`,
         });
         loadBackups();
+        loadSyncStatus();
       } else {
         toast({
           title: '备份失败',
@@ -193,7 +303,6 @@ export function CloudSync({ className }: CloudSyncProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: encryptionPassword }),
       });
-
       const data = await res.json();
       if (res.ok) {
         toast({
@@ -229,7 +338,6 @@ export function CloudSync({ className }: CloudSyncProps) {
       const res = await fetch(`/api/cloud-sync/backups/${backupId}`, {
         method: 'DELETE',
       });
-
       if (res.ok) {
         toast({
           title: '删除成功',
@@ -247,6 +355,180 @@ export function CloudSync({ className }: CloudSyncProps) {
     } catch (error) {
       toast({
         title: '删除失败',
+        description: '网络错误，请重试',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // 手动同步
+  const handleSync = async () => {
+    if (!encryptionPassword) {
+      toast({
+        title: '请输入加密密码',
+        description: '需要加密密码才能进行同步',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setIsSyncing(true);
+    try {
+      const res = await fetch('/api/cloud-sync/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: encryptionPassword }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast({
+          title: '同步完成',
+          description: `上传 ${data.data.uploaded} 个，下载 ${data.data.downloaded} 个，冲突 ${data.data.conflicts} 个`,
+        });
+        loadSyncStatus();
+        loadConflicts();
+        loadQueue();
+      } else {
+        toast({
+          title: '同步失败',
+          description: data.error || '同步失败',
+          variant: 'destructive',
+        });
+      }
+    } catch (error) {
+      toast({
+        title: '同步失败',
+        description: '网络错误，请重试',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // 解决冲突
+  const handleResolveConflict = async (fileId: string, resolution: 'local_wins' | 'cloud_wins' | 'keep_both') => {
+    if (!encryptionPassword) {
+      toast({
+        title: '请输入加密密码',
+        description: '需要加密密码才能解决冲突',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setIsResolvingConflict(fileId);
+    try {
+      const res = await fetch('/api/cloud-sync/conflicts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileId,
+          resolution,
+          password: encryptionPassword,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast({
+          title: '冲突已解决',
+          description: '文件已同步',
+        });
+        loadConflicts();
+        loadSyncStatus();
+      } else {
+        toast({
+          title: '解决冲突失败',
+          description: data.error || '解决冲突失败',
+          variant: 'destructive',
+        });
+      }
+    } catch (error) {
+      toast({
+        title: '解决冲突失败',
+        description: '网络错误，请重试',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsResolvingConflict(null);
+    }
+  };
+
+  // 批量自动解决冲突
+  const handleAutoResolveConflicts = async () => {
+    if (!encryptionPassword) {
+      toast({
+        title: '请输入加密密码',
+        description: '需要加密密码才能解决冲突',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!confirm('确定要自动解决所有冲突吗？将使用"最后写入胜出"策略。')) {
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/cloud-sync/conflicts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          auto: true,
+          password: encryptionPassword,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast({
+          title: '批量解决完成',
+          description: `已解决 ${data.data.resolved} 个冲突`,
+        });
+        loadConflicts();
+        loadSyncStatus();
+      } else {
+        toast({
+          title: '批量解决失败',
+          description: data.error || '批量解决失败',
+          variant: 'destructive',
+        });
+      }
+    } catch (error) {
+      toast({
+        title: '批量解决失败',
+        description: '网络错误，请重试',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // 清理队列
+  const handleCleanupQueue = async () => {
+    if (!confirm('确定要清理已完成的队列项吗？')) {
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/cloud-sync/queue', {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast({
+          title: '清理完成',
+          description: `已清理 ${data.data.cleaned} 个队列项`,
+        });
+        loadQueue();
+      } else {
+        toast({
+          title: '清理失败',
+          description: data.error || '清理失败',
+          variant: 'destructive',
+        });
+      }
+    } catch (error) {
+      toast({
+        title: '清理失败',
         description: '网络错误，请重试',
         variant: 'destructive',
       });
@@ -271,6 +553,51 @@ export function CloudSync({ className }: CloudSyncProps) {
     });
   };
 
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'synced':
+        return <Badge className="bg-green-500">已同步</Badge>;
+      case 'pending':
+        return <Badge className="bg-yellow-500">等待中</Badge>;
+      case 'conflict':
+        return <Badge className="bg-red-500">冲突</Badge>;
+      case 'local':
+        return <Badge variant="outline">本地</Badge>;
+      default:
+        return <Badge variant="outline">{status}</Badge>;
+    }
+  };
+
+  const getOverallStatusText = (status: string) => {
+    switch (status) {
+      case 'idle':
+        return '空闲';
+      case 'syncing':
+        return '同步中';
+      case 'error':
+        return '错误';
+      case 'offline':
+        return '离线';
+      default:
+        return status;
+    }
+  };
+
+  const getOverallStatusColor = (status: string) => {
+    switch (status) {
+      case 'idle':
+        return 'text-green-500';
+      case 'syncing':
+        return 'text-blue-500';
+      case 'error':
+        return 'text-red-500';
+      case 'offline':
+        return 'text-gray-500';
+      default:
+        return 'text-gray-500';
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center p-8">
@@ -281,21 +608,201 @@ export function CloudSync({ className }: CloudSyncProps) {
 
   return (
     <div className={className}>
-      <Tabs defaultValue="backups" className="w-full">
-        <TabsList className="grid w-full grid-cols-3">
+      <Tabs defaultValue="sync" className="w-full">
+        <TabsList className="grid w-full grid-cols-5">
+          <TabsTrigger value="sync">
+            <RefreshCw className="mr-2 h-4 w-4" />
+            同步状态
+          </TabsTrigger>
           <TabsTrigger value="backups">
             <Cloud className="mr-2 h-4 w-4" />
             备份管理
+          </TabsTrigger>
+          <TabsTrigger value="conflicts">
+            <AlertTriangle className="mr-2 h-4 w-4" />
+            冲突解决
+            {conflicts.length > 0 && (
+              <Badge className="ml-2 bg-red-500 text-xs">{conflicts.length}</Badge>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="queue">
+            <ListTodo className="mr-2 h-4 w-4" />
+            同步队列
           </TabsTrigger>
           <TabsTrigger value="settings">
             <Settings className="mr-2 h-4 w-4" />
             配置设置
           </TabsTrigger>
-          <TabsTrigger value="security">
-            <Shield className="mr-2 h-4 w-4" />
-            安全设置
-          </TabsTrigger>
         </TabsList>
+
+        {/* 同步状态 */}
+        <TabsContent value="sync" className="space-y-4">
+          {!isConfigured ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Cloud className="h-5 w-5 text-muted-foreground" />
+                  云同步未配置
+                </CardTitle>
+                <CardDescription>
+                  请先配置 Cloudflare R2 存储以启用云端备份同步功能
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button onClick={() => (document.querySelector('[data-value="settings"]') as HTMLElement)?.click()}>
+                  去配置
+                </Button>
+              </CardContent>
+            </Card>
+          ) : (
+            <>
+              {/* 同步状态卡片 */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Cloud className="h-5 w-5" />
+                      同步状态
+                    </div>
+                    <Badge className={getOverallStatusColor(syncStatus?.overallStatus || 'idle')}>
+                      {getOverallStatusText(syncStatus?.overallStatus || 'idle')}
+                    </Badge>
+                  </CardTitle>
+                  <CardDescription>
+                    离线优先：本地数据为主，云端为备份
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {/* 同步进度 */}
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span>同步进度</span>
+                      <span>
+                        {syncStatus?.syncedFiles || 0} / {syncStatus?.totalFiles || 0} 个文件
+                      </span>
+                    </div>
+                    <Progress
+                      value={syncStatus?.totalFiles ? (syncStatus.syncedFiles / syncStatus.totalFiles) * 100 : 0}
+                    />
+                  </div>
+
+                  {/* 统计信息 */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="space-y-1">
+                      <p className="text-sm text-muted-foreground">总文件数</p>
+                      <p className="text-2xl font-bold">{syncStatus?.totalFiles || 0}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-sm text-muted-foreground">已同步</p>
+                      <p className="text-2xl font-bold text-green-500">{syncStatus?.syncedFiles || 0}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-sm text-muted-foreground">等待中</p>
+                      <p className="text-2xl font-bold text-yellow-500">{syncStatus?.pendingFiles || 0}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-sm text-muted-foreground">冲突</p>
+                      <p className="text-2xl font-bold text-red-500">{syncStatus?.conflictFiles || 0}</p>
+                    </div>
+                  </div>
+
+                  {/* 上次同步时间 */}
+                  {syncStatus?.lastSyncTime && (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Clock className="h-4 w-4" />
+                      <span>上次同步：{formatDate(syncStatus.lastSyncTime)}</span>
+                    </div>
+                  )}
+
+                  {/* 错误信息 */}
+                  {syncStatus?.lastError && (
+                    <div className="flex items-center gap-2 text-sm text-red-500">
+                      <AlertCircle className="h-4 w-4" />
+                      <span>{syncStatus.lastError}</span>
+                    </div>
+                  )}
+
+                  {/* 加密密码和同步按钮 */}
+                  <div className="space-y-4 pt-4 border-t">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">加密密码</label>
+                      <div className="flex gap-2">
+                        <Input
+                          type={showPassword ? 'text' : 'password'}
+                          placeholder="请输入加密密码"
+                          value={encryptionPassword}
+                          onChange={(e) => setEncryptionPassword(e.target.value)}
+                        />
+                        <Button
+                          variant="outline"
+                          onClick={() => setShowPassword(!showPassword)}
+                          type="button"
+                        >
+                          {showPassword ? '隐藏' : '显示'}
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        密码用于加密您的数据，请务必牢记。丢失密码将无法恢复备份数据。
+                      </p>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={handleSync}
+                        disabled={isSyncing || !encryptionPassword}
+                        className="flex-1"
+                      >
+                        {isSyncing ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            同步中...
+                          </>
+                        ) : (
+                          <>
+                            <Play className="mr-2 h-4 w-4" />
+                            立即同步
+                          </>
+                        )}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={loadSyncStatus}
+                        disabled={isSyncing}
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* 队列状态 */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <ListTodo className="h-5 w-5" />
+                    离线队列
+                    <Badge variant="outline" className="ml-auto">
+                      {syncStatus?.queueSize || 0} 个待处理
+                    </Badge>
+                  </CardTitle>
+                  <CardDescription>
+                    离线时操作会加入队列，联网后自动同步
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => (document.querySelector('[data-value="queue"]') as HTMLElement)?.click()}
+                  >
+                    查看队列详情
+                  </Button>
+                </CardContent>
+              </Card>
+            </>
+          )}
+        </TabsContent>
 
         {/* 备份管理 */}
         <TabsContent value="backups" className="space-y-4">
@@ -448,6 +955,259 @@ export function CloudSync({ className }: CloudSyncProps) {
           )}
         </TabsContent>
 
+        {/* 冲突解决 */}
+        <TabsContent value="conflicts" className="space-y-4">
+          {!isConfigured ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Cloud className="h-5 w-5 text-muted-foreground" />
+                  云同步未配置
+                </CardTitle>
+                <CardDescription>
+                  请先配置云同步以启用冲突解决功能
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button onClick={() => (document.querySelector('[data-value="settings"]') as HTMLElement)?.click()}>
+                  去配置
+                </Button>
+              </CardContent>
+            </Card>
+          ) : (
+            <>
+              {/* 冲突说明 */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <AlertTriangle className="h-5 w-5 text-yellow-500" />
+                    文件冲突
+                    <Badge variant="destructive" className="ml-auto">
+                      {conflicts.length} 个冲突
+                    </Badge>
+                  </CardTitle>
+                  <CardDescription>
+                    当本地和云端同时修改同一文件时会产生冲突，请选择解决方式
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {conflicts.length > 0 && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">加密密码</label>
+                      <div className="flex gap-2">
+                        <Input
+                          type={showPassword ? 'text' : 'password'}
+                          placeholder="请输入加密密码"
+                          value={encryptionPassword}
+                          onChange={(e) => setEncryptionPassword(e.target.value)}
+                        />
+                        <Button
+                          variant="outline"
+                          onClick={() => setShowPassword(!showPassword)}
+                          type="button"
+                        >
+                          {showPassword ? '隐藏' : '显示'}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {conflicts.length > 0 && (
+                    <Button
+                      variant="outline"
+                      onClick={handleAutoResolveConflicts}
+                      disabled={!encryptionPassword}
+                    >
+                      自动解决所有冲突（最后写入胜出）
+                    </Button>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* 冲突列表 */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>冲突文件列表</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {conflicts.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-8 text-center">
+                      <CheckCircle2 className="h-12 w-12 text-green-500/50 mb-4" />
+                      <p className="text-muted-foreground">没有冲突文件</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        所有文件都已正确同步
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {conflicts.map((conflict) => (
+                        <div
+                          key={conflict.id}
+                          className="p-4 border rounded-lg space-y-3"
+                        >
+                          <div className="flex items-start justify-between">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <AlertTriangle className="h-4 w-4 text-yellow-500" />
+                                <span className="font-medium">{conflict.fileName}</span>
+                              </div>
+                              <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                                <span>{formatSize(conflict.fileSize)}</span>
+                                <span>修改于 {formatDate(conflict.updatedAt)}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleResolveConflict(conflict.id, 'local_wins')}
+                              disabled={isResolvingConflict === conflict.id || !encryptionPassword}
+                            >
+                              {isResolvingConflict === conflict.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : null}
+                              <span className="ml-1">保留本地版本</span>
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleResolveConflict(conflict.id, 'cloud_wins')}
+                              disabled={isResolvingConflict === conflict.id || !encryptionPassword}
+                            >
+                              {isResolvingConflict === conflict.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : null}
+                              <span className="ml-1">保留云端版本</span>
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleResolveConflict(conflict.id, 'keep_both')}
+                              disabled={isResolvingConflict === conflict.id || !encryptionPassword}
+                            >
+                              {isResolvingConflict === conflict.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : null}
+                              <span className="ml-1">保留两者</span>
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </>
+          )}
+        </TabsContent>
+
+        {/* 同步队列 */}
+        <TabsContent value="queue" className="space-y-4">
+          {!isConfigured ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Cloud className="h-5 w-5 text-muted-foreground" />
+                  云同步未配置
+                </CardTitle>
+                <CardDescription>
+                  请先配置云同步以查看同步队列
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button onClick={() => (document.querySelector('[data-value="settings"]') as HTMLElement)?.click()}>
+                  去配置
+                </Button>
+              </CardContent>
+            </Card>
+          ) : (
+            <>
+              {/* 队列操作 */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <ListTodo className="h-5 w-5" />
+                    离线同步队列
+                    <Badge variant="outline" className="ml-auto">
+                      {queue.length} 个任务
+                    </Badge>
+                  </CardTitle>
+                  <CardDescription>
+                    离线时的操作会加入队列，联网后自动同步
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={loadQueue}>
+                      <RefreshCw className="mr-2 h-4 w-4" />
+                      刷新
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={handleCleanupQueue}>
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      清理已完成
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* 队列列表 */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>队列任务列表</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {queue.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-8 text-center">
+                      <CheckCircle2 className="h-12 w-12 text-green-500/50 mb-4" />
+                      <p className="text-muted-foreground">队列为空</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        所有同步任务都已完成
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {queue.map((item) => (
+                        <div
+                          key={item.id}
+                          className="flex items-center justify-between p-3 border rounded-lg"
+                        >
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              {item.operation === 'upload' || item.operation === 'update' ? (
+                                <CloudUpload className="h-4 w-4 text-blue-500" />
+                              ) : (
+                                <Trash2 className="h-4 w-4 text-red-500" />
+                              )}
+                              <span className="font-medium">
+                                {item.fileName || item.fileId}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                              <span>
+                                {item.operation === 'upload' ? '上传' : item.operation === 'update' ? '更新' : '删除'}
+                              </span>
+                              <span>重试 {item.retryCount}/{item.maxRetries}</span>
+                              <span>{formatDate(item.createdAt)}</span>
+                            </div>
+                            {item.errorMessage && (
+                              <p className="text-xs text-red-500">{item.errorMessage}</p>
+                            )}
+                          </div>
+                          <div>
+                            {getStatusBadge(item.status)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </>
+          )}
+        </TabsContent>
+
         {/* 配置设置 */}
         <TabsContent value="settings" className="space-y-4">
           <Card>
@@ -487,7 +1247,7 @@ export function CloudSync({ className }: CloudSyncProps) {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">Bucket 名称</label>
+                <label className="text-sm font-medium">Bucket Name</label>
                 <Input
                   placeholder="存储桶名称"
                   value={configForm.bucketName}
@@ -505,56 +1265,41 @@ export function CloudSync({ className }: CloudSyncProps) {
                     测试连接中...
                   </>
                 ) : (
-                  '保存配置并测试连接'
+                  '保存配置'
                 )}
               </Button>
-              <p className="text-xs text-muted-foreground">
-                配置信息仅存储在服务端内存中，重启后需要重新配置。生产环境建议存储到加密数据库中。
-              </p>
             </CardContent>
           </Card>
-        </TabsContent>
 
-        {/* 安全设置 */}
-        <TabsContent value="security" className="space-y-4">
+          {/* 安全设置 */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Shield className="h-5 w-5" />
-                加密说明
+                安全设置
               </CardTitle>
               <CardDescription>
-                了解云端同步的安全机制
+                数据加密和安全相关设置
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
-                <h4 className="font-medium">端到端加密</h4>
-                <p className="text-sm text-muted-foreground">
-                  所有备份数据在上传到云端之前都会在本地使用 AES-256-GCM 算法加密。
-                  加密密钥由您的密码派生，即使云端存储被攻破，数据也无法被解密。
-                </p>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-green-500" />
+                  <span className="text-sm">端到端 AES-256-GCM 加密</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-green-500" />
+                  <span className="text-sm">零知识加密 - 服务器无法读取您的数据</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-green-500" />
+                  <span className="text-sm">数据完整性校验</span>
+                </div>
               </div>
-              <div className="space-y-2">
-                <h4 className="font-medium">密码管理</h4>
-                <p className="text-sm text-muted-foreground">
-                  请务必牢记您的加密密码。密码丢失将无法恢复备份数据。
-                  我们不会存储您的密码，也无法帮您找回。
-                </p>
-              </div>
-              <div className="space-y-2">
-                <h4 className="font-medium">数据完整性</h4>
-                <p className="text-sm text-muted-foreground">
-                  每个备份都包含 SHA-256 校验和，恢复时会自动验证数据完整性，
-                  确保备份数据没有被篡改或损坏。
-                </p>
-              </div>
-              <div className="space-y-2">
-                <h4 className="font-medium">存储位置</h4>
-                <p className="text-sm text-muted-foreground">
-                  数据存储在您自己的 Cloudflare R2 存储桶中，您完全拥有和控制自己的数据。
-                </p>
-              </div>
+              <p className="text-xs text-muted-foreground">
+                注意：请务必牢记您的加密密码。丢失密码将无法恢复备份数据，我们也无法帮您找回。
+              </p>
             </CardContent>
           </Card>
         </TabsContent>

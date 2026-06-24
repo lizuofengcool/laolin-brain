@@ -299,3 +299,28 @@ model SyncLog {
   @@index([status])
   @@index([startedAt])
 }
+
+model SyncQueue {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String
+  operation String   // upload / update / delete
+  fileId    String?
+  fileName  String?
+  fileHash  String?
+  filePath  String?
+  folderId  String?
+  status    String   // pending / processing / failed / completed
+  retryCount Int     @default(0)
+  maxRetries Int     @default(3)
+  errorMessage String?
+  priority  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  processedAt DateTime?
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([tenantId, status])
+}
