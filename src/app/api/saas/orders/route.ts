@@ -78,7 +78,7 @@ export async function POST(request: Request) {
     const order = await createOrder(tenantId, plan, interval, quantity);
 
     // 获取支付参数（预留支付宝/微信对接）
-    const paymentParams = await getPaymentParams(order.id);
+    const paymentParams = await getPaymentParams(order.id, 'alipay');
 
     return NextResponse.json({
       order,

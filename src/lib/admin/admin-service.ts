@@ -330,9 +330,7 @@ export async function getRecentSyncLogs(limit: number = 20) {
     orderBy: { startedAt: 'desc' },
     take: limit,
     include: {
-      tenant: {
-        select: { name: true },
-      },
+      tenant: true,
     },
-  });
+  } as any);
 }

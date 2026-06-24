@@ -178,7 +178,6 @@ export async function handlePaymentSuccess(
             currentPeriodEnd: newPeriodEnd,
             startedAt: now,
             status: 'active',
-            orderId: order.id,
           },
         });
 

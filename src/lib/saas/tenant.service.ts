@@ -159,7 +159,7 @@ export async function checkStorageQuota(
   });
 
   if (!tenant) {
-    return { allowed: false, used: 0n, quota: 0n };
+    return { allowed: false, used: BigInt(0), quota: BigInt(0) };
   }
 
   const allowed = tenant.storageUsed + BigInt(fileSize) <= tenant.storageQuota;

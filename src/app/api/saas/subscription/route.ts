@@ -4,7 +4,7 @@
 
 import { NextResponse } from 'next/server';
 import { getCurrentSubscription, checkTenantStatus } from '@/lib/saas/tenant.service';
-import { cancelSubscription, resumeSubscription, isSubscriptionExpiringSoon } from '@/lib/saas/billing.service';
+import { cancelSubscription, reactivateSubscription, isSubscriptionExpiringSoon } from '@/lib/saas/billing.service';
 
 // 获取当前订阅信息
 export async function GET(request: Request) {
@@ -86,7 +86,7 @@ export async function POST(request: Request) {
     }
 
     if (action === 'resume') {
-      const result = await resumeSubscription(tenantId);
+      const result = await reactivateSubscription(tenantId);
       return NextResponse.json({
         success: true,
         message: '订阅已恢复',
