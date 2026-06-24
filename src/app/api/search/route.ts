@@ -7,21 +7,51 @@ type SearchMode = "keyword" | "semantic" | "hybrid";
 // Keyword search - the original search logic
 async function keywordSearch(
   q: string,
-  tenantDb: any
+  tenantDb: any,
+  filters: {
+    fileType?: string;
+    dateFrom?: Date;
+    dateTo?: Date;
+    folderId?: string;
+  } = {}
 ): Promise<Array<Record<string, unknown>>> {
+  const where: any = {
+    storageMode: "cloud",
+    isDeleted: false,
+    OR: [
+      { fileName: { contains: q } },
+      { textContent: { contains: q } },
+      { tags: { contains: q } },
+    ],
+  };
+
+  // 文件类型筛选
+  if (filters.fileType) {
+    where.fileType = filters.fileType;
+  }
+
+  // 时间范围筛选
+  if (filters.dateFrom || filters.dateTo) {
+    where.createdAt = {};
+    if (filters.dateFrom) {
+      where.createdAt.gte = filters.dateFrom;
+    }
+    if (filters.dateTo) {
+      where.createdAt.lte = filters.dateTo;
+    }
+  }
+
+  // 文件夹筛选
+  if (filters.folderId) {
+    where.folderId = filters.folderId;
+  }
+
   const files = await tenantDb.file.findMany({
-    where: {
-      storageMode: "cloud",
-      isDeleted: false,
-      OR: [
-        { fileName: { contains: q } },
-        { textContent: { contains: q } },
-        { tags: { contains: q } },
-      ],
-    },
+    where,
     orderBy: { createdAt: "desc" },
     take: 50,
   });
+
   return files.map((f: any) => ({
     ...f,
     tags: safeJsonParseArray(f.tags),

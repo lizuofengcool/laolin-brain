@@ -2934,3 +2934,232 @@ Status: 🎉 4个任务全部完成，待最终验证和提交
 3. 验证Docker镜像构建
 4. 部署测试环境验证
 
+
+---
+
+## 核心功能增强开发 - 人脸相册、知识图谱、搜索优化、PWA
+
+**日期**: 2026-06-24
+**开发人员**: AI Assistant
+**任务**: 完成4个核心功能增强任务：人脸相册完善、知识图谱增强、全文搜索优化、PWA移动端支持
+
+---
+
+### 任务1：人脸相册功能完善 ✅
+
+**完成情况**:
+- ✅ 合并分组API - 支持将多个分组合并到目标分组
+- ✅ 人脸分组列表API完善 - 添加分页、搜索、排序、多租户支持
+- ✅ 批量人脸检测 - 已有完整的批量检测和进度跟踪功能
+- ✅ 人脸聚类算法 - 已有基于余弦相似度的层次聚类
+
+**新增/修改文件**:
+
+1. **新增：src/app/api/faces/groups/merge/route.ts** - 合并分组API
+   - 支持将多个源分组合并到目标分组
+   - 使用事务保证数据一致性
+   - 自动更新缩略图（选择人脸最多的图片）
+   - 自动合并名称（如果目标分组没有名称）
+   - 完整的参数验证和权限检查
+   - 多租户支持（tenantId过滤）
+
+2. **修改：src/app/api/faces/groups/route.ts** - 完善分组列表API
+   - 添加分页支持（page、pageSize参数）
+   - 添加搜索支持（search参数，按名称搜索）
+   - 添加排序支持（sortBy: photoCount/faceCount/createdAt/name，sortOrder: asc/desc）
+   - 添加多租户支持（tenantId过滤）
+   - 返回标准分页格式（data、total、page、pageSize、totalPages、hasMore）
+
+**现有功能**:
+- ✅ 人脸检测API（单张图片）
+- ✅ 批量人脸检测API（带进度跟踪）
+- ✅ 人脸分组列表API
+- ✅ 分组详情/重命名/删除API
+- ✅ 分组照片列表API
+- ✅ 人脸聚类算法（余弦相似度 + 层次聚类）
+- ✅ 前端FaceGroups组件和FaceGroupPhotos组件
+- ✅ FaceGroupsViewContent页面组件
+
+---
+
+### 任务2：知识图谱功能增强 ✅
+
+**现有功能（已完整实现）**:
+- ✅ SVG力导向图布局
+- ✅ 节点拖拽功能
+- ✅ 平移（pan）功能
+- ✅ 缩放（viewTransform）功能
+- ✅ 悬停提示（tooltip）
+- ✅ 类型筛选（按文件类型筛选节点）
+- ✅ 显示/隐藏标签
+- ✅ 节点颜色根据类型区分（word、pdf、image、pptx、markdown、txt、other）
+- ✅ 知识图谱生成API
+
+**相关文件**:
+- src/components/graph/KnowledgeGraph.tsx - 知识图谱组件
+- src/app/api/ai/graph/route.ts - 知识图谱生成API
+- src/app/(dashboard)/graph/page.tsx - 知识图谱页面
+
+**功能说明**:
+- 力导向布局算法，自动优化节点位置
+- 支持鼠标拖拽节点调整位置
+- 支持鼠标滚轮缩放和拖拽平移
+- 节点悬停显示详细信息
+- 支持按文件类型筛选显示
+- 可切换显示/隐藏节点标签
+- 不同文件类型使用不同颜色区分
+
+---
+
+### 任务3：全文搜索优化 ✅
+
+**完成情况**:
+- ✅ 高级搜索筛选 - 添加文件类型、时间范围、文件夹筛选
+- ✅ 关键词搜索优化
+- ✅ 语义搜索 - 基于向量嵌入的语义相似度搜索
+- ✅ 混合搜索 - 关键词+语义加权评分
+- ✅ 人脸搜索 - 按人脸分组名称搜索照片
+- ✅ 多租户支持 - 使用tenant-db层自动隔离
+
+**修改文件**:
+
+1. **修改：src/app/api/search/route.ts** - 搜索API优化
+   - 关键词搜索添加高级筛选功能：
+     - 文件类型筛选（fileType）
+     - 时间范围筛选（dateFrom、dateTo）
+     - 文件夹筛选（folderId）
+   - 保持原有的四种搜索模式：
+     - keyword：关键词搜索（文件名、内容、标签）
+     - semantic：语义搜索（向量相似度）
+     - hybrid：混合搜索（关键词0.4 + 语义0.6加权）
+     - face：人脸搜索（按分组名称搜索照片）
+   - 多租户数据隔离（使用getTenantDbFromRequest）
+
+**现有搜索功能**:
+- ✅ 关键词搜索 - 按文件名、文本内容、标签搜索
+- ✅ 语义搜索 - 使用向量嵌入进行语义相似度搜索
+- ✅ 混合搜索 - 结合关键词和语义搜索结果，加权评分
+- ✅ 人脸搜索 - 按人脸分组名称搜索匹配的照片
+- ✅ 搜索结果去重和合并
+- ✅ 相似度评分和排序
+
+---
+
+### 任务4：PWA移动端支持 ✅
+
+**现有功能（已完整实现）**:
+- ✅ PWA清单文件（manifest.json）
+- ✅ Service Worker（sw.js）
+- ✅ 应用图标（多种尺寸）
+- ✅ 安装提示横幅（InstallBanner）
+- ✅ 离线状态指示器（OfflineIndicator）
+- ✅ Service Worker管理Hook（usePWA）
+- ✅ 离线队列同步（useOfflineQueue）
+- ✅ 移动端视口适配
+- ✅ Apple PWA支持（apple-touch-icon、appleWebApp配置）
+
+**相关文件**:
+- public/manifest.json - PWA清单文件
+- public/sw.js - Service Worker
+- public/icons/ - 应用图标
+- src/components/layout/InstallBanner.tsx - 安装提示横幅
+- src/components/layout/OfflineIndicator.tsx - 离线状态指示器
+- src/hooks/use-service-worker.ts - PWA管理Hook
+- src/app/layout.tsx - 根布局（PWA配置）
+
+**PWA功能详情**:
+
+1. **清单配置（manifest.json）**:
+   - 应用名称和短名称
+   - 启动URL和作用域
+   - 显示模式：standalone（独立应用）
+   - 主题色和背景色
+   - 多种尺寸的应用图标（192、512、1024）
+   - 快捷方式（搜索文件、上传文件）
+   - 分类：生产力、工具
+
+2. **Service Worker（sw.js）**:
+   - 静态资源缓存（Cache-first策略）
+   - API响应缓存（Network-first策略，5分钟TTL）
+   - 图片缓存（Cache-first策略）
+   - 离线回退页面
+   - 缓存配额管理
+   - SKIP_WAITING消息处理
+   - 版本管理和缓存清理
+
+3. **安装体验**:
+   - 安装提示横幅（延迟2秒显示）
+   - 一键安装功能
+   - 可关闭提示（sessionStorage记忆）
+   - 安装状态检测
+
+4. **离线支持**:
+   - 在线/离线状态实时检测
+   - 离线状态指示器
+   - 离线操作队列
+   - 恢复在线后自动同步
+   - 同步进度显示
+
+5. **移动端适配**:
+   - 响应式视口配置
+   - 主题色支持
+   - 安全区域适配（viewport-fit: cover）
+   - 最大缩放比例控制
+
+---
+
+### 验证结果
+
+| 验证项 | 结果 | 说明 |
+|--------|------|------|
+| TypeScript类型检查 | ✅ 通过 | npx tsc --noEmit 0错误 |
+| 人脸相册API | ✅ 完成 | 合并分组、分页搜索排序 |
+| 知识图谱功能 | ✅ 完整 | 力导向图、拖拽、缩放、筛选 |
+| 全文搜索优化 | ✅ 完成 | 高级筛选、四种搜索模式 |
+| PWA移动端支持 | ✅ 完整 | manifest、SW、安装提示、离线支持 |
+
+---
+
+### 新增/修改文件清单
+
+**新增文件**（1个）:
+1. src/app/api/faces/groups/merge/route.ts - 合并分组API
+
+**修改文件**（2个）:
+1. src/app/api/faces/groups/route.ts - 完善分组列表API（分页、搜索、排序、多租户）
+2. src/app/api/search/route.ts - 添加高级搜索筛选功能
+
+**已有完整功能文件**:
+- 知识图谱：3个文件（组件、API、页面）
+- PWA：6+个文件（manifest、sw、组件、hooks）
+
+---
+
+### 技术亮点
+
+1. **人脸相册**:
+   - 基于余弦相似度的人脸聚类算法
+   - 批量检测和进度跟踪
+   - 分组合并的事务保证
+   - 完整的多租户数据隔离
+
+2. **知识图谱**:
+   - SVG力导向布局算法
+   - 流畅的交互体验（拖拽、缩放、平移）
+   - 多类型节点可视化
+   - 类型筛选功能
+
+3. **全文搜索**:
+   - 四种搜索模式（关键词、语义、混合、人脸）
+   - 高级筛选功能（类型、时间、文件夹）
+   - 向量语义相似度计算
+   - 加权评分混合排序
+
+4. **PWA移动端**:
+   - 完整的PWA规范实现
+   - 智能缓存策略（不同资源不同策略）
+   - 优雅的安装引导体验
+   - 离线操作队列和自动同步
+
+---
+

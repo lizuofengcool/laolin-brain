@@ -5,23 +5,73 @@ import { db } from '@/lib/db';
 export async function GET(request: NextRequest) {
   const auth = authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
+
   const { userId } = auth;
 
   try {
-    const groups = await db.faceGroup.findMany({
+    // 查询用户的租户
+    const tenantUser = await db.tenantUser.findFirst({
       where: { userId },
-      take: 100,
+      select: { tenantId: true },
+    });
+
+    if (!tenantUser) {
+      return NextResponse.json(
+        { error: "Tenant not found" },
+        { status: 404 }
+      );
+    }
+
+    const { tenantId } = tenantUser;
+
+    // 解析查询参数
+    const { searchParams } = new URL(request.url);
+    const page = parseInt(searchParams.get('page') || '1', 10);
+    const pageSize = Math.min(100, parseInt(searchParams.get('pageSize') || '50', 10));
+    const search = searchParams.get('search') || '';
+    const sortBy = searchParams.get('sortBy') || 'photoCount'; // photoCount, faceCount, createdAt, name
+    const sortOrder = searchParams.get('sortOrder') || 'desc'; // asc, desc
+
+    // 构建查询条件
+    const where: any = {
+      tenantId,
+      userId,
+    };
+
+    // 搜索条件
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    // 计算总数
+    const total = await db.faceGroup.count({ where });
+
+    // 构建排序
+    let orderBy: any = {};
+    if (sortBy === 'createdAt') {
+      orderBy = { createdAt: sortOrder };
+    } else if (sortBy === 'name') {
+      orderBy = { name: sortOrder };
+    }
+
+    // 查询分组
+    const groups = await db.faceGroup.findMany({
+      where,
+      skip: (page - 1) * pageSize,
+      take: pageSize,
       include: {
         faces: {
           select: { fileId: true },
-          take: 50,
+          take: 100,
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: Object.keys(orderBy).length > 0 ? orderBy : { createdAt: 'desc' },
     });
 
-    // Count faces per group and deduplicate file IDs for photo count
-    const result = groups.map((group) => {
+    // 处理结果：计算人脸数和照片数
+    let result = groups.map((group) => {
       const uniqueFileIds = new Set(group.faces.map((f) => f.fileId));
       return {
         id: group.id,
@@ -34,10 +84,22 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    // Sort by photo count descending
-    result.sort((a, b) => b.photoCount - a.photoCount);
+    // 按照片数或人脸数排序（如果是这些排序方式）
+    if (sortBy === 'photoCount') {
+      result.sort((a, b) => sortOrder === 'asc' ? a.photoCount - b.photoCount : b.photoCount - a.photoCount);
+    } else if (sortBy === 'faceCount') {
+      result.sort((a, b) => sortOrder === 'asc' ? a.faceCount - b.faceCount : b.faceCount - a.faceCount);
+    }
 
-    return NextResponse.json(result);
+    // 返回分页结果
+    return NextResponse.json({
+      data: result,
+      total,
+      page,
+      pageSize,
+      totalPages: Math.ceil(total / pageSize),
+      hasMore: page * pageSize < total,
+    });
   } catch (e) {
     console.error('Face groups list error:', e);
     return NextResponse.json(
