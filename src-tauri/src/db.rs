@@ -134,6 +134,7 @@ fn init_tables(conn: &Connection) -> DbResult<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS files (
             id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT '',
             user_id TEXT NOT NULL,
             file_name TEXT NOT NULL,
             file_type TEXT NOT NULL,
@@ -187,6 +188,7 @@ fn init_tables(conn: &Connection) -> DbResult<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS file_versions (
             id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT '',
             file_id TEXT NOT NULL,
             file_name TEXT NOT NULL,
             file_size INTEGER NOT NULL DEFAULT 0,
@@ -214,6 +216,7 @@ fn init_tables(conn: &Connection) -> DbResult<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS folders (
             id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT '',
             name TEXT NOT NULL,
             parent_id TEXT,
             user_id TEXT NOT NULL,
