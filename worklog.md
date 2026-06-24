@@ -3,7 +3,7 @@ Task ID: 前端会员中心页面开发
 Agent: Sub Agent
 Task: 开发面向普通用户的会员中心页面
 Date: 2026-06-24
-Commit: 待提交
+Commit: 3677445
 Work Log:
 - 新增会员中心API路由（/api/billing/）：
   - subscription/route.ts - 获取当前用户订阅信息、配额使用、试用状态
