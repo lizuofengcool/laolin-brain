@@ -3,7 +3,7 @@ Task ID: 用户账户和设置功能开发
 Agent: Sub Agent
 Task: 开发用户账户和设置相关功能
 Date: 2026-06-24
-Commit: (待提交)
+Commit: d263867
 Work Log:
 - 任务1：个人信息管理 ✅
   - User模型添加avatar和settings字段
