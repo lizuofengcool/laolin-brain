@@ -401,3 +401,61 @@ model Comment {
   @@index([parentId])
   @@index([createdAt])
 }
+
+// ==================== 高级功能模型 ====================
+
+model AutomationRule {
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String
+  name       String
+  trigger    String   // file_uploaded
+  conditions String   // JSON string
+  actions    String   // JSON string
+  enabled    Boolean  @default(true)
+  priority   Int      @default(0)
+  runCount   Int      @default(0)
+  lastRunAt  DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@index([tenantId, enabled])
+  @@index([createdAt])
+}
+
+model AccessHistory {
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String
+  fileId     String
+  accessType String   // view / download / edit
+  accessCount Int     @default(1)
+  lastAccessedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@index([tenantId, fileId])
+  @@index([tenantId, userId, lastAccessedAt])
+  @@unique([tenantId, userId, fileId, accessType])
+}
+
+model Shortcut {
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String
+  fileId     String?
+  folderId   String?
+  name       String
+  icon       String?
+  sortOrder  Int      @default(0)
+  isPinned   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@index([tenantId, userId, isPinned])
+  @@index([sortOrder])
+}
