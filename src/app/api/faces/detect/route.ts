@@ -11,6 +11,19 @@ export async function POST(request: NextRequest) {
   const { userId } = auth;
 
   try {
+    // 查询用户的租户
+    const tenantUser = await db.tenantUser.findFirst({
+      where: { userId },
+      select: { tenantId: true },
+    });
+    if (!tenantUser) {
+      return NextResponse.json(
+        { error: "Tenant not found" },
+        { status: 404 }
+      );
+    }
+    const { tenantId } = tenantUser;
+
     const body = await request.json();
     const { imageBase64, fileId } = body;
 
@@ -30,7 +43,7 @@ export async function POST(request: NextRequest) {
 
     // Verify file belongs to authenticated user
     const file = await db.file.findUnique({ where: { id: fileId } });
-    if (!file || file.userId !== userId) {
+    if (!file || file.userId !== userId || file.tenantId !== tenantId) {
       return NextResponse.json(
         { error: '文件不存在或无权访问' },
         { status: 403 }
@@ -47,6 +60,7 @@ export async function POST(request: NextRequest) {
       const groups = await db.faceGroup.findMany({
         where: {
           userId,
+          tenantId,
           faces: { some: { fileId } },
         },
         include: { faces: true },
@@ -86,7 +100,7 @@ export async function POST(request: NextRequest) {
 
     // Get all existing face groups for this user
     const existingGroups = await db.faceGroup.findMany({
-      where: { userId },
+      where: { userId, tenantId },
       include: { faces: true },
     });
 
@@ -149,6 +163,7 @@ export async function POST(request: NextRequest) {
         await db.faceGroup.create({
           data: {
             id: groupId,
+            tenantId,
             userId,
             name: null,
             thumbnail: fileId,

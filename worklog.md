@@ -1927,3 +1927,62 @@ Status: 🚧 进行中
 Status: 🚧 进行中
 - 已完成：云同步 API 多租户升级、admin-service 类型修复
 - 待完成：现有 API 路由多租户升级、旧 saas 模块修复、前端页面、支付接入
+
+## saas-phase2-api-fixes - SaaS化API路由多租户升级完成
+
+**Date**: 2026-06-24
+**Type**: 类型修复 + 多租户架构升级
+
+### 完成的工作
+
+#### 1. 修复剩余8个TypeScript类型错误
+所有类型错误均为业务表创建时缺少tenantId字段导致。
+
+#### 2. API路由多租户升级完成
+
+**src/app/api/backup/route.ts**
+- GET方法：添加tenantId查询逻辑，file和folder查询添加tenantId过滤
+- POST方法：添加tenantId查询逻辑，冲突检查添加tenantId过滤，folder和file创建时添加tenantId字段
+
+**src/app/api/embeddings/generate/route.ts**
+- POST方法：添加tenantId查询逻辑
+- 所有fileEmbedding查询添加tenantId过滤
+- 所有file查询添加tenantId过滤
+- fileEmbedding.upsert的create添加tenantId字段
+- GET方法：添加tenantId查询逻辑，count查询添加tenantId过滤
+
+**src/app/api/faces/detect/route.ts**
+- POST方法：添加tenantId查询逻辑
+- 文件权限验证添加tenantId检查
+- faceGroup查询添加tenantId过滤
+- faceGroup.create添加tenantId字段
+
+**src/app/api/faces/process-all/route.ts**
+- POST方法：添加tenantId查询逻辑
+- allImageFiles查询添加tenantId过滤
+- processFilesInBackground函数添加tenantId参数
+- existingGroups查询添加tenantId过滤
+- faceGroup.create添加tenantId字段
+- existingGroups.push对象添加tenantId字段
+
+**src/app/api/files/import/route.ts**
+- POST方法：添加tenantId查询逻辑
+- 存储配额查询添加tenantId过滤
+- folder权限验证添加tenantId检查
+- folder.create添加tenantId字段
+- folder.findFirst查询添加tenantId过滤
+- file.create添加tenantId字段
+
+### 技术要点
+- 严格遵循多租户API升级模式：通过userId查询TenantUser表获取tenantId
+- 所有业务表创建时必须携带tenantId字段
+- 所有查询必须按tenantId过滤，确保数据隔离
+- 底层架构强制保证数据隔离，不依赖程序员自觉
+
+### 验证结果
+- 运行 `npx tsc --noEmit` 验证通过，0个类型错误
+- 所有8个初始类型错误全部修复
+
+Status: ✅ 完成
+- 已完成：所有剩余API路由多租户升级，8个类型错误全部修复
+- TypeScript类型检查：0错误

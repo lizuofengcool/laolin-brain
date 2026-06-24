@@ -11,6 +11,20 @@ export async function POST(request: NextRequest) {
   const { userId } = auth;
 
   try {
+    const { db } = await import('@/lib/db');
+    // 查询用户的租户
+    const tenantUser = await db.tenantUser.findFirst({
+      where: { userId },
+      select: { tenantId: true },
+    });
+    if (!tenantUser) {
+      return NextResponse.json(
+        { error: "Tenant not found" },
+        { status: 404 }
+      );
+    }
+    const { tenantId } = tenantUser;
+
     const body = await request.json();
     const { fileIds } = body;
 
@@ -22,7 +36,6 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const { db } = await import('@/lib/db');
     const {
       generateEmbedding,
       createFileEmbeddingText,
@@ -48,6 +61,7 @@ export async function POST(request: NextRequest) {
         where: {
           fileId: { in: fileIds },
           userId,
+          tenantId,
         },
         select: { fileId: true },
         take: 5000,
@@ -58,7 +72,7 @@ export async function POST(request: NextRequest) {
     } else {
       // Process all files without embeddings
       const existingEmbeddings = await db.fileEmbedding.findMany({
-        where: { userId },
+        where: { userId, tenantId },
         select: { fileId: true },
         take: 5000,
       });
@@ -68,6 +82,7 @@ export async function POST(request: NextRequest) {
       const filesWithoutEmbeddings = await db.file.findMany({
         where: {
           userId,
+          tenantId,
           isDeleted: false,
           id: { notIn: Array.from(existingSet) },
         },
@@ -91,6 +106,7 @@ export async function POST(request: NextRequest) {
       where: {
         id: { in: targetFileIds },
         userId,
+        tenantId,
       },
     });
 
@@ -127,6 +143,7 @@ export async function POST(request: NextRequest) {
           },
           create: {
             fileId: file.id,
+            tenantId,
             userId: file.userId,
             embedding: serializeEmbedding(embedding),
           },
@@ -168,13 +185,25 @@ export async function GET(request: NextRequest) {
 
   try {
     const { db } = await import('@/lib/db');
+    // 查询用户的租户
+    const tenantUser = await db.tenantUser.findFirst({
+      where: { userId },
+      select: { tenantId: true },
+    });
+    if (!tenantUser) {
+      return NextResponse.json(
+        { error: "Tenant not found" },
+        { status: 404 }
+      );
+    }
+    const { tenantId } = tenantUser;
 
     const totalFiles = await db.file.count({
-      where: { userId, isDeleted: false },
+      where: { userId, tenantId, isDeleted: false },
     });
 
     const totalEmbeddings = await db.fileEmbedding.count({
-      where: { userId },
+      where: { userId, tenantId },
     });
 
     return NextResponse.json({

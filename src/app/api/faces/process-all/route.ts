@@ -15,6 +15,19 @@ export async function POST(request: NextRequest) {
   const { userId } = auth;
 
   try {
+    // 查询用户的租户
+    const tenantUser = await db.tenantUser.findFirst({
+      where: { userId },
+      select: { tenantId: true },
+    });
+    if (!tenantUser) {
+      return NextResponse.json(
+        { error: "Tenant not found" },
+        { status: 404 }
+      );
+    }
+    const { tenantId } = tenantUser;
+
     // Check if already processing
     const state = processingState.get(userId);
     if (state?.isProcessing) {
@@ -30,9 +43,9 @@ export async function POST(request: NextRequest) {
     const allImageFiles = await db.file.findMany({
       where: {
         userId,
+        tenantId,
         fileType: 'image',
         isDeleted: false,
-
         filePath: { not: null },
       },
       select: { id: true, filePath: true },
@@ -61,7 +74,7 @@ export async function POST(request: NextRequest) {
     processingState.set(userId, { processed: 0, total, isProcessing: true });
 
     // Process asynchronously
-    processFilesInBackground(userId, unprocessedFiles);
+    processFilesInBackground(userId, tenantId, unprocessedFiles);
 
     return NextResponse.json({
       message: `开始处理 ${total} 张图片`,
@@ -93,6 +106,7 @@ export async function GET(request: NextRequest) {
 
 async function processFilesInBackground(
   userId: string,
+  tenantId: string,
   files: { id: string; filePath: string | null }[]
 ) {
   const state = processingState.get(userId);
@@ -142,7 +156,7 @@ async function processFilesInBackground(
 
           // Get existing groups for this user
           const existingGroups = await db.faceGroup.findMany({
-            where: { userId },
+            where: { userId, tenantId },
             include: { faces: true },
           });
 
@@ -190,6 +204,7 @@ async function processFilesInBackground(
               await db.faceGroup.create({
                 data: {
                   id: groupId,
+                  tenantId,
                   userId,
                   name: null,
                   thumbnail: file.id,
@@ -208,6 +223,7 @@ async function processFilesInBackground(
               });
               existingGroups.push({
                 id: groupId,
+                tenantId,
                 userId,
                 name: null,
                 thumbnail: file.id,

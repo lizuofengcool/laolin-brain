@@ -62,6 +62,19 @@ export async function GET(request: NextRequest) {
   const { userId } = auth;
 
   try {
+    // 查询用户的租户
+    const tenantUser = await db.tenantUser.findFirst({
+      where: { userId },
+      select: { tenantId: true },
+    });
+    if (!tenantUser) {
+      return NextResponse.json(
+        { error: "Tenant not found" },
+        { status: 404 }
+      );
+    }
+    const { tenantId } = tenantUser;
+
     // Fetch user info
     const user = await db.user.findUnique({
       where: { id: userId },
@@ -77,13 +90,13 @@ export async function GET(request: NextRequest) {
 
     // Fetch all files for this user (including soft-deleted, for complete backup)
     const files = await db.file.findMany({
-      where: { userId },
+      where: { userId, tenantId },
       orderBy: { createdAt: "asc" },
     });
 
     // Fetch all folders for this user
     const folders = await db.folder.findMany({
-      where: { userId },
+      where: { userId, tenantId },
       orderBy: { createdAt: "asc" },
     });
 
@@ -147,6 +160,19 @@ export async function POST(request: NextRequest) {
   const { userId } = auth;
 
   try {
+    // 查询用户的租户
+    const tenantUser = await db.tenantUser.findFirst({
+      where: { userId },
+      select: { tenantId: true },
+    });
+    if (!tenantUser) {
+      return NextResponse.json(
+        { error: "Tenant not found" },
+        { status: 404 }
+      );
+    }
+    const { tenantId } = tenantUser;
+
     // Parse request body
     let body: ImportRequestBody;
     try {
@@ -215,6 +241,7 @@ export async function POST(request: NextRequest) {
         const conflict = await tx.folder.findFirst({
           where: {
             userId,
+            tenantId,
             name: folder.name,
             parentId: folder.parentId ? folderIdMap.get(folder.parentId) || null : null,
           },
@@ -228,6 +255,7 @@ export async function POST(request: NextRequest) {
         await tx.folder.create({
           data: {
             id: newId,
+            tenantId,
             userId,
             name: folder.name,
             parentId: folder.parentId ? folderIdMap.get(folder.parentId) || null : null,
@@ -245,6 +273,7 @@ export async function POST(request: NextRequest) {
         await tx.file.create({
           data: {
             id: newId,
+            tenantId,
             userId,
             fileName: file.fileName,
             fileType: VALID_FILE_TYPES.includes(file.fileType) ? file.fileType : 'other',

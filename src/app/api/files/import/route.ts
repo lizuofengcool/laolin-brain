@@ -10,6 +10,19 @@ export async function POST(request: NextRequest) {
   const { userId } = auth;
 
   try {
+    // 查询用户的租户
+    const tenantUser = await db.tenantUser.findFirst({
+      where: { userId },
+      select: { tenantId: true },
+    });
+    if (!tenantUser) {
+      return NextResponse.json(
+        { error: "Tenant not found" },
+        { status: 404 }
+      );
+    }
+    const { tenantId } = tenantUser;
+
     // Early reject requests over 50MB based on Content-Length
     const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
     if (contentLength > 50 * 1024 * 1024) {
@@ -38,7 +51,7 @@ export async function POST(request: NextRequest) {
 
     // Check storage quota before importing
     const [{ totalSize: currentTotal }] = await db.$queryRaw<Array<{ totalSize: bigint }>>`
-      SELECT COALESCE(SUM("fileSize"), 0) as "totalSize" FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+      SELECT COALESCE(SUM("fileSize"), 0) as "totalSize" FROM "File" WHERE "userId" = ${userId} AND "tenantId" = ${tenantId} AND "isDeleted" = false
     `;
     const quotaBytes = 5 * 1024 * 1024 * 1024; // 5GB
     let totalImportSize = 0;
@@ -54,7 +67,7 @@ export async function POST(request: NextRequest) {
         let parentId = folder.parentId || null;
         if (parentId) {
           const parentFolder = await db.folder.findUnique({ where: { id: parentId } });
-          if (!parentFolder || parentFolder.userId !== userId) {
+          if (!parentFolder || parentFolder.userId !== userId || parentFolder.tenantId !== tenantId) {
             parentId = null;
           }
         }
@@ -62,6 +75,7 @@ export async function POST(request: NextRequest) {
         try {
           await db.folder.create({
             data: {
+              tenantId,
               userId,
               name: folder.name,
               parentId,
@@ -117,7 +131,7 @@ export async function POST(request: NextRequest) {
         let validFolderId = file.folderId || null;
         if (validFolderId) {
           const folderExists = await db.folder.findFirst({
-            where: { id: validFolderId, userId },
+            where: { id: validFolderId, userId, tenantId },
             select: { id: true },
           });
           if (!folderExists) {
@@ -127,6 +141,7 @@ export async function POST(request: NextRequest) {
 
         await db.file.create({
           data: {
+            tenantId,
             userId,
             fileName: file.fileName,
             fileType: VALID_FILE_TYPES.includes(file.fileType) ? file.fileType : "other",

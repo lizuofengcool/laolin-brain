@@ -8,6 +8,21 @@ export async function POST(request: NextRequest) {
   const { userId } = auth;
 
   try {
+    // 查询用户的租户
+    const tenantUser = await db.tenantUser.findFirst({
+      where: { userId },
+      select: { tenantId: true },
+    });
+
+    if (!tenantUser) {
+      return NextResponse.json(
+        { error: "Tenant not found" },
+        { status: 404 }
+      );
+    }
+
+    const { tenantId } = tenantUser;
+
     const body = await request.json();
     const { name, parentId } = body;
 
@@ -52,6 +67,7 @@ export async function POST(request: NextRequest) {
 
     const folder = await db.folder.create({
       data: {
+        tenantId,
         userId,
         name,
         parentId: parentId || null,

@@ -123,6 +123,22 @@ export async function POST(request: NextRequest) {
 
     // Use authenticated userId instead of client-sent userId
     const userId = authenticatedUserId;
+
+    // 查询用户的租户
+    const tenantUser = await db.tenantUser.findFirst({
+      where: { userId },
+      select: { tenantId: true },
+    });
+
+    if (!tenantUser) {
+      return NextResponse.json(
+        { error: "Tenant not found" },
+        { status: 404 }
+      );
+    }
+
+    const { tenantId } = tenantUser;
+
     // Parse query params for AI skip control
     const searchParams = new URL(request.url).searchParams;
 
@@ -340,6 +356,7 @@ export async function POST(request: NextRequest) {
 
       return tx.file.create({
         data: {
+          tenantId,
           userId,
           fileName: file.name,
           fileType,
