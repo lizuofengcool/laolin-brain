@@ -17,6 +17,7 @@ use db::{DbError, DbResult, FileUpdates};
 #[serde(rename_all = "camelCase")]
 struct KBFile {
     id: String,
+    tenant_id: String,
     user_id: String,
     file_name: String,
     file_type: String,
@@ -42,6 +43,7 @@ struct KBFile {
 #[serde(rename_all = "camelCase")]
 struct KBFileVersion {
     id: String,
+    tenant_id: String,
     file_id: String,
     file_name: String,
     file_size: i64,
@@ -57,6 +59,7 @@ struct KBFileVersion {
 #[serde(rename_all = "camelCase")]
 struct KBFolder {
     id: String,
+    tenant_id: String,
     name: String,
     parent_id: Option<String>,
     user_id: String,

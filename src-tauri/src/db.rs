@@ -247,16 +247,16 @@ fn init_tables(conn: &Connection) -> DbResult<()> {
 // ─── 文件操作 ────────────────────────────────────────────────────
 
 /// 获取所有文件（过滤已删除的）
-pub fn get_all_files(conn: &Connection) -> DbResult<Vec<KBFile>> {
+pub fn get_all_files(conn: &Connection, tenant_id: &str) -> DbResult<Vec<KBFile>> {
     let mut stmt = conn.prepare(
-        "SELECT id, user_id, file_name, file_type, file_size, file_path, text_content,
+        "SELECT id, tenant_id, user_id, file_name, file_type, file_size, file_path, text_content,
                 thumbnail_url, preview_url, storage_mode, folder_id, tags,
                 is_favorite, is_deleted, deleted_at, created_at, file_hash, summary, key_points
-         FROM files WHERE is_deleted = 0 ORDER BY created_at DESC",
+         FROM files WHERE is_deleted = 0 AND (tenant_id = ?1 OR ?1 = '') ORDER BY created_at DESC",
     )?;
 
     let files = stmt
-        .query_map([], |row| row_to_file(row))?
+        .query_map(params![tenant_id], |row| row_to_file(row))?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(files)
