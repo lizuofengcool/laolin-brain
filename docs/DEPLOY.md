@@ -714,3 +714,214 @@ sudo certbot --nginx -d your-domain.com
 # 完成！访问 https://your-domain.com
 # 后续更新: git pull && npm install && bash scripts/deploy.sh
 ```
+
+---
+
+## 13. SaaS 多租户部署
+
+### 13.1 SaaS 部署架构
+
+```
+用户浏览器 → Nginx (反向代理 + HTTPS) → Next.js (PM2 集群) → SQLite
+                                      ↓
+                              多租户数据隔离层
+                                      ↓
+                         租户A数据  租户B数据  租户C数据
+```
+
+### 13.2 多租户部署注意事项
+
+#### 数据隔离
+
+- **底层强制隔离**：所有业务表携带 `tenantId` 字段，数据访问层强制过滤
+- **禁止跨租户访问**：API 层通过 `getTenantDbFromRequest()` 自动获取租户上下文
+- **管理员权限**：运营后台需要特殊权限才能查看所有租户数据
+
+#### 数据库选择
+
+- **SQLite**：适合中小规模（1000 租户以内），零运维，备份简单
+- **PostgreSQL**：推荐生产环境使用，支持更高并发和更复杂的查询
+- **MySQL**：备选方案，需要调整 Prisma schema
+
+#### 性能优化
+
+```bash
+# 启用 PM2 集群模式（推荐生产环境）
+# 修改 ecosystem.config.js
+instances: "max",  # 使用所有 CPU 核心
+exec_mode: "cluster",
+```
+
+#### 存储规划
+
+- **免费版用户**：建议限制单文件大小和总存储量
+- **付费用户**：根据套餐等级提供不同的存储配额
+- **大文件处理**：考虑使用对象存储（OSS/R2）而非本地存储
+
+### 13.3 支付系统配置
+
+#### 支付宝配置
+
+1. 登录支付宝开放平台（open.alipay.com）
+2. 创建网页/移动应用
+3. 生成应用密钥（RSA2）
+4. 配置回调地址：`https://your-domain.com/api/payment/alipay/notify`
+5. 在 `.env.local` 中配置：
+
+```bash
+PAYMENT_PROVIDER=alipay
+ALIPAY_APP_ID=your-app-id
+ALIPAY_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
+...
+-----END RSA PRIVATE KEY-----"
+ALIPAY_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----
+...
+-----END PUBLIC KEY-----"
+ALIPAY_NOTIFY_URL=https://your-domain.com/api/payment/alipay/notify
+```
+
+#### 微信支付配置
+
+1. 登录微信支付商户平台（pay.weixin.qq.com）
+2. 开通 JSAPI 支付
+3. 配置支付回调：`https://your-domain.com/api/payment/wechat/notify`
+4. 在 `.env.local` 中配置：
+
+```bash
+PAYMENT_PROVIDER=wechat
+WECHAT_APP_ID=your-app-id
+WECHAT_MCH_ID=your-mch-id
+WECHAT_API_KEY=your-api-key
+WECHAT_NOTIFY_URL=https://your-domain.com/api/payment/wechat/notify
+```
+
+#### 支付安全注意事项
+
+- **签名验证**：所有支付回调必须验证签名，防止伪造
+- **幂等性**：使用订单号保证支付回调的幂等性
+- **日志记录**：完整记录所有支付请求和回调
+- **金额校验**：回调金额必须与订单金额一致
+
+### 13.4 运营后台配置
+
+#### 管理员账号
+
+首次部署时需要创建管理员账号：
+
+```bash
+# 进入项目目录
+cd /path/to/project
+
+# 使用 Prisma Studio 创建管理员
+npx prisma studio
+
+# 或使用 SQL 直接插入
+sqlite3 prisma/dev.db "INSERT INTO TenantUser ..."
+```
+
+#### 运营后台功能
+
+- **仪表盘**：用户统计、收入统计、存储使用趋势
+- **租户管理**：租户列表、详情、状态管理、套餐调整
+- **订单管理**：订单列表、详情、退款处理
+- **系统设置**：套餐配置、配额调整、系统参数
+
+### 13.5 套餐配置
+
+#### 默认套餐
+
+| 套餐 | 存储配额 | AI 调用/天 | 价格 | 说明 |
+|------|---------|-----------|------|------|
+| 免费版 | 1GB | 10次 | ¥0 | 新用户默认，7天试用 |
+| 专业版 | 10GB | 100次 | ¥29/月 | 适合个人用户 |
+| 企业版 | 100GB | 1000次 | ¥99/月 | 适合团队使用 |
+
+#### 自定义套餐
+
+可通过环境变量或数据库配置自定义套餐参数：
+
+```bash
+# 免费版配额
+FREE_STORAGE_QUOTA=1073741824  # 1GB
+FREE_AI_QUOTA=10
+
+# 专业版配额
+PRO_STORAGE_QUOTA=10737418240  # 10GB
+PRO_AI_QUOTA=100
+
+# 企业版配额
+ENTERPRISE_STORAGE_QUOTA=107374182400  # 100GB
+ENTERPRISE_AI_QUOTA=1000
+```
+
+### 13.6 数据备份策略
+
+#### 数据库备份
+
+```bash
+# 每日自动备份 SQLite 数据库
+0 2 * * * sqlite3 /path/to/db.sqlite ".backup /backup/db-$(date +%Y%m%d).sqlite"
+
+# 保留最近 30 天的备份
+find /backup -name "db-*.sqlite" -mtime +30 -delete
+```
+
+#### 文件备份
+
+- **本地存储**：定期备份整个上传目录
+- **对象存储**：OSS/R2 自带多副本和版本控制
+- **异地备份**：重要数据建议跨区域备份
+
+---
+
+## 14. 云同步部署
+
+### 14.1 云同步架构
+
+```
+客户端 (Web/Tauri) → 同步引擎 → 云存储 (OSS/R2)
+                        ↓
+                   同步队列 + 冲突检测
+                        ↓
+                   本地 SQLite 数据库
+```
+
+### 14.2 增量同步配置
+
+- **同步触发**：文件变更时自动触发同步
+- **批量同步**：每次最多同步 100 个文件
+- **冲突策略**：
+  - `latest`：以最新版本为准（默认）
+  - `manual`：人工选择保留版本
+  - `duplicate`：两个版本都保留，重命名冲突文件
+
+### 14.3 离线队列
+
+- 离线操作自动加入队列
+- 网络恢复后自动重试
+- 队列持久化到数据库，重启不丢失
+- 失败重试机制，最多重试 3 次
+
+---
+
+## 15. 常见问题（SaaS 版）
+
+### Q: 如何处理租户数据迁移？
+
+A: 提供备份导出功能，用户可通过 `/api/backup` 导出自己的所有数据，然后导入到新的租户中。
+
+### Q: 如何防止超售？
+
+A: 每次上传和 AI 调用前都会检查配额，超出配额直接返回错误。配额使用量实时统计，避免超售。
+
+### Q: 支付失败怎么办？
+
+A: 支付失败时订单状态保持为 `pending`，用户可以重新发起支付。订单有过期时间，超时自动取消。
+
+### Q: 如何处理退款？
+
+A: 运营后台支持手动退款，退款后会相应调整订阅到期时间。建议制定明确的退款政策。
+
+### Q: SQLite 能支撑多少租户？
+
+A: 单机 SQLite 可以支撑 1000-5000 个活跃租户，具体取决于使用频率。超过这个规模建议迁移到 PostgreSQL。

@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, getTenantIdFromRequest } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 import { safeJsonParseArray } from "@/lib/safe-json-parse";
 
-// GET: Return analytics data for the current user
+// GET: Return analytics data for the current tenant
 export async function GET(request: NextRequest) {
   const auth = authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
-  const { userId } = auth;
 
   try {
+    const tenantId = await getTenantIdFromRequest(request);
     const now = new Date();
     const weekStart = new Date(now);
     weekStart.setDate(weekStart.getDate() - 7);
@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
     // Quick stats via SQL aggregation
     const [statsRow] = await db.$queryRaw<Array<{ totalCount: bigint; totalSize: bigint }>>`
       SELECT COUNT(*) as "totalCount", COALESCE(SUM("fileSize"), 0) as "totalSize"
-      FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+      FROM "File" WHERE "tenantId" = ${tenantId} AND "isDeleted" = false
     `;
     const totalFiles = Number(statsRow.totalCount);
     const totalSize = Number(statsRow.totalSize);
@@ -28,20 +28,20 @@ export async function GET(request: NextRequest) {
 
     const [weekRow] = await db.$queryRaw<Array<{ count: bigint }>>`
       SELECT COUNT(*) as count FROM "File"
-      WHERE "userId" = ${userId} AND "isDeleted" = false AND "createdAt" >= ${weekStart.toISOString()}
+      WHERE "tenantId" = ${tenantId} AND "isDeleted" = false AND "createdAt" >= ${weekStart.toISOString()}
     `;
     const filesThisWeek = Number(weekRow.count);
 
     const [monthRow] = await db.$queryRaw<Array<{ count: bigint }>>`
       SELECT COUNT(*) as count FROM "File"
-      WHERE "userId" = ${userId} AND "isDeleted" = false AND "createdAt" >= ${monthStart.toISOString()}
+      WHERE "tenantId" = ${tenantId} AND "isDeleted" = false AND "createdAt" >= ${monthStart.toISOString()}
     `;
     const filesThisMonth = Number(monthRow.count);
 
     // File growth by month (SQL GROUP BY)
     const monthlyGrowthRaw = await db.$queryRaw<Array<{ month: string; count: bigint }>>`
       SELECT strftime('%Y-%m', "createdAt") as month, COUNT(*) as count
-      FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+      FROM "File" WHERE "tenantId" = ${tenantId} AND "isDeleted" = false
       GROUP BY month ORDER BY month ASC
     `;
     const fileGrowth = monthlyGrowthRaw.map((r) => ({
@@ -52,7 +52,7 @@ export async function GET(request: NextRequest) {
     // Storage by type (SQL GROUP BY)
     const storageByTypeRaw = await db.$queryRaw<Array<{ fileType: string; totalSize: bigint }>>`
       SELECT "fileType" as "fileType", COALESCE(SUM("fileSize"), 0) as "totalSize"
-      FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+      FROM "File" WHERE "tenantId" = ${tenantId} AND "isDeleted" = false
       GROUP BY "fileType"
     `;
     const storageByType: Record<string, number> = {};
@@ -63,7 +63,7 @@ export async function GET(request: NextRequest) {
     // File type distribution by month (SQL GROUP BY)
     const monthlyTypeRaw = await db.$queryRaw<Array<{ month: string; fileType: string; count: bigint }>>`
       SELECT strftime('%Y-%m', "createdAt") as month, "fileType", COUNT(*) as count
-      FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+      FROM "File" WHERE "tenantId" = ${tenantId} AND "isDeleted" = false
       GROUP BY month, "fileType" ORDER BY month ASC
     `;
     const monthlyTypeMap: Record<string, Record<string, number>> = {};
@@ -78,7 +78,7 @@ export async function GET(request: NextRequest) {
     // Top 10 largest files (limited query)
     const topFilesRaw = await db.$queryRaw<Array<{ id: string; fileName: string; fileSize: number; fileType: string }>>`
       SELECT "id", "fileName", "fileSize", "fileType"
-      FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+      FROM "File" WHERE "tenantId" = ${tenantId} AND "isDeleted" = false
       ORDER BY "fileSize" DESC LIMIT 10
     `;
     const topFiles = topFilesRaw;
@@ -86,7 +86,7 @@ export async function GET(request: NextRequest) {
     // Activity data - by hour and day of week (SQL GROUP BY)
     const activityHourRaw = await db.$queryRaw<Array<{ hour: number; count: bigint }>>`
       SELECT CAST(strftime('%H', "createdAt") AS INTEGER) as hour, COUNT(*) as count
-      FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+      FROM "File" WHERE "tenantId" = ${tenantId} AND "isDeleted" = false
       GROUP BY hour
     `;
     const activityByHour: number[] = new Array(24).fill(0);
@@ -96,7 +96,7 @@ export async function GET(request: NextRequest) {
 
     const activityDayRaw = await db.$queryRaw<Array<{ dow: number; count: bigint }>>`
       SELECT CAST(strftime('%w', "createdAt") AS INTEGER) as dow, COUNT(*) as count
-      FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+      FROM "File" WHERE "tenantId" = ${tenantId} AND "isDeleted" = false
       GROUP BY dow
     `;
     const activityByDayOfWeek: number[] = new Array(7).fill(0);
@@ -108,7 +108,7 @@ export async function GET(request: NextRequest) {
 
     // Most used tags - fetch only active files' tags column (limited data)
     const tagsRaw = await db.$queryRaw<Array<{ tags: string | null }>>`
-      SELECT "tags" FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false AND "tags" IS NOT NULL AND "tags" != '[]' LIMIT 5000
+      SELECT "tags" FROM "File" WHERE "tenantId" = ${tenantId} AND "isDeleted" = false AND "tags" IS NOT NULL AND "tags" != '[]' LIMIT 5000
     `;
     const tagCount: Record<string, number> = {};
     for (const row of tagsRaw) {
@@ -129,18 +129,16 @@ export async function GET(request: NextRequest) {
     let predicted1Month = 0;
     let predicted3Months = 0;
     let predicted6Months = 0;
-
     if (months >= 2) {
       // Estimate recent size growth using storage stats
       const threeMonthsAgo = new Date(now);
       threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
       const [recentSizeRow] = await db.$queryRaw<Array<{ totalSize: bigint }>>`
         SELECT COALESCE(SUM("fileSize"), 0) as "totalSize"
-        FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false AND "createdAt" >= ${threeMonthsAgo.toISOString()}
+        FROM "File" WHERE "tenantId" = ${tenantId} AND "isDeleted" = false AND "createdAt" >= ${threeMonthsAgo.toISOString()}
       `;
       const recentSizeGrowth = Number(recentSizeRow.totalSize);
       const avgMonthlySize = recentSizeGrowth / 3;
-
       predicted1Month = totalSize + avgMonthlySize;
       predicted3Months = totalSize + avgMonthlySize * 3;
       predicted6Months = totalSize + avgMonthlySize * 6;
@@ -149,7 +147,7 @@ export async function GET(request: NextRequest) {
     // Storage efficiency score
     const [taggedRow] = await db.$queryRaw<Array<{ count: bigint }>>`
       SELECT COUNT(*) as count FROM "File"
-      WHERE "userId" = ${userId} AND "isDeleted" = false AND "tags" IS NOT NULL AND "tags" != '[]'
+      WHERE "tenantId" = ${tenantId} AND "isDeleted" = false AND "tags" IS NOT NULL AND "tags" != '[]'
     `;
     const tagUsageRatio = totalFiles > 0 ? Number(taggedRow.count) / totalFiles : 0;
     const efficiencyScore = Math.min(100, Math.round(

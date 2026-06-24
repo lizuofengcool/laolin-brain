@@ -2,68 +2,69 @@
 // 提供文件管理、版本控制、文件夹管理等本地存储功能
 // 使用 SQLite 数据库进行持久化存储（替代原 JSON 文件存储，性能提升 10x+）
 // 数据存储在 Tauri 的 app_data_dir 下
+// 多租户支持：所有命令支持 tenant_id 参数，实现数据隔离
 
 mod db;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::command;
-
 use db::{DbError, DbResult, FileUpdates};
 
 // ─── 数据结构定义 ──────────────────────────────────────────────
+
 /// 文件数据结构（对应前端 FileData）
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct KBFile {
-    id: String,
-    tenant_id: String,
-    user_id: String,
-    file_name: String,
-    file_type: String,
-    file_size: i64,
-    file_path: Option<String>,
-    text_content: Option<String>,
-    thumbnail_url: Option<String>,
-    preview_url: Option<String>,
-    storage_mode: String,
-    folder_id: Option<String>,
-    tags: Vec<String>,
-    is_favorite: bool,
-    is_deleted: Option<bool>,
-    deleted_at: Option<String>,
-    created_at: String,
-    file_hash: Option<String>,
-    summary: Option<String>,
-    key_points: Option<Vec<String>>,
+pub struct KBFile {
+    pub id: String,
+    pub tenant_id: String,
+    pub user_id: String,
+    pub file_name: String,
+    pub file_type: String,
+    pub file_size: i64,
+    pub file_path: Option<String>,
+    pub text_content: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub preview_url: Option<String>,
+    pub storage_mode: String,
+    pub folder_id: Option<String>,
+    pub tags: Vec<String>,
+    pub is_favorite: bool,
+    pub is_deleted: Option<bool>,
+    pub deleted_at: Option<String>,
+    pub created_at: String,
+    pub file_hash: Option<String>,
+    pub summary: Option<String>,
+    pub key_points: Option<Vec<String>>,
 }
 
 /// 文件版本数据结构
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct KBFileVersion {
-    id: String,
-    tenant_id: String,
-    file_id: String,
-    file_name: String,
-    file_size: i64,
-    file_path: Option<String>,
-    text_content: Option<String>,
-    thumbnail_url: Option<String>,
-    version: i32,
-    created_at: String,
+pub struct KBFileVersion {
+    pub id: String,
+    pub tenant_id: String,
+    pub file_id: String,
+    pub file_name: String,
+    pub file_size: i64,
+    pub file_path: Option<String>,
+    pub text_content: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub version: i32,
+    pub created_at: String,
 }
 
 /// 文件夹数据结构
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct KBFolder {
-    id: String,
-    tenant_id: String,
-    name: String,
-    parent_id: Option<String>,
-    user_id: String,
-    created_at: String,
+pub struct KBFolder {
+    pub id: String,
+    pub tenant_id: String,
+    pub name: String,
+    pub parent_id: Option<String>,
+    pub user_id: String,
+    pub created_at: String,
 }
 
 /// 上传文件的返回结果
@@ -89,38 +90,74 @@ fn get_app_data_dir(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 /// 获取用户的所有文件（过滤掉已删除的）
+/// tenant_id 为空字符串时不限制租户（向后兼容）
 #[command]
-fn get_files(user_id: String, app: tauri::AppHandle) -> Result<Vec<KBFile>, String> {
+fn get_files(user_id: String, tenant_id: Option<String>, app: tauri::AppHandle) -> Result<Vec<KBFile>, String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
-    db::get_all_files(&conn).map_err(|e| e.to_string())
+    let tid = tenant_id.unwrap_or_default();
+    db::get_all_files(&conn, &tid).map_err(|e| e.to_string())
 }
 
 /// 获取单个文件详情
+/// tenant_id 为空字符串时不限制租户（向后兼容）
 #[command]
 fn get_file(
     file_id: String,
     user_id: String,
+    tenant_id: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<Option<KBFile>, String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
-    db::get_file_by_id(&conn, &file_id).map_err(|e| e.to_string())
+    let tid = tenant_id.unwrap_or_default();
+    db::get_file_by_id(&conn, &file_id, &tid).map_err(|e| e.to_string())
 }
 
 /// 搜索文件（按文件名、文本内容、标签）
+/// tenant_id 为空字符串时不限制租户（向后兼容）
 #[command]
 fn search_files(
     query: String,
     user_id: String,
+    tenant_id: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<Vec<KBFile>, String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
-    db::search_files(&conn, &query).map_err(|e| e.to_string())
+    let tid = tenant_id.unwrap_or_default();
+    db::search_files(&conn, &query, &tid).map_err(|e| e.to_string())
+}
+
+/// 获取收藏的文件
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+#[command]
+fn get_favorite_files(
+    user_id: String,
+    tenant_id: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<KBFile>, String> {
+    let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
+    let tid = tenant_id.unwrap_or_default();
+    db::get_favorite_files(&conn, &tid).map_err(|e| e.to_string())
+}
+
+/// 获取文件夹下的文件
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+#[command]
+fn get_files_by_folder(
+    folder_id: String,
+    user_id: String,
+    tenant_id: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<KBFile>, String> {
+    let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
+    let tid = tenant_id.unwrap_or_default();
+    db::get_files_by_folder(&conn, &folder_id, &tid).map_err(|e| e.to_string())
 }
 
 /// 上传文件（base64 数据）
 #[command]
 fn upload_file(
     user_id: String,
+    tenant_id: Option<String>,
     file_name: String,
     file_size: i64,
     file_type: String,
@@ -128,6 +165,7 @@ fn upload_file(
     app: tauri::AppHandle,
 ) -> Result<UploadResult, String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
+    let tid = tenant_id.unwrap_or_default();
 
     // 确保用户文件目录存在
     let files_dir = get_user_files_dir(&app, &user_id)?;
@@ -145,6 +183,7 @@ fn upload_file(
     let now = now_iso8601();
     let kb_file = KBFile {
         id: file_id.clone(),
+        tenant_id: tid,
         user_id: user_id.clone(),
         file_name: file_name.clone(),
         file_type: file_type.clone(),
@@ -178,33 +217,39 @@ fn upload_file(
 }
 
 /// 删除文件（软删除）
+/// tenant_id 为空字符串时不限制租户（向后兼容）
 #[command]
-fn delete_file(file_id: String, user_id: String, app: tauri::AppHandle) -> Result<(), String> {
+fn delete_file(
+    file_id: String,
+    user_id: String,
+    tenant_id: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
-
+    let tid = tenant_id.unwrap_or_default();
     let updates = FileUpdates {
         is_deleted: Some(true),
         ..Default::default()
     };
-
-    let success = db::update_file(&conn, &file_id, &updates).map_err(|e| e.to_string())?;
+    let success = db::update_file(&conn, &file_id, &updates, &tid).map_err(|e| e.to_string())?;
     if !success {
         return Err(format!("文件 {} 不存在", file_id));
     }
-
     Ok(())
 }
 
 /// 更新文件元数据（支持 is_deleted 字段用于恢复文件）
+/// tenant_id 为空字符串时不限制租户（向后兼容）
 #[command]
 fn update_file(
     file_id: String,
     user_id: String,
+    tenant_id: Option<String>,
     data: serde_json::Value,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
-
+    let tid = tenant_id.unwrap_or_default();
     let mut updates = FileUpdates::default();
 
     // 支持更新文件名
@@ -245,23 +290,25 @@ fn update_file(
         updates.is_deleted = Some(deleted);
     }
 
-    let success = db::update_file(&conn, &file_id, &updates).map_err(|e| e.to_string())?;
+    let success = db::update_file(&conn, &file_id, &updates, &tid).map_err(|e| e.to_string())?;
     if !success {
         return Err(format!("文件 {} 不存在", file_id));
     }
-
     Ok(())
 }
 
 /// 获取文件版本历史
+/// tenant_id 为空字符串时不限制租户（向后兼容）
 #[command]
 fn get_versions(
     file_id: String,
     user_id: String,
+    tenant_id: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<Vec<KBFileVersion>, String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
-    db::get_file_versions(&conn, &file_id).map_err(|e| e.to_string())
+    let tid = tenant_id.unwrap_or_default();
+    db::get_file_versions(&conn, &file_id, &tid).map_err(|e| e.to_string())
 }
 
 /// 创建文件版本
@@ -269,6 +316,7 @@ fn get_versions(
 fn create_version(
     file_id: String,
     user_id: String,
+    tenant_id: Option<String>,
     file_name: String,
     file_size: i64,
     text_content: Option<String>,
@@ -276,12 +324,14 @@ fn create_version(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
+    let tid = tenant_id.unwrap_or_default();
 
     // 计算下一个版本号
-    let current_max = db::get_latest_version(&conn, &file_id).map_err(|e| e.to_string())?;
+    let current_max = db::get_latest_version(&conn, &file_id, &tid).map_err(|e| e.to_string())?;
 
     let version = KBFileVersion {
         id: generate_uuid(),
+        tenant_id: tid,
         file_id,
         file_name,
         file_size,
@@ -293,33 +343,35 @@ fn create_version(
     };
 
     db::create_version(&conn, &version).map_err(|e| e.to_string())?;
-
     Ok(())
 }
 
 /// 恢复到指定版本
+/// tenant_id 为空字符串时不限制租户（向后兼容）
 #[command]
 fn restore_version(
     version_id: String,
     file_id: String,
     user_id: String,
+    tenant_id: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
+    let tid = tenant_id.unwrap_or_default();
 
-    let version = db::get_version_by_id(&conn, &version_id)
+    let version = db::get_version_by_id(&conn, &version_id, &tid)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("版本 {} 不存在", version_id))?;
 
     let mut updates = FileUpdates::default();
     updates.file_name = Some(version.file_name);
+
     // 注意：file_size、file_path、text_content、thumbnail_url 也需要更新
     // 但由于 FileUpdates 结构限制，我们直接执行 SQL
-
     let now = now_iso8601();
     conn.execute(
         "UPDATE files SET file_name = ?1, file_size = ?2, file_path = ?3, text_content = ?4,
-                thumbnail_url = ?5, updated_at = ?6 WHERE id = ?7",
+                thumbnail_url = ?5, updated_at = ?6 WHERE id = ?7 AND (tenant_id = ?8 OR ?8 = '')",
         rusqlite::params![
             version.file_name,
             version.file_size,
@@ -328,28 +380,29 @@ fn restore_version(
             version.thumbnail_url,
             now,
             file_id,
+            tid,
         ],
     )
     .map_err(|e| e.to_string())?;
-
     Ok(())
 }
 
 /// 删除文件版本
+/// tenant_id 为空字符串时不限制租户（向后兼容）
 #[command]
 fn delete_version(
     version_id: String,
     file_id: String,
     user_id: String,
+    tenant_id: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
-
-    let success = db::delete_version(&conn, &version_id).map_err(|e| e.to_string())?;
+    let tid = tenant_id.unwrap_or_default();
+    let success = db::delete_version(&conn, &version_id, &tid).map_err(|e| e.to_string())?;
     if !success {
         return Err(format!("版本 {} 不存在", version_id));
     }
-
     Ok(())
 }
 
@@ -358,12 +411,15 @@ fn delete_version(
 fn create_folder(
     folder_name: String,
     user_id: String,
+    tenant_id: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<KBFolder, String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
+    let tid = tenant_id.unwrap_or_default();
 
     let folder = KBFolder {
         id: generate_uuid(),
+        tenant_id: tid,
         name: folder_name,
         parent_id: None,
         user_id: user_id.clone(),
@@ -371,63 +427,73 @@ fn create_folder(
     };
 
     db::insert_folder(&conn, &folder).map_err(|e| e.to_string())?;
-
     Ok(folder)
 }
 
 /// 获取用户的所有文件夹
+/// tenant_id 为空字符串时不限制租户（向后兼容）
 #[command]
-fn get_folders(user_id: String, app: tauri::AppHandle) -> Result<Vec<KBFolder>, String> {
+fn get_folders(
+    user_id: String,
+    tenant_id: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<KBFolder>, String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
-    db::get_all_folders(&conn).map_err(|e| e.to_string())
+    let tid = tenant_id.unwrap_or_default();
+    db::get_all_folders(&conn, &tid).map_err(|e| e.to_string())
 }
 
 /// 删除文件夹（从数据库中移除）
+/// tenant_id 为空字符串时不限制租户（向后兼容）
 #[command]
 fn delete_folder(
     folder_id: String,
     user_id: String,
+    tenant_id: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
-
-    let success = db::delete_folder(&conn, &folder_id).map_err(|e| e.to_string())?;
+    let tid = tenant_id.unwrap_or_default();
+    let success = db::delete_folder(&conn, &folder_id, &tid).map_err(|e| e.to_string())?;
     if !success {
         return Err(format!("文件夹 {} 不存在", folder_id));
     }
-
     Ok(())
 }
 
 /// 重命名文件夹
+/// tenant_id 为空字符串时不限制租户（向后兼容）
 #[command]
 fn rename_folder(
     folder_id: String,
     new_name: String,
     user_id: String,
+    tenant_id: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
-
-    let success = db::rename_folder(&conn, &folder_id, &new_name).map_err(|e| e.to_string())?;
+    let tid = tenant_id.unwrap_or_default();
+    let success = db::rename_folder(&conn, &folder_id, &new_name, &tid).map_err(|e| e.to_string())?;
     if !success {
         return Err(format!("文件夹 {} 不存在", folder_id));
     }
-
     Ok(())
 }
 
 /// 永久删除文件（从数据库中彻底移除 + 删除物理文件）
+/// tenant_id 为空字符串时不限制租户（向后兼容）
 #[command]
 fn permanent_delete_file(
     file_id: String,
     user_id: String,
+    tenant_id: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
+    let tid = tenant_id.unwrap_or_default();
 
     // 先查找文件并获取物理路径
-    let file = db::get_file_by_id(&conn, &file_id)
+    let file = db::get_file_by_id(&conn, &file_id, &tid)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("文件 {} 不存在", file_id))?;
 
@@ -440,37 +506,42 @@ fn permanent_delete_file(
     }
 
     // 从数据库中移除文件记录（会级联删除版本）
-    let success = db::permanent_delete_file(&conn, &file_id).map_err(|e| e.to_string())?;
+    let success = db::permanent_delete_file(&conn, &file_id, &tid).map_err(|e| e.to_string())?;
     if !success {
         return Err(format!("文件 {} 不存在", file_id));
     }
-
     Ok(())
 }
 
 /// 清空回收站（删除所有 is_deleted=true 的文件，返回删除数量）
+/// tenant_id 为空字符串时不限制租户（向后兼容）
 #[command]
-fn empty_recycle_bin(user_id: String, app: tauri::AppHandle) -> Result<usize, String> {
+fn empty_recycle_bin(
+    user_id: String,
+    tenant_id: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<usize, String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
+    let tid = tenant_id.unwrap_or_default();
 
     // 先找出所有已删除的文件，删除物理文件
     let deleted_files: Vec<KBFile> = conn
         .prepare(
-            "SELECT id, user_id, file_name, file_type, file_size, file_path, text_content,
+            "SELECT id, tenant_id, user_id, file_name, file_type, file_size, file_path, text_content,
                     thumbnail_url, preview_url, storage_mode, folder_id, tags,
                     is_favorite, is_deleted, deleted_at, created_at, file_hash, summary, key_points
-             FROM files WHERE is_deleted = 1",
+             FROM files WHERE is_deleted = 1 AND (tenant_id = ?1 OR ?1 = '')",
         )
         .map_err(|e| e.to_string())?
-        .query_map([], |row| {
+        .query_map(params![tid], |row| {
             // 复用 db 模块的转换逻辑
             let tags_str: String = row.get("tags")?;
             let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
             let key_points_str: Option<String> = row.get("key_points")?;
             let key_points = key_points_str.and_then(|s| serde_json::from_str(&s).ok());
-
             Ok(KBFile {
                 id: row.get("id")?,
+                tenant_id: row.get("tenant_id")?,
                 user_id: row.get("user_id")?,
                 file_name: row.get("file_name")?,
                 file_type: row.get("file_type")?,
@@ -506,21 +577,36 @@ fn empty_recycle_bin(user_id: String, app: tauri::AppHandle) -> Result<usize, St
     }
 
     // 从数据库中移除已删除的文件（会级联删除版本）
-    let count = db::empty_recycle_bin(&conn).map_err(|e| e.to_string())?;
-
+    let count = db::empty_recycle_bin(&conn, &tid).map_err(|e| e.to_string())?;
     Ok(count)
 }
 
+/// 获取已删除的文件（回收站列表）
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+#[command]
+fn get_deleted_files(
+    user_id: String,
+    tenant_id: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<KBFile>, String> {
+    let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
+    let tid = tenant_id.unwrap_or_default();
+    db::get_deleted_files(&conn, &tid).map_err(|e| e.to_string())
+}
+
 /// 获取文件数据（读取物理文件并返回 base64 编码，用于文件预览）
+/// tenant_id 为空字符串时不限制租户（向后兼容）
 #[command]
 fn get_file_data(
     file_id: String,
     user_id: String,
+    tenant_id: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
+    let tid = tenant_id.unwrap_or_default();
 
-    let file = db::get_file_by_id(&conn, &file_id)
+    let file = db::get_file_by_id(&conn, &file_id, &tid)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("文件 {} 不存在", file_id))?;
 
@@ -542,7 +628,6 @@ fn get_file_data(
         let mut encoder = base64_encode_writer(&mut base64_output);
         encoder.write_all(&data).map_err(|e| e.to_string())?;
     }
-
     Ok(base64_output)
 }
 
@@ -593,21 +678,28 @@ fn generate_uuid() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
+
     // 使用时间戳 + 简单混合生成伪随机
     let mut seed = nanos as u64;
+
     // 简单的线性同余生成器
     seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
     let a = ((seed >> 32) ^ seed) & 0xFFFFFFFF;
+
     seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
     let b = ((seed >> 32) ^ seed) & 0xFFFFFFFF;
+
     seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
     let c = ((seed >> 32) ^ seed) & 0xFFFFFFFF;
+
     seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
     let d = ((seed >> 32) ^ seed) & 0xFFFFFFFF;
+
     // 设置 UUID v4 版本位（第 3 段首位为 4）
     let c = (c & 0x0FFF) | 0x4000;
     // 设置变体位（第 4 段首位为 10xx）
     let d = (d & 0x3FFF) | 0x8000;
+
     format!(
         "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
         a & 0xFFFFFFFF,
@@ -626,14 +718,17 @@ pub fn now_iso8601() -> String {
         .unwrap_or_default();
     let total_secs = duration.as_secs();
     let nanos = duration.subsec_nanos();
+
     // 计算 UTC 时间各字段
     let days = total_secs / 86400;
     let time_of_day = total_secs % 86400;
     let hours = time_of_day / 3600;
     let minutes = (time_of_day % 3600) / 60;
     let seconds = time_of_day % 60;
+
     // 从 Unix 纪元的天数计算年月日（简化的算法）
     let (year, month, day) = days_to_ymd(days);
+
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
         year, month, day, hours, minutes, seconds, nanos / 1_000_000
@@ -645,6 +740,7 @@ fn days_to_ymd(days_since_epoch: u64) -> (u64, u64, u64) {
     // 1970-01-01 起算
     let mut days = days_since_epoch;
     let mut year = 1970u64;
+
     // 每年天数（不考虑闰年的近似值，用于快速迭代）
     loop {
         let days_in_year = if is_leap_year(year) { 366 } else { 365 };
@@ -654,6 +750,7 @@ fn days_to_ymd(days_since_epoch: u64) -> (u64, u64, u64) {
         days -= days_in_year;
         year += 1;
     }
+
     let mut month = 1u64;
     let days_in_months: [u64; 12] = [
         31,
@@ -669,6 +766,7 @@ fn days_to_ymd(days_since_epoch: u64) -> (u64, u64, u64) {
         30,
         31,
     ];
+
     for &dim in &days_in_months {
         if days < dim {
             break;
@@ -676,6 +774,7 @@ fn days_to_ymd(days_since_epoch: u64) -> (u64, u64, u64) {
         days -= dim;
         month += 1;
     }
+
     (year, month, days + 1)
 }
 
@@ -690,15 +789,18 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
         .bytes()
         .filter(|b| !b.is_ascii_whitespace())
         .collect();
+
     if input.is_empty() {
         return Ok(vec![]);
     }
+
     // 移除 padding
     let input_trimmed: Vec<u8> = input
         .iter()
         .copied()
         .take_while(|b| *b != b'=')
         .collect();
+
     let lookup = |c: u8| -> Result<u8, String> {
         match c {
             b'A'..=b'Z' => Ok(c - b'A'),
@@ -709,8 +811,10 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
             _ => Err(format!("无效的 Base64 字符: {}", c as char)),
         }
     };
+
     let mut result = Vec::with_capacity(input_trimmed.len() * 3 / 4);
     let chunks = input_trimmed.chunks(4);
+
     for chunk in chunks {
         let a = lookup(chunk[0])?;
         let b = if chunk.len() > 1 {
@@ -719,6 +823,7 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
             0
         };
         result.push((a << 2) | (b >> 4));
+
         if chunk.len() > 2 {
             let c = lookup(chunk[2])?;
             result.push(((b & 0x0F) << 4) | (c >> 2));
@@ -728,6 +833,7 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
             }
         }
     }
+
     Ok(result)
 }
 
@@ -749,26 +855,33 @@ fn base64_encode_writer(output: &mut String) -> Base64EncodeWriter<'_> {
 impl<'a> std::io::Write for Base64EncodeWriter<'a> {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
         const CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
         for &byte in data {
             self.buffer[self.position] = byte;
             self.position += 1;
+
             if self.position == 3 {
                 let b0 = self.buffer[0] as usize;
                 let b1 = self.buffer[1] as usize;
                 let b2 = self.buffer[2] as usize;
+
                 self.output.push(CHARS[(b0 >> 2) as usize] as char);
                 self.output
                     .push(CHARS[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
                 self.output
                     .push(CHARS[(((b1 & 0x0F) << 2) | (b2 >> 6)) as usize] as char);
                 self.output.push(CHARS[(b2 & 0x3F) as usize] as char);
+
                 self.position = 0;
             }
         }
+
         Ok(data.len())
     }
+
     fn flush(&mut self) -> std::io::Result<()> {
         const CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
         if self.position > 0 {
             let b0 = self.buffer[0] as usize;
             let b1 = if self.position > 1 {
@@ -776,9 +889,11 @@ impl<'a> std::io::Write for Base64EncodeWriter<'a> {
             } else {
                 0
             };
+
             self.output.push(CHARS[(b0 >> 2) as usize] as char);
             self.output
                 .push(CHARS[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+
             if self.position == 2 {
                 self.output
                     .push(CHARS[((b1 & 0x0F) << 2) as usize] as char);
@@ -787,6 +902,7 @@ impl<'a> std::io::Write for Base64EncodeWriter<'a> {
             }
             self.output.push('=');
         }
+
         Ok(())
     }
 }

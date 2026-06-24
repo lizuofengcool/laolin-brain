@@ -1,10 +1,10 @@
 // SQLite 数据库模块
 // 提供文件、版本、文件夹的持久化存储，替代原有的 JSON 文件存储
 // 性能提升 10x+，支持复杂查询和事务
+// 多租户支持：所有业务表携带 tenant_id，查询自动按租户隔离
 
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
-
 use crate::{KBFile, KBFileVersion, KBFolder};
 
 /// 数据库错误类型
@@ -31,7 +31,6 @@ pub fn get_db_path(app: &tauri::AppHandle, user_id: &str) -> DbResult<PathBuf> {
 pub fn open_db(app: &tauri::AppHandle, user_id: &str) -> DbResult<Connection> {
     let db_path = get_db_path(app, user_id)?;
     let is_new_db = !db_path.exists();
-
     let conn = Connection::open(db_path)?;
 
     // 启用 WAL 模式，提升并发性能
@@ -49,7 +48,6 @@ pub fn open_db(app: &tauri::AppHandle, user_id: &str) -> DbResult<Connection> {
             // 迁移失败不影响使用，只是旧数据没了
         }
     }
-
     Ok(conn)
 }
 
@@ -80,7 +78,6 @@ fn migrate_from_json(app: &tauri::AppHandle, user_id: &str, conn: &Connection) -
             serde_json::from_str(&content).map_err(|e| DbError::Rusqlite(
                 rusqlite::Error::InvalidParameterName(format!("JSON解析失败: {}", e)),
             ))?;
-
         for folder in &folders {
             insert_folder(&tx, folder)?;
         }
@@ -94,7 +91,6 @@ fn migrate_from_json(app: &tauri::AppHandle, user_id: &str, conn: &Connection) -
             serde_json::from_str(&content).map_err(|e| DbError::Rusqlite(
                 rusqlite::Error::InvalidParameterName(format!("JSON解析失败: {}", e)),
             ))?;
-
         for file in &files {
             insert_file(&tx, file)?;
         }
@@ -108,7 +104,6 @@ fn migrate_from_json(app: &tauri::AppHandle, user_id: &str, conn: &Connection) -
             serde_json::from_str(&content).map_err(|e| DbError::Rusqlite(
                 rusqlite::Error::InvalidParameterName(format!("JSON解析失败: {}", e)),
             ))?;
-
         for version in &versions {
             create_version(&tx, version)?;
         }
@@ -124,7 +119,6 @@ fn migrate_from_json(app: &tauri::AppHandle, user_id: &str, conn: &Connection) -
     let _ = std::fs::rename(&folders_json, folders_json.with_extension("json.bak"));
 
     println!("数据迁移完成，旧文件已备份为 .bak");
-
     Ok(())
 }
 
@@ -164,7 +158,15 @@ fn init_tables(conn: &Connection) -> DbResult<()> {
         [],
     )?;
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_files_tenant_id ON files(tenant_id)",
+        [],
+    )?;
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_files_user_deleted ON files(user_id, is_deleted)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_files_tenant_deleted ON files(tenant_id, is_deleted)",
         [],
     )?;
     conn.execute(
@@ -208,6 +210,10 @@ fn init_tables(conn: &Connection) -> DbResult<()> {
         [],
     )?;
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_versions_tenant_id ON file_versions(tenant_id)",
+        [],
+    )?;
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_versions_file_version ON file_versions(file_id, version)",
         [],
     )?;
@@ -233,6 +239,10 @@ fn init_tables(conn: &Connection) -> DbResult<()> {
         [],
     )?;
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_folders_tenant_id ON folders(tenant_id)",
+        [],
+    )?;
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_folders_parent_id ON folders(parent_id)",
         [],
     )?;
@@ -247,57 +257,87 @@ fn init_tables(conn: &Connection) -> DbResult<()> {
 // ─── 文件操作 ────────────────────────────────────────────────────
 
 /// 获取所有文件（过滤已删除的）
+/// tenant_id 为空字符串时不限制租户（向后兼容）
 pub fn get_all_files(conn: &Connection, tenant_id: &str) -> DbResult<Vec<KBFile>> {
     let mut stmt = conn.prepare(
         "SELECT id, tenant_id, user_id, file_name, file_type, file_size, file_path, text_content,
                 thumbnail_url, preview_url, storage_mode, folder_id, tags,
-                is_favorite, is_deleted, deleted_at, created_at, file_hash, summary, key_points
+                is_favorite, is_deleted, deleted_at, created_at, updated_at, file_hash, summary, key_points
          FROM files WHERE is_deleted = 0 AND (tenant_id = ?1 OR ?1 = '') ORDER BY created_at DESC",
     )?;
-
     let files = stmt
         .query_map(params![tenant_id], |row| row_to_file(row))?
         .collect::<Result<Vec<_>, _>>()?;
-
     Ok(files)
 }
 
 /// 根据 ID 获取单个文件
-pub fn get_file_by_id(conn: &Connection, file_id: &str) -> DbResult<Option<KBFile>> {
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn get_file_by_id(conn: &Connection, file_id: &str, tenant_id: &str) -> DbResult<Option<KBFile>> {
     let file = conn
         .query_row(
-            "SELECT id, user_id, file_name, file_type, file_size, file_path, text_content,
+            "SELECT id, tenant_id, user_id, file_name, file_type, file_size, file_path, text_content,
                     thumbnail_url, preview_url, storage_mode, folder_id, tags,
-                    is_favorite, is_deleted, deleted_at, created_at, file_hash, summary, key_points
-             FROM files WHERE id = ?1",
-            params![file_id],
+                    is_favorite, is_deleted, deleted_at, created_at, updated_at, file_hash, summary, key_points
+             FROM files WHERE id = ?1 AND (tenant_id = ?2 OR ?2 = '')",
+            params![file_id, tenant_id],
             |row| row_to_file(row),
         )
         .optional()?;
-
     Ok(file)
 }
 
 /// 搜索文件（按文件名、文本内容、标签）
-pub fn search_files(conn: &Connection, query: &str) -> DbResult<Vec<KBFile>> {
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn search_files(conn: &Connection, query: &str, tenant_id: &str) -> DbResult<Vec<KBFile>> {
     let query_lower = format!("%{}%", query.to_lowercase());
-
     let mut stmt = conn.prepare(
-        "SELECT id, user_id, file_name, file_type, file_size, file_path, text_content,
+        "SELECT id, tenant_id, user_id, file_name, file_type, file_size, file_path, text_content,
                 thumbnail_url, preview_url, storage_mode, folder_id, tags,
-                is_favorite, is_deleted, deleted_at, created_at, file_hash, summary, key_points
+                is_favorite, is_deleted, deleted_at, created_at, updated_at, file_hash, summary, key_points
          FROM files
          WHERE is_deleted = 0
-           AND (LOWER(file_name) LIKE ?1
-                OR LOWER(COALESCE(text_content, '')) LIKE ?1
-                OR LOWER(tags) LIKE ?1)
+           AND (tenant_id = ?1 OR ?1 = '')
+           AND (LOWER(file_name) LIKE ?2
+                OR LOWER(COALESCE(text_content, '')) LIKE ?2
+                OR LOWER(tags) LIKE ?2)
          ORDER BY created_at DESC",
     )?;
-
     let files = stmt
-        .query_map(params![query_lower], |row| row_to_file(row))?
+        .query_map(params![tenant_id, query_lower], |row| row_to_file(row))?
         .collect::<Result<Vec<_>, _>>()?;
+    Ok(files)
+}
 
+/// 获取收藏的文件
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn get_favorite_files(conn: &Connection, tenant_id: &str) -> DbResult<Vec<KBFile>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, tenant_id, user_id, file_name, file_type, file_size, file_path, text_content,
+                thumbnail_url, preview_url, storage_mode, folder_id, tags,
+                is_favorite, is_deleted, deleted_at, created_at, updated_at, file_hash, summary, key_points
+         FROM files WHERE is_deleted = 0 AND is_favorite = 1 AND (tenant_id = ?1 OR ?1 = '')
+         ORDER BY created_at DESC",
+    )?;
+    let files = stmt
+        .query_map(params![tenant_id], |row| row_to_file(row))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(files)
+}
+
+/// 获取文件夹下的文件
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn get_files_by_folder(conn: &Connection, folder_id: &str, tenant_id: &str) -> DbResult<Vec<KBFile>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, tenant_id, user_id, file_name, file_type, file_size, file_path, text_content,
+                thumbnail_url, preview_url, storage_mode, folder_id, tags,
+                is_favorite, is_deleted, deleted_at, created_at, updated_at, file_hash, summary, key_points
+         FROM files WHERE is_deleted = 0 AND folder_id = ?1 AND (tenant_id = ?2 OR ?2 = '')
+         ORDER BY created_at DESC",
+    )?;
+    let files = stmt
+        .query_map(params![folder_id, tenant_id], |row| row_to_file(row))?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(files)
 }
 
@@ -309,15 +349,15 @@ pub fn insert_file(conn: &Connection, file: &KBFile) -> DbResult<()> {
         .as_ref()
         .and_then(|kp| serde_json::to_string(kp).ok())
         .unwrap_or_default();
-
     conn.execute(
         "INSERT INTO files (
-            id, user_id, file_name, file_type, file_size, file_path, text_content,
+            id, tenant_id, user_id, file_name, file_type, file_size, file_path, text_content,
             thumbnail_url, preview_url, storage_mode, folder_id, tags,
             is_favorite, is_deleted, deleted_at, created_at, updated_at, file_hash, summary, key_points
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         params![
             file.id,
+            file.tenant_id,
             file.user_id,
             file.file_name,
             file.file_type,
@@ -339,12 +379,12 @@ pub fn insert_file(conn: &Connection, file: &KBFile) -> DbResult<()> {
             key_points_json,
         ],
     )?;
-
     Ok(())
 }
 
 /// 更新文件元数据
-pub fn update_file(conn: &Connection, file_id: &str, updates: &FileUpdates) -> DbResult<bool> {
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn update_file(conn: &Connection, file_id: &str, updates: &FileUpdates, tenant_id: &str) -> DbResult<bool> {
     let mut sets = Vec::new();
     let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
 
@@ -397,10 +437,10 @@ pub fn update_file(conn: &Connection, file_id: &str, updates: &FileUpdates) -> D
 
     // 添加 WHERE 参数
     params.push(&file_id);
+    params.push(&tenant_id);
 
-    let sql = format!("UPDATE files SET {} WHERE id = ?", sets.join(", "));
+    let sql = format!("UPDATE files SET {} WHERE id = ? AND (tenant_id = ? OR ? = '')", sets.join(", "));
     let rows = conn.execute(&sql, rusqlite::params_from_iter(params))?;
-
     Ok(rows > 0)
 }
 
@@ -430,43 +470,66 @@ impl Default for FileUpdates {
 }
 
 /// 永久删除文件
-pub fn permanent_delete_file(conn: &Connection, file_id: &str) -> DbResult<bool> {
-    let rows = conn.execute("DELETE FROM files WHERE id = ?1", params![file_id])?;
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn permanent_delete_file(conn: &Connection, file_id: &str, tenant_id: &str) -> DbResult<bool> {
+    let rows = conn.execute(
+        "DELETE FROM files WHERE id = ?1 AND (tenant_id = ?2 OR ?2 = '')",
+        params![file_id, tenant_id],
+    )?;
     Ok(rows > 0)
 }
 
 /// 清空回收站（删除所有 is_deleted = 1 的文件）
-pub fn empty_recycle_bin(conn: &Connection) -> DbResult<usize> {
-    let rows = conn.execute("DELETE FROM files WHERE is_deleted = 1", [])?;
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn empty_recycle_bin(conn: &Connection, tenant_id: &str) -> DbResult<usize> {
+    let rows = conn.execute(
+        "DELETE FROM files WHERE is_deleted = 1 AND (tenant_id = ?1 OR ?1 = '')",
+        params![tenant_id],
+    )?;
     Ok(rows)
+}
+
+/// 获取已删除的文件（回收站）
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn get_deleted_files(conn: &Connection, tenant_id: &str) -> DbResult<Vec<KBFile>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, tenant_id, user_id, file_name, file_type, file_size, file_path, text_content,
+                thumbnail_url, preview_url, storage_mode, folder_id, tags,
+                is_favorite, is_deleted, deleted_at, created_at, updated_at, file_hash, summary, key_points
+         FROM files WHERE is_deleted = 1 AND (tenant_id = ?1 OR ?1 = '')
+         ORDER BY deleted_at DESC",
+    )?;
+    let files = stmt
+        .query_map(params![tenant_id], |row| row_to_file(row))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(files)
 }
 
 // ─── 版本操作 ────────────────────────────────────────────────────
 
 /// 获取文件的所有版本（按版本号降序）
-pub fn get_file_versions(conn: &Connection, file_id: &str) -> DbResult<Vec<KBFileVersion>> {
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn get_file_versions(conn: &Connection, file_id: &str, tenant_id: &str) -> DbResult<Vec<KBFileVersion>> {
     let mut stmt = conn.prepare(
-        "SELECT id, file_id, file_name, file_size, file_path, text_content, thumbnail_url, version, created_at
-         FROM file_versions WHERE file_id = ?1 ORDER BY version DESC",
+        "SELECT id, tenant_id, file_id, file_name, file_size, file_path, text_content, thumbnail_url, version, created_at
+         FROM file_versions WHERE file_id = ?1 AND (tenant_id = ?2 OR ?2 = '') ORDER BY version DESC",
     )?;
-
     let versions = stmt
-        .query_map(params![file_id], |row| row_to_version(row))?
+        .query_map(params![file_id, tenant_id], |row| row_to_version(row))?
         .collect::<Result<Vec<_>, _>>()?;
-
     Ok(versions)
 }
 
 /// 获取文件的最新版本号
-pub fn get_latest_version(conn: &Connection, file_id: &str) -> DbResult<i32> {
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn get_latest_version(conn: &Connection, file_id: &str, tenant_id: &str) -> DbResult<i32> {
     let max_version: Option<i32> = conn
         .query_row(
-            "SELECT MAX(version) FROM file_versions WHERE file_id = ?1",
-            params![file_id],
+            "SELECT MAX(version) FROM file_versions WHERE file_id = ?1 AND (tenant_id = ?2 OR ?2 = '')",
+            params![file_id, tenant_id],
             |row| row.get(0),
         )
         .optional()?;
-
     Ok(max_version.unwrap_or(0))
 }
 
@@ -474,10 +537,11 @@ pub fn get_latest_version(conn: &Connection, file_id: &str) -> DbResult<i32> {
 pub fn create_version(conn: &Connection, version: &KBFileVersion) -> DbResult<()> {
     conn.execute(
         "INSERT INTO file_versions (
-            id, file_id, file_name, file_size, file_path, text_content, thumbnail_url, version, created_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            id, tenant_id, file_id, file_name, file_size, file_path, text_content, thumbnail_url, version, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             version.id,
+            version.tenant_id,
             version.file_id,
             version.file_name,
             version.file_size,
@@ -488,29 +552,29 @@ pub fn create_version(conn: &Connection, version: &KBFileVersion) -> DbResult<()
             version.created_at,
         ],
     )?;
-
     Ok(())
 }
 
 /// 根据 ID 获取版本
-pub fn get_version_by_id(conn: &Connection, version_id: &str) -> DbResult<Option<KBFileVersion>> {
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn get_version_by_id(conn: &Connection, version_id: &str, tenant_id: &str) -> DbResult<Option<KBFileVersion>> {
     let version = conn
         .query_row(
-            "SELECT id, file_id, file_name, file_size, file_path, text_content, thumbnail_url, version, created_at
-             FROM file_versions WHERE id = ?1",
-            params![version_id],
+            "SELECT id, tenant_id, file_id, file_name, file_size, file_path, text_content, thumbnail_url, version, created_at
+             FROM file_versions WHERE id = ?1 AND (tenant_id = ?2 OR ?2 = '')",
+            params![version_id, tenant_id],
             |row| row_to_version(row),
         )
         .optional()?;
-
     Ok(version)
 }
 
 /// 删除版本
-pub fn delete_version(conn: &Connection, version_id: &str) -> DbResult<bool> {
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn delete_version(conn: &Connection, version_id: &str, tenant_id: &str) -> DbResult<bool> {
     let rows = conn.execute(
-        "DELETE FROM file_versions WHERE id = ?1",
-        params![version_id],
+        "DELETE FROM file_versions WHERE id = ?1 AND (tenant_id = ?2 OR ?2 = '')",
+        params![version_id, tenant_id],
     )?;
     Ok(rows > 0)
 }
@@ -518,55 +582,86 @@ pub fn delete_version(conn: &Connection, version_id: &str) -> DbResult<bool> {
 // ─── 文件夹操作 ──────────────────────────────────────────────────
 
 /// 获取所有文件夹
-pub fn get_all_folders(conn: &Connection) -> DbResult<Vec<KBFolder>> {
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn get_all_folders(conn: &Connection, tenant_id: &str) -> DbResult<Vec<KBFolder>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, parent_id, user_id, created_at FROM folders ORDER BY created_at ASC",
+        "SELECT id, tenant_id, name, parent_id, user_id, created_at, updated_at FROM folders
+         WHERE (tenant_id = ?1 OR ?1 = '') ORDER BY created_at ASC",
     )?;
-
     let folders = stmt
-        .query_map([], |row| row_to_folder(row))?
+        .query_map(params![tenant_id], |row| row_to_folder(row))?
         .collect::<Result<Vec<_>, _>>()?;
-
     Ok(folders)
 }
 
 /// 插入新文件夹
 pub fn insert_folder(conn: &Connection, folder: &KBFolder) -> DbResult<()> {
     conn.execute(
-        "INSERT INTO folders (id, name, parent_id, user_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+        "INSERT INTO folders (id, tenant_id, name, parent_id, user_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
         params![
             folder.id,
+            folder.tenant_id,
             folder.name,
             folder.parent_id,
             folder.user_id,
             folder.created_at,
         ],
     )?;
-
     Ok(())
 }
 
 /// 重命名文件夹
-pub fn rename_folder(conn: &Connection, folder_id: &str, new_name: &str) -> DbResult<bool> {
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn rename_folder(conn: &Connection, folder_id: &str, new_name: &str, tenant_id: &str) -> DbResult<bool> {
     let now = crate::now_iso8601();
     let rows = conn.execute(
-        "UPDATE folders SET name = ?1, updated_at = ?2 WHERE id = ?3",
-        params![new_name, now, folder_id],
+        "UPDATE folders SET name = ?1, updated_at = ?2 WHERE id = ?3 AND (tenant_id = ?4 OR ?4 = '')",
+        params![new_name, now, folder_id, tenant_id],
     )?;
     Ok(rows > 0)
 }
 
 /// 删除文件夹
-pub fn delete_folder(conn: &Connection, folder_id: &str) -> DbResult<bool> {
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn delete_folder(conn: &Connection, folder_id: &str, tenant_id: &str) -> DbResult<bool> {
     // 先将该文件夹下的文件移出
     conn.execute(
-        "UPDATE files SET folder_id = NULL, updated_at = ?1 WHERE folder_id = ?2",
-        params![crate::now_iso8601(), folder_id],
+        "UPDATE files SET folder_id = NULL, updated_at = ?1 WHERE folder_id = ?2 AND (tenant_id = ?3 OR ?3 = '')",
+        params![crate::now_iso8601(), folder_id, tenant_id],
     )?;
-
-    let rows = conn.execute("DELETE FROM folders WHERE id = ?1", params![folder_id])?;
+    let rows = conn.execute(
+        "DELETE FROM folders WHERE id = ?1 AND (tenant_id = ?2 OR ?2 = '')",
+        params![folder_id, tenant_id],
+    )?;
     Ok(rows > 0)
+}
+
+/// 根据 ID 获取文件夹
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn get_folder_by_id(conn: &Connection, folder_id: &str, tenant_id: &str) -> DbResult<Option<KBFolder>> {
+    let folder = conn
+        .query_row(
+            "SELECT id, tenant_id, name, parent_id, user_id, created_at, updated_at
+             FROM folders WHERE id = ?1 AND (tenant_id = ?2 OR ?2 = '')",
+            params![folder_id, tenant_id],
+            |row| row_to_folder(row),
+        )
+        .optional()?;
+    Ok(folder)
+}
+
+/// 获取子文件夹
+/// tenant_id 为空字符串时不限制租户（向后兼容）
+pub fn get_child_folders(conn: &Connection, parent_id: &str, tenant_id: &str) -> DbResult<Vec<KBFolder>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, tenant_id, name, parent_id, user_id, created_at, updated_at FROM folders
+         WHERE parent_id = ?1 AND (tenant_id = ?2 OR ?2 = '') ORDER BY created_at ASC",
+    )?;
+    let folders = stmt
+        .query_map(params![parent_id, tenant_id], |row| row_to_folder(row))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(folders)
 }
 
 // ─── 行转换辅助函数 ──────────────────────────────────────────────
@@ -574,12 +669,11 @@ pub fn delete_folder(conn: &Connection, folder_id: &str) -> DbResult<bool> {
 fn row_to_file(row: &rusqlite::Row) -> rusqlite::Result<KBFile> {
     let tags_str: String = row.get("tags")?;
     let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-
     let key_points_str: Option<String> = row.get("key_points")?;
     let key_points = key_points_str.and_then(|s| serde_json::from_str(&s).ok());
-
     Ok(KBFile {
         id: row.get("id")?,
+        tenant_id: row.get("tenant_id")?,
         user_id: row.get("user_id")?,
         file_name: row.get("file_name")?,
         file_type: row.get("file_type")?,
@@ -604,6 +698,7 @@ fn row_to_file(row: &rusqlite::Row) -> rusqlite::Result<KBFile> {
 fn row_to_version(row: &rusqlite::Row) -> rusqlite::Result<KBFileVersion> {
     Ok(KBFileVersion {
         id: row.get("id")?,
+        tenant_id: row.get("tenant_id")?,
         file_id: row.get("file_id")?,
         file_name: row.get("file_name")?,
         file_size: row.get("file_size")?,
@@ -618,6 +713,7 @@ fn row_to_version(row: &rusqlite::Row) -> rusqlite::Result<KBFileVersion> {
 fn row_to_folder(row: &rusqlite::Row) -> rusqlite::Result<KBFolder> {
     Ok(KBFolder {
         id: row.get("id")?,
+        tenant_id: row.get("tenant_id")?,
         name: row.get("name")?,
         parent_id: row.get("parent_id")?,
         user_id: row.get("user_id")?,

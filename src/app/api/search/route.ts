@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { authenticateRequest } from "@/lib/api-auth";
+import { getTenantDbFromRequest } from "@/lib/db/tenant-context";
 import { safeJsonParseArray } from "@/lib/safe-json-parse";
 
 type SearchMode = "keyword" | "semantic" | "hybrid";
@@ -8,11 +7,10 @@ type SearchMode = "keyword" | "semantic" | "hybrid";
 // Keyword search - the original search logic
 async function keywordSearch(
   q: string,
-  userId: string
+  tenantDb: any
 ): Promise<Array<Record<string, unknown>>> {
-  const files = await db.file.findMany({
+  const files = await tenantDb.file.findMany({
     where: {
-      userId,
       storageMode: "cloud",
       isDeleted: false,
       OR: [
@@ -24,8 +22,7 @@ async function keywordSearch(
     orderBy: { createdAt: "desc" },
     take: 50,
   });
-
-  return files.map((f) => ({
+  return files.map((f: any) => ({
     ...f,
     tags: safeJsonParseArray(f.tags),
     matchType: "keyword",
@@ -36,7 +33,7 @@ async function keywordSearch(
 // Semantic search using embeddings
 async function semanticSearch(
   q: string,
-  userId: string
+  tenantDb: any
 ): Promise<Array<Record<string, unknown>>> {
   const {
     generateEmbedding,
@@ -52,8 +49,8 @@ async function semanticSearch(
     return [];
   }
 
-  const fileEmbeddings = await db.fileEmbedding.findMany({
-    where: { userId, file: { isDeleted: false } },
+  const fileEmbeddings = await tenantDb.fileEmbedding.findMany({
+    where: { file: { isDeleted: false } },
     take: 5000,
   });
 
@@ -63,7 +60,6 @@ async function semanticSearch(
 
   // Compute similarity scores
   const scoredResults: Array<{ fileId: string; score: number }> = [];
-
   for (const fe of fileEmbeddings) {
     const fileEmbedding = deserializeEmbedding(fe.embedding);
     const score = cosineSimilarity(queryEmbedding, fileEmbedding);
@@ -72,9 +68,9 @@ async function semanticSearch(
 
   scoredResults.sort((a, b) => b.score - a.score);
   const topResults = scoredResults.slice(0, 30);
-
   const matchedFileIds = topResults.map((r) => r.fileId);
-  const files = await db.file.findMany({
+
+  const files = await tenantDb.file.findMany({
     where: {
       id: { in: matchedFileIds },
       isDeleted: false,
@@ -84,7 +80,7 @@ async function semanticSearch(
   const scoreMap = new Map(topResults.map((r) => [r.fileId, r.score]));
 
   return files
-    .map((f) => ({
+    .map((f: any) => ({
       ...f,
       tags: safeJsonParseArray(f.tags),
       similarityScore: scoreMap.get(f.id) || 0,
@@ -97,12 +93,12 @@ async function semanticSearch(
 // Hybrid search - combine keyword and semantic results
 async function hybridSearch(
   q: string,
-  userId: string
+  tenantDb: any
 ): Promise<Array<Record<string, unknown>>> {
   // Run both searches in parallel
   const [keywordResults, semanticResults] = await Promise.all([
-    keywordSearch(q, userId),
-    semanticSearch(q, userId),
+    keywordSearch(q, tenantDb),
+    semanticSearch(q, tenantDb),
   ]);
 
   // Weighted scoring: 0.4 * keyword + 0.6 * semantic
@@ -122,7 +118,6 @@ async function hybridSearch(
   for (const result of semanticResults) {
     const id = result.id as string;
     const semanticScore = (result.similarityScore as number) * 0.6;
-
     if (resultScores.has(id)) {
       const existing = resultScores.get(id)!;
       existing.score += semanticScore;
@@ -155,12 +150,11 @@ async function hybridSearch(
 // Face group name search - find photos by person name
 async function faceSearch(
   q: string,
-  userId: string
+  tenantDb: any
 ): Promise<Array<Record<string, unknown>>> {
   // Find face groups whose name matches the query
-  const matchingGroups = await db.faceGroup.findMany({
+  const matchingGroups = await tenantDb.faceGroup.findMany({
     where: {
-      userId,
       name: { contains: q },
     },
     include: { faces: { select: { fileId: true } } },
@@ -181,7 +175,7 @@ async function faceSearch(
   const fileIds = Array.from(fileIdSet);
   if (fileIds.length === 0) return [];
 
-  const files = await db.file.findMany({
+  const files = await tenantDb.file.findMany({
     where: {
       id: { in: fileIds },
       isDeleted: false,
@@ -189,10 +183,10 @@ async function faceSearch(
   });
 
   const matchedGroupNames = matchingGroups
-    .filter((g) => g.name)
-    .map((g) => g.name);
+    .filter((g: any) => g.name)
+    .map((g: any) => g.name);
 
-  return files.map((f) => ({
+  return files.map((f: any) => ({
     ...f,
     tags: safeJsonParseArray(f.tags),
     matchType: "face",
@@ -202,11 +196,9 @@ async function faceSearch(
 }
 
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
-  if (auth instanceof NextResponse) return auth;
-  const { userId } = auth;
-
   try {
+    const tenantDb = await getTenantDbFromRequest(request);
+
     const { searchParams } = new URL(request.url);
     const q = searchParams.get("q") || "";
     const rawMode = searchParams.get("mode") || "hybrid";
@@ -225,22 +217,21 @@ export async function GET(request: NextRequest) {
     }
 
     let results: Array<Record<string, unknown>>;
-
     switch (mode) {
       case "semantic":
-        results = await semanticSearch(q, userId);
+        results = await semanticSearch(q, tenantDb);
         break;
       case "keyword":
-        results = await keywordSearch(q, userId);
+        results = await keywordSearch(q, tenantDb);
         break;
       case "hybrid":
       default:
-        results = await hybridSearch(q, userId);
+        results = await hybridSearch(q, tenantDb);
         break;
     }
 
     // Also search face groups by name
-    const faceResults = await faceSearch(q, userId);
+    const faceResults = await faceSearch(q, tenantDb);
 
     // Merge face results into main results (avoid duplicates)
     const existingIds = new Set(results.map((r) => r.id as string));
@@ -251,7 +242,11 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json(results);
-  } catch {
+  } catch (error: any) {
+    if (error.message === '未授权') {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    console.error('Search failed:', error);
     return NextResponse.json(
       { error: "Search failed" },
       { status: 500 }
