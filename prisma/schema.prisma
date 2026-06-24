@@ -324,3 +324,41 @@ model SyncQueue {
   @@index([createdAt])
   @@index([tenantId, status])
 }
+
+// ==================== 通知和日志模型 ====================
+
+model Notification {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String
+  type      String   // system, payment, storage, ai, share
+  title     String
+  content   String?
+  isRead    Boolean  @default(false)
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@index([tenantId, userId, isRead])
+  @@index([createdAt])
+}
+
+model ActivityLog {
+  id           String   @id @default(cuid())
+  tenantId     String
+  userId       String
+  action       String   // create, update, delete, download, share, login, etc.
+  resourceType String   // file, folder, user, tenant, setting, etc.
+  resourceId   String?
+  details      String?  // JSON string
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@index([tenantId, action])
+  @@index([tenantId, resourceType])
+  @@index([createdAt])
+}

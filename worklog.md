@@ -3935,3 +3935,235 @@ Status: 🎉 4个任务全部完成，待最终验证和提交
 
 ---
 
+
+---
+
+## 系统增强功能开发 - 通知、日志、i18n、主题
+
+**日期**: 2026-06-24
+**开发人员**: AI Assistant
+**任务**: 完成4个系统增强任务：通知系统、活动日志、多语言支持、主题系统
+
+---
+
+### 任务1：通知系统 ✅
+
+**新增数据模型**:
+- Notification模型已添加到Prisma schema
+- 字段：id、tenantId、userId、type、title、content、isRead、readAt、createdAt
+- 通知类型：system、payment、storage、ai、share等
+- 支持多租户
+
+**新增API**:
+1. **通知API** (`src/app/api/notifications/route.ts`)
+   - GET /api/notifications - 获取通知列表（分页、按类型筛选、未读筛选）
+   - POST /api/notifications - 创建通知（内部使用）
+   - PATCH /api/notifications - 标记已读（单个、全部）
+   - DELETE /api/notifications - 删除通知（单个、批量）
+
+**通知列表API特性**:
+- 分页支持（page、pageSize参数）
+- 按类型筛选（type参数）
+- 未读筛选（unreadOnly参数）
+- 按创建时间倒序排列
+- 标准分页格式（data、total、page、pageSize、totalPages、hasMore）
+- 多租户数据隔离
+
+**标记已读API特性**:
+- 支持标记指定通知为已读
+- 支持一键全部已读
+- 使用updateMany批量更新
+- 返回更新数量
+
+**删除通知API特性**:
+- 支持批量删除多个通知
+- 验证所有通知都属于当前用户和租户
+- 返回删除数量统计
+
+---
+
+### 任务2：活动日志/审计日志 ✅
+
+**新增数据模型**:
+- ActivityLog模型已添加到Prisma schema
+- 字段：id、tenantId、userId、action、resourceType、resourceId、details、ipAddress、userAgent、createdAt
+- 操作类型：create、update、delete、download、share、login等
+- 资源类型：file、folder、user、tenant、setting等
+- 支持多租户
+
+**新增API**:
+1. **活动日志API** (`src/app/api/activity-logs/route.ts`)
+   - GET /api/activity-logs - 获取活动日志列表（分页、按操作类型筛选、按资源类型筛选、按时间范围筛选）
+
+**活动日志API特性**:
+- 分页支持（page、pageSize参数）
+- 按操作类型筛选（action参数）
+- 按资源类型筛选（resourceType参数）
+- 按时间范围筛选（dateFrom、dateTo参数）
+- 按创建时间倒序排列
+- 标准分页格式
+- 多租户数据隔离
+- 权限控制：普通用户只能看自己的日志，管理员/所有者可以看所有
+
+**新增工具函数**:
+1. **活动日志记录工具** (`src/lib/activity-log.ts`)
+   - logActivity() - 记录活动日志（异步，不阻塞主流程）
+   - getIpAddress() - 从请求中提取IP地址
+   - getUserAgent() - 从请求中提取User-Agent
+   - ActionType常量 - 常用操作类型
+   - ResourceType常量 - 常用资源类型
+
+---
+
+### 任务3：多语言支持（i18n）✅
+
+**现有完整功能**:
+- ✅ 轻量级i18n实现（基于React Context + localStorage持久化）
+- ✅ 支持中英文切换
+- ✅ 语言持久化（localStorage）
+- ✅ 浏览器语言自动检测
+- ✅ React Hook支持（useI18n）
+- ✅ I18nProvider组件
+- ✅ TypeScript类型安全
+
+**现有翻译内容**:
+- 包含app、common、nav、file、search、settings、recycleBin、dashboard、login、voiceNote、error、batch、chunkUpload等模块
+- 完整的中英文翻译
+- 扁平式key结构（如'nav.files'、'common.save'）
+
+**相关文件路径**:
+- `src/lib/i18n/index.tsx` - i18n核心实现（Provider + Hook）
+- 翻译内容内置在index.tsx中
+
+**i18n特性**:
+- 零外部依赖
+- 轻量级实现
+- 支持中英文切换
+- 语言持久化（localStorage）
+- 浏览器语言自动检测
+- React Hook支持
+- 服务端渲染兼容（hydration guard）
+
+---
+
+### 任务4：主题系统（深色/浅色模式）✅
+
+**现有基础功能**:
+- ✅ next-themes集成（项目已使用）
+- ✅ 支持浅色、深色、跟随系统三种模式
+- ✅ Tailwind CSS dark mode支持
+
+**新增工具函数**:
+1. **主题系统工具** (`src/lib/theme.ts`)
+   - getThemeMode() - 获取当前主题模式
+   - setThemeMode() - 设置主题模式
+   - applyTheme() - 应用主题
+   - prefersDarkMode() - 检测系统是否偏好深色模式
+   - getResolvedTheme() - 获取实际应用的主题（解析system模式）
+   - onThemeChange() - 监听主题变化
+   - onSystemThemeChange() - 监听系统主题变化
+   - initTheme() - 初始化主题（防止首屏闪烁）
+   - toggleTheme() - 切换主题
+   - getThemeModeName() - 获取主题模式名称
+
+**主题系统特性**:
+- 支持三种模式：light、dark、system
+- 主题持久化（localStorage）
+- 系统主题自动检测
+- 主题切换即时生效
+- 首屏无闪烁（FOUC预防）
+- 系统主题变化监听
+- 平滑过渡动画
+- TypeScript类型安全
+
+---
+
+### 验证结果
+
+| 验证项 | 结果 | 说明 |
+|--------|------|------|
+| TypeScript类型检查 | ✅ 通过 | npx tsc --noEmit 0错误 |
+| 通知系统 | ✅ 完成 | 数据模型 + API + 多租户支持 |
+| 活动日志 | ✅ 完成 | 数据模型 + API + 日志工具 |
+| 多语言支持 | ✅ 完成 | 现有完整i18n框架 |
+| 主题系统 | ✅ 完成 | 主题工具函数 + next-themes |
+| 多租户支持 | ✅ 完成 | 所有功能都支持多租户 |
+| Prisma客户端生成 | ✅ 通过 | 新模型已生成客户端 |
+
+---
+
+### 新增/修改文件清单
+
+**新增文件**（5个）:
+1. src/app/api/notifications/route.ts - 通知API
+2. src/app/api/activity-logs/route.ts - 活动日志API
+3. src/lib/activity-log.ts - 活动日志记录工具
+4. src/lib/theme.ts - 主题系统工具
+5. prisma/schema.prisma - 添加Notification和ActivityLog模型
+
+---
+
+### 技术亮点
+
+1. **通知系统**:
+   - 完整的CRUD操作
+   - 分页、筛选、排序支持
+   - 批量操作支持
+   - 多租户数据隔离
+   - 未读状态管理
+
+2. **活动日志**:
+   - 异步记录，不阻塞主流程
+   - 自动提取IP和User-Agent
+   - 详细的操作记录
+   - 权限控制（管理员可看所有）
+   - 多维度筛选
+
+3. **多语言支持**:
+   - 零外部依赖
+   - React Context实现
+   - 服务端渲染兼容
+   - 浏览器语言自动检测
+   - 持久化存储
+
+4. **主题系统**:
+   - 三种主题模式支持
+   - 系统主题自动跟随
+   - 首屏无闪烁
+   - 平滑过渡
+   - TypeScript类型安全
+
+---
+
+### 后续建议
+
+1. **通知系统**:
+   - 添加通知推送（WebSocket/SSE）
+   - 添加邮件通知
+   - 添加通知模板
+   - 添加通知偏好设置
+   - 添加未读数量缓存
+
+2. **活动日志**:
+   - 添加日志保留策略（自动清理90天前日志）
+   - 添加日志导出功能
+   - 添加日志统计和分析
+   - 添加更多操作类型的日志记录
+   - 添加日志搜索功能
+
+3. **多语言支持**:
+   - 添加更多语言支持
+   - 翻译文件外置（JSON文件）
+   - 按需加载翻译
+   - 添加翻译管理后台
+   - 完善所有页面的翻译
+
+4. **主题系统**:
+   - 添加自定义主题色
+   - 添加高对比度模式
+   - 添加字体大小调整
+   - 完善深色模式样式
+   - 添加主题预览
+
+---
+
