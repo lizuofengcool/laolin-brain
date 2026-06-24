@@ -1,4 +1,43 @@
 ---
+Task ID: 批量任务5个 - 多租户数据访问层、Tauri适配、API升级、测试、文档
+Agent: Sub Agent
+Task: 批量完成5个SaaS化相关任务
+Date: 2026-06-24
+Commit: c74c830 (最新)
+Work Log:
+- 任务1：多租户数据访问层统一封装 ✅
+  - 创建tenant-db.ts - 租户数据访问类，封装所有业务表的CRUD操作
+  - 创建tenant-context.ts - 租户上下文，从请求/用户ID获取租户ID
+  - 将db.ts移动到db/index.ts，保持向后兼容
+  - 支持的表：file、folder、fileVersion、fileEmbedding、faceGroup、faceInstance、fileShare、syncLog、syncQueue、order、subscription、tenant、storageConfig
+  - TypeScript类型检查：0错误
+
+- 任务2：Tauri桌面端多租户适配（部分完成）
+  - 数据库表添加tenant_id字段（files、file_versions、folders）
+  - 数据结构添加tenant_id字段（KBFile、KBFileVersion、KBFolder）
+  - get_all_files函数添加tenant_id参数和过滤逻辑
+  - 保持向后兼容，现有数据库会自动添加字段
+
+- 任务2（续）：剩余API路由多租户升级（部分完成）
+  - 升级files/[id]/route.ts - GET/PUT/DELETE方法都添加tenantId过滤
+  - 使用getTenantIdFromUserId获取tenantId
+  - 将findUnique改为findFirst，添加tenantId条件
+  - TypeScript类型检查：0错误
+
+- 任务5：文档更新（部分完成）
+  - 更新README.md核心特性，添加SaaS多租户、云同步、支付系统等特性
+  - 更新README.md技术栈，添加Tauri、云存储、支付系统、多租户等技术
+  - 更新README.md项目结构，添加admin、billing、cloud-sync、payment等目录
+  - 更新README.md功能概览，添加会员中心、运营后台、云同步、人脸管理等视图
+  - worklog.md已更新，记录了批量任务1-5的进展
+
+待完成：
+- 任务1（续）：Tauri桌面端多租户适配 - 完成剩余部分
+- 任务2（续）：剩余API路由多租户升级 - 完成全面迁移
+- 任务3：测试用例补充
+- 任务4（续）：文档完善（DEPLOY.md）
+
+---
 Task ID: 前端会员中心页面开发
 Agent: Sub Agent
 Task: 开发面向普通用户的会员中心页面
