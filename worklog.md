@@ -2141,3 +2141,139 @@ Status: ✅ 完成
 - 已完成：增量同步、冲突处理、离线队列功能
 - 已完成：同步历史展示
 - TypeScript类型检查：0错误
+
+---
+Task ID: 支付接入框架开发
+Agent: Sub Agent
+Task: 实现支付宝和微信支付的接入框架，包括支付接口封装、回调处理、订单状态更新和前端支付流程
+Date: 2026-06-24
+Commit: (待提交)
+Work Log:
+
+### 1. 支付服务层
+**src/lib/payment/types.ts** - 类型定义
+- PayMethod类型：'alipay' | 'wechat'
+- PaymentStatus类型：'pending' | 'paid' | 'failed' | 'refunded'
+- CreatePaymentParams接口
+- CreatePaymentResult接口
+- QueryPaymentResult接口
+- VerifyCallbackResult接口
+- RefundParams接口
+- RefundResult接口
+- PaymentConfig接口
+- PaymentProvider接口
+
+**src/lib/payment/config.ts** - 配置管理
+- getPaymentConfig() - 获取支付配置
+- isPaymentConfigured(payMethod) - 检查支付配置是否完整
+- getNotifyUrl(payMethod) - 获取回调URL
+
+**src/lib/payment/alipay.ts** - 支付宝支付服务
+- AlipayProvider类实现PaymentProvider接口
+- createPayment() - 创建支付订单
+- queryPayment() - 查询支付状态
+- verifyCallback() - 验证回调签名
+- refund() - 退款
+- 模拟模式支持（未配置时使用）
+- generateMockSign() - 生成模拟签名
+
+**src/lib/payment/wechat.ts** - 微信支付服务
+- WechatPayProvider类实现PaymentProvider接口
+- createPayment() - 创建支付订单
+- queryPayment() - 查询支付状态
+- verifyCallback() - 验证回调签名
+- refund() - 退款
+- 模拟模式支持（未配置时使用）
+- generateMockSign() - 生成模拟签名
+
+**src/lib/payment/index.ts** - 支付工厂/统一接口
+- getPaymentProvider(payMethod) - 获取支付提供者
+- createPayment(payMethod, params) - 创建支付订单
+- queryPayment(payMethod, orderNo) - 查询支付状态
+- processPaymentCallback(payMethod, callbackParams) - 验证并处理支付回调（包含事务处理）
+- refundPayment(payMethod, params) - 退款
+
+### 2. API路由
+**src/app/api/payment/create/route.ts** - 创建支付订单
+- POST方法
+- 认证：authenticateRequest获取userId
+- 通过userId查询TenantUser获取tenantId
+- 参数验证：planId、interval、payMethod
+- 创建订单
+- 创建支付订单
+- 返回订单信息和支付URL
+
+**src/app/api/payment/callback/alipay/route.ts** - 支付宝回调
+- POST和GET方法都支持
+- 解析表单数据或JSON数据
+- 调用processPaymentCallback处理
+- 返回"success"或"fail"
+
+**src/app/api/payment/callback/wechat/route.ts** - 微信支付回调
+- POST方法
+- 解析JSON数据或表单数据
+- 调用processPaymentCallback处理
+- 返回{code: 'SUCCESS', message: '成功'}或{code: 'FAIL', message: '失败'}
+
+**src/app/api/payment/status/[orderId]/route.ts** - 查询支付状态
+- GET方法
+- 认证：authenticateRequest获取userId
+- 验证用户权限（只能查看自己租户的订单）
+- 如果订单是终态直接返回
+- 如果是pending状态，查询第三方支付状态
+- 返回订单状态信息
+
+**src/app/api/payment/mock/alipay/route.ts** - 模拟支付宝支付页面
+- GET方法
+- 返回模拟支付页面HTML
+- 包含确认支付和取消支付按钮
+- 点击后提交表单到回调接口
+- 使用mock_sign进行模拟签名验证
+
+**src/app/api/payment/mock/wechat/route.ts** - 模拟微信支付页面
+- GET方法
+- 返回模拟支付页面HTML
+- 包含模拟二维码和支付按钮
+- 点击后发送POST请求到回调接口
+- 使用mock_sign进行模拟签名验证
+
+### 3. 前端支付流程
+**src/components/billing/PaymentDialog.tsx** - 支付对话框组件
+- 支付方式选择（支付宝/微信支付）
+- 订单信息展示
+- 支付状态展示（创建中、等待支付、成功、失败）
+- 支付状态轮询（每3秒查询一次，最多30次）
+- 支付成功后回调
+- 重新支付功能
+
+**src/components/billing/PlanComparison.tsx** - 套餐对比页面集成
+- 添加PaymentDialog组件导入
+- 添加支付对话框状态管理
+- 修改立即升级按钮点击事件，打开支付对话框
+- 支付成功后刷新套餐列表
+- 免费套餐直接切换，不走支付流程
+
+### 4. 回调处理逻辑
+- 签名验证：所有回调必须验证签名
+- 幂等性：重复回调不会重复处理
+- 事务处理：订单和订阅更新在事务中完成
+- 订单状态更新：pending → paid/failed
+- 订阅更新：支付成功后创建新订阅
+- 租户配额更新：支付成功后更新租户存储和AI配额
+
+### 安全特性
+- 所有回调必须验证签名
+- 防止重复回调处理（幂等性）
+- 支付金额从服务端获取，不相信前端传值
+- 订单状态更新使用事务
+- 多租户数据隔离：所有支付操作按tenantId隔离
+
+### 验证结果
+- 运行 `npx tsc --noEmit` 验证通过，0个类型错误
+
+Status: ✅ 完成
+- 已完成：支付服务层开发
+- 已完成：支付API路由开发
+- 已完成：回调处理逻辑实现
+- 已完成：前端支付流程集成
+- TypeScript类型检查：0错误

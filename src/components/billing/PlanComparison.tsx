@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter }
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Check, X, Zap, Crown, Building2 } from 'lucide-react';
+import { PaymentDialog } from './PaymentDialog';
 
 interface Plan {
   id: string;
@@ -36,6 +37,8 @@ export function PlanComparison({ currentPlanId, onSelectPlan }: PlanComparisonPr
   const [plans, setPlans] = useState<Plan[]>([]);
   const [billingInterval, setBillingInterval] = useState<'month' | 'year'>('month');
   const [loading, setLoading] = useState(true);
+  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
+  const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null);
 
   useEffect(() => {
     fetchPlans();
@@ -238,7 +241,14 @@ export function PlanComparison({ currentPlanId, onSelectPlan }: PlanComparisonPr
                   className="w-full"
                   variant={isCurrentPlan ? 'outline' : 'default'}
                   disabled={isCurrentPlan}
-                  onClick={() => onSelectPlan?.(plan.id, billingInterval)}
+                  onClick={() => {
+                    if (plan.id === 'free') {
+                      onSelectPlan?.(plan.id, billingInterval);
+                    } else {
+                      setSelectedPlan(plan);
+                      setPaymentDialogOpen(true);
+                    }
+                  }}
                 >
                   {isCurrentPlan ? '当前套餐' : plan.id === 'free' ? '免费使用' : '立即升级'}
                 </Button>
@@ -274,6 +284,23 @@ export function PlanComparison({ currentPlanId, onSelectPlan }: PlanComparisonPr
           </div>
         </CardContent>
       </Card>
+
+      {/* 支付对话框 */}
+      {selectedPlan && (
+        <PaymentDialog
+          open={paymentDialogOpen}
+          onOpenChange={setPaymentDialogOpen}
+          planId={selectedPlan.id}
+          planName={selectedPlan.name}
+          interval={billingInterval}
+          amount={billingInterval === 'month' ? selectedPlan.price.monthly : selectedPlan.price.yearly}
+          onSuccess={() => {
+            onSelectPlan?.(selectedPlan.id, billingInterval);
+            // 刷新套餐列表
+            fetchPlans();
+          }}
+        />
+      )}
     </div>
   );
 }
