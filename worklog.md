@@ -1,4 +1,25 @@
 ---
+Task ID: 前端会员中心页面开发
+Agent: Sub Agent
+Task: 开发面向普通用户的会员中心页面
+Date: 2026-06-24
+Commit: 待提交
+Work Log:
+- 新增会员中心API路由（/api/billing/）：
+  - subscription/route.ts - 获取当前用户订阅信息、配额使用、试用状态
+  - orders/route.ts - 获取当前用户订单列表（支持分页、状态筛选）
+  - plans/route.ts - 获取套餐列表（含年付优惠计算）
+- 新增会员中心组件（src/components/billing/）：
+  - BillingDashboard.tsx - 会员中心首页：订阅状态卡片、存储/AI配额进度条、快捷操作、试用提示
+  - PlanComparison.tsx - 套餐对比页面：三档套餐对比、月付/年付切换、当前套餐高亮、FAQ
+  - OrderHistory.tsx - 订单历史页面：订单列表表格、状态筛选、分页、订单详情对话框
+  - BillingCenter.tsx - 会员中心主组件：三个子标签页（订阅概览、套餐升级、订单历史）
+- 集成到设置页面（SettingsViewContent.tsx）：
+  - 新增"会员"标签页（在自动化和关于之间）
+  - 标签页数量从4个增加到5个
+  - 添加Crown图标
+- TypeScript类型检查：0错误
+---
 Task ID: 运营后台完整功能开发
 Agent: Sub Agent
 Task: 完善运营后台（/admin）的完整UI功能
