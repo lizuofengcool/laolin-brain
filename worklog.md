@@ -1692,3 +1692,61 @@ Stage Summary:
 - 代码质量：模块化设计，db 层与命令层分离
 - 修改文件：Cargo.toml（+2 依赖）、src/db.rs（新建，~500 行）、src/lib.rs（重构，~600 行）
 - 下一步：验证编译通过 → 测试功能 → 提交代码
+
+---
+Task ID: cloud-sync-backup
+Agent: Main Agent
+Task: 云端备份同步功能（Cloudflare R2 + AES-256-GCM 端到端加密）
+
+Work Log:
+- 技术选型：Cloudflare R2（S3 兼容，免费额度大）+ AWS SDK v3
+- 加密方案：AES-256-GCM 端到端加密，PBKDF2 密钥派生
+- 创建加密模块 src/lib/cloud-sync/crypto.ts：
+  - AES-256-GCM 加密/解密
+  - PBKDF2 密钥派生（100,000 次迭代）
+  - 密码验证器
+  - 文件哈希（SHA-256）
+- 创建 R2 存储适配器 src/lib/cloud-sync/r2-storage.ts：
+  - S3Client 初始化和配置
+  - 上传/下载/删除/列出对象
+  - 预签名 URL 生成
+  - 连接测试
+- 创建同步引擎 src/lib/cloud-sync/sync-engine.ts：
+  - 完整备份上传（加密后上传）
+  - 备份恢复（解密后合并到本地）
+  - 备份列表获取
+  - 备份删除
+  - 数据校验（SHA-256 checksum）
+- 创建 API 路由：
+  - GET/POST /api/cloud-sync/config - 配置管理
+  - GET/POST /api/cloud-sync/backups - 备份列表/创建
+  - POST/DELETE /api/cloud-sync/backups/[id] - 恢复/删除备份
+- 创建前端组件 src/components/settings/CloudSync.tsx：
+  - 三个标签页：备份管理、配置设置、安全设置
+  - 备份创建、恢复、删除功能
+  - R2 配置表单（带连接测试）
+  - 加密说明文档
+
+Stage Summary:
+- 功能：完整的云端备份同步功能，支持端到端加密
+- 安全性：AES-256-GCM 加密 + PBKDF2 密钥派生 + SHA-256 校验
+- 架构：模块化设计，crypto/r2-storage/sync-engine 三层分离
+- API：RESTful 设计，输入验证，错误处理
+- UI：三标签页设计，用户友好，操作反馈完善
+- 新增文件：7 个（3 个 lib + 3 个 API + 1 个组件）
+- 新增依赖：@aws-sdk/client-s3、@aws-sdk/s3-request-presigner
+- 下一步：验证 TypeScript 类型检查 → 测试功能 → 提交代码
+
+- 集成 CloudSync 组件到设置页面（storage 标签页）
+- 修复 TypeScript 类型错误（3 个）
+  - toast 导入路径错误（@/components/ui/use-toast → @/hooks/use-toast）
+  - Element.click 类型断言
+  - AWS SDK v3 Body 类型问题
+- TypeScript 类型检查：0 错误
+
+Status: ✅ 已完成
+- 新增文件：7 个（3 个 lib + 3 个 API + 1 个组件）
+- 修改文件：1 个（SettingsViewContent.tsx）
+- 新增依赖：@aws-sdk/client-s3、@aws-sdk/s3-request-presigner
+- TypeScript：0 错误
+- 下一步：提交代码到 Gitee → 测试功能 → 增量同步优化

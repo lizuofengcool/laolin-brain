@@ -6,6 +6,7 @@ import { useAppStore } from "@/stores/app-store";
 import { getStorageAdapter } from "@/lib/storage/factory";
 import { StorageSwitch } from "@/components/settings/StorageSwitch";
 import { BackupRestore } from "@/components/settings/BackupRestore";
+import { CloudSync } from "@/components/settings/CloudSync";
 import { ThemeCustomizer } from "@/components/settings/ThemeCustomizer";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -327,6 +328,9 @@ export function SettingsViewContent() {
 
             {/* ZIP Backup & Restore */}
             <BackupRestore />
+
+            {/* Cloud Sync */}
+            <CloudSync />
           </motion.div>
         </TabsContent>
 
