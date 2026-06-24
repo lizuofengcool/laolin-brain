@@ -1,4 +1,62 @@
 ---
+Task ID: 用户账户和设置功能开发
+Agent: Sub Agent
+Task: 开发用户账户和设置相关功能
+Date: 2026-06-24
+Commit: (待提交)
+Work Log:
+- 任务1：个人信息管理 ✅
+  - User模型添加avatar和settings字段
+  - 创建个人信息API（GET/PATCH /api/user/profile）
+  - 支持获取和更新姓名、头像、存储模式、个人设置
+  - 个人设置合并默认值（语言、主题、时区、日期格式等）
+  - 返回用户的租户列表和角色信息
+  - TypeScript类型检查：0错误
+
+- 任务2：安全设置 ✅
+  - 创建修改密码API（POST /api/user/security/change-password）
+  - 密码强度检查（评分系统：weak/medium/strong）
+  - 旧密码验证（bcrypt比较）
+  - 新密码不能与旧密码相同
+  - 密码哈希存储（bcrypt，12轮）
+  - 记录密码修改活动日志（IP、User-Agent）
+  - 创建登录日志API（GET /api/user/security/login-logs）
+  - 基于ActivityLog模型，支持分页查询
+  - TypeScript类型检查：0错误
+
+- 任务3：通知偏好设置 ✅
+  - 创建通知偏好设置API（GET/PATCH /api/user/notifications/settings）
+  - 7种通知类型：system、payment、storage、ai、share、comment、collaboration
+  - 每种类型支持3个渠道：inApp、email、push
+  - 免打扰设置：时间段、重要通知例外
+  - 声音设置：开关、音量
+  - 设置存储在User.settings字段中
+  - 自动合并默认值和用户设置
+  - 深度合并类型设置
+  - TypeScript类型检查：0错误
+
+- 任务4：帮助中心和使用指南 ✅
+  - 创建帮助文档列表API（GET /api/help/articles）
+  - 创建帮助文档详情API（GET /api/help/articles/[id]）
+  - 7篇帮助文档：快速入门、文件管理、AI功能、搜索功能、快捷键、常见问题、关于我们
+  - 5个分类：快速入门、功能使用、使用技巧、常见问题、关于
+  - 支持按分类筛选
+  - 文档内容使用Markdown格式
+  - TypeScript类型检查：0错误
+
+新增API路由：
+- /api/user/profile - 个人信息管理
+- /api/user/security/change-password - 修改密码
+- /api/user/security/login-logs - 登录日志
+- /api/user/notifications/settings - 通知偏好设置
+- /api/help/articles - 帮助文档列表
+- /api/help/articles/[id] - 帮助文档详情
+
+数据模型更新：
+- User模型添加avatar字段（String?）
+- User模型添加settings字段（String?，JSON格式存储个人设置）
+
+---
 Task ID: 批量任务5个 - 多租户数据访问层、Tauri适配、API升级、测试、文档
 Agent: Sub Agent
 Task: 批量完成5个SaaS化相关任务
