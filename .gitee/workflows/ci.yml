@@ -1,0 +1,289 @@
+# ============================================
+# laolin-brain CI/CD 流水线
+# Gitee Go 配置
+# ============================================
+
+name: CI/CD Pipeline
+
+# 触发条件
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'feature/*'
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.gitignore'
+
+  pull_request:
+    branches:
+      - main
+      - develop
+
+  tag:
+    - 'v*'
+
+# 环境变量
+env:
+  NODE_VERSION: '18'
+  NPM_CACHE: '~/.npm'
+  DATABASE_URL: 'file:./dev.db'
+  TOKEN_SECRET: 'ci-test-secret-key'
+
+# 阶段
+stages:
+  - name: install
+    label: 安装依赖
+
+  - name: test
+    label: 代码测试
+    needs: install
+
+  - name: build
+    label: 构建项目
+    needs: test
+
+  - name: deploy
+    label: 部署
+    needs: build
+    only:
+      - main
+      - tags
+
+# 任务
+jobs:
+  # 安装依赖
+  install:
+    stage: install
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+
+      - name: 设置Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 缓存依赖
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.npm
+            node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: 安装依赖
+        run: |
+          npm ci --prefer-offline --no-audit --no-fund
+
+      - name: 生成Prisma客户端
+        run: |
+          npx prisma generate
+
+  # 代码检查
+  lint:
+    stage: test
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+
+      - name: 设置Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 恢复缓存
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.npm
+            node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+
+      - name: 类型检查
+        run: |
+          npx tsc --noEmit
+
+      - name: 代码规范检查（如果有ESLint）
+        run: |
+          if [ -f .eslintrc.json ] || [ -f .eslintrc.js ]; then
+            npx eslint src --ext .ts,.tsx
+          else
+            echo "ESLint not configured, skipping..."
+          fi
+        continue-on-error: true
+
+  # 单元测试
+  unit-test:
+    stage: test
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+
+      - name: 设置Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 恢复缓存
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.npm
+            node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+
+      - name: 生成Prisma客户端
+        run: |
+          npx prisma generate
+
+      - name: 推送数据库
+        run: |
+          npx prisma db push --skip-generate
+
+      - name: 运行单元测试
+        run: |
+          npm run test -- --run
+
+      - name: 上传测试覆盖率
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage
+          path: coverage/
+        if: always()
+
+  # 构建项目
+  build:
+    stage: build
+    runs-on: ubuntu-latest
+    needs: [lint, unit-test]
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+
+      - name: 设置Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 恢复缓存
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.npm
+            node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+
+      - name: 生成Prisma客户端
+        run: |
+          npx prisma generate
+
+      - name: 构建项目
+        run: |
+          npm run build
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v3
+        with:
+          name: build
+          path: |
+            .next/
+            public/
+            package.json
+            package-lock.json
+
+  # Docker镜像构建
+  docker-build:
+    stage: build
+    runs-on: ubuntu-latest
+    needs: [lint, unit-test]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+
+      - name: 设置Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: 登录容器镜像仓库
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ secrets.REGISTRY_URL }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.REGISTRY_URL }}/laolin-brain:latest
+            ${{ secrets.REGISTRY_URL }}/laolin-brain:${{ github.sha }}
+          cache-from: type=registry,ref=${{ secrets.REGISTRY_URL }}/laolin-brain:buildcache
+          cache-to: type=registry,ref=${{ secrets.REGISTRY_URL }}/laolin-brain:buildcache,mode=max
+
+  # 部署到测试环境
+  deploy-staging:
+    stage: deploy
+    runs-on: ubuntu-latest
+    needs: [build, docker-build]
+    if: github.ref == 'refs/heads/develop'
+    environment:
+      name: staging
+      url: https://staging.example.com
+    steps:
+      - name: 部署到测试环境
+        run: |
+          echo "Deploying to staging environment..."
+          # 这里添加实际的部署命令
+          # 例如：kubectl apply -f k8s/
+          # 或者：ssh user@server "cd /app && docker-compose pull && docker-compose up -d"
+
+      - name: 部署后验证
+        run: |
+          echo "Verifying deployment..."
+          # curl -f https://staging.example.com/health || exit 1
+
+  # 部署到生产环境
+  deploy-production:
+    stage: deploy
+    runs-on: ubuntu-latest
+    needs: [build, docker-build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: production
+      url: https://example.com
+    steps:
+      - name: 生产环境部署确认
+        run: |
+          echo "Deploying to production..."
+          echo "Version: ${{ github.ref_name }}"
+
+      - name: 部署到生产环境
+        run: |
+          echo "Deploying to production environment..."
+          # 这里添加实际的生产部署命令
+
+      - name: 部署后验证
+        run: |
+          echo "Verifying production deployment..."
+          # curl -f https://example.com/health || exit 1
+
+      - name: 发送通知
+        run: |
+          echo "Production deployment completed successfully!"
+          # 这里可以添加企业微信/钉钉/飞书通知
