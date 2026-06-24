@@ -34,3 +34,12 @@ export const db =
   })
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = db
+
+// 导出租户数据访问层
+export { TenantDb, createTenantDb, rawDb } from './tenant-db';
+export { 
+  getTenantIdFromRequest, 
+  getTenantDbFromRequest,
+  getTenantIdFromUserId,
+  getTenantDbFromUserId,
+} from './tenant-context';
