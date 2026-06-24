@@ -362,3 +362,42 @@ model ActivityLog {
   @@index([tenantId, resourceType])
   @@index([createdAt])
 }
+
+// ==================== 团队协作模型 ====================
+
+model Invitation {
+  id         String   @id @default(cuid())
+  tenantId   String
+  email      String
+  role       String   @default("member") // owner / admin / member / viewer
+  status     String   @default("pending") // pending / accepted / revoked / expired
+  token      String   @unique
+  invitedBy  String
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([email])
+  @@index([token])
+  @@index([createdAt])
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  tenantId  String
+  fileId    String
+  userId    String
+  content   String
+  parentId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, fileId])
+  @@index([tenantId, userId])
+  @@index([parentId])
+  @@index([createdAt])
+}
