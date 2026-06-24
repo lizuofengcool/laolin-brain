@@ -48,10 +48,10 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     where: { status: 'paid' },
     select: { amount: true, createdAt: true },
   });
-  const totalRevenue = paidOrders.reduce((sum, o) => sum + o.amount, 0);
+  const totalRevenue = paidOrders.reduce((sum, o) => sum + Number(o.amount), 0);
   const monthlyRevenue = paidOrders
     .filter(o => o.createdAt >= thisMonth)
-    .reduce((sum, o) => sum + o.amount, 0);
+    .reduce((sum, o) => sum + Number(o.amount), 0);
 
   // 存储统计
   const tenants = await db.tenant.findMany({
@@ -259,7 +259,7 @@ export async function getOrderList(
   if (filters?.search) {
     where.OR = [
       { orderNo: { contains: filters.search } },
-      { tenant: { name: { contains: filters.search } } },
+      { tenant: { is: { name: { contains: filters.search } } } },
     ];
   }
 

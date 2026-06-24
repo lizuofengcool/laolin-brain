@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { authenticateRequest } from "@/lib/api-auth";
 import { isR2Configured } from "@/lib/cloud-sync/r2-storage";
 import { uploadBackup, listBackups } from "@/lib/cloud-sync/sync-engine";
+import { db } from "@/lib/db";
 import { z } from "zod";
 
 // 创建备份请求验证
@@ -17,6 +18,21 @@ export async function GET(request: NextRequest) {
   const { userId } = auth;
 
   try {
+    // 获取用户的默认租户
+    const tenantUser = await db.tenantUser.findFirst({
+      where: { userId },
+      include: { tenant: true },
+    });
+
+    if (!tenantUser) {
+      return NextResponse.json(
+        { error: "用户未关联任何租户" },
+        { status: 400 }
+      );
+    }
+
+    const tenantId = tenantUser.tenantId;
+
     // 检查是否已配置 R2
     if (!isR2Configured()) {
       return NextResponse.json(
@@ -25,7 +41,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const backups = await listBackups(userId);
+    const backups = await listBackups(tenantId);
 
     return NextResponse.json({
       backups,
@@ -48,6 +64,21 @@ export async function POST(request: NextRequest) {
   const { userId } = auth;
 
   try {
+    // 获取用户的默认租户
+    const tenantUser = await db.tenantUser.findFirst({
+      where: { userId },
+      include: { tenant: true },
+    });
+
+    if (!tenantUser) {
+      return NextResponse.json(
+        { error: "用户未关联任何租户" },
+        { status: 400 }
+      );
+    }
+
+    const tenantId = tenantUser.tenantId;
+
     // 检查是否已配置 R2
     if (!isR2Configured()) {
       return NextResponse.json(
@@ -69,7 +100,7 @@ export async function POST(request: NextRequest) {
     const { password } = validated.data;
 
     // 创建备份
-    const backup = await uploadBackup(userId, password);
+    const backup = await uploadBackup(tenantId, userId, password);
 
     return NextResponse.json({
       success: true,

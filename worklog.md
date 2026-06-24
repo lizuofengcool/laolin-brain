@@ -1883,3 +1883,47 @@ Status: 🚧 进行中
 - 已完成：付费系统框架、运营后台服务层、云同步引擎升级、管理后台基础页面
 - 待完成：现有 API 路由多租户升级、前端会员页面、支付接入、管理后台完整功能更多 API 路由、前端 UI、支付接入、运营后台
 - 预计 Phase 1 完成时间：1-2 天
+
+## saas-phase2-continued - SaaS 化开发继续推进
+
+**Date**: 2026-06-24
+**Type**: 功能开发 + 类型修复
+
+### 完成的工作
+
+#### 1. 修复 admin-service.ts 类型错误
+- 修复 Decimal 类型相加问题：使用 Number() 转换
+- 修复订单搜索条件类型错误：使用 `tenant: { is: { name: ... } }` 语法
+
+#### 2. 升级云同步 API 路由支持多租户
+- 修改 `src/app/api/cloud-sync/backups/route.ts`：
+  - 添加 db 导入
+  - GET 方法：通过 userId 查询默认租户，传递 tenantId 给 listBackups
+  - POST 方法：通过 userId 查询默认租户，传递 tenantId, userId, password 给 uploadBackup
+- 修改 `src/app/api/cloud-sync/backups/[id]/route.ts`：
+  - 添加 db 导入
+  - POST 方法：通过 userId 查询默认租户，传递 tenantId, userId, backupId, password 给 downloadAndRestoreBackup
+  - DELETE 方法：通过 userId 查询默认租户，传递 tenantId, backupId 给 deleteBackup
+
+#### 3. 多租户 API 升级模式确立
+- 模式：每个 API 路由先通过 userId 查询 TenantUser 表获取 tenantId
+- 然后使用 tenantId 进行业务操作
+- 确保数据隔离在底层架构层面
+
+### 剩余工作
+- 现有 API 路由多租户升级（backup、embeddings、faces、files、folders 等）
+- 旧版 saas 模块类型错误修复
+- 前端会员中心页面
+- 支付接入（支付宝 + 微信支付）
+- 运营后台完整 UI 页面
+- 完整的 TypeScript 类型检查修复
+
+### Stage Summary
+- 云同步 API 已完成多租户升级
+- 确立了多租户 API 升级的标准模式
+- 部分类型错误已修复
+- 剩余大量 API 路由待升级
+
+Status: 🚧 进行中
+- 已完成：云同步 API 多租户升级、admin-service 类型修复
+- 待完成：现有 API 路由多租户升级、旧 saas 模块修复、前端页面、支付接入

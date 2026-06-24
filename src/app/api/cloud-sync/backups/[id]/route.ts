@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { authenticateRequest } from "@/lib/api-auth";
 import { isR2Configured } from "@/lib/cloud-sync/r2-storage";
 import { downloadAndRestoreBackup, deleteBackup } from "@/lib/cloud-sync/sync-engine";
+import { db } from "@/lib/db";
 import { z } from "zod";
 
 // 恢复备份请求验证
@@ -21,6 +22,21 @@ export async function POST(
   const backupId = params.id;
 
   try {
+    // 获取用户的默认租户
+    const tenantUser = await db.tenantUser.findFirst({
+      where: { userId },
+      include: { tenant: true },
+    });
+
+    if (!tenantUser) {
+      return NextResponse.json(
+        { error: "用户未关联任何租户" },
+        { status: 400 }
+      );
+    }
+
+    const tenantId = tenantUser.tenantId;
+
     // 检查是否已配置 R2
     if (!isR2Configured()) {
       return NextResponse.json(
@@ -42,7 +58,7 @@ export async function POST(
     const { password } = validated.data;
 
     // 恢复备份
-    const result = await downloadAndRestoreBackup(userId, backupId, password);
+    const result = await downloadAndRestoreBackup(tenantId, userId, backupId, password);
 
     return NextResponse.json({
       success: true,
@@ -71,6 +87,21 @@ export async function DELETE(
   const backupId = params.id;
 
   try {
+    // 获取用户的默认租户
+    const tenantUser = await db.tenantUser.findFirst({
+      where: { userId },
+      include: { tenant: true },
+    });
+
+    if (!tenantUser) {
+      return NextResponse.json(
+        { error: "用户未关联任何租户" },
+        { status: 400 }
+      );
+    }
+
+    const tenantId = tenantUser.tenantId;
+
     // 检查是否已配置 R2
     if (!isR2Configured()) {
       return NextResponse.json(
@@ -80,7 +111,7 @@ export async function DELETE(
     }
 
     // 删除备份
-    await deleteBackup(userId, backupId);
+    await deleteBackup(tenantId, backupId);
 
     return NextResponse.json({
       success: true,
