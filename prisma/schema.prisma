@@ -459,3 +459,94 @@ model Shortcut {
   @@index([tenantId, userId, isPinned])
   @@index([sortOrder])
 }
+
+// ==================== 开放平台和系统运维模型 ====================
+
+model ApiKey {
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String
+  name       String
+  key        String   @unique
+  secret     String
+  scopes     String   // JSON string array
+  expiresAt  DateTime?
+  lastUsedAt DateTime?
+  enabled    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@index([tenantId, enabled])
+  @@index([createdAt])
+}
+
+model Webhook {
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String
+  name       String
+  url        String
+  events     String   // JSON string array
+  secret     String?
+  enabled    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@index([tenantId, enabled])
+  @@index([createdAt])
+}
+
+model WebhookLog {
+  id         String   @id @default(cuid())
+  tenantId   String
+  webhookId  String
+  event      String
+  status     Int
+  response   String?
+  retryCount Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, webhookId])
+  @@index([tenantId, event])
+  @@index([createdAt])
+}
+
+model Backup {
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String
+  name       String
+  type       String   // full / incremental
+  size       Int      @default(0)
+  fileCount  Int      @default(0)
+  status     String   // pending / running / completed / failed
+  error      String?
+  filePath   String?
+  createdAt  DateTime @default(now())
+  completedAt DateTime?
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@index([tenantId, status])
+  @@index([createdAt])
+}
+
+model SystemLog {
+  id         String   @id @default(cuid())
+  tenantId   String?
+  level      String   // info / warn / error / debug
+  module     String
+  message    String
+  details    String?
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([level])
+  @@index([module])
+  @@index([createdAt])
+}
