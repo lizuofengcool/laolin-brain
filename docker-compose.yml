@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: laolin-brain
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=file:/app/data/db.sqlite
+      - NEXT_PUBLIC_APP_URL=http://localhost:3000
+      # JWT密钥（请修改为随机字符串）
+      - JWT_SECRET=change-this-to-a-random-secret-key-at-least-32-chars
+      # SaaS配置
+      - SAAS_ENABLED=true
+      - DEFAULT_PLAN=free
+      - TRIAL_DAYS=7
+      # 存储配置
+      - STORAGE_PROVIDER=local
+      # 初始化配置
+      - INIT_DEFAULT_ADMIN=false
+      # - ADMIN_EMAIL=admin@example.com
+      # - ADMIN_PASSWORD=your-secure-password
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/public/uploads
+    networks:
+      - laolin-brain-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # 可选：使用Nginx作为反向代理
+  nginx:
+    image: nginx:alpine
+    container_name: laolin-brain-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - app
+    networks:
+      - laolin-brain-network
+    profiles:
+      - nginx
+
+networks:
+  laolin-brain-network:
+    driver: bridge
+
+volumes:
+  data:
+  uploads:

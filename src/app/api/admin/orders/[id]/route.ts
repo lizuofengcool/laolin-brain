@@ -4,10 +4,10 @@ import { getOrderDetail } from "@/lib/admin/admin-service";
 // ─── GET /api/admin/orders/[id] — 获取订单详情 ────────────────
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = params;
+    const { id } = await params;
     const order = await getOrderDetail(id);
     
     if (!order) {

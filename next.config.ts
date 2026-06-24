@@ -9,10 +9,24 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: false,
   },
   reactStrictMode: true,
+  // 压缩优化
+  compress: true,
+  // 图片优化
+  images: {
+    formats: ['image/avif', 'image/webp'],
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: '**',
+      },
+    ],
+  },
   experimental: {
     serverActions: {
       bodySizeLimit: "50mb",
     },
+    // 优化打包
+    optimizePackageImports: ['lucide-react', '@radix-ui/react-icons'],
   },
   serverExternalPackages: ['sharp'],
   async headers() {

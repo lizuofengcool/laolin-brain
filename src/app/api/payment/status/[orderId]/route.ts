@@ -9,17 +9,15 @@ import { db } from '@/lib/db';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { orderId: string } }
+  { params }: { params: Promise<{ orderId: string }> }
 ) {
   try {
-    // 认证用户
+    const { orderId } = await params;
     const authResult = await authenticateRequest(request);
     if (authResult instanceof NextResponse) {
       return authResult;
     }
     const { userId } = authResult;
-
-    const orderId = params.orderId;
 
     if (!orderId) {
       return NextResponse.json(

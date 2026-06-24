@@ -13,13 +13,15 @@ const restoreBackupSchema = z.object({
 // ─── POST /api/cloud-sync/backups/[id] — 恢复指定备份 ─────────────
 export async function POST(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   const auth = authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
+  const { id } = await params;
+
   const { userId } = auth;
-  const backupId = params.id;
+  const backupId = id;
 
   try {
     // 获取用户的默认租户
@@ -78,13 +80,15 @@ export async function POST(
 // ─── DELETE /api/cloud-sync/backups/[id] — 删除指定备份 ─────────────
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   const auth = authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
+  const { id } = await params;
+
   const { userId } = auth;
-  const backupId = params.id;
+  const backupId = id;
 
   try {
     // 获取用户的默认租户
