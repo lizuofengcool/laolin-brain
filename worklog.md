@@ -2039,3 +2039,105 @@ Status: 🚧 进行中
 Status: ✅ 完成
 - 已完成：所有剩余API路由多租户升级，8个类型错误全部修复
 - TypeScript类型检查：0错误
+
+---
+Task ID: 云同步引擎完善（Phase 2）
+Agent: Sub Agent
+Task: 完善云端同步引擎，实现增量同步、冲突处理、离线队列等核心功能
+Date: 2026-06-24
+Commit: (待提交)
+Work Log:
+
+### 1. 数据库模型升级
+**prisma/schema.prisma**
+- 新增SyncQueue表模型，包含：
+  - id, tenantId, userId
+  - operation (upload/update/delete)
+  - fileId, fileName, fileHash, filePath, folderId
+  - status (pending/processing/failed/completed)
+  - retryCount, maxRetries, errorMessage, priority
+  - createdAt, updatedAt, processedAt
+  - 索引：tenantId, status, createdAt, tenantId+status
+
+### 2. 同步引擎核心升级
+**src/lib/cloud-sync/sync-engine.ts**
+- 新增类型定义：SyncProgress、ConflictInfo、QueueItem、CloudFileMeta
+- 新增常量：SYNC_STATUS、QUEUE_STATUS、OPERATION_TYPE
+- 新增离线队列管理：
+  - addToSyncQueue - 添加到同步队列
+  - getSyncQueue - 获取同步队列
+  - processSyncQueue - 处理同步队列
+  - cleanupCompletedQueue - 清理已完成队列
+- 新增文件云端操作：
+  - uploadFileToCloud - 上传文件到云端
+  - downloadFileFromCloud - 从云端下载文件
+  - deleteFileFromCloud - 从云端删除文件
+  - listCloudFiles - 列出云端文件
+- 新增冲突检测与处理：
+  - detectConflicts - 检测冲突
+  - resolveConflict - 解决单个冲突
+  - resolveConflictsAuto - 批量自动解决冲突
+- 升级增量同步：incrementalSync（完整版本，支持冲突检测）
+- 升级同步状态管理：getSyncStatus（添加conflictFiles、overallStatus、queueSize）
+- 新增便捷方法：triggerSync、getConflictFiles、getRecentSyncLogs
+- 保留完整备份/恢复功能（向后兼容）
+
+### 3. API路由新增
+**src/app/api/cloud-sync/sync/route.ts**
+- POST方法：触发增量同步
+- 认证：authenticateRequest获取userId
+- 通过userId查询TenantUser获取tenantId
+- 调用triggerSync函数
+
+**src/app/api/cloud-sync/status/route.ts**
+- GET方法：获取同步状态
+- 调用getSyncStatus获取状态
+- 调用getRecentSyncLogs获取最近日志
+
+**src/app/api/cloud-sync/conflicts/route.ts**
+- GET方法：获取冲突文件列表
+- POST方法：解决冲突（单个或批量自动）
+- 支持三种解决策略：local_wins、cloud_wins、keep_both
+- 支持auto批量自动解决
+
+**src/app/api/cloud-sync/queue/route.ts**
+- GET方法：获取同步队列（支持status筛选、limit限制）
+- DELETE方法：清理已完成的队列项
+
+### 4. 前端组件升级
+**src/components/settings/CloudSync.tsx**
+- 标签页从3个增加到5个：同步状态、备份管理、冲突解决、同步队列、配置设置
+- 同步状态标签页：
+  - 同步进度条
+  - 统计信息（总文件数、已同步、等待中、冲突）
+  - 上次同步时间
+  - 错误信息
+  - 加密密码输入
+  - 立即同步按钮
+  - 队列状态卡片
+  - 同步历史卡片（最近5条记录）
+- 冲突解决标签页：
+  - 冲突说明卡片
+  - 冲突文件列表
+  - 三种解决策略按钮
+  - 批量自动解决功能
+- 同步队列标签页：
+  - 队列操作（刷新、清理已完成）
+  - 队列任务列表
+
+### 技术要点
+- 离线优先：本地数据为主，云端为备份
+- 数据安全：所有云端数据保持端到端加密
+- 兼容性：与现有备份恢复功能兼容
+- 多租户数据隔离：所有同步操作按tenantId隔离
+- 冲突解决策略：最后写入胜出（Last Write Wins）
+- 离线队列持久化：支持重试机制（默认3次）
+
+### 验证结果
+- 运行 `npx tsc --noEmit` 验证通过，0个类型错误
+
+Status: ✅ 完成
+- 已完成：云同步引擎核心功能开发
+- 已完成：增量同步、冲突处理、离线队列功能
+- 已完成：同步历史展示
+- TypeScript类型检查：0错误

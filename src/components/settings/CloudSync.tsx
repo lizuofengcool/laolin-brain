@@ -24,6 +24,7 @@ import {
   ListTodo,
   Play,
   X,
+  History,
 } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 
@@ -68,6 +69,18 @@ interface QueueItem {
   createdAt: string;
 }
 
+interface SyncLogItem {
+  id: string;
+  syncType: 'full' | 'incremental';
+  status: 'success' | 'failed' | 'in_progress';
+  filesSynced: number;
+  filesTotal: number;
+  bytesSynced: number;
+  errorMessage: string | null;
+  startedAt: string;
+  endedAt: string | null;
+}
+
 interface CloudSyncProps {
   className?: string;
 }
@@ -84,6 +97,7 @@ export function CloudSync({ className }: CloudSyncProps) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [conflicts, setConflicts] = useState<ConflictFile[]>([]);
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [syncLogs, setSyncLogs] = useState<SyncLogItem[]>([]);
   const [isResolvingConflict, setIsResolvingConflict] = useState<string | null>(null);
 
   // 配置表单状态
@@ -113,6 +127,9 @@ export function CloudSync({ className }: CloudSyncProps) {
       const data = await res.json();
       if (res.ok && data.success) {
         setSyncStatus(data.data.status);
+        if (data.data.recentLogs) {
+          setSyncLogs(data.data.recentLogs);
+        }
       }
     } catch (error) {
       console.error('加载同步状态失败:', error);
@@ -798,6 +815,69 @@ export function CloudSync({ className }: CloudSyncProps) {
                   >
                     查看队列详情
                   </Button>
+                </CardContent>
+              </Card>
+
+              {/* 同步历史 */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <History className="h-5 w-5" />
+                    同步历史
+                    <Badge variant="outline" className="ml-auto">
+                      {syncLogs.length} 条记录
+                    </Badge>
+                  </CardTitle>
+                  <CardDescription>
+                    最近的同步操作记录
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {syncLogs.length === 0 ? (
+                    <div className="text-sm text-muted-foreground text-center py-4">
+                      暂无同步记录
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {syncLogs.slice(0, 5).map((log) => (
+                        <div
+                          key={log.id}
+                          className="flex items-center justify-between p-2 border rounded-lg"
+                        >
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <Badge
+                                className={
+                                  log.status === 'success'
+                                    ? 'bg-green-500'
+                                    : log.status === 'failed'
+                                    ? 'bg-red-500'
+                                    : 'bg-blue-500'
+                                }
+                              >
+                                {log.status === 'success'
+                                  ? '成功'
+                                  : log.status === 'failed'
+                                  ? '失败'
+                                  : '进行中'}
+                              </Badge>
+                              <span className="text-sm font-medium">
+                                {log.syncType === 'full' ? '全量同步' : '增量同步'}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                              <span>{log.filesSynced}/{log.filesTotal} 个文件</span>
+                              <span>{formatSize(Number(log.bytesSynced))}</span>
+                              <span>{formatDate(log.startedAt)}</span>
+                            </div>
+                            {log.errorMessage && (
+                              <p className="text-xs text-red-500">{log.errorMessage}</p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </>
