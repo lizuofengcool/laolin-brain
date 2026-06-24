@@ -5,7 +5,7 @@
 
 import { db } from "@/lib/db";
 import { encrypt, decrypt, hashFileContent } from "./crypto";
-import { R2Storage, R2Config } from "./r2-storage";
+import { R2Storage, R2Config } from "./r2-storage-class";
 import { AliyunOSSStorage, AliyunOSSConfig } from "./aliyun-oss";
 
 // ==================== 类型定义 ====================

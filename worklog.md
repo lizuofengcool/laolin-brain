@@ -1834,5 +1834,52 @@ Stage Summary:
 
 Status: 🚧 进行中
 - 已完成：数据库 schema、租户服务、订单服务、OSS 适配器、同步引擎升级
-- 待完成：更多 API 路由、前端 UI、支付接入、运营后台
+- 待完成：
+
+---
+Task ID: saas-phase2
+Agent: Main Agent
+Task: SaaS 化开发 - 付费系统 + 运营后台
+Work Log:
+- 升级云端同步引擎为多租户版（src/lib/cloud-sync/sync-engine.ts）：
+  - 存储提供者工厂模式：支持阿里云 OSS / Cloudflare R2 动态切换
+  - 完整备份/恢复：支持多租户数据隔离（tenantId 前缀）
+  - 增量同步：基于 syncStatus 和 lastSyncAt 判断
+  - 同步日志记录：SyncLog 表记录每次同步
+  - 端到端加密：AES-256-GCM + PBKDF2 密钥派生
+- 创建 R2 存储类版本（src/lib/cloud-sync/r2-storage-class.ts）：
+  - 面向对象设计，每个实例独立配置
+  - 支持多租户不同 R2 账号
+  - 与阿里云 OSS 接口保持一致
+- 实现付费系统基础框架（src/lib/billing/subscription.ts）：
+  - 三档套餐定义：免费版 / 专业版 / 企业版
+  - 订阅管理：创建、取消、查询
+  - 订单管理：创建订单、支付回调、订单列表
+  - 配额控制：存储配额检查、AI 配额检查与消耗
+  - 试用管理：开始试用、检查试用状态
+- 实现运营后台服务层（src/lib/admin/admin-service.ts）：
+  - 仪表盘统计：租户统计、收入统计、存储统计、文件统计
+  - 租户管理：租户列表、详情、状态更新、套餐变更
+  - 订单管理：订单列表、详情
+  - 系统监控：系统概览、同步日志
+- 创建运营后台 API 路由：
+  - GET /api/admin/dashboard - 获取仪表盘统计数据
+  - GET /api/admin/tenants - 获取租户列表
+- 创建运营后台前端页面（src/app/admin/page.tsx）：
+  - 仪表盘布局：统计卡片 + 快捷操作
+  - 统计卡片：总租户数、本月收入、总存储量、本月新增
+  - 快捷入口：租户管理、订单管理、系统设置
+  - 使用 shadcn/ui 组件库，与主项目风格一致
+
+Stage Summary:
+- 付费系统：完整的订阅与计费框架，支持三档套餐
+- 运营后台：服务层 + API + 前端页面，基础功能可用
+- 云同步升级：多租户支持，动态存储配置
+- 新增文件：8+ 个（服务层 + API + 页面 + 适配器）
+- 技术栈：保持 Next.js + Prisma + shadcn/ui 统一
+- 注意：现有部分 API 路由仍需升级支持多租户（缺少 tenantId）
+
+Status: 🚧 进行中
+- 已完成：付费系统框架、运营后台服务层、云同步引擎升级、管理后台基础页面
+- 待完成：现有 API 路由多租户升级、前端会员页面、支付接入、管理后台完整功能更多 API 路由、前端 UI、支付接入、运营后台
 - 预计 Phase 1 完成时间：1-2 天
