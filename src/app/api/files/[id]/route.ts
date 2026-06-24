@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, getTenantIdFromUserId } from "@/lib/db";
 import { unlink } from "fs/promises";
 import path from "path";
 import { authenticateRequest } from "@/lib/api-auth";
@@ -14,8 +14,11 @@ export async function GET(
   const { userId } = auth;
 
   try {
+    const tenantId = await getTenantIdFromUserId(userId);
     const { id } = await params;
-    const file = await db.file.findUnique({ where: { id } });
+    const file = await db.file.findFirst({
+      where: { id, tenantId }
+    });
     if (!file) {
       return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
@@ -39,10 +42,13 @@ export async function PUT(
   const { userId } = auth;
 
   try {
+    const tenantId = await getTenantIdFromUserId(userId);
     const { id } = await params;
 
     // Ownership check
-    const existingFile = await db.file.findUnique({ where: { id } });
+    const existingFile = await db.file.findFirst({
+      where: { id, tenantId }
+    });
     if (!existingFile || existingFile.userId !== userId) {
       return NextResponse.json({ error: "文件不存在" }, { status: 404 });
     }
@@ -138,8 +144,11 @@ export async function DELETE(
   const { userId } = auth;
 
   try {
+    const tenantId = await getTenantIdFromUserId(userId);
     const { id } = await params;
-    const file = await db.file.findUnique({ where: { id } });
+    const file = await db.file.findFirst({
+      where: { id, tenantId }
+    });
 
     if (!file || file.userId !== userId) {
       return NextResponse.json({ error: "文件不存在" }, { status: 404 });
