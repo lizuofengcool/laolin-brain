@@ -18,6 +18,11 @@ import {
   Network,
   ScanFace,
   Settings,
+  BookOpen,
+  StickyNote,
+  CheckSquare,
+  Calendar,
+  Lightbulb,
 } from "lucide-react";
 
 import { useMemo } from "react";
@@ -41,6 +46,14 @@ const navItems: { icon: typeof LayoutDashboard; label: string; view: ViewType; p
   { icon: BarChart3, label: "分析", view: "analytics", path: "/analytics" },
   { icon: Network, label: "知识图谱", view: "knowledgeGraph", path: "/graph" },
   { icon: User, label: "我的", view: "profile", path: "/profile" },
+];
+
+// 生产力工具导航项
+const productivityNavItems = [
+  { icon: BookOpen, label: "知识库", path: "/knowledge" },
+  { icon: StickyNote, label: "笔记", path: "/notes" },
+  { icon: CheckSquare, label: "待办事项", path: "/todos" },
+  { icon: Calendar, label: "日历", path: "/calendar" },
 ];
 
 export function Sidebar() {
@@ -132,6 +145,33 @@ export function Sidebar() {
           <Upload className="h-4 w-4 shrink-0" />
           {sidebarOpen && <span className="text-sm">上传文件</span>}
         </Button>
+
+        {/* 生产力工具 */}
+        {sidebarOpen && (
+          <>
+            <Separator className="my-3" />
+            <div className="px-2">
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                生产力工具
+              </span>
+            </div>
+            {productivityNavItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = pathname === item.path;
+              return (
+                <Button
+                  key={item.path}
+                  variant={isActive ? "secondary" : "ghost"}
+                  className="w-full justify-start gap-3 h-10"
+                  onClick={() => router.push(item.path)}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span className="text-sm flex-1 text-left">{item.label}</span>
+                </Button>
+              );
+            })}
+          </>
+        )}
 
         {/* Recent files section */}
         {sidebarOpen && recentFiles.length > 0 && (
