@@ -1,164 +1,221 @@
-import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { authenticateRequest } from "@/lib/api-auth";
-
 /**
- * 分享管理API
- * GET /api/shares - 获取我的分享列表
- * DELETE /api/shares - 批量删除分享
+ * 分享列表API
+ * GET - 获取分享列表
+ * POST - 创建分享
+ * DELETE - 批量删除分享
  */
 
-// ─── GET /api/shares — 获取我的分享列表 ─────────────
+import { NextRequest, NextResponse } from 'next/server';
+import { shareManager } from '@/lib/shares';
+import { ShareTargetType, ShareMethod, ShareStatus } from '@/lib/shares/types';
+
+// ==================== GET - 获取分享列表 ====================
+
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
-  if (auth instanceof NextResponse) return auth;
-
-  const { userId } = auth;
-
   try {
     const { searchParams } = new URL(request.url);
+
+    // 解析查询参数
+    const targetId = searchParams.get('targetId') || undefined;
+    const targetType = searchParams.get('targetType') as ShareTargetType | undefined;
+    const statusParam = searchParams.get('status');
+    const shareMethodParam = searchParams.get('shareMethod');
+    const createdBy = searchParams.get('createdBy') || undefined;
+    const search = searchParams.get('search') || undefined;
+    const sortBy = searchParams.get('sortBy') as 'createdAt' | 'accessCount' | 'downloadCount' | 'expiresAt' || 'createdAt';
+    const sortOrder = searchParams.get('sortOrder') as 'asc' | 'desc' || 'desc';
     const page = parseInt(searchParams.get('page') || '1', 10);
-    const pageSize = Math.min(100, parseInt(searchParams.get('pageSize') || '20', 10));
-    const fileId = searchParams.get('fileId');
+    const pageSize = parseInt(searchParams.get('pageSize') || '20', 10);
+    const dateFrom = searchParams.get('dateFrom') ? new Date(searchParams.get('dateFrom')!) : undefined;
+    const dateTo = searchParams.get('dateTo') ? new Date(searchParams.get('dateTo')!) : undefined;
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
+    // 解析状态
+    let status: ShareStatus | ShareStatus[] | undefined;
+    if (statusParam) {
+      status = statusParam.split(',') as ShareStatus[];
+      if (status.length === 1) {
+        status = status[0];
+      }
     }
 
-    const { tenantId } = tenantUser;
-
-    // 构建查询条件
-    const where: any = {
-      file: {
-        userId,
-        tenantId,
-      },
-    };
-
-    if (fileId) {
-      where.fileId = fileId;
+    // 解析分享方式
+    let shareMethod: ShareMethod | ShareMethod[] | undefined;
+    if (shareMethodParam) {
+      shareMethod = shareMethodParam.split(',') as ShareMethod[];
+      if (shareMethod.length === 1) {
+        shareMethod = shareMethod[0];
+      }
     }
 
-    // 计算总数
-    const total = await db.fileShare.count({
-      where,
-    });
+    // 模拟租户ID（实际应该从认证中获取）
+    const tenantId = 'default_tenant';
+    const userId = 'default_user';
 
-    // 分页查询分享列表
-    const shares = await db.fileShare.findMany({
-      where,
-      include: {
-        file: {
-          select: {
-            id: true,
-            fileName: true,
-            fileType: true,
-            fileSize: true,
-            thumbnailUrl: true,
-          },
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    });
-
-    // 返回分页结果
-    return NextResponse.json({
-      data: shares,
-      total,
+    // 查询分享
+    const result = shareManager.queryShares({
+      tenantId,
+      targetId,
+      targetType,
+      status,
+      shareMethod,
+      createdBy,
+      search,
+      sortBy,
+      sortOrder,
       page,
       pageSize,
-      totalPages: Math.ceil(total / pageSize),
-      hasMore: page * pageSize < total,
+      dateFrom,
+      dateTo,
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        shares: result.shares,
+        pagination: {
+          total: result.total,
+          page: result.page,
+          pageSize: result.pageSize,
+          totalPages: result.totalPages,
+          hasMore: result.hasMore,
+        },
+      },
     });
   } catch (error) {
-    console.error('Failed to fetch shares:', error);
+    console.error('获取分享列表失败:', error);
     return NextResponse.json(
-      { error: '获取分享列表失败' },
+      { success: false, error: '获取分享列表失败' },
       { status: 500 }
     );
   }
 }
 
-// ─── DELETE /api/shares — 批量删除分享 ─────────────
+// ==================== POST - 创建分享 ====================
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const {
+      targetId,
+      targetType,
+      shareMethod,
+      permissions,
+      password,
+      expiresAt,
+      maxAccessCount,
+      title,
+      description,
+      allowComment,
+      allowDownload,
+      allowEdit,
+      notifyOnAccess,
+      notifyOnDownload,
+      customUrl,
+      watermark,
+      previewMode,
+      templateId,
+    } = body;
+
+    if (!targetId || !targetType || !shareMethod) {
+      return NextResponse.json(
+        { success: false, error: '缺少必要参数' },
+        { status: 400 }
+      );
+    }
+
+    // 模拟租户ID和用户信息（实际应该从认证中获取）
+    const tenantId = 'default_tenant';
+    const userId = 'default_user';
+    const userName = '默认用户';
+
+    let share;
+
+    // 如果指定了模板，从模板创建
+    if (templateId) {
+      share = shareManager.createShareFromTemplate(
+        tenantId,
+        userId,
+        userName,
+        targetId,
+        targetType as ShareTargetType,
+        templateId
+      );
+    } else {
+      // 解析过期时间
+      const expiresAtDate = expiresAt ? new Date(expiresAt) : undefined;
+
+      share = shareManager.createShare(tenantId, userId, userName, {
+        targetId,
+        targetType: targetType as ShareTargetType,
+        shareMethod: shareMethod as ShareMethod,
+        permissions,
+        password,
+        expiresAt: expiresAtDate,
+        maxAccessCount,
+        title,
+        description,
+        allowComment,
+        allowDownload,
+        allowEdit,
+        notifyOnAccess,
+        notifyOnDownload,
+        customUrl,
+        watermark,
+        previewMode,
+      });
+    }
+
+    if (!share) {
+      return NextResponse.json(
+        { success: false, error: '创建分享失败' },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        share,
+        shareUrl: `/s/${share.token}`,
+      },
+    });
+  } catch (error) {
+    console.error('创建分享失败:', error);
+    return NextResponse.json(
+      { success: false, error: '创建分享失败' },
+      { status: 500 }
+    );
+  }
+}
+
+// ==================== DELETE - 批量删除分享 ====================
+
 export async function DELETE(request: NextRequest) {
-  const auth = authenticateRequest(request);
-  if (auth instanceof NextResponse) return auth;
-
-  const { userId } = auth;
-
   try {
     const body = await request.json();
     const { shareIds } = body;
 
     if (!shareIds || !Array.isArray(shareIds) || shareIds.length === 0) {
       return NextResponse.json(
-        { error: 'shareIds is required' },
+        { success: false, error: '缺少分享ID列表' },
         { status: 400 }
       );
     }
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
+    // 模拟租户ID和用户信息（实际应该从认证中获取）
+    const tenantId = 'default_tenant';
+    const userId = 'default_user';
 
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
-    // 使用事务批量删除
-    const result = await db.$transaction(async (tx) => {
-      // 验证所有分享都属于当前用户和租户
-      const shares = await tx.fileShare.findMany({
-        where: {
-          id: { in: shareIds },
-          file: {
-            userId,
-            tenantId,
-          },
-        },
-        select: { id: true },
-      });
-
-      if (shares.length !== shareIds.length) {
-        throw new Error('部分分享不存在或无权访问');
-      }
-
-      // 删除分享
-      const deleteResult = await tx.fileShare.deleteMany({
-        where: {
-          id: { in: shareIds },
-        },
-      });
-
-      return deleteResult.count;
-    });
+    const result = shareManager.batchDeleteShares(shareIds, tenantId, userId);
 
     return NextResponse.json({
       success: true,
-      deletedCount: result,
+      data: result,
     });
-  } catch (error: any) {
-    console.error('Failed to delete shares:', error);
+  } catch (error) {
+    console.error('批量删除分享失败:', error);
     return NextResponse.json(
-      { error: error.message || '删除分享失败' },
+      { success: false, error: '批量删除分享失败' },
       { status: 500 }
     );
   }
