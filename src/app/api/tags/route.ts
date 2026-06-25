@@ -12,10 +12,10 @@ import { safeJsonParseArray } from "@/lib/safe-json-parse";
 
 // ─── GET /api/tags — 获取所有标签列表（带使用数量） ─────────────
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const { searchParams } = new URL(request.url);
@@ -105,10 +105,10 @@ export async function GET(request: NextRequest) {
 
 // ─── POST /api/tags — 批量添加标签到文件 ─────────────
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const body = await request.json();
@@ -197,10 +197,10 @@ export async function POST(request: NextRequest) {
 
 // ─── DELETE /api/tags — 删除标签（从所有文件中移除） ─────────────
 export async function DELETE(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const body = await request.json();

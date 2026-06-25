@@ -198,13 +198,11 @@ export async function getSearchRecommendations(
         {
           fileName: {
             contains: query,
-            mode: "insensitive",
           },
         },
         {
           tags: {
             contains: query,
-            mode: "insensitive",
           },
         },
       ],
@@ -383,36 +381,45 @@ async function getHistoryBasedRecommendations(
   tenantId: string,
   limit: number
 ): Promise<Recommendation[]> {
-  // 获取用户的访问历史
   const accessHistory = await db.accessHistory.findMany({
     where: { tenantId, userId },
     orderBy: { lastAccessedAt: "desc" },
     take: 50,
-    include: { file: true },
   });
 
   if (accessHistory.length === 0) {
     return [];
   }
 
-  // 计算每个文件的兴趣分数
+  const fileIds = accessHistory.map((a) => a.fileId);
+  const files = await db.file.findMany({
+    where: {
+      id: { in: fileIds },
+      tenantId,
+      userId,
+      isDeleted: false,
+    },
+  });
+
+  const fileMap = new Map(files.map((f) => [f.id, f]));
+
   const fileScores = new Map<string, { score: number; file: any; reasons: string[] }>();
 
   for (const access of accessHistory) {
-    if (!access.file || access.file.isDeleted) continue;
+    const file = fileMap.get(access.fileId);
+    if (!file) continue;
 
     const existing = fileScores.get(access.fileId) || {
       score: 0,
-      file: access.file,
+      file,
       reasons: [],
     };
 
-    // 基于访问次数和最近访问时间计算分数
     const recencyScore =
       1 /
       (1 +
         (Date.now() - new Date(access.lastAccessedAt).getTime()) /
-          (1000 * 60 * 60 * 24 * 7)); // 7天半衰期
+          (1000 * 60 * 60 * 24 * 7));
     const frequencyScore = Math.log10(access.accessCount + 1);
 
     existing.score += recencyScore * 2 + frequencyScore;
@@ -421,7 +428,6 @@ async function getHistoryBasedRecommendations(
     fileScores.set(access.fileId, existing);
   }
 
-  // 转换为推荐列表
   const recommendations: Recommendation[] = Array.from(fileScores.values())
     .map((item) => ({
       fileId: item.file.id,

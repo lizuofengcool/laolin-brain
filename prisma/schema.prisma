@@ -34,6 +34,10 @@ model Tenant {
   orders          Order[]
   storageConfigs  StorageConfig[]
   faceGroups      FaceGroup[]
+  chatConversations ChatConversation[]
+  chatMessages    ChatMessage[]
+  aiProviderConfigs AiProviderConfig[]
+  settings        Setting[]
 
   @@index([status])
   @@index([plan])
@@ -68,6 +72,7 @@ model User {
   tenantMemberships TenantUser[]
   files             File[]
   folders           Folder[]
+  aiProviderConfigs AiProviderConfig[]
 
   // 便捷方法：获取当前激活的租户
   @@map("users")
@@ -393,20 +398,30 @@ model Invitation {
 }
 
 model Comment {
-  id        String   @id @default(cuid())
-  tenantId  String
-  fileId    String
-  userId    String
-  content   String
-  parentId  String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id         String   @id @default(cuid())
+  tenantId   String
+  fileId     String?
+  userId     String
+  content    String
+  parentId   String?
+  likes      Int      @default(0)
+  isEdited   Boolean  @default(false)
+  editedAt   DateTime?
+  replyCount Int      @default(0)
+  attachments String? // JSON string array
+  mentions   String   @default("[]") // JSON string array of mentioned user IDs
+  targetType String   @default("file") // file / folder / conversation
+  targetId   String?
+  likedBy    String?  // JSON string array of user IDs
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   @@index([tenantId])
   @@index([tenantId, fileId])
   @@index([tenantId, userId])
   @@index([parentId])
   @@index([createdAt])
+  @@index([tenantId, targetType, targetId])
 }
 
 // ==================== 高级功能模型 ====================
@@ -556,4 +571,128 @@ model SystemLog {
   @@index([level])
   @@index([module])
   @@index([createdAt])
+}
+
+// ==================== 聊天功能模型 ====================
+
+model ChatConversation {
+  id          String   @id @default(cuid())
+  tenantId    String
+  userId      String
+  title       String
+  type        String   @default("general") // general / file_analysis / knowledge_qa
+  provider    String?  // AI provider: openai / anthropic / deepseek / qwen / ollama
+  modelId     String?  // 使用的 AI 模型
+  systemPrompt String?
+  lastMessageAt DateTime?
+  messageCount Int     @default(0)
+  tokenUsage  Int      @default(0)
+  isArchived  Boolean  @default(false)
+  isPinned    Boolean  @default(false)
+  metadata    String?  // JSON string
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  messages    ChatMessage[]
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@index([tenantId, isArchived])
+  @@index([tenantId, isPinned])
+  @@index([lastMessageAt])
+  @@index([createdAt])
+}
+
+model ChatMessage {
+  id             String   @id @default(cuid())
+  tenantId       String
+  conversationId String
+  userId         String
+  role           String   // user / assistant / system
+  content        String
+  modelId        String?
+  tokensUsed     Int      @default(0)
+  durationMs     Int?
+  status         String   @default("completed") // pending / streaming / completed / failed / cancelled
+  isStreaming    Boolean  @default(false)
+  toolResults    String?  // JSON string: tool call results
+  errorMessage   String?
+  attachments    String?  // JSON string array
+  metadata       String?  // JSON string
+  parentId       String?
+  timestamp      DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant         Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversation   ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  parent         ChatMessage?     @relation("MessageReplies", fields: [parentId], references: [id], onDelete: SetNull)
+  replies        ChatMessage[]    @relation("MessageReplies")
+
+  @@index([tenantId])
+  @@index([tenantId, conversationId])
+  @@index([conversationId])
+  @@index([tenantId, userId])
+  @@index([parentId])
+  @@index([timestamp])
+  @@index([createdAt])
+  @@index([status])
+}
+
+// ==================== AI 提供商配置模型 ====================
+
+model AiProviderConfig {
+  id          String   @id @default(cuid())
+  tenantId    String
+  userId      String
+  name        String
+  provider    String   // openai / anthropic / deepseek / qwen / ollama / custom
+  apiKey      String?  // 加密存储
+  baseUrl     String?
+  model       String?
+  isDefault   Boolean  @default(false)
+  isEnabled   Boolean  @default(true)
+  config      String?  // JSON string: temperature, maxTokens, topP 等
+  priority    Int      @default(0)
+  quotaLimit  Int?     // 配额限制
+  quotaUsed   Int      @default(0)
+  lastUsedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@index([tenantId, provider])
+  @@index([tenantId, isEnabled])
+  @@index([tenantId, isDefault])
+  @@unique([tenantId, userId, provider])
+  @@unique([tenantId, name])
+}
+
+// ==================== 系统设置模型 ====================
+
+model Setting {
+  id          String   @id @default(cuid())
+  tenantId    String
+  key         String
+  value       String?  // JSON string
+  type        String   @default("string") // string / number / boolean / json / array
+  category    String   @default("general") // general / ai / storage / notification / security
+  description String?
+  isPublic    Boolean  @default(false)
+  isEncrypted Boolean  @default(false)
+  userId      String?  // 用户级设置（null 表示租户级）
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, category])
+  @@index([tenantId, userId])
+  @@unique([tenantId, key, userId])
 }

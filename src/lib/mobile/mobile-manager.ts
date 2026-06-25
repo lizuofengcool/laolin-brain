@@ -47,7 +47,17 @@ export class MobileManager {
   private breakpointListeners: Set<(breakpoint: CurrentBreakpoint) => void> = new Set();
 
   // 手势状态
-  private gestureState = {
+  private gestureState: {
+    isTracking: boolean;
+    startX: number;
+    startY: number;
+    lastX: number;
+    lastY: number;
+    startTime: number;
+    lastTapTime: number;
+    longPressTimer: ReturnType<typeof setTimeout> | null;
+    pointers: Map<number, { x: number; y: number }>;
+  } = {
     isTracking: false,
     startX: 0,
     startY: 0,
@@ -55,8 +65,8 @@ export class MobileManager {
     lastY: 0,
     startTime: 0,
     lastTapTime: 0,
-    longPressTimer: null as ReturnType<typeof setTimeout> | null,
-    pointers: Map<number, { x: number; y: number }> = new Map(),
+    longPressTimer: null,
+    pointers: new Map(),
   };
 
   constructor() {

@@ -7,7 +7,7 @@ import { getAiUsageStatus, AI_DAILY_LIMIT } from '@/lib/ai-usage';
  * 返回当前认证用户的 AI 调用用量信息（只读，不递增计数）
  */
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
   try {

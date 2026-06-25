@@ -15,7 +15,7 @@ export async function POST(request: NextRequest) {
     if (authResult instanceof NextResponse) {
       return authResult;
     }
-    const { userId } = authResult;
+    const { userId, tenantId } = authResult;
 
     // 获取请求体
     const body = await request.json();
@@ -49,21 +49,6 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-
-    // 获取用户的租户ID
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      orderBy: { joinedAt: 'asc' },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { success: false, error: '用户不属于任何租户' },
-        { status: 400 }
-      );
-    }
-
-    const tenantId = tenantUser.tenantId;
 
     // 免费套餐不需要支付
     if (planId === 'free') {

@@ -95,9 +95,9 @@ export async function GET(
   }
 
   // Normal auth flow
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const file = await db.file.findUnique({ where: { id } });

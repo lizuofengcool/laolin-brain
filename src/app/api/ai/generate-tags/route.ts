@@ -29,10 +29,10 @@ function getZAI() {
  */
 
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     // 检查AI配额和租户信息

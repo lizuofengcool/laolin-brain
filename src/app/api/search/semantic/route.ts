@@ -3,7 +3,7 @@ import { authenticateRequest } from '@/lib/api-auth';
 import { safeJsonParseArray } from '@/lib/safe-json-parse';
 
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
   try {

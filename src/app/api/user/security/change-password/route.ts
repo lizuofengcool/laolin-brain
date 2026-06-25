@@ -46,10 +46,10 @@ function checkPasswordStrength(password: string): {
 
 // ─── POST /api/user/security/change-password — 修改密码 ─────────────
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const body = await request.json();

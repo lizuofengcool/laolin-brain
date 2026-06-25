@@ -10,10 +10,10 @@ import { authenticateRequest } from "@/lib/api-auth";
 
 // ─── GET /api/system-logs — 获取系统日志 ─────────────
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const { searchParams } = new URL(request.url);

@@ -10,10 +10,10 @@ import { authenticateRequest } from "@/lib/api-auth";
 
 // ─── GET /api/shortcuts — 获取快捷方式列表 ─────────────
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const { searchParams } = new URL(request.url);
@@ -112,10 +112,10 @@ export async function GET(request: NextRequest) {
 
 // ─── POST /api/shortcuts — 创建快捷方式 ─────────────
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const body = await request.json();

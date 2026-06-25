@@ -1,4 +1,6 @@
 import type { FileData } from "@/lib/storage/base";
+import type { AiProviderType } from "@/lib/ai/providers/base";
+import type { ChatMessage, ChatConversation } from "./chat-slice";
 
 // ── Shared Types ──────────────────────────────────────────────────────────────
 
@@ -18,11 +20,21 @@ export type ViewType =
   | "analytics"
   | "knowledgeGraph";
 
+export interface UserSettings {
+  language?: string;
+  timezone?: string;
+  dateFormat?: string;
+  timeFormat?: string;
+  [key: string]: any;
+}
+
 export interface UserInfo {
   id: string;
   name: string;
   email: string;
   storageMode: string;
+  avatar?: string;
+  settings?: UserSettings;
 }
 
 export interface FolderItem {
@@ -43,6 +55,7 @@ export interface AppState {
   setCurrentView: (view: ViewType) => void;
   login: (user: UserInfo, token: string) => void;
   logout: () => void;
+  updateUser: (userData: Partial<UserInfo>) => void;
   hydrateAuth: () => void;
   _setupCrossTabSync: () => (() => void) | void;
 
@@ -128,6 +141,23 @@ export interface AppState {
   embeddingQueue: string[];
   queueEmbedding: (fileId: string) => void;
   processEmbeddingQueue: () => Promise<void>;
+
+  // Chat
+  conversations: ChatConversation[];
+  currentConversationId: string | null;
+  currentMessages: ChatMessage[];
+  isSending: boolean;
+  chatProvider: AiProviderType;
+  setChatProvider: (provider: AiProviderType) => void;
+  floatingChatOpen: boolean;
+  setFloatingChatOpen: (open: boolean) => void;
+  createConversation: () => string;
+  deleteConversation: (id: string) => void;
+  setCurrentConversation: (id: string | null) => void;
+  sendMessage: (content: string) => Promise<void>;
+  clearCurrentConversation: () => void;
+  loadConversations: () => Promise<void>;
+  loadConversationMessages: (id: string) => Promise<void>;
 }
 
 export type StoreSet = (...args: any[]) => any;

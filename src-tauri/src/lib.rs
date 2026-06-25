@@ -5,10 +5,12 @@
 // 多租户支持：所有命令支持 tenant_id 参数，实现数据隔离
 
 mod db;
+mod system_search;
+mod search_service;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tauri::command;
+use tauri::{command, Emitter};
 use db::{DbError, DbResult, FileUpdates};
 
 // ─── 数据结构定义 ──────────────────────────────────────────────
@@ -905,4 +907,246 @@ impl<'a> std::io::Write for Base64EncodeWriter<'a> {
 
         Ok(())
     }
+}
+
+// ─── 全盘文件搜索命令 ──────────────────────────────────────────
+
+/// 将文件类型分类转换为扩展名筛选
+fn category_to_exts(category: &str) -> Option<String> {
+    match category {
+        "folder" => None,
+        "document" => Some("doc,docx,pdf,txt,md,rtf,odt,xls,xlsx,csv,ppt,pptx,odp,ods,wps".to_string()),
+        "image" => Some("jpg,jpeg,png,gif,bmp,svg,webp,ico,tiff,tif,psd".to_string()),
+        "video" => Some("mp4,avi,mkv,mov,wmv,flv,webm,m4v,3gp".to_string()),
+        "audio" => Some("mp3,wav,flac,aac,ogg,wma,m4a,opus".to_string()),
+        "archive" => Some("zip,rar,7z,tar,gz,bz2,xz,iso".to_string()),
+        "executable" => Some("exe,msi,bat,cmd,ps1,sh,lnk".to_string()),
+        "code" => Some("js,ts,py,rs,go,java,c,cpp,h,cs,ruby,php,html,css,json,yaml,yml,xml,toml".to_string()),
+        _ => None,
+    }
+}
+
+/// 构建全盘索引（后台执行，立即返回，完成后通过事件通知）
+#[command]
+pub fn system_search_build_index(app: tauri::AppHandle) -> Result<String, String> {
+    if search_service::is_service_running_fast() {
+        let app_clone = app.clone();
+        std::thread::spawn(move || {
+            let rebuild_result = search_service::service_rebuild();
+            match rebuild_result {
+                Ok(_) => {
+                    let load_result = system_search::load_index_from_file();
+                    match load_result {
+                        Ok(status) => {
+                            let _ = app_clone.emit("index-built", serde_json::json!({
+                                "success": true,
+                                "status": status
+                            }));
+                        }
+                        Err(err) => {
+                            let _ = app_clone.emit("index-built", serde_json::json!({
+                                "success": false,
+                                "error": err
+                            }));
+                        }
+                    }
+                }
+                Err(err) => {
+                    let _ = app_clone.emit("index-built", serde_json::json!({
+                        "success": false,
+                        "error": format!("服务构建索引失败: {}", err)
+                    }));
+                }
+            }
+        });
+        return Ok("正在通过服务构建索引...".to_string());
+    }
+
+    let app_clone = app.clone();
+    std::thread::spawn(move || {
+        let result = system_search::build_index();
+        match result {
+            Ok(status) => {
+                let _ = app_clone.emit("index-built", serde_json::json!({
+                    "success": true,
+                    "status": status
+                }));
+            }
+            Err(err) => {
+                let _ = app_clone.emit("index-built", serde_json::json!({
+                    "success": false,
+                    "error": err
+                }));
+            }
+        }
+    });
+    Ok("索引任务已启动".to_string())
+}
+
+/// 全盘搜索文件（异步）
+#[command]
+pub async fn system_search_query(
+    query: String,
+    category: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<system_search::FileEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let ext_filter = category.as_deref().and_then(|c| category_to_exts(c));
+        let cat = category.as_deref();
+        system_search::search_files(
+            &query,
+            ext_filter.as_deref(),
+            cat,
+            limit.unwrap_or(100),
+        )
+    })
+    .await
+    .map_err(|e| format!("搜索任务执行失败: {}", e))?
+}
+
+/// 在指定路径下搜索文件（异步）
+#[command]
+pub async fn system_search_query_in_path(
+    query: String,
+    path: String,
+    category: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<system_search::FileEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let resolved_path = match path.as_str() {
+            "DESKTOP" => dirs::desktop_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or(path),
+            "DOCUMENTS" => dirs::document_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or(path),
+            "DOWNLOADS" => dirs::download_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or(path),
+            "PICTURES" => dirs::picture_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or(path),
+            "MUSIC" => dirs::audio_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or(path),
+            "VIDEOS" => dirs::video_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or(path),
+            "HOME" => dirs::home_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or(path),
+            _ => path,
+        };
+        let cat = category.as_deref();
+        system_search::search_files_in_path(
+            &query,
+            &resolved_path,
+            cat,
+            limit.unwrap_or(100),
+        )
+    })
+    .await
+    .map_err(|e| format!("搜索任务执行失败: {}", e))?
+}
+
+/// 获取全盘索引状态
+#[command]
+pub fn system_search_status() -> Result<system_search::IndexStatus, String> {
+    system_search::get_status()
+}
+
+/// 是否正在构建索引
+#[command]
+pub fn system_search_is_building() -> Result<bool, String> {
+    system_search::is_building()
+}
+
+/// 检测是否以管理员权限运行
+#[command]
+pub fn system_search_is_admin() -> Result<bool, String> {
+    system_search::is_admin()
+}
+
+/// 搜索文件内容（异步）
+#[command]
+pub async fn system_search_content(
+    query: String,
+    path: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<system_search::ContentSearchResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        system_search::search_content(
+            &query,
+            path.as_deref(),
+            limit.unwrap_or(100),
+        )
+    })
+    .await
+    .map_err(|e| format!("内容搜索任务执行失败: {}", e))?
+}
+
+/// 查找重复文件（异步）
+#[command]
+pub async fn system_search_duplicates(
+    path: Option<String>,
+    min_size: Option<u64>,
+) -> Result<Vec<system_search::DuplicateGroup>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        system_search::find_duplicates(
+            path.as_deref(),
+            min_size.unwrap_or(0),
+        )
+    })
+    .await
+    .map_err(|e| format!("查找重复文件任务执行失败: {}", e))?
+}
+
+/// 手动刷新索引
+#[command]
+pub fn system_search_refresh() -> Result<system_search::IndexStatus, String> {
+    system_search::refresh_index()
+}
+
+/// 启动后台文件监听
+#[command]
+pub fn system_search_start_watcher() -> Result<bool, String> {
+    system_search::start_watcher()
+}
+
+/// 停止后台文件监听
+#[command]
+pub fn system_search_stop_watcher() -> Result<bool, String> {
+    system_search::stop_watcher()
+}
+
+/// 获取监听状态
+#[command]
+pub fn system_search_watcher_status() -> Result<bool, String> {
+    system_search::watcher_status()
+}
+
+/// 打开目录选择对话框
+#[command]
+pub async fn dialog_open_dir(title: String, app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let dir = app.dialog().file().set_title(&title).blocking_pick_folder();
+    Ok(dir.map(|p| p.to_string()))
+}
+
+/// 完全退出应用
+#[command]
+pub fn app_exit(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+// ─── 搜索服务命令 ──────────────────────────────────────────
+
+/// 检查搜索服务是否正在运行
+#[command]
+pub fn search_service_is_running() -> bool {
+    search_service::is_service_running()
+}
+
+/// 检查搜索服务是否已安装
+#[command]
+pub fn search_service_is_installed() -> bool {
+    search_service::is_service_installed()
+}
+
+/// 安装并启动搜索服务
+#[command]
+pub fn search_service_install() -> Result<(), String> {
+    search_service::install_service()
+}
+
+/// 卸载搜索服务
+#[command]
+pub fn search_service_uninstall() -> Result<(), String> {
+    search_service::uninstall_service()
 }

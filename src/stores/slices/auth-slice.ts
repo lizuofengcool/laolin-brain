@@ -50,6 +50,16 @@ export function createAuthSlice(set: StoreSet, get: StoreGet) {
       });
     },
 
+    updateUser: (userData: Partial<UserInfo>) => {
+      const currentUser = get().user;
+      if (!currentUser) return;
+      const updatedUser = { ...currentUser, ...userData };
+      if (typeof window !== "undefined") {
+        localStorage.setItem("kb_user", JSON.stringify(updatedUser));
+      }
+      set({ user: updatedUser });
+    },
+
     hydrateAuth: () => {
       if (typeof window === "undefined") return;
       const token = localStorage.getItem("kb_token");

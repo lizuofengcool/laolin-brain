@@ -16,10 +16,10 @@ import {
 
 // ─── GET /api/ai/chat/sessions — 获取对话列表 ─────────────
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId, tenantId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const { searchParams } = new URL(request.url);
@@ -43,10 +43,10 @@ export async function GET(request: NextRequest) {
 
 // ─── POST /api/ai/chat/sessions — 创建对话 ─────────────
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId, tenantId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const body = await request.json();

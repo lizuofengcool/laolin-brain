@@ -942,7 +942,7 @@ export class TeamSpaceManager {
    */
   sendNotification(
     tenantId: string,
-    notification: Omit<TeamNotification, 'id' | 'tenantId' | 'isRead' | 'createdAt'> & { userId?: string }
+    notification: Omit<TeamNotification, 'id' | 'tenantId' | 'isRead' | 'createdAt' | 'userId'> & { userId?: string }
   ): void {
     const notificationRecord: TeamNotification = {
       id: `notif_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,

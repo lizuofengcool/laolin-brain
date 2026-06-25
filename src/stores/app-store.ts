@@ -4,9 +4,11 @@ import { createFileSlice } from "./slices/file-slice";
 import { createUISlice } from "./slices/ui-slice";
 import { createAISlice } from "./slices/ai-slice";
 import { createLightboxSlice } from "./slices/lightbox-slice";
+import { createChatSlice } from "./slices/chat-slice";
 
 // Re-export types for backward compatibility
 export type { ViewType, UserInfo, FolderItem, AppState } from "./slices/types";
+export type { ChatMessage, ChatConversation, ChatSlice } from "./slices/chat-slice";
 
 import type { AppState } from "./slices/types";
 
@@ -23,4 +25,5 @@ export const useAppStore = create<AppState>()((set, get) => ({
   ...createUISlice(set, get),
   ...createAISlice(set, get),
   ...createLightboxSlice(set, get),
+  ...createChatSlice(set, get),
 }));

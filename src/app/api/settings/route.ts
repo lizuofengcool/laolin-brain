@@ -4,9 +4,9 @@ import { authenticateRequest } from "@/lib/api-auth";
 import { resetAdapter } from "@/lib/storage/factory";
 
 export async function PUT(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const body = await request.json();

@@ -6,6 +6,7 @@ import { ThemeProvider } from "next-themes";
 import { InstallBanner } from "@/components/layout/InstallBanner";
 import { OfflineIndicator } from "@/components/layout/OfflineIndicator";
 import { ToastNotifications } from "@/components/ui/ToastNotifications";
+import { I18nProvider } from "@/lib/i18n";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -64,11 +65,13 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <InstallBanner />
-          <OfflineIndicator />
-          {children}
-          <ToastNotifications />
-          <Toaster />
+          <I18nProvider>
+            <InstallBanner />
+            <OfflineIndicator />
+            {children}
+            <ToastNotifications />
+            <Toaster />
+          </I18nProvider>
         </ThemeProvider>
       </body>
     </html>

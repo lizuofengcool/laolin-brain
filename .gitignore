@@ -68,3 +68,11 @@ server.log
 
 # Tauri
 /src-tauri/target/
+
+# Local database files
+/prisma/db/
+/db/
+
+# Backup files
+*.full
+*.backup

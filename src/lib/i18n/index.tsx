@@ -1,18 +1,13 @@
-/**
- * 轻量级国际化（i18n）模块
- * 支持中/英文切换，基于 React Context + localStorage 持久化
- * 零外部依赖
- */
-
-'use client';
+"use client";
 
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 
-export type Locale = 'zh-CN' | 'en';
+export type Locale = 'zh-CN' | 'en-US';
 export const LOCALE_KEY = 'kb_locale';
+export const DEFAULT_LOCALE: Locale = 'zh-CN';
 export const LOCALES: { value: Locale; label: string }[] = [
   { value: 'zh-CN', label: '中文' },
-  { value: 'en', label: 'English' },
+  { value: 'en-US', label: 'English' },
 ];
 
 const zhCN: Record<string, string> = {
@@ -189,7 +184,7 @@ const enUS: Record<string, string> = {
 
 const LOCALE_MAP: Record<Locale, Record<string, string>> = {
   'zh-CN': zhCN,
-  'en': enUS,
+  'en-US': enUS,
 };
 
 interface I18nContextType {
@@ -199,31 +194,30 @@ interface I18nContextType {
 }
 
 const I18nContext = createContext<I18nContextType>({
-  locale: 'zh-CN',
+  locale: DEFAULT_LOCALE,
   setLocale: () => {},
   t: (key, fallback) => fallback || key,
 });
 
 function detectLocale(): Locale {
-  if (typeof window === 'undefined') return 'zh-CN';
+  if (typeof window === 'undefined') return DEFAULT_LOCALE;
   try {
     const saved = localStorage.getItem(LOCALE_KEY) as Locale;
     if (saved && LOCALE_MAP[saved]) return saved;
   } catch {}
   const lang = navigator.language;
-  return lang.startsWith('zh') ? 'zh-CN' : 'en';
+  if (lang.startsWith('zh')) return 'zh-CN';
+  return 'en-US';
 }
 
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocaleState] = useState<Locale>('zh-CN');
+  const [locale, setLocaleState] = useState<Locale>(DEFAULT_LOCALE);
   const [mounted, setMounted] = useState(false);
 
-  /* eslint-disable react-hooks/set-state-in-effect -- hydration guard pattern for i18n locale */
   useEffect(() => {
     setLocaleState(detectLocale());
     setMounted(true);
   }, []);
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   const setLocale = useCallback((newLocale: Locale) => {
     setLocaleState(newLocale);
@@ -237,7 +231,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   if (!mounted) {
     return (
-      <I18nContext.Provider value={{ locale: 'zh-CN', setLocale, t }}>
+      <I18nContext.Provider value={{ locale: DEFAULT_LOCALE, setLocale, t }}>
         {children}
       </I18nContext.Provider>
     );
@@ -253,3 +247,6 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 export function useI18n() {
   return useContext(I18nContext);
 }
+
+export { I18nManager, i18n, t as translate } from './i18n-manager';
+export * from './types';

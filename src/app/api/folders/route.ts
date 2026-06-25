@@ -3,9 +3,9 @@ import { db } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     // 查询用户的租户
@@ -84,9 +84,9 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const folders = await db.folder.findMany({

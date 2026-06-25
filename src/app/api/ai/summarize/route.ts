@@ -16,7 +16,7 @@ function getZAI() {
 }
 
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
   // Per-user daily AI usage check

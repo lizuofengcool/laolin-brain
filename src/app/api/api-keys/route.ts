@@ -26,10 +26,10 @@ function hashSecret(secret: string): string {
 
 // ─── GET /api/api-keys — 获取API密钥列表 ─────────────
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const { searchParams } = new URL(request.url);
@@ -105,10 +105,10 @@ export async function GET(request: NextRequest) {
 
 // ─── POST /api/api-keys — 创建API密钥 ─────────────
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const body = await request.json();

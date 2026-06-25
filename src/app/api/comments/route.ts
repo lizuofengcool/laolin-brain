@@ -14,9 +14,9 @@ import { CommentTargetType, CommentSortBy, ExportFormat } from "@/lib/comments/t
 
 // ─── GET /api/comments — 获取评论列表 ─────────────
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const { searchParams } = new URL(request.url);
@@ -278,9 +278,9 @@ export async function GET(request: NextRequest) {
 
 // ─── POST /api/comments — 发表评论 ─────────────
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const body = await request.json();
@@ -350,8 +350,8 @@ export async function POST(request: NextRequest) {
         userId,
         content: safeContent,
         parentId: parentId || null,
-        mentions: mentions ? JSON.stringify(mentions) : null,
-        attachments: attachments ? JSON.stringify(attachments) : null,
+        ...(mentions ? { mentions: JSON.stringify(mentions) } : {}),
+        ...(attachments ? { attachments: JSON.stringify(attachments) } : {}),
       },
     });
 

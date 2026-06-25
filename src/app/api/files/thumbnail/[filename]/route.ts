@@ -8,9 +8,9 @@ export async function GET(
   { params }: { params: Promise<{ filename: string }> }
 ) {
   // Auth check
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const { filename } = await params;

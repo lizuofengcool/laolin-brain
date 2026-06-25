@@ -24,10 +24,10 @@ const DEFAULT_SETTINGS = {
 
 // ─── GET /api/user/profile — 获取个人信息 ─────────────
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     // 查询用户信息
@@ -109,10 +109,10 @@ export async function GET(request: NextRequest) {
 
 // ─── PATCH /api/user/profile — 更新个人信息 ─────────────
 export async function PATCH(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const body = await request.json();

@@ -12,10 +12,10 @@ const createBackupSchema = z.object({
 
 // ─── GET /api/cloud-sync/backups — 列出所有云端备份 ────────────────
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     // 获取用户的默认租户
@@ -58,10 +58,10 @@ export async function GET(request: NextRequest) {
 
 // ─── POST /api/cloud-sync/backups — 创建新的云端备份 ────────────────
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     // 获取用户的默认租户

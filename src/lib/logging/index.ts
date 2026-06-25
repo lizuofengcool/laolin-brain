@@ -513,9 +513,9 @@ export class PerformanceTimer {
   private startTime: number;
   private logger: Logger;
 
-  constructor(name: string, logger?: Logger) {
+  constructor(name: string, customLogger?: Logger) {
     this.name = name;
-    this.logger = logger || logger;
+    this.logger = customLogger || logger;
     this.startTime = Date.now();
   }
 

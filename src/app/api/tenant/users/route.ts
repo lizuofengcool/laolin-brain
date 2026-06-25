@@ -11,10 +11,10 @@ import { authenticateRequest } from "@/lib/api-auth";
 
 // ─── GET /api/tenant/users — 获取租户用户列表 ─────────────
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const { searchParams } = new URL(request.url);

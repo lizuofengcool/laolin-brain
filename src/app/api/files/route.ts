@@ -77,9 +77,9 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 
 export async function POST(request: NextRequest) {
   // Authenticate request
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
-  const { userId: authenticatedUserId } = auth;
+  const { userId: authenticatedUserId, tenantId, role } = auth;
 
   try {
     // Cleanup stale aiProcessingTimestamps (older than 1 hour)
@@ -447,9 +447,9 @@ export async function POST(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   // Authenticate request
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
-  const { userId: authenticatedUserId } = auth;
+  const { userId: authenticatedUserId, tenantId, role } = auth;
 
   try {
     const { searchParams } = new URL(request.url);

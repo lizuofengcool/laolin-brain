@@ -3,7 +3,7 @@
  * 支持完整备份、增量备份、恢复、验证等功能
  */
 
-import prisma from "@/lib/db/prisma";
+import { db as prisma } from "@/lib/db";
 import { createHash } from "crypto";
 
 // 备份类型
@@ -191,12 +191,12 @@ export async function createFullBackup(
     // 备份分享
     if (options.includeShares !== false) {
       try {
+        const sharesWhere: any = {};
+        if (options.tenantId) {
+          sharesWhere.file = { tenantId: options.tenantId };
+        }
         const shares = await prisma.fileShare.findMany({
-          where: {
-            file: {
-              tenantId: options.tenantId,
-            },
-          },
+          where: sharesWhere,
         });
         backupContent.data.shares = shares;
       } catch (error) {
@@ -216,21 +216,23 @@ export async function createFullBackup(
 
     // 保存备份记录（如果有备份表）
     try {
+      const backupCreateData: any = {
+        id: backupId,
+        type: "full",
+        name: backupInfo.name,
+        status: "completed",
+        size: backupInfo.size,
+        fileCount: backupInfo.fileCount,
+        encrypted: backupInfo.encrypted,
+        compressed: backupInfo.compressed,
+      };
+      if (backupInfo.description !== undefined) backupCreateData.description = backupInfo.description;
+      if (backupInfo.checksum !== undefined) backupCreateData.checksum = backupInfo.checksum;
+      if (options.tenantId !== undefined) backupCreateData.tenantId = options.tenantId;
+      if (options.userId !== undefined) backupCreateData.createdBy = options.userId;
+      
       await prisma.backup.create({
-        data: {
-          id: backupId,
-          type: "full",
-          name: backupInfo.name,
-          description: backupInfo.description,
-          status: "completed",
-          size: backupInfo.size,
-          fileCount: backupInfo.fileCount,
-          checksum: backupInfo.checksum,
-          encrypted: backupInfo.encrypted,
-          compressed: backupInfo.compressed,
-          tenantId: options.tenantId,
-          createdBy: options.userId,
-        },
+        data: backupCreateData,
       });
     } catch (error) {
       // Backup表可能不存在，忽略
@@ -466,11 +468,12 @@ export async function validateBackup(
     });
 
     // 检查数据
-    const hasData =
+    const hasData = !!(
       backupData.data &&
       (backupData.data.files?.length ||
         backupData.data.folders?.length ||
-        backupData.data.tags?.length);
+        backupData.data.tags?.length)
+    );
     checks.push({
       name: "数据完整性检查",
       passed: hasData,

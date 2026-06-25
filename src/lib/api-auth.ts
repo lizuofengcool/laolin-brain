@@ -1,23 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyToken } from "@/lib/auth";
+import { db } from "@/lib/db";
+
+export type AuthResult = {
+  userId: string;
+  email: string;
+  tenantId: string;
+  role: string;
+};
 
 /**
  * API authentication middleware.
  * Extracts token from Authorization header or query param,
- * verifies it, and returns user info or a 401 response.
+ * verifies it, queries tenant info, and returns user info or a 401 response.
  *
  * Usage:
- *   const auth = authenticateRequest(request);
+ *   const auth = await authenticateRequest(request);
  *   if (auth instanceof NextResponse) return auth;
- *   const { userId, email } = auth;
+ *   const { userId, email, tenantId, role } = auth;
  */
-export function authenticateRequest(
+export async function authenticateRequest(
   request: NextRequest
-): { userId: string; email: string } | NextResponse {
-  // Try Authorization header first
+): Promise<AuthResult | NextResponse> {
   let token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-
-  // Only accept token from Authorization header (not URL params to prevent leakage)
 
   if (!token) {
     return NextResponse.json(
@@ -34,5 +39,30 @@ export function authenticateRequest(
     );
   }
 
-  return { userId: decoded.id, email: decoded.email };
+  const tenantUser = await db.tenantUser.findFirst({
+    where: { userId: decoded.id },
+    orderBy: { joinedAt: 'asc' },
+  });
+
+  const tenantId = tenantUser?.tenantId ?? 'default';
+  const role = tenantUser?.role ?? 'owner';
+
+  if (!tenantUser) {
+    const existingTenant = await db.tenant.findFirst();
+    let activeTenantId: string;
+    if (!existingTenant) {
+      const newTenant = await db.tenant.create({
+        data: { name: 'Default Tenant', plan: 'enterprise' },
+      });
+      activeTenantId = newTenant.id;
+    } else {
+      activeTenantId = existingTenant.id;
+    }
+    await db.tenantUser.create({
+      data: { userId: decoded.id, tenantId: activeTenantId, role: 'owner' },
+    });
+    return { userId: decoded.id, email: decoded.email, tenantId: activeTenantId, role: 'owner' };
+  }
+
+  return { userId: decoded.id, email: decoded.email, tenantId, role };
 }

@@ -292,6 +292,7 @@ export class DataEncryptor {
     let encrypted = cipher.update(data, "utf8", "hex");
     encrypted += cipher.final("hex");
 
+    // @ts-expect-error - getAuthTag exists on GCM cipher but TypeScript types may not recognize it
     const authTag = cipher.getAuthTag().toString("hex");
 
     // 返回格式: iv:authTag:encrypted
@@ -312,6 +313,7 @@ export class DataEncryptor {
     const authTag = Buffer.from(authTagHex, "hex");
 
     const decipher = crypto.createDecipheriv(this.algorithm, this.key, iv);
+    // @ts-expect-error - setAuthTag exists on GCM decipher but TypeScript types may not recognize it
     decipher.setAuthTag(authTag);
 
     let decrypted = decipher.update(encrypted, "hex", "utf8");

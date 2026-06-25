@@ -13,7 +13,7 @@ const configSchema = z.object({
 
 // ─── GET /api/cloud-sync/config — 获取云同步配置状态 ────────────────
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
   try {
@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
 
 // ─── POST /api/cloud-sync/config — 配置云同步 ──────────────────────
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
   try {

@@ -6,9 +6,9 @@ import { safeJsonParseArray } from '@/lib/safe-json-parse';
 const MAX_FILES_PER_CALL = 50;
 
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const { db } = await import('@/lib/db');
@@ -179,9 +179,9 @@ export async function POST(request: NextRequest) {
 
 // GET endpoint to check embedding status
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const { db } = await import('@/lib/db');

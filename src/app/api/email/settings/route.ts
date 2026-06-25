@@ -14,7 +14,7 @@ import { emailService, initEmailServiceFromEnv } from "@/lib/email";
 
 // ─── GET /api/email/settings — 获取邮件设置 ─────────────
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
   const { userId, tenantId, role } = auth;
@@ -55,7 +55,7 @@ export async function GET(request: NextRequest) {
 
 // ─── POST /api/email/settings — 更新邮件设置 ─────────────
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
   const { userId, tenantId, role } = auth;

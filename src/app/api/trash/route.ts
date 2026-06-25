@@ -12,10 +12,10 @@ import { authenticateRequest } from "@/lib/api-auth";
 
 // ─── GET /api/trash — 获取回收站列表 ─────────────
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const { searchParams } = new URL(request.url);
@@ -106,10 +106,10 @@ export async function GET(request: NextRequest) {
 
 // ─── POST /api/trash/restore — 批量恢复文件 ─────────────
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const url = new URL(request.url);
@@ -217,10 +217,10 @@ export async function POST(request: NextRequest) {
 
 // ─── DELETE /api/trash — 永久删除文件 ─────────────
 export async function DELETE(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const body = await request.json();

@@ -6,24 +6,9 @@ import { getOrders } from "@/lib/billing/subscription";
 // ─── GET /api/billing/orders — 获取当前用户订单列表 ────────────────
 export async function GET(request: NextRequest) {
   try {
-    const auth = authenticateRequest(request);
+    const auth = await authenticateRequest(request);
     if (auth instanceof NextResponse) return auth;
-    const { userId } = auth;
-
-    // 获取租户ID
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "租户不存在" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
+    const { userId, tenantId } = auth;
 
     // 获取查询参数
     const { searchParams } = new URL(request.url);

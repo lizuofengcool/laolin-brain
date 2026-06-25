@@ -12,10 +12,10 @@ import { authenticateRequest } from "@/lib/api-auth";
 
 // ─── GET /api/notifications — 获取通知列表 ─────────────
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const { searchParams } = new URL(request.url);
@@ -84,10 +84,10 @@ export async function GET(request: NextRequest) {
 
 // ─── POST /api/notifications — 创建通知（内部使用） ─────────────
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const body = await request.json();
@@ -142,10 +142,10 @@ export async function POST(request: NextRequest) {
 
 // ─── PATCH /api/notifications — 标记已读 ─────────────
 export async function PATCH(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const body = await request.json();
@@ -218,10 +218,10 @@ export async function PATCH(request: NextRequest) {
 
 // ─── DELETE /api/notifications — 删除通知 ─────────────
 export async function DELETE(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const body = await request.json();

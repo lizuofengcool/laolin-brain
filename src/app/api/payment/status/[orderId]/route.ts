@@ -17,7 +17,7 @@ export async function GET(
     if (authResult instanceof NextResponse) {
       return authResult;
     }
-    const { userId } = authResult;
+    const { userId, tenantId, role } = authResult;
 
     if (!orderId) {
       return NextResponse.json(

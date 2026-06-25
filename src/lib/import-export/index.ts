@@ -180,7 +180,6 @@ export async function exportData(
         id: true,
         fileId: true,
         token: true,
-        hasPassword: false, // 不导出密码
         expiresAt: true,
         createdAt: true,
       },
@@ -194,9 +193,6 @@ export async function exportData(
   if (opts.includeComments) {
     const comments = await db.comment.findMany({
       where: { tenantId },
-      where: {
-        file: { userId, tenantId },
-      },
       select: {
         id: true,
         fileId: true,

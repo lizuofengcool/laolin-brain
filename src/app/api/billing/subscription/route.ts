@@ -6,24 +6,9 @@ import { getCurrentSubscription, PLANS, checkTrialStatus } from "@/lib/billing/s
 // ─── GET /api/billing/subscription — 获取当前用户订阅信息 ────────────────
 export async function GET(request: NextRequest) {
   try {
-    const auth = authenticateRequest(request);
+    const auth = await authenticateRequest(request);
     if (auth instanceof NextResponse) return auth;
-    const { userId } = auth;
-
-    // 获取租户ID
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "租户不存在" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
+    const { userId, tenantId } = auth;
 
     // 获取订阅信息
     const subscription = await getCurrentSubscription(tenantId);

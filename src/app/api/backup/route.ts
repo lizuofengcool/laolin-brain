@@ -57,9 +57,9 @@ interface ImportRequestBody {
 // ─── GET /api/backup — Export all user data as JSON ────────────────
 
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     // 查询用户的租户
@@ -155,9 +155,9 @@ export async function GET(request: NextRequest) {
 // ─── POST /api/backup — Import/restore data ───────────────────────
 
 export async function POST(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     // 查询用户的租户

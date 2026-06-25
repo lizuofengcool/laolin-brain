@@ -3,10 +3,10 @@ import { authenticateRequest } from '@/lib/api-auth';
 import { db } from '@/lib/db';
 
 export async function GET(request: NextRequest) {
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     // 查询用户的租户

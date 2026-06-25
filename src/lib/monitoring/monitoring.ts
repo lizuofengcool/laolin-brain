@@ -3,7 +3,7 @@
  * 支持系统监控、应用监控、业务监控和告警功能
  */
 
-import { os } from "os";
+import os from "os";
 
 // 告警级别
 export type AlertLevel = "info" | "warn" | "error" | "critical";
@@ -141,13 +141,13 @@ export interface BusinessMetrics {
 
 // 健康检查结果
 export interface HealthCheckResult {
-  status: "healthy" | "degraded" | "unhealthy";
+  status: "healthy" | "degraded" | "unhealthy" | "critical";
   timestamp: Date;
   version: string;
   uptime: number;
   checks: {
     name: string;
-    status: "healthy" | "degraded" | "unhealthy";
+    status: "healthy" | "degraded" | "unhealthy" | "critical";
     message?: string;
     responseTime?: number;
     details?: any;
@@ -420,11 +420,14 @@ export async function performHealthCheck(): Promise<HealthCheckResult> {
   }
 
   // 计算整体状态
+  const hasCritical = checks.some((c) => c.status === "critical");
   const hasUnhealthy = checks.some((c) => c.status === "unhealthy");
   const hasDegraded = checks.some((c) => c.status === "degraded");
 
   let overallStatus: HealthCheckResult["status"] = "healthy";
-  if (hasUnhealthy) {
+  if (hasCritical) {
+    overallStatus = "critical";
+  } else if (hasUnhealthy) {
     overallStatus = "unhealthy";
   } else if (hasDegraded) {
     overallStatus = "degraded";

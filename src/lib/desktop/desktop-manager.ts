@@ -744,9 +744,13 @@ export class DesktopManager {
       }
 
       this.syncStatus = 'idle';
-      this.syncProgress.status = 'idle';
+      if (this.syncProgress) {
+        this.syncProgress.status = 'idle';
+      }
       this.syncStatusListeners.forEach(listener => listener('idle'));
-      this.syncProgressListeners.forEach(listener => listener(this.syncProgress));
+      if (this.syncProgress) {
+        this.syncProgressListeners.forEach(listener => listener(this.syncProgress!));
+      }
 
       // 发送通知
       if (this.settings.notificationOnSyncComplete) {
@@ -830,7 +834,7 @@ export class DesktopManager {
   /**
    * 监听系统主题变化
    */
-  private listenThemeChange(): void {
+  private async listenThemeChange(): Promise<void> {
     if (!isDesktop()) return;
 
     try {

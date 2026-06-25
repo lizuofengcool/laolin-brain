@@ -16,7 +16,7 @@ export async function POST(
   const { id } = await params;
 
   // Unauthenticated POST with password body = password verification
-  const auth = authenticateRequest(request);
+  const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) {
     // Not authenticated — treat as password verification request
     try {
@@ -80,7 +80,7 @@ export async function POST(
   }
 
   // Authenticated POST = create share link
-  const { userId } = auth;
+  const { userId, tenantId, role } = auth;
 
   try {
     const body = await request.json();
