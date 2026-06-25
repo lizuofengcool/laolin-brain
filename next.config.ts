@@ -26,7 +26,19 @@ const nextConfig: NextConfig = {
       bodySizeLimit: "50mb",
     },
     // 优化打包
-    optimizePackageImports: ['lucide-react', '@radix-ui/react-icons'],
+    optimizePackageImports: [
+      'lucide-react',
+      '@radix-ui/react-icons',
+      'recharts',
+      'framer-motion',
+      'zustand',
+      'clsx',
+      'tailwind-merge',
+    ],
+    // 优化内存使用
+    workerThreads: true,
+    // 优化字体加载
+    optimizeCss: true,
   },
   serverExternalPackages: ['sharp'],
   async headers() {

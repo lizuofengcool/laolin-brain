@@ -183,6 +183,11 @@ model File {
   @@index([createdAt])
   @@index([fileType])
   @@index([syncStatus])
+  // 复合索引优化常见查询
+  @@index([tenantId, folderId, isDeleted])
+  @@index([tenantId, createdAt, isDeleted])
+  @@index([tenantId, fileType, isDeleted])
+  @@index([tenantId, isFavorite, isDeleted])
 }
 
 model FileVersion {
