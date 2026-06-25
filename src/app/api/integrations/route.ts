@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCurrentTenantId, getCurrentUserId } from "@/lib/tenant-context";
+import { getTenantIdFromRequest } from "@/lib/db/tenant-context";
 import {
   integrationManager,
   BUILTIN_INTEGRATIONS,
@@ -13,7 +13,7 @@ import { validateInput } from "@/lib/utils/security";
  */
 export async function GET(request: NextRequest) {
   try {
-    const tenantId = await getCurrentTenantId();
+    const tenantId = await getTenantIdFromRequest(request);
 
     if (!tenantId) {
       return NextResponse.json(
@@ -105,10 +105,9 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
-    const tenantId = await getCurrentTenantId();
-    const userId = await getCurrentUserId();
+    const tenantId = await getTenantIdFromRequest(request);
 
-    if (!tenantId || !userId) {
+    if (!tenantId) {
       return NextResponse.json(
         { error: "未授权访问" },
         { status: 401 }
@@ -152,7 +151,6 @@ export async function POST(request: NextRequest) {
       id: `${tenantId}-${integrationId}`,
       integrationId,
       tenantId,
-      userId,
       name: BUILTIN_INTEGRATIONS.find((i) => i.id === integrationId)?.name,
       status: "connected" as const,
       config: config || {},

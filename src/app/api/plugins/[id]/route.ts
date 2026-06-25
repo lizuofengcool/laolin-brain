@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCurrentTenantId, getCurrentUserId } from "@/lib/tenant-context";
+import { getTenantIdFromRequest } from "@/lib/db/tenant-context";
 import { pluginManager } from "@/lib/plugins/plugin-manager";
 
 /**
@@ -13,7 +13,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const tenantId = await getCurrentTenantId();
+    const tenantId = await getTenantIdFromRequest(request);
 
     if (!tenantId) {
       return NextResponse.json(
@@ -26,6 +26,7 @@ export async function GET(
 
     // 获取插件定义
     const pluginDef = pluginManager.getPluginDefinition(id);
+
     if (!pluginDef) {
       return NextResponse.json(
         { error: "插件不存在" },
@@ -70,7 +71,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const tenantId = await getCurrentTenantId();
+    const tenantId = await getTenantIdFromRequest(request);
 
     if (!tenantId) {
       return NextResponse.json(
@@ -85,6 +86,7 @@ export async function PATCH(
 
     // 检查插件是否已安装
     const installed = pluginManager.getInstalledPlugin(id, tenantId);
+
     if (!installed) {
       return NextResponse.json(
         { error: "插件未安装" },
@@ -144,7 +146,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const tenantId = await getCurrentTenantId();
+    const tenantId = await getTenantIdFromRequest(request);
 
     if (!tenantId) {
       return NextResponse.json(
@@ -157,6 +159,7 @@ export async function DELETE(
 
     // 检查插件是否已安装
     const installed = pluginManager.getInstalledPlugin(id, tenantId);
+
     if (!installed) {
       return NextResponse.json(
         { error: "插件未安装" },

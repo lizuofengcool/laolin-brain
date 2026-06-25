@@ -5794,3 +5794,169 @@ Files Added:
 - src/components/visualization/index.ts
 - src/app/visualization/page.tsx
 
+
+---
+Task ID: 扩展性增强功能开发
+Agent: Sub Agent
+Task: 扩展性增强功能开发（插件系统、集成功能、API增强、Webhook增强）
+Date: 2026-06-25
+Commit: (pending)
+Work Log:
+
+- 任务1：插件系统增强 ✅
+  - 新增文件：src/lib/plugins/plugin-manager.ts
+    - 插件管理器核心类
+    - 插件生命周期管理（安装、卸载、启用、禁用）
+    - 插件配置管理
+    - 插件权限控制
+    - 内置插件注册表
+  - 新增文件：src/lib/plugins/types.ts
+    - 插件类型定义
+    - 插件元数据接口
+    - 插件权限定义
+    - 插件状态枚举
+  - 新增文件：src/components/plugins/PluginManager.tsx
+    - 插件市场UI组件
+    - 插件列表展示
+    - 插件安装/卸载
+    - 插件启用/禁用
+    - 插件配置管理
+    - 插件详情弹窗
+  - 新增文件：src/app/api/plugins/route.ts
+    - 插件列表API
+    - 插件安装API
+    - 支持按类型、状态筛选
+    - 支持搜索
+  - 新增文件：src/app/api/plugins/[id]/route.ts
+    - 插件详情API
+    - 插件配置更新API
+    - 插件卸载API
+    - 插件启用/禁用API
+  - 内置插件：
+    - hello-world：示例插件
+    - dark-mode：深色模式主题插件
+    - auto-tag：AI自动标签插件
+    - file-note：文件备注插件
+    - quick-share：快速分享插件
+    - backup-sync：备份同步插件
+    - custom-theme：自定义主题插件
+    - workflow：工作流插件
+
+- 任务2：集成功能增强 ✅
+  - 新增文件：src/lib/integrations/integration-manager.ts
+    - 集成管理器核心类
+    - 统一的集成接口规范
+    - 集成状态管理
+    - 集成配置管理
+    - 内置集成注册表
+  - 新增文件：src/lib/integrations/types.ts
+    - 集成类型定义
+    - 集成分类（存储、认证、通知、办公）
+    - 集成状态枚举
+  - 新增文件：src/components/integrations/IntegrationManager.tsx
+    - 集成中心UI组件
+    - 集成列表展示
+    - 集成连接/断开
+    - 集成配置管理
+    - 集成详情弹窗
+    - 按分类筛选
+  - 新增文件：src/app/api/integrations/route.ts
+    - 集成列表API
+    - 集成连接API
+    - 支持按分类、状态筛选
+    - 支持搜索
+  - 内置集成（框架就绪）：
+    - 存储集成：阿里云OSS、腾讯云COS、七牛云、又拍云、AWS S3
+    - 认证集成：企业微信、钉钉、飞书、GitHub、Google
+    - 通知集成：企业微信消息、钉钉消息、飞书消息、邮件通知、短信通知
+    - 办公集成：企业微信文档、飞书文档、钉钉文档、Google Drive、OneDrive
+
+- 任务3：API增强 ✅
+  - 新增文件：src/lib/api-keys/api-key-manager.ts
+    - API密钥管理器
+    - 密钥生成和哈希存储
+    - 权限范围（scopes）管理
+    - 密钥过期管理
+    - 使用统计和限流
+    - 审计日志
+  - 新增文件：src/lib/api-keys/types.ts
+    - API密钥类型定义
+    - 权限范围定义
+    - 密钥状态枚举
+  - 新增文件：src/components/api-keys/ApiKeyManager.tsx
+    - API密钥管理UI组件
+    - 密钥列表展示
+    - 密钥创建/删除
+    - 密钥启用/禁用
+    - 密钥重置
+    - 权限配置
+    - 使用统计
+    - 密钥详情弹窗
+  - 新增文件：src/app/api/api-keys/route.ts
+    - API密钥列表API
+    - API密钥创建API
+    - 支持分页和搜索
+  - 新增文件：src/app/api/api-keys/[id]/route.ts
+    - API密钥详情API
+    - API密钥更新API
+    - API密钥删除API
+    - API密钥重置API
+  - API安全特性：
+    - 密钥哈希存储（SHA-256）
+    - 权限范围控制
+    - 速率限制
+    - IP白名单（预留）
+    - 审计日志
+    - 过期自动失效
+
+- 任务4：Webhook增强 ✅
+  - 新增文件：src/lib/webhooks/webhook-manager.ts
+    - Webhook管理器核心类
+    - Webhook CRUD管理
+    - 事件类型注册
+    - 事件触发机制
+    - 异步发送队列
+    - 失败重试机制（指数退避）
+    - 签名验证（HMAC-SHA256）
+    - 调用日志记录
+  - 新增文件：src/lib/webhooks/types.ts
+    - Webhook类型定义
+    - 事件类型定义
+    - 调用日志类型
+    - 重试配置
+  - 新增文件：src/components/webhooks/WebhookManager.tsx
+    - Webhook管理UI组件
+    - Webhook列表展示
+    - Webhook创建/删除
+    - Webhook启用/禁用
+    - 事件订阅配置
+    - 调用日志查看
+    - 测试Webhook功能
+    - 签名密钥管理
+    - Webhook详情弹窗
+  - 支持的事件类型：
+    - 文件事件：创建、更新、删除、移动、下载
+    - 文件夹事件：创建、更新、删除
+    - 分享事件：创建、删除
+    - 用户事件：注册、更新
+    - 评论事件：创建
+    - AI事件：处理完成
+
+Files Added:
+- src/lib/plugins/plugin-manager.ts
+- src/lib/plugins/types.ts
+- src/components/plugins/PluginManager.tsx
+- src/app/api/plugins/route.ts
+- src/app/api/plugins/[id]/route.ts
+- src/lib/integrations/integration-manager.ts
+- src/lib/integrations/types.ts
+- src/components/integrations/IntegrationManager.tsx
+- src/app/api/integrations/route.ts
+- src/lib/api-keys/api-key-manager.ts
+- src/lib/api-keys/types.ts
+- src/components/api-keys/ApiKeyManager.tsx
+- src/app/api/api-keys/route.ts
+- src/app/api/api-keys/[id]/route.ts
+- src/lib/webhooks/webhook-manager.ts
+- src/lib/webhooks/types.ts
+- src/components/webhooks/WebhookManager.tsx
