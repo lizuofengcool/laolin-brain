@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, createTenantDb } from "@/lib/db";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 import { parseWord } from "@/lib/parser/word";
@@ -124,20 +124,8 @@ export async function POST(request: NextRequest) {
     // Use authenticated userId instead of client-sent userId
     const userId = authenticatedUserId;
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
+    // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
+    // （原实现重复 db.tenantUser.findFirst 且与 auth 取的 tenantId 可能不一致）
 
     // Parse query params for AI skip control
     const searchParams = new URL(request.url).searchParams;
@@ -150,8 +138,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Per-user storage quota check (5GB) - early check for fast rejection
+    // 同时按 tenantId 过滤，确保配额统计不跨租户
     const [{ totalSize: earlyTotalSize }] = await db.$queryRaw<Array<{ totalSize: bigint }>>`
-      SELECT COALESCE(SUM("fileSize"), 0) as "totalSize" FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+      SELECT COALESCE(SUM("fileSize"), 0) as "totalSize" FROM "File" WHERE "userId" = ${userId} AND "tenantId" = ${tenantId} AND "isDeleted" = false
     `;
     const earlyTotalUsed = Number(earlyTotalSize);
     const quotaBytes = 5 * 1024 * 1024 * 1024; // 5GB
@@ -277,9 +266,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if a file with the same name already exists for this user (versioning)
+    // 加 tenantId 过滤，确保版本判定不跨租户
     const existingFile = await db.file.findFirst({
       where: {
         userId,
+        tenantId,
         fileName: file.name,
         isDeleted: false,
       },
@@ -348,7 +339,7 @@ export async function POST(request: NextRequest) {
     const fileRecord = await db.$transaction(async (tx) => {
       // Authoritative quota check inside transaction
       const [{ totalSize: txTotalSize }] = await tx.$queryRaw<Array<{ totalSize: bigint }>>`
-        SELECT COALESCE(SUM("fileSize"), 0) as "totalSize" FROM "File" WHERE "userId" = ${userId} AND "isDeleted" = false
+        SELECT COALESCE(SUM("fileSize"), 0) as "totalSize" FROM "File" WHERE "userId" = ${userId} AND "tenantId" = ${tenantId} AND "isDeleted" = false
       `;
       if (Number(txTotalSize) + file.size > quotaBytes) {
         throw new Error("Storage quota exceeded (concurrent upload detected)");
@@ -463,6 +454,10 @@ export async function GET(request: NextRequest) {
     // Use authenticated userId
     const userId = authenticatedUserId;
 
+    // 走 TenantDb 租户隔离层：tenantDb.file.findMany 会自动注入 tenantId 过滤，
+    // 此处 where 仅保留业务级过滤（userId 归属、存储模式、软删除、目录）。
+    const tenantDb = createTenantDb(tenantId);
+
     const where: Record<string, unknown> = {
       userId,
       storageMode: "cloud",
@@ -475,7 +470,7 @@ export async function GET(request: NextRequest) {
       where.folderId = folderId;
     }
 
-    const files = await db.file.findMany({
+    const files = await tenantDb.file.findMany({
       where,
       orderBy: { createdAt: "desc" },
       take: limit,
