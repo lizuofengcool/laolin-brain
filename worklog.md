@@ -6739,3 +6739,34 @@ Status: 完成
 - `src/app/api/files/batch/route.ts`、`import/route.ts`：重复 `db.tenantUser.findFirst` 查询需去除并按 TenantDb 改造（上一轮候选遗留，本轮未动）
 - 微信 V3 回调 `resource` 密文用 APIv3 密钥 AES-256-GCM 解密后取 `out_trade_no`/`transaction_id`，替代当前明文 resource 读取简化
 - alipay 回调 GET/POST 两条路径可抽公共解析，减少重复
+
+## 2026-06-27 03:25 自动迭代
+
+本次为自动化迭代开发机制的第六轮执行，收尾上一轮"下一轮候选"首项的剩余部分：`files/batch/route.ts` 与 `files/import/route.ts` 两个路由的冗余 tenantUser 查询消除。这两路由属第五轮同一安全/质量改进主题的延伸，本轮一并清理。环境沿用第五轮已装好的 `node_modules`（无需重装），`npx prisma generate` 已生成客户端，`npx tsc --noEmit` 退出码 0 零类型错误，全量 `npx vitest run` 1006/1006 通过（61 文件，74.7s），零回归。
+
+### 改动
+
+1. **src/app/api/files/batch/route.ts** + **src/app/api/files/import/route.ts** — `fix(files): batch/import 路由复用 auth tenantId 移除冗余 tenantUser 查询`
+   - 两路由与第五轮 `[id]` 子树属同一 bug 类：在 `authenticateRequest` 已返回可信 `tenantId` 之后，仍重复 `db.tenantUser.findFirst({ where:{userId} })` 查询并**覆盖** auth 的 tenantId。`import/route.ts` 尤其明显——第 10 行 `const { userId, tenantId, role } = auth;` 解构后第 24 行又 `const { tenantId } = tenantUser;` 重新声明覆盖
+   - 同第五轮的并发隐患：两次查询在并发场景可能返回不一致租户；且 `tenantUser.findFirst` 在用户无 tenantUser 时返回 null 走 404，而 `authenticateRequest` 会兜底建租户，行为不一致
+   - 修复：删除两路由全部冗余 `tenantUser.findFirst` 查询，直接复用 auth 的 `tenantId`
+   - **未切 TenantDb 的原因**：两路由的写路径均位于 `db.$transaction` 事务闭包内（batch 的 `tx.file.updateMany` / `tx.file.findMany` / `tx.folder.findUnique`；import 虽无显式事务但逐条 `db.file.create`），TenantDb 不支持事务内操作；且两路由的 `where` 子句已显式带 `tenantId` 过滤（batch：`where:{id,userId,tenantId}`；import：`$queryRaw` SQL 带 `"tenantId" = ${tenantId}`、`folder.findFirst({where:{id,userId,tenantId}})`、`parentFolder.tenantId !== tenantId` 校验），属"where 层显式隔离"，非"绕过 tenantId 仅按 userId"的漏洞，本轮仅去冗余查询不改写架构
+   - 对单租户用户（常见场景）零行为变化；多租户场景下避免重复查询的潜在不一致
+
+### Commit
+- `（本轮单一 commit）fix(files): batch/import 路由复用 auth tenantId 移除冗余 tenantUser 查询`
+
+### 推送状态
+- Gitee: ✅ `ef03373..<本轮HEAD> main -> main`
+- GitHub: ✅ 同上
+- 本 worklog 改动随同代码 commit 一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1006/1006 通过（61 文件，74.7s），零回归
+- 至此第五轮"下一轮候选"首项（`files/` 子路由 TenantDb 迁移 + 冗余查询消除）已全部完成：第五轮清理 6 个 `[id]` 子树路由，第六轮清理 batch/import 2 个路由
+- `files/route.ts`（主路由）已在更早的轮次（第三轮 commit `1e2a7ba`）完成迁移，`files/[id]/info/route.ts` 经查已在 where 中带 tenantId（非绕过点），`extract-text/route.ts` 已在第四轮加鉴权——`files/` 目录下所有路由的租户隔离审计现已收口
+
+### 下一轮候选
+- 微信 V3 回调 `resource` 密文用 APIv3 密钥 AES-256-GCM 解密后取 `out_trade_no`/`transaction_id`，替代当前明文 resource 读取简化（第二/四/五轮均提及，仍未动）
+- alipay 回调 GET/POST 两条路径可抽公共解析，减少重复（第四/五轮提及）
+- 其他目录路由的租户隔离审计：`src/app/api/folders/`、`src/app/api/ai/`、`src/app/api/search/` 等是否也存在绕过 tenantId 仅按 userId 校验的模式，需排查

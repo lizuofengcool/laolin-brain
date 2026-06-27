@@ -10,18 +10,7 @@ export async function POST(request: NextRequest) {
   const { userId, tenantId, role } = auth;
 
   try {
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-    const { tenantId } = tenantUser;
+    // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
 
     // Early reject requests over 50MB based on Content-Length
     const contentLength = parseInt(request.headers.get("content-length") || "0", 10);

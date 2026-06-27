@@ -49,21 +49,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
+    // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
     // 使用事务执行批量操作
     const result = await db.$transaction(async (tx) => {
       // 验证所有文件都属于当前用户和租户
