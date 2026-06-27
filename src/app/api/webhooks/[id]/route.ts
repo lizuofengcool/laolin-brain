@@ -17,30 +17,18 @@ export async function PATCH(
   const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId, tenantId, role } = auth;
+  const { tenantId, role } = auth;
   const { id: webhookId } = await params;
 
   try {
     const body = await request.json();
     const { name, url, events, enabled } = body;
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId, role: userRole } = tenantUser;
-
+    // tenantId / role 直接取自 authenticateRequest 的权威值（已按 joinedAt asc
+    // 确定性选取租户），不再重复 tenantUser.findFirst 影子覆盖——后者无 orderBy，
+    // 对多租户用户可能取到与 auth 不一致的租户，导致越权读写。
     // 权限检查：只有owner和admin可以管理Webhook
-    if (userRole !== 'owner' && userRole !== 'admin') {
+    if (role !== 'owner' && role !== 'admin') {
       return NextResponse.json(
         { error: '没有权限管理Webhook' },
         { status: 403 }
@@ -117,27 +105,15 @@ export async function DELETE(
   const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId, tenantId, role } = auth;
+  const { tenantId, role } = auth;
   const { id: webhookId } = await params;
 
   try {
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId, role: userRole } = tenantUser;
-
+    // tenantId / role 直接取自 authenticateRequest 的权威值（已按 joinedAt asc
+    // 确定性选取租户），不再重复 tenantUser.findFirst 影子覆盖——后者无 orderBy，
+    // 对多租户用户可能取到与 auth 不一致的租户，导致越权读写。
     // 权限检查：只有owner和admin可以管理Webhook
-    if (userRole !== 'owner' && userRole !== 'admin') {
+    if (role !== 'owner' && role !== 'admin') {
       return NextResponse.json(
         { error: '没有权限管理Webhook' },
         { status: 403 }
