@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDashboardStats } from "@/lib/admin/admin-service";
+import { requirePlatformAdmin } from "@/lib/api-auth";
 
 // ─── GET /api/admin/dashboard — 获取仪表盘统计 ────────────────
 export async function GET(request: NextRequest) {
+  const auth = await requirePlatformAdmin(request);
+  if (auth instanceof NextResponse) return auth;
+
   try {
-    // TODO: 添加管理员权限验证
     const stats = await getDashboardStats();
     return NextResponse.json(stats);
   } catch (error) {

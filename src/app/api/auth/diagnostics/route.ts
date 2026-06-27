@@ -1,6 +1,12 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { requirePlatformAdmin } from "@/lib/api-auth";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  // 诊断端点会暴露 DATABASE_URL/TOKEN_SECRET 是否配置、cwd、Prisma 客户端文件清单等
+  // 侦察价值高的信息，必须限平台管理员访问（未配置 ADMIN_EMAILS 时 fail-closed）
+  const auth = await requirePlatformAdmin(request);
+  if (auth instanceof NextResponse) return auth;
+
   const diagnostics: Record<string, unknown> = {};
 
   // 1. Test database connection

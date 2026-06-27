@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { PLANS } from "@/lib/billing/subscription";
+import { requirePlatformAdmin } from "@/lib/api-auth";
 
 // ─── GET /api/admin/settings — 获取系统设置 ────────────────
 export async function GET(request: NextRequest) {
+  const auth = await requirePlatformAdmin(request);
+  if (auth instanceof NextResponse) return auth;
+
   try {
     // 获取系统概览信息
     const [totalUsers, totalTenants, totalFiles, totalFolders] = await Promise.all([

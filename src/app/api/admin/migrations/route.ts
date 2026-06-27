@@ -13,11 +13,15 @@ import {
   postMigrationValidation,
   getMigrationScripts,
 } from "@/lib/migrations/migration-tool";
+import { requirePlatformAdmin } from "@/lib/api-auth";
 
 /**
  * GET - 获取迁移状态
  */
 export async function GET(request: NextRequest) {
+  const auth = await requirePlatformAdmin(request);
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const { searchParams } = new URL(request.url);
     const action = searchParams.get("action");
@@ -86,6 +90,9 @@ export async function GET(request: NextRequest) {
  * POST - 执行迁移
  */
 export async function POST(request: NextRequest) {
+  const auth = await requirePlatformAdmin(request);
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const body = await request.json();
     const { action, targetVersion, version } = body;
