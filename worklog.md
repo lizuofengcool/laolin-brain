@@ -7010,3 +7010,57 @@ Status: 完成
 - 补 shares 路由 handler 测试（mock `@/lib/api-auth` + `@/lib/shares`）
 - ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计是否还有冗余 tenantUser 查询
 - 继续扩展租户隔离审计到剩余目录：`src/app/api/api-keys/`、`src/app/api/webhooks/`、`src/app/api/automation/`、`src/app/api/backup*/` 等是否仍有同型冗余 tenantUser 查询或 where 缺 tenantId 模式
+
+## 2026-06-27 08:36 自动迭代
+
+第十二轮自动迭代。本轮工作目录为空（全新沙箱），从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `7ca603b`，工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：逐文件复查任务清单"优先级 1 剩余项"五项（tenant-db.ts raw 后门 stack+console.warn 审计、alipay/wechat RSA2 真实验签 createVerify('RSA-SHA256')/HMAC-SHA256+timingSafeEqual、files/route 走 createTenantDb、sync-engine keep_both 重命名冲突副本+新 id 落地、api-auth.test.ts 匹配 4 字段/async/拒 query 实现）——**五项均已于第三~七轮完成并复查确认**，本轮不再重复。
+
+**审计扩展**：用 search 子代理对未审计的 `src/app/api/*/` 剩余目录（api-keys/webhooks/automation/backup/admin/saas/auth-diagnostics/system-logs/cloud-sync/access-history/activity-logs/analytics/billing/chat/embeddings/export-import/faces/integrations/invitations/plugins/recommendations/settings/stats/storage/tenant/trash/user 等 65 个 route.ts）做完整租户隔离审计。发现一个**比前序轮次 P1 冗余查询严重得多的 P0 类**：`admin/`（7 文件 9 handler）、`saas/`（3 文件 7 handler）、`auth/diagnostics`、`system-logs` POST、`cloud-sync/config` 等端点**完全无鉴权**或信任 query/body 的 `tenantId`/`userId`，任意未认证请求可读取全平台统计/租户列表/订单、挂起或改套餐任意租户、执行/回滚共享数据库迁移、向任意租户注入日志。其中 `admin/tenants/[id]` PATCH（任意 id 挂起/改套餐租户）与 `admin/migrations` POST（任意回滚 schema）危害最高。
+
+本轮按"1-3 个相关 commit、不铺大摊子"约束，聚焦最严重且 LIVE（前端 `src/app/admin/*/page.tsx` 实际调用）的 `admin/` 集群 + `auth/diagnostics` 信息泄露 + `system-logs` POST 日志注入，共 2 个 commit。`saas/`（grep 确认零前端引用、`billing/` 为活跃替代）与 `cloud-sync/config` 跨租户 R2 共享状态留待下一轮。
+
+环境：`npm ci`（package-lock.json，963 包，46s）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1006/1006 通过（61 文件，52.3s），零回归。
+
+### 改动
+
+1. **`src/lib/api-auth.ts`** — `e8c1701` `fix(admin,auth): 管理端点接入 requirePlatformAdmin 鉴权阻断未认证跨租户访问`
+   - 新增 `requirePlatformAdmin(request): Promise<AuthResult | NextResponse>` helper：先 `authenticateRequest`（401 透传），再将 `auth.email` 与 `ADMIN_EMAILS` 环境变量（逗号分隔、`trim().toLowerCase()` 后白名单比对，大小写不敏感）匹配；未配置或空 → 403「未配置平台管理员 (ADMIN_EMAILS)，管理端点已禁用」；不在白名单 → 403「无平台管理员权限」。**fail-closed**：运营方须显式配置 `ADMIN_EMAILS` 才能启用管理 UI。无需 Prisma 迁移（User 模型无 isAdmin 字段，env 白名单为零迁移方案）
+   - 顺带修正 `authenticateRequest` 过期 JSDoc（"Extracts token from Authorization header or query param" → 实现早已仅读 Authorization 头，第六轮已改但注释未同步）
+
+2. **7 个 admin 路由 + auth/diagnostics** — 同一 commit
+   - `admin/dashboard/route.ts`(GET)、`admin/migrations/route.ts`(GET+POST)、`admin/orders/route.ts`(GET)、`admin/orders/[id]/route.ts`(GET)、`admin/settings/route.ts`(GET)、`admin/tenants/route.ts`(GET)、`admin/tenants/[id]/route.ts`(GET+PATCH) 共 9 handler 顶部统一 `const auth = await requirePlatformAdmin(request); if (auth instanceof NextResponse) return auth;`（与 comments/notifications/shares 三行 auth 模式同款）
+   - `auth/diagnostics/route.ts` GET 签名由 `()` 改为 `(request: NextRequest)` 并接入同一 gate（原端点泄露 `DATABASE_URL`/`TOKEN_SECRET` 是否配置、`process.cwd()`、Prisma 客户端文件清单，侦察价值高）
+   - `admin/dashboard/route.ts` 的 `// TODO: 添加管理员权限验证` 一并闭环
+   - 前端影响：`src/app/admin/*/page.tsx` 调用这些端点；未配置 `ADMIN_EMAILS` 或非白名单用户访问将收 403，页面走既有 fetch 错误分支（不崩溃）。运营方启用管理 UI 前需在环境配置 `ADMIN_EMAILS=admin@example.com,...`
+
+3. **`src/app/api/system-logs/route.ts`** — `3a25c03` `fix(system-logs): POST 阻断未认证日志注入，要求 x-internal-key 常量时间校验`
+   - POST 此前完全无鉴权且信任 `body.tenantId`，任意未认证请求可向任意租户或全局注入日志（污染审计、DoS 日志查询）。代码注释自承"实际生产中应该有内部API密钥验证"但未实现
+   - 接入 `x-internal-key` 头与 `INTERNAL_API_KEY` 环境变量比对，使用 `crypto.timingSafeEqual` 常量时间比较（与 wechat.ts 验签同款实践）；未配置 `INTERNAL_API_KEY` 或头缺失/长度不等/不匹配 → 403（fail-closed）。grep 确认 src 内无任何调用方，禁用不影响现有功能
+   - GET 未改动（保持本轮聚焦于 P0 注入；GET 的 P1 冗余 tenantUser 查询留待后续 P1 清理轮次）
+
+### Commit
+- `e8c1701 fix(admin,auth): 管理端点接入 requirePlatformAdmin 鉴权阻断未认证跨租户访问`
+- `3a25c03 fix(system-logs): POST 阻断未认证日志注入，要求 x-internal-key 常量时间校验`
+
+### 推送状态
+- Gitee: ✅ `7ca603b..3a25c03` 推送 2 个代码 commit 至 main
+- GitHub: ✅ `7ca603b..3a25c03` 推送至 main
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1006/1006 通过（61 文件，52.3s），零回归
+- 改动量：commit1 9 文件 +93/-6 行；commit2 1 文件 +22/-2 行
+- admin/system-logs/diagnostics 目录均无现存单测，改动不影响现有测试；`api-auth.test.ts` 仅测 `authenticateRequest`，新增 `requirePlatformAdmin` 未被现有测试覆盖（可后续补测）
+- 运行时 vitest 日志中 `parsePdf` 的 stderr 警告为 pdf-parse 模块加载噪音（parser-pdf.test.ts 自身 9/9 通过），与本次改动无关
+- **运营迁移注意**：启用管理 UI 须配置 `ADMIN_EMAILS`（逗号分隔邮箱白名单）；内部日志写入须配置 `INTERNAL_API_KEY` 并由调用方带 `x-internal-key` 头。两个 env 均未配置时对应端点 fail-closed 返回 403
+- 任务清单"优先级 1 剩余项"经复查全部已完成；本轮新发现的 P0（未认证跨租户端点）属优先级 1 同类，已闭环 admin/diagnostics/system-logs 子集
+
+### 下一轮候选
+- **`src/app/api/saas/`（3 文件 7 handler）**：grep 确认零前端引用、`billing/` 为活跃替代，但仍暴露未认证 P0（`saas/orders` POST 信任 body.tenantId 建单、`saas/subscription` DELETE/POST 信任 query tenantId 取消/恢复订阅、`saas/tenant` GET 信任 query tenantId+userId）。下轮可删除（确认无外部调用方）或同款接入 `authenticateRequest`+`auth.tenantId` 对齐 `billing/`
+- **`src/app/api/cloud-sync/config/route.ts` POST**：已鉴权但 `initR2Client(config)` 把 R2 client 存进 process 全局内存无 tenant key（注释自承），租户 A 配置后租户 B 的 sync/backups 走 A 的 bucket+凭证——跨租户数据外泄/覆盖。改为按 `tenantId` key 的 Map 或落库加密存储；并补 owner/admin role gate
+- **P1 批量清理**：api-keys/webhooks/automation/backup/cloud-sync(access-history/activity-logs/embeddings/export-import/faces/invitations/stats/storage/tenant/trash 等)共 ~33 文件的冗余 `tenantUser.findFirst` 影子覆盖 `auth.tenantId` 模式（前置 authenticateRequest 已返回可信 tenantId），可一次性机械清理
+- 补 `requirePlatformAdmin` 单测（mock ADMIN_EMAILS：空→403、白名单内→返回 auth、白名单外→403、authenticateRequest 401 透传）
+- 补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 payment provider 单测；补 shares 路由 handler 测试
+- ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
