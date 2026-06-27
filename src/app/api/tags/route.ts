@@ -24,21 +24,7 @@ export async function GET(request: NextRequest) {
     const sortOrder = searchParams.get('sortOrder') || 'desc'; // asc, desc
     const limit = Math.min(100, parseInt(searchParams.get('limit') || '50', 10));
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
+    // 复用 authenticateRequest 已解析的 tenantId（auth 兜底建租户，无需再查 tenantUser）
     // 查询所有未删除的文件的标签
     const files = await db.file.findMany({
       where: {
@@ -128,21 +114,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
+    // 复用 authenticateRequest 已解析的 tenantId（auth 兜底建租户，无需再查 tenantUser）
     // 使用事务批量添加标签
     const result = await db.$transaction(async (tx) => {
       // 验证所有文件都属于当前用户和租户
@@ -162,13 +134,13 @@ export async function POST(request: NextRequest) {
 
       let successCount = 0;
 
-      // 逐个更新文件标签
+      // 逐个更新文件标签（where 补 tenantId 纵深防御，文件已由 findMany 闸门校验归属）
       for (const file of files) {
         try {
           const existingTags = safeJsonParseArray(file.tags as any);
           const newTags = [...new Set([...existingTags, ...tags])];
-          await tx.file.update({
-            where: { id: file.id },
+          await tx.file.updateMany({
+            where: { id: file.id, tenantId },
             data: { tags: JSON.stringify(newTags) },
           });
           successCount++;
@@ -213,21 +185,7 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
+    // 复用 authenticateRequest 已解析的 tenantId（auth 兜底建租户，无需再查 tenantUser）
     const tagsToRemove = new Set(tags);
 
     // 使用事务批量移除标签
@@ -251,13 +209,13 @@ export async function DELETE(request: NextRequest) {
 
       let updatedCount = 0;
 
-      // 逐个更新文件标签
+      // 逐个更新文件标签（where 补 tenantId 纵深防御，文件已由 findMany 闸门校验归属）
       for (const file of filesToUpdate) {
         try {
           const existingTags = safeJsonParseArray(file.tags as any);
           const newTags = existingTags.filter(tag => !tagsToRemove.has(tag));
-          await tx.file.update({
-            where: { id: file.id },
+          await tx.file.updateMany({
+            where: { id: file.id, tenantId },
             data: { tags: JSON.stringify(newTags) },
           });
           updatedCount++;

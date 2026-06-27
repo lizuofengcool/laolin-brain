@@ -24,21 +24,7 @@ export async function PATCH(
     const body = await request.json();
     const { name, icon, sortOrder, isPinned } = body;
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
+    // 复用 authenticateRequest 已解析的 tenantId（auth 兜底建租户，无需再查 tenantUser）
     // 检查快捷方式是否存在
     const existingShortcut = await db.shortcut.findFirst({
       where: {
@@ -62,7 +48,8 @@ export async function PATCH(
     if (sortOrder !== undefined) updateData.sortOrder = sortOrder;
     if (isPinned !== undefined) updateData.isPinned = isPinned;
 
-    // 更新快捷方式
+    // 更新快捷方式（前置 findFirst 已按 tenantId+userId 闸门校验归属；
+    // Prisma update 的 where 仅接受唯一字段，无法附加 tenantId，沿用第六轮约定）
     const shortcut = await db.shortcut.update({
       where: { id: shortcutId },
       data: updateData,
@@ -102,21 +89,7 @@ export async function DELETE(
   const { id: shortcutId } = await params;
 
   try {
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
+    // 复用 authenticateRequest 已解析的 tenantId（auth 兜底建租户，无需再查 tenantUser）
     // 检查快捷方式是否存在
     const existingShortcut = await db.shortcut.findFirst({
       where: {
@@ -133,9 +106,9 @@ export async function DELETE(
       );
     }
 
-    // 删除快捷方式
-    await db.shortcut.delete({
-      where: { id: shortcutId },
+    // 删除快捷方式（where 补 tenantId 纵深防御，前置 findFirst 已闸门校验归属）
+    await db.shortcut.deleteMany({
+      where: { id: shortcutId, tenantId },
     });
 
     return NextResponse.json({

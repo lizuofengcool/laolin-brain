@@ -19,21 +19,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const isPinned = searchParams.get('isPinned');
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
+    // 复用 authenticateRequest 已解析的 tenantId（auth 兜底建租户，无需再查 tenantUser）
     // 构建查询条件
     const where: any = {
       tenantId,
@@ -128,21 +114,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
+    // 复用 authenticateRequest 已解析的 tenantId（auth 兜底建租户，无需再查 tenantUser）
     // 验证文件或文件夹存在
     if (fileId) {
       const file = await db.file.findFirst({
