@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
   const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId, tenantId, role } = auth;
+  const { tenantId, role } = auth;
 
   try {
     const { searchParams } = new URL(request.url);
@@ -21,23 +21,11 @@ export async function GET(request: NextRequest) {
     const dateFrom = searchParams.get('dateFrom');
     const dateTo = searchParams.get('dateTo');
 
-    // 查询用户的租户和角色
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId, role: userRole } = tenantUser;
-
+    // tenantId / role 直接取自 authenticateRequest 的权威值（已按 joinedAt asc
+    // 确定性选取租户），不再重复 tenantUser.findFirst 影子覆盖——后者无 orderBy，
+    // 对多租户用户可能取到与 auth 不一致的租户，导致越权读写。
     // 检查权限：只有owner和admin可以查看统计
-    if (userRole !== 'owner' && userRole !== 'admin') {
+    if (role !== 'owner' && role !== 'admin') {
       return NextResponse.json(
         { error: '没有权限查看统计数据' },
         { status: 403 }
