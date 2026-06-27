@@ -52,7 +52,7 @@ export async function authenticateRequest(
     let activeTenantId: string;
     if (!existingTenant) {
       const newTenant = await db.tenant.create({
-        data: { name: 'Default Tenant', plan: 'enterprise' },
+        data: { name: 'Default Tenant', plan: 'free' },
       });
       activeTenantId = newTenant.id;
     } else {

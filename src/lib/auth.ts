@@ -5,11 +5,16 @@ function getTokenSecret(): string {
   const secret = process.env.TOKEN_SECRET;
   if (!secret) {
     if (process.env.NODE_ENV === 'production') {
-      console.error(
-        '[AUTH] WARN: TOKEN_SECRET is not set. Authentication will use a fallback secret. ' +
-        'Set TOKEN_SECRET environment variable for production security.'
+      throw new Error(
+        '[AUTH] FATAL: TOKEN_SECRET is not set in production. ' +
+        'Set TOKEN_SECRET environment variable before starting the server. ' +
+        'Refusing to boot with an insecure fallback secret.'
       );
     }
+    console.warn(
+      '[AUTH] WARN: TOKEN_SECRET is not set. Using insecure fallback secret. ' +
+      'Set TOKEN_SECRET environment variable for production security.'
+    );
     return 'fallback-dev-secret-do-not-use-in-production';
   }
   return secret;
