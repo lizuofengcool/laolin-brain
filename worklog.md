@@ -7404,3 +7404,50 @@ Status: 完成
 - 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files(info)/api-keys handler 级路由测试；补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 shares 路由 handler 测试
 - ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+
+## 2026-06-28 07:00 自动迭代
+
+第二十轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `5ea6fea`，工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：第十八/十九轮已确认任务清单"优先级 1 剩余项"全部闭环（tenant-db raw 后门、alipay/wechat RSA2 验签、sync-engine keep_both、api-auth.test 不符、files 顶层/[id] raw-db 读侧、api-keys 影子覆盖）。本轮按优先级 3 继续 worklog "下一轮候选" 首项——**P1 批量清理（`tenantUser.findFirst` 影子覆盖 `auth.tenantId` 模式）**，按第十九轮 api-keys 范式收口 2 个目录：webhooks（route.ts + [id]/route.ts）与 stats（route.ts）。
+
+立项依据：与 api-keys 同源缺陷——四个 webhook handler（GET/POST/PATCH/DELETE）与 stats GET 均存在 `db.tenantUser.findFirst({ where:{ userId } })` 影子覆盖 `auth.tenantId/role`。该重查**无 orderBy**，而 `authenticateRequest` 内部按 `orderBy:{ joinedAt:'asc' }` 确定性选取租户，对多租户用户两者可能取到不同租户，导致后续 webhook CRUD / 统计聚合落到非 auth 意图的租户（越权读写 + 错误统计）。webhooks 作为 CRUD 管理目录与 api-keys 完全同构，stats 的统计聚合则放大了"取错租户"的数据泄露面（概览/类型/趋势/活动/AI 五类统计全部基于该 tenantId）。
+
+环境：`npm ci`（package-lock.json，963 包 33s）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1051/1051 通过（64 文件，53.6s），与第十九轮基线完全一致，零回归。
+
+### 改动
+
+1. **`src/app/api/webhooks/route.ts` + `src/app/api/webhooks/[id]/route.ts`** — `9546a66` `fix(webhooks): 移除 tenantUser 影子查询改用 authenticateRequest 权威 tenantId/role`
+   - 四个 handler（GET/POST/PATCH/DELETE）均删除冗余 `db.tenantUser.findFirst({ where:{ userId } })` + "Tenant not found" 404 死分支（`authenticateRequest` 已保证 tenant 存在，缺失时自动创建 default tenant）+ 影子解构 `const { tenantId, role: userRole } = tenantUser`。
+   - 权限检查 `userRole !== 'owner' && userRole !== 'admin'` → `role !== 'owner' && role !== 'admin'`（直接用 auth.role）；`db.webhook.*` 调用的 tenantId 改用 auth.tenantId。
+   - 清理仅被该重查引用而变成未使用的 `userId` 解构：GET、[id] PATCH、[id] DELETE。POST 保留 `userId`（仍用于 `db.webhook.create({ data:{ tenantId, userId, ... } })`）。
+   - `db` import 保留（仍用于 `db.webhook.count/findMany/create/findFirst/update/delete`，webhook 模型尚未纳入 TenantDb 访问器）。
+
+2. **`src/app/api/stats/route.ts`** — `61ac686` `fix(stats): 移除 tenantUser 影子查询改用 authenticateRequest 权威 tenantId/role`
+   - GET handler 删除冗余 `db.tenantUser.findFirst({ where:{ userId } })` + 404 死分支 + 影子解构，改用 auth.tenantId/role 直接做权限检查与下游 `getOverviewStats/getStatsByType/getTrendStats/getActivityStats/getAiStats` 的 tenantId 入参。
+   - GET 仅清理因重查变未用的 `userId` 解构。
+   - 注：`getOverviewStats` 内 `db.tenantUser.count({ where:{ tenantId } })` 是对全租户用户的聚合计数（非按 userId 单点影子查询），属合法统计查询，保留不动。`db` import 保留（stats 大量使用 `db.file/folder/accessHistory/user/tenantUser` 聚合）。
+
+### Commit
+- `9546a66 fix(webhooks): 移除 tenantUser 影子查询改用 authenticateRequest 权威 tenantId/role`
+- `61ac686 fix(stats): 移除 tenantUser 影子查询改用 authenticateRequest 权威 tenantId/role`
+
+### 推送状态
+- Gitee: 待推送
+- GitHub: 待推送
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1051/1051 通过（64 文件，53.6s），零回归
+- 改动量：3 文件 +24/-84 行（净减 60 行，主要来自删除 5 处冗余 tenantUser 查询块）
+- 运行时 vitest 日志中 `parsePdf` 的 stderr 警告为 pdf-parse 模块加载噪音（parser-pdf.test.ts 自身 9/9 通过），与本次改动无关
+- 无现存 handler 级单测覆盖 `/api/webhooks/*` 与 `/api/stats`（grep `__tests__` 仅命中 payment 测试引用 webhook 变量名），故本轮改动不影响现有测试；可后续补 handler 级测试（mock `@/lib/api-auth` + `@/lib/db`，覆盖权限 403/正常 200/跨租户 id 404/多租户用户 tenantId 一致性）
+- P1 批量清理进度：app/api 下真实 `db.tenantUser.findFirst` 调用文件由本轮前的 28 降至 **25**（api-keys/webhooks/stats 三目录已收口）；剩余 25 文件按同范式推进
+
+### 下一轮候选
+- **P1 批量清理（剩余 25 文件）**：access-history/activity-logs/storage/system-logs/trash/invitations/notifications/files(POST 事务待评估)/embeddings/generate/export-import/tenant/users(2 文件)/faces(4 文件)/cloud-sync(4 文件)/automation/rules(2 文件)/backup/backups(3 文件) 仍存在 `tenantUser.findFirst` 影子覆盖 `auth.tenantId` 模式，按本轮 webhooks/stats 范式（删冗余查询 + 用 auth.tenantId/role + 清理未用 userId 解构）推进；建议每轮收口 1-2 个目录保持 1-3 commit 规模
+- **`storageConfig.config` 落库加密**：明文 JSON 存储 secretAccessKey/accessKeyId，改为 encrypt 存储 + getStorageProvider/aliyun-oss/r2-storage-class 读取侧 decrypt
+- **`db.$transaction` 回调租户隔离**：21 处直连事务回调内 `tx` 无 tenantId 注入，可评估是否提供 `tenantDb.transaction` 的租户感知变体（现已带审计）或文档化各路由自管约定
+- 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files(info)/api-keys/webhooks/stats handler 级路由测试；补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 shares 路由 handler 测试
+- ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
