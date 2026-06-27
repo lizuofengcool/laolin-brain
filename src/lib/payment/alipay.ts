@@ -33,9 +33,13 @@ export class AlipayProvider implements PaymentProvider {
       }
 
       // 真实支付宝SDK接入点
-      // 这里可以接入 alipay-sdk 或其他支付宝SDK
-      // 目前返回模拟结果
-      return this.createMockPayment(params);
+      // 已配置真实密钥但尚未接入 alipay-sdk：返回明确错误，而非静默返回 mock 支付链接。
+      // mock 链接指向 /api/payment/mock/*（回调最终会被 verifyCallback 的 RSA2 验签拒绝），
+      // 但在已配置真实密钥的生产环境不应让用户进入模拟支付页，故显式失败。
+      return {
+        success: false,
+        error: '支付宝真实支付尚未接入 SDK，请在未配置密钥的开发环境使用模拟支付，或接入 alipay-sdk',
+      };
     } catch (error: any) {
       return {
         success: false,
@@ -74,9 +78,12 @@ export class AlipayProvider implements PaymentProvider {
       }
 
       // 真实支付宝SDK接入点
+      // 已配置但未接入 SDK：返回失败，调用方（status 路由）会回退到本地订单状态，
+      // 避免返回伪造的 pending 掩盖真实查询未实现。
       return {
-        success: true,
-        status: 'pending',
+        success: false,
+        status: 'failed',
+        error: '支付宝真实支付查询尚未接入 SDK',
       };
     } catch (error: any) {
       return {
@@ -227,9 +234,10 @@ export class AlipayProvider implements PaymentProvider {
       }
 
       // 真实支付宝退款接口接入点
+      // 已配置但未接入 SDK：返回失败，避免静默返回伪造退款号造成"退款已发起"的假象。
       return {
-        success: true,
-        refundNo: `REFUND${Date.now()}`,
+        success: false,
+        error: '支付宝真实退款尚未接入 SDK',
       };
     } catch (error: any) {
       return {
