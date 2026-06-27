@@ -7108,3 +7108,63 @@ Status: 完成
 - 补 saas 路由 handler 测试（覆盖本轮新行为：401 透传 + orders GET 越权 404 + 正常 200）
 - 补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 payment provider 单测；补 shares 路由 handler 测试
 - ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
+
+## 2026-06-28 01:00 自动迭代
+
+第十四轮自动迭代。本轮工作目录为空（全新沙箱），从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `fcbd3f6`，工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：任务清单"优先级 1 剩余项"五项（tenant-db.ts raw 后门审计、alipay/wechat RSA2 真实验签、files/route 走 TenantDb、sync-engine keep_both、api-auth.test.ts 匹配实现）均已于第三~七轮完成并多轮复查确认，本轮不再重复。
+
+承接第十三轮"下一轮候选"首项（P0 跨租户配置泄露）：`src/lib/cloud-sync/r2-storage.ts` 此前以进程级单例 `s3Client`/`currentConfig` 保存 R2 配置，`POST /api/cloud-sync/config` 调用 `initR2Client(config)` 仅写内存——
+
+1. **跨租户误报**：租户 A 配置后 `isR2Configured()` 对所有租户返回 true，租户 B 的 `GET /api/cloud-sync/config` 误报"已配置"、`backups/` 路由误判已配置而进入实际同步流程（所幸 `sync-engine.getStorageProvider` 读 DB、租户 B 无 storageConfig 行会抛错 500，未直接外泄租户 A 数据，但行为错误且误导）。
+2. **配置不落库**：POST 仅写内存（服务重启即丢失），且与 `sync-engine.getStorageProvider` 的 DB 数据源脱节——即便租户 A 自己配置后，`listBackups`/`uploadBackup` 仍因 DB 无 storageConfig 行而 500，云同步功能实际从未可用。
+3. **缺 role gate**：POST 任意已认证用户（含 member）均可改写全局配置。
+
+实际数据读写链路（`sync-engine` → `getStorageProvider(tenantId)` → 读 `tenant.storageConfigs` → per-call `R2Storage` 实例）本就租户安全，问题集中在 `isR2Configured()` 标志位与 config POST 本身。本轮统一到 DB 真相源闭环该 P0。
+
+环境：`npm ci`（package-lock.json，963 包，43s）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1013/1013 通过（62 文件，69.4s，较上轮 1006 +7 为新增 r2-storage 单测），零回归。
+
+### 改动
+
+1. **`src/lib/cloud-sync/r2-storage.ts`** — `8631682` `fix(cloud-sync): R2 配置落库按租户隔离，关闭跨租户配置泄露`
+   - 移除进程级单例 `s3Client`/`currentConfig`、`initR2Client`、`getClient`，以及未被任何代码引用的模块级存储函数（uploadObject/downloadObject/headObject/deleteObject/listObjects/generatePresignedUrl——grep 确认仅 `initR2Client`/`isR2Configured`/`testR2Connection` 被外部 import，其余为死代码）
+   - `isR2Configured(tenantId): Promise<boolean>` 改为按 `tenantId` 查询 `db.storageConfig.findUnique({ where: { tenantId_provider: { tenantId, provider: 'r2' } } })`，与 `sync-engine.getStorageProvider` 同源，彻底消除跨租户误报
+   - `testR2Connection(config): Promise<boolean>` 改为构造临时 `new R2Storage(config).testConnection()`，不写入任何全局状态；异常捕获返回 false（行为与旧实现一致）
+   - 重新导出 `R2Config`/`StorageObject` 类型保持导入兼容
+
+2. **`src/app/api/cloud-sync/config/route.ts`** — 同一 commit
+   - GET：`configured: await isR2Configured(auth.tenantId)`，按租户返回真实配置态
+   - POST：新增 `canManageStorage(role)` gate，仅 `owner`/`admin` 可变更（member → 403）；连接测试通过后 `db.$transaction([storageConfig.upsert(provider='r2'), tenant.update(storageProvider='r2')])` 落库——使配置真正持久化并被 `sync-engine.getStorageProvider` 命中，云同步功能首次端到端可用（此前内存配置重启丢失且与同步链路脱节）
+   - 注：`storageConfig.config` 仍以明文 JSON 存储（与 `sync-engine` 现有 `JSON.parse` 读取行为一致；schema 注释虽标注"加密存储"但实际链路未解密）。落库加密为后续独立项，需协同改造 `getStorageProvider` + `aliyun-oss`/`r2-storage-class` 的读取侧，不在本轮范围
+
+3. **`src/app/api/cloud-sync/backups/route.ts` + `backups/[id]/route.ts`** — 同一 commit
+   - `isR2Configured()` → `await isR2Configured(auth.tenantId)`（适配新的按租户 async 签名）
+   - 顺带移除冗余 `db.tenantUser.findFirst`（4 个 handler），直接用可信 `auth.tenantId`——闭合该 2 文件的 P1 影子覆盖模式（前置 `authenticateRequest` 已返回可信 tenantId，且无租户时自动建租户，原 400 "用户未关联任何租户" 分支为死代码）；其余 ~31 文件 P1 清理留待后续批量轮次
+
+4. **`src/__tests__/lib/r2-storage.test.ts`**（新增）— 同一 commit
+   - 7 个用例锁定回归：`isR2Configured` 按租户查询（已配置→true、未配置→false、不同租户互不影响且走 `tenantId_provider` 复合键）；`testR2Connection` 成功/失败/异常捕获/连续调用无全局状态污染
+   - mock 要点：`vi.hoisted` 确保 mock 函数在 `vi.mock` 工厂执行时已初始化；`R2Storage` 的 `mockImplementation` 必须用普通 `function`（非箭头函数），否则无法作为构造器被 `new` 调用（vitest 报 "is not a constructor"）
+
+### Commit
+- `8631682 fix(cloud-sync): R2 配置落库按租户隔离，关闭跨租户配置泄露`
+
+### 推送状态
+- Gitee: 待推送
+- GitHub: 待推送
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1013/1013 通过（62 文件，69.4s），零回归
+- 改动量：5 文件 +210/-323 行（净减 113 行，主要来自 r2-storage.ts 死代码清理与 backups 路由冗余查询移除）
+- cloud-sync/config 与 backups 目录此前无现存单测；新增 r2-storage 单测覆盖核心配置态逻辑；config POST 路由的 role gate / 落库 / 越权场景可后续补 handler 级测试（mock `@/lib/api-auth` + `@/lib/db` + `@/lib/cloud-sync/r2-storage`）
+- 运行时 vitest 日志中 `parsePdf` 的 stderr 警告为 pdf-parse 模块加载噪音（parser-pdf.test.ts 自身 9/9 通过），与本次改动无关
+- **运营注意**：R2 配置现已落库持久化（不再重启丢失）；`storageConfig.config` 明文存储 secretAccessKey，与现有 aliyun 链路同风险等级，落库加密为后续独立项
+- 至此第十三轮"下一轮候选"首项（cloud-sync/config 跨租户 P0）已闭环
+
+### 下一轮候选
+- **`storageConfig.config` 落库加密**：现以明文 JSON 存储 secretAccessKey/accessKeyId（与 sync-engine `JSON.parse` 读取一致）。改为 `encrypt(config)` 存储 + `getStorageProvider`/`aliyun-oss`/`r2-storage-class` 读取侧 `decrypt`，需用租户级密钥或全局 `TOKEN_SECRET` 派生密钥
+- **P1 批量清理（剩余 ~31 文件）**：api-keys/webhooks/automation/backup/cloud-sync(access-history/activity-logs/embeddings/export-import/faces/invitations/stats/storage/tenant/trash 等仍存在 `tenantUser.findFirst` 影子覆盖 `auth.tenantId` 模式，可一次性机械清理（本轮已清 cloud-sync/backups 4 个 handler）
+- 补 `requirePlatformAdmin` 单测；补 saas 路由 handler 测试；补 cloud-sync/config POST handler 测试（role gate 403/落库 upsert/连接测试失败 400）
+- 补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 payment provider 单测；补 shares 路由 handler 测试
+- ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
