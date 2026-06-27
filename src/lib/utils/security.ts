@@ -185,8 +185,8 @@ export function detectSqlInjection(input: string): boolean {
   const sqlKeywords = [
     /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC|EXECUTE|UNION|SCRIPT)\b)/i,
     /(--|;|\/\*|\*\/|xp_|sp_)/i,
-    /(\b(OR|AND)\b\s+\d+\s*=\s*\d+)/i,
-    /(\b(OR|AND)\b\s+['"][^'"]*['"]\s*=\s*['"][^'"]*['"])/i,
+    // OR/AND 注入：兼容 `1=1`、`'1'='1'`、`'1'='1`（无尾引号，依赖外层 SQL 补全引号）等形态
+    /(\b(OR|AND)\b\s+['"]?\w+['"]?\s*=\s*['"]?\w+['"]?)/i,
   ];
 
   return sqlKeywords.some((pattern) => pattern.test(input));

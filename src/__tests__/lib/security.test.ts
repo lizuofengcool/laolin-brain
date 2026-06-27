@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { detectSqlInjection } from "@/lib/utils/security";
 
 // 模拟安全工具函数
 describe("安全工具", () => {
@@ -101,19 +102,6 @@ describe("安全工具", () => {
   });
 
   describe("SQL注入检测", () => {
-    // 模拟SQL注入检测函数
-    const detectSqlInjection = (input: string): boolean => {
-      const patterns = [
-        /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE)\b)/i,
-        /(--|;|\/\*|\*\/)/,
-        /(\bOR\b.*=.*\bOR\b)/i,
-        /(\bUNION\b.*\bSELECT\b)/i,
-        /(\bEXEC\b|\bEXECUTE\b)/i,
-      ];
-
-      return patterns.some((pattern) => pattern.test(input));
-    };
-
     it("应该检测到SQL关键字", () => {
       expect(detectSqlInjection("SELECT * FROM users")).toBe(true);
     });
