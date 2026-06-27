@@ -35,8 +35,8 @@ export const db =
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = db
 
-// 导出租户数据访问层
-export { TenantDb, createTenantDb, rawDb } from './tenant-db';
+// 导出租户数据访问层（rawDb 已移除：无审计的原始客户端导出，需跨租户访问请用 TenantDb.raw）
+export { TenantDb, createTenantDb } from './tenant-db';
 export { 
   getTenantIdFromRequest, 
   getTenantDbFromRequest,

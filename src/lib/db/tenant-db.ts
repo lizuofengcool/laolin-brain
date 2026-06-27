@@ -34,8 +34,15 @@ export class TenantDb {
 
   /**
    * 执行事务
+   *
+   * 安全审计：回调内的 tx 是原始事务客户端，无 tenantId 注入，
+   * 调用方需自行保证隔离。每次调用记录调用方堆栈，便于审计是否绕过租户隔离层。
    */
   async transaction<T>(fn: (tx: any) => Promise<T>): Promise<T> {
+    const caller = new Error().stack?.split('\n')[3]?.trim() || '<unknown>';
+    console.warn(
+      `[TenantDb.transaction] tenantId=${this.tenantId} 越过租户隔离层执行原始事务，回调 tx 无 tenantId 注入，调用方: ${caller}`
+    );
     return this.prisma.$transaction(fn);
   }
 
@@ -978,8 +985,8 @@ export function createTenantDb(tenantId: string): TenantDb {
   return new TenantDb(tenantId);
 }
 
-/**
- * 原始Prisma客户端（用于管理后台等需要跨租户操作的场景）
- * 谨慎使用！
- */
-export { db as rawDb };
+// 原始 Prisma 客户端不再以 rawDb 形式无审计导出。
+// 需跨租户操作的场景应：
+//   1. 优先经 createTenantDb(tenantId) 的模型访问器（自动注入 tenantId）；
+//   2. 确需原始客户端时，经 TenantDb.raw getter 获取（带调用堆栈软审计）；
+//   3. 管理后台等系统级场景直接 import { db } from '@/lib/db'（已在路由层鉴权）。
