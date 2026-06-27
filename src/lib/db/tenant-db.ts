@@ -41,8 +41,16 @@ export class TenantDb {
 
   /**
    * 原始Prisma客户端（谨慎使用）
+   *
+   * 安全审计：此 getter 绕过租户隔离层，直接暴露全局 PrismaClient。
+   * 每次访问都会记录调用方堆栈，便于审计是否有绕过 tenantId 过滤的越权访问。
+   * 仅应在确需跨租户操作（如管理后台）且调用方已自行保证隔离的场景下使用。
    */
   get raw(): PrismaClient {
+    const caller = new Error().stack?.split('\n')[3]?.trim() || '<unknown>';
+    console.warn(
+      `[TenantDb.raw] tenantId=${this.tenantId} 越过租户隔离层访问原始 PrismaClient，调用方: ${caller}`
+    );
     return this.prisma;
   }
 
