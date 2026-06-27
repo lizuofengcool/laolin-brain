@@ -7303,3 +7303,55 @@ Status: 完成
 - **`db.$transaction` 回调租户隔离**：21 处直连事务回调内 `tx` 无 tenantId 注入，可评估是否提供 `tenantDb.transaction` 的租户感知变体（现已带审计）或文档化各路由自管约定
 - 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files(info) handler 级路由测试；补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 payment provider 单测；补 shares 路由 handler 测试
 - ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
+
+## 2026-06-28 05:00 自动迭代
+
+第十八轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `6fcf091`，工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：逐项核验任务清单"剩余项"的实际状态，发现**全部已在之前轮次闭环**，任务清单信息已过时：
+1. `tenant-db.ts` raw 后门 → 加审计/限制 ✅ 第十七轮闭环（`574cc97` 关闭 rawDb 导出 + transaction 软审计，`26801c2` 补单测）
+2. `alipay.ts & wechat.ts` RSA2 验签占位"非空即通过" ✅ 已实现真实验签：alipay 走 `createVerify('RSA-SHA256')` + `normalizePublicKey`（PEM/单行 base64 兼容）；wechat 走 HMAC-SHA256 恒定时间比较 + AES-256-GCM resource 解密；两方在"已配置未接入 SDK"时 createPayment/queryPayment/refund 显式失败而非返回伪造结果
+3. `sync-engine.ts` keep_both 直接覆盖 bug ✅ `ef4c361 fix(sync): keep_both 冲突解决保留两端版本而非覆盖丢失本地版本`（重命名本地为 `[冲突副本]` + 新 id 落地云端版本）
+4. `api-auth.test.ts` 与实现不符 ✅ `7f9a404 test(auth): 重写 api-auth.test.ts 匹配当前 authenticateRequest 实现`（已期望 4 字段/async/不读 query）
+
+即任务清单优先级 1 已无剩余项。本轮按优先级 3 转向"补测试"。选定目标：**payment 模块单测**——alipay/wechat 验签属安全关键逻辑（回调验签 = 确认真金白银到账），刚从占位修成真实加密验签，却零测试覆盖。补回归测试可锁定"非空即通过已废弃、真实加密验签必行"的契约，防后续误回退。
+
+环境：`npm ci`（package-lock.json，963 包 47s）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run src/__tests__/lib/payment-alipay.test.ts src/__tests__/lib/payment-wechat.test.ts` 36/36 通过；`npx vitest run` 全量 1051/1051 通过（64 文件，74.4s），较第十七轮基线 1015 +36，零回归。
+
+### 改动
+
+1. **`src/__tests__/lib/payment-alipay.test.ts`**（新增，17 用例）— `ed3dc00` `test(payment): 补 alipay/wechat 验签与支付操作单测`
+   - 用 `vi.hoisted` mock `@/lib/payment/config`（singleton `alipayProvider` 在 import 时即构造，需在 hoisted 块内提供默认返回值避免 `undefined.alipay`）。
+   - **模拟模式**：createPayment 返回 mock payUrl/tradeNo、queryPayment 返回 pending、refund 返回 mock refundNo、verifyCallback 校验 mock_sign（正确通过/错误拒绝）、generateMockSign 确定性、status 非 success → failed。
+   - **已配置未接入 SDK**：createPayment/queryPayment/refund 均显式失败，断言 `payUrl` undefined、error 含"尚未接入 SDK"，锁定"不静默返回伪造结果"。
+   - **RSA2 验签**：`generateKeyPairSync('rsa', {modulusLength:2048})` 生成密钥对，复刻实现 `buildSignContent`（去 sign/sign_type、ASCII 排序、k=v & 拼接）+ `cryptoSign('RSA-SHA256', RSA_PKCS1_PADDING)` 端到端验签。覆盖：PEM 公钥通过、单行 base64 公钥通过（normalizePublicKey）、签名篡改拒绝、缺 sign 拒绝、缺 publicKey 拒绝、trade_status 非 SUCCESS/FINISHED → failed、无效 publicKey 格式安全失败。
+
+2. **`src/__tests__/lib/payment-wechat.test.ts`**（新增，19 用例）— 同一 commit
+   - 同款 `vi.hoisted` mock 模式。apiKey 用 32 字节串（APIv3 密钥规范）。
+   - **模拟模式**：createPayment 返回 payUrl/tradeNo/qrCode、queryPayment/refund、verifyCallback mock_sign、generateMockSign 确定性。
+   - **已配置未接入 SDK**：同 alipay，三方法显式失败。
+   - **V3 HMAC 验签**：`createHmac('sha256', apiKey).update('timestamp\nnonce\nbody\n')` 生成签名，覆盖合法签名+明文 resource 兼容路径提取订单、trade_state 非 SUCCESS → failed、签名篡改拒绝、缺 timestamp/nonce/body/signature 任一字段拒绝、缺 apiKey 拒绝、签名长度不一致安全拒绝（恒定时间比较前置 length 检查）。
+   - **V3 AES-256-GCM resource 解密**：`createCipheriv('aes-256-gcm')` 加密明文 JSON，覆盖合法解密提取订单（ciphertext+authTag base64）、错误密钥 GCM auth 失败拒绝、ciphertext 篡改（翻转首字节）auth tag 失败拒绝、apiKey 非 32 字节拒绝。锁定"resource 必须真解密、空/伪造 resource 不能误判支付成功"。
+
+### Commit
+- `ed3dc00 test(payment): 补 alipay/wechat 验签与支付操作单测`
+
+### 推送状态
+- Gitee: 待推送
+- GitHub: 待推送
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1051/1051 通过（64 文件，74.4s），零回归
+- 改动量：2 文件 +715 行（纯测试，零生产代码变更）
+- 运行时 vitest stderr 中 `Wechat resource decryption failed: Unsupported state or unable to authenticate data` 为 wechat 解密失败用例（错误密钥/ciphertext 篡改）的预期日志噪音（实现内 `console.error`），测试本身通过；与 pdf-parse stderr 噪音同理
+- 运行时 vitest stderr 中 `parsePdf` 警告为 pdf-parse 模块加载噪音（parser-pdf.test.ts 9/9 通过），与本次改动无关
+- 任务清单"优先级 1 剩余项"经本轮复查确认**全部已闭环**（见上复查 1-4），后续轮次按优先级 2/3 推进
+
+### 下一轮候选
+- **P1 批量清理（剩余 ~31 文件）**：api-keys/webhooks/automation/backup/cloud-sync(access-history/activity-logs/embeddings/export-import/faces/invitations/stats/storage/tenant/trash 等仍存在 `tenantUser.findFirst` 影子覆盖 `auth.tenantId` 模式，可一次性机械清理；含 `src/app/api/files/route.ts:270` POST 去重查询改走 TenantDb
+- **`storageConfig.config` 落库加密**：明文 JSON 存储 secretAccessKey/accessKeyId，改为 encrypt 存储 + getStorageProvider/aliyun-oss/r2-storage-class 读取侧 decrypt
+- **`db.$transaction` 回调租户隔离**：21 处直连事务回调内 `tx` 无 tenantId 注入，可评估是否提供 `tenantDb.transaction` 的租户感知变体（现已带审计）或文档化各路由自管约定
+- 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files(info) handler 级路由测试；补 shares 路由 handler 测试
+- ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
