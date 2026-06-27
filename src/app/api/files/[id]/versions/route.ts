@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import path from "path";
-import { db } from "@/lib/db";
+import { db, createTenantDb } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 
 // ─── GET /api/files/[id]/versions — 获取文件版本列表（分页） ─────────────
@@ -21,34 +21,22 @@ export async function GET(
     const page = parseInt(searchParams.get('page') || '1', 10);
     const pageSize = Math.min(100, parseInt(searchParams.get('pageSize') || '20', 10));
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
+    // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
+    const tenantDb = createTenantDb(tenantId);
 
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
-    // 验证文件存在且属于当前用户和租户
-    const file = await db.file.findUnique({ where: { id } });
-    if (!file || file.userId !== userId || file.tenantId !== tenantId) {
+    // 验证文件存在且属于当前用户和租户（TenantDb 自动注入 tenantId 过滤）
+    const file = await tenantDb.file.findFirst({ where: { id } });
+    if (!file || file.userId !== userId) {
       return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
 
-    // 计算总数
-    const total = await db.fileVersion.count({
+    // 计算总数（按 file.tenantId 关联过滤）
+    const total = await tenantDb.fileVersion.count({
       where: { fileId: id },
     });
 
     // 分页查询版本
-    const versions = await db.fileVersion.findMany({
+    const versions = await tenantDb.fileVersion.findMany({
       where: { fileId: id },
       orderBy: { version: "desc" },
       skip: (page - 1) * pageSize,
@@ -138,28 +126,16 @@ export async function POST(
       }
     }
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
+    // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
+    const tenantDb = createTenantDb(tenantId);
 
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
-    // 验证文件存在且属于当前用户和租户
-    const file = await db.file.findUnique({ where: { id } });
-    if (!file || file.userId !== userId || file.tenantId !== tenantId) {
+    // 验证文件存在且属于当前用户和租户（TenantDb 自动注入 tenantId 过滤）
+    const file = await tenantDb.file.findFirst({ where: { id } });
+    if (!file || file.userId !== userId) {
       return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
 
-    // 使用事务防止版本号竞争
+    // 使用事务防止版本号竞争（事务内操作已由上方 tenant 校验保证归属）
     const version = await db.$transaction(async (tx) => {
       const latestVersion = await tx.fileVersion.findFirst({
         where: { fileId: id },
@@ -223,28 +199,16 @@ export async function DELETE(
       );
     }
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
+    // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
+    const tenantDb = createTenantDb(tenantId);
 
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
-    // 验证文件存在且属于当前用户和租户
-    const file = await db.file.findUnique({ where: { id: fileId } });
-    if (!file || file.userId !== userId || file.tenantId !== tenantId) {
+    // 验证文件存在且属于当前用户和租户（TenantDb 自动注入 tenantId 过滤）
+    const file = await tenantDb.file.findFirst({ where: { id: fileId } });
+    if (!file || file.userId !== userId) {
       return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
 
-    // 使用事务批量删除
+    // 使用事务批量删除（事务内操作已由上方 tenant 校验保证归属）
     const result = await db.$transaction(async (tx) => {
       // 验证所有版本都属于该文件
       const versions = await tx.fileVersion.findMany({
@@ -304,29 +268,17 @@ export async function PATCH(
       );
     }
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
+    // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
+    const tenantDb = createTenantDb(tenantId);
 
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
-    // 验证文件存在且属于当前用户和租户
-    const file = await db.file.findUnique({ where: { id: fileId } });
-    if (!file || file.userId !== userId || file.tenantId !== tenantId) {
+    // 验证文件存在且属于当前用户和租户（TenantDb 自动注入 tenantId 过滤）
+    const file = await tenantDb.file.findFirst({ where: { id: fileId } });
+    if (!file || file.userId !== userId) {
       return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
 
-    // 验证版本存在且属于该文件
-    const version = await db.fileVersion.findFirst({
+    // 验证版本存在且属于该文件（按 file.tenantId 关联过滤）
+    const version = await tenantDb.fileVersion.findFirst({
       where: { id: versionId, fileId },
     });
 

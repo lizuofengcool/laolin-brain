@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db, getTenantIdFromUserId } from "@/lib/db";
+import { db, createTenantDb } from "@/lib/db";
 import { unlink } from "fs/promises";
 import path from "path";
 import { authenticateRequest } from "@/lib/api-auth";
@@ -14,10 +14,12 @@ export async function GET(
   const { userId, tenantId, role } = auth;
 
   try {
-    const tenantId = await getTenantIdFromUserId(userId);
+    // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
+    const tenantDb = createTenantDb(tenantId);
     const { id } = await params;
-    const file = await db.file.findFirst({
-      where: { id, tenantId }
+    // TenantDb 自动注入 tenantId 过滤，防止跨租户访问
+    const file = await tenantDb.file.findFirst({
+      where: { id }
     });
     if (!file) {
       return NextResponse.json({ error: "File not found" }, { status: 404 });
@@ -42,12 +44,13 @@ export async function PUT(
   const { userId, tenantId, role } = auth;
 
   try {
-    const tenantId = await getTenantIdFromUserId(userId);
+    // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
+    const tenantDb = createTenantDb(tenantId);
     const { id } = await params;
 
-    // Ownership check
-    const existingFile = await db.file.findFirst({
-      where: { id, tenantId }
+    // Ownership + tenant check via TenantDb (auto-injects tenantId)
+    const existingFile = await tenantDb.file.findFirst({
+      where: { id }
     });
     if (!existingFile || existingFile.userId !== userId) {
       return NextResponse.json({ error: "文件不存在" }, { status: 404 });
@@ -99,8 +102,8 @@ export async function PUT(
         if (typeof folderIdValue !== 'string') {
           return NextResponse.json({ error: 'folderId must be a string or null' }, { status: 400 });
         }
-        // Verify folder belongs to the same user
-        const folder = await db.folder.findUnique({ where: { id: folderIdValue } });
+        // Verify folder belongs to the same user and tenant (TenantDb auto-injects tenantId)
+        const folder = await tenantDb.folder.findFirst({ where: { id: folderIdValue } });
         if (!folder || folder.userId !== userId) {
           return NextResponse.json({ error: '目标文件夹不存在' }, { status: 400 });
         }
@@ -144,10 +147,12 @@ export async function DELETE(
   const { userId, tenantId, role } = auth;
 
   try {
-    const tenantId = await getTenantIdFromUserId(userId);
+    // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
+    const tenantDb = createTenantDb(tenantId);
     const { id } = await params;
-    const file = await db.file.findFirst({
-      where: { id, tenantId }
+    // TenantDb 自动注入 tenantId 过滤，防止跨租户访问
+    const file = await tenantDb.file.findFirst({
+      where: { id }
     });
 
     if (!file || file.userId !== userId) {
@@ -167,8 +172,8 @@ export async function DELETE(
       }
     }
 
-    // Clean up version file paths from disk
-    const versions = await db.fileVersion.findMany({
+    // Clean up version file paths from disk (TenantDb 按 file.tenantId 关联过滤)
+    const versions = await tenantDb.fileVersion.findMany({
       where: { fileId: id },
       select: { filePath: true },
     });
