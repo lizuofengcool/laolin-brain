@@ -12,7 +12,7 @@ import {
   RefundResult,
 } from './types';
 import { getPaymentConfig, isPaymentConfigured } from './config';
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 
 export class WechatPayProvider implements PaymentProvider {
   private config: ReturnType<typeof getPaymentConfig>['wechat'];
@@ -179,14 +179,37 @@ export class WechatPayProvider implements PaymentProvider {
   }
 
   /**
-   * 微信支付签名验证（占位实现）
-   * 实际实现需要完整的微信支付V3签名验证逻辑
+   * 微信支付 V3 回调签名验证
+   *
+   * 使用 APIv3 密钥对签名串做 HMAC-SHA256，与回调签名做恒定时间比较。
+   * 签名串规范（微信支付 V3）：`${timestamp}\n${nonce}\n${body}\n`
+   *
+   * 调用方需从 HTTP 头透传以下字段到 params：
+   *   - timestamp  (Wechatpay-Timestamp)
+   *   - nonce      (Wechatpay-Nonce)
+   *   - body       (原始请求体文本)
+   *   - signature  (Wechatpay-Signature)
+   *
+   * 缺少任一字段或密钥未配置时直接拒绝，不再"非空即通过"。
    */
   private verifyWechatSign(params: Record<string, any>, sign: string): boolean {
-    // 占位实现，实际项目中需要完整实现
+    const apiKey = this.config.apiKey;
+    const timestamp = params?.timestamp;
+    const nonce = params?.nonce;
+    const body = params?.body;
+    const signature = sign || params?.signature;
+
+    if (!apiKey || !timestamp || !nonce || body === undefined || !signature) {
+      return false;
+    }
+
     try {
-      // 简单验证：非空即通过（开发模式）
-      return !!sign && !!this.config.apiKey;
+      const signContent = `${timestamp}\n${nonce}\n${body}\n`;
+      const expected = createHmac('sha256', apiKey).update(signContent, 'utf8').digest('hex');
+      const a = Buffer.from(signature);
+      const b = Buffer.from(expected);
+      if (a.length !== b.length) return false;
+      return timingSafeEqual(a, b);
     } catch {
       return false;
     }

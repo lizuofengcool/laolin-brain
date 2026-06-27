@@ -12,7 +12,7 @@ import {
   RefundResult,
 } from './types';
 import { getPaymentConfig, isPaymentConfigured } from './config';
-import { createHmac } from 'crypto';
+import { createHmac, createVerify, constants as cryptoConstants } from 'crypto';
 
 export class AlipayProvider implements PaymentProvider {
   private config: ReturnType<typeof getPaymentConfig>['alipay'];
@@ -177,18 +177,40 @@ export class AlipayProvider implements PaymentProvider {
   }
 
   /**
-   * RSA2签名验证（占位实现）
-   * 实际实现需要使用 crypto 模块的公钥验证
+   * RSA2 签名验证（RSA-SHA256）
+   * 使用支付宝公钥验证回调签名，签名 base64 解码后以 RSA-SHA256 验签。
+   * 公钥可为 PEM 文本，或单行 base64（自动补齐 PEM 头尾与换行）。
    */
   private verifyRSA2Sign(content: string, sign: string, publicKey: string): boolean {
-    // 占位实现，实际项目中需要完整实现
-    // 使用 crypto.createVerify('RSA-SHA256')
+    if (!sign || !publicKey) {
+      return false;
+    }
     try {
-      // 简单验证：非空即通过（开发模式）
-      return !!sign && !!publicKey;
+      const pem = this.normalizePublicKey(publicKey);
+      const verifier = createVerify('RSA-SHA256');
+      verifier.update(content, 'utf8');
+      const signBuf = Buffer.from(sign, 'base64');
+      return verifier.verify(
+        { key: pem, padding: cryptoConstants.RSA_PKCS1_PADDING },
+        signBuf,
+      );
     } catch {
       return false;
     }
+  }
+
+  /**
+   * 将支付宝公钥规整为 PEM 格式。
+   * 支付宝后台复制的公钥通常是无头尾、无换行的 base64 单行串。
+   */
+  private normalizePublicKey(publicKey: string): string {
+    const trimmed = publicKey.trim();
+    if (trimmed.includes('-----BEGIN')) {
+      return trimmed;
+    }
+    // 每 64 字符换行，符合 PEM 规范
+    const body = trimmed.replace(/\s+/g, '').replace(/(.{64})/g, '$1\n').trim();
+    return `-----BEGIN PUBLIC KEY-----\n${body}\n-----END PUBLIC KEY-----`;
   }
 
   /**
