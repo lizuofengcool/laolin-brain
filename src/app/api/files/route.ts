@@ -266,11 +266,12 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if a file with the same name already exists for this user (versioning)
-    // 加 tenantId 过滤，确保版本判定不跨租户
-    const existingFile = await db.file.findFirst({
+    // 走 TenantDb 租户隔离层：tenantDb.file.findFirst 自动注入 tenantId 过滤，
+    // 确保版本判定不跨租户，且不依赖调用方手动传 tenantId。
+    const dedupTenantDb = createTenantDb(tenantId);
+    const existingFile = await dedupTenantDb.file.findFirst({
       where: {
         userId,
-        tenantId,
         fileName: file.name,
         isDeleted: false,
       },
