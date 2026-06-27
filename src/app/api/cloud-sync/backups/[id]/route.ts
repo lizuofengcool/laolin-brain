@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { authenticateRequest } from "@/lib/api-auth";
 import { isR2Configured } from "@/lib/cloud-sync/r2-storage";
 import { downloadAndRestoreBackup, deleteBackup } from "@/lib/cloud-sync/sync-engine";
-import { db } from "@/lib/db";
 import { z } from "zod";
 
 // 恢复备份请求验证
@@ -20,27 +19,12 @@ export async function POST(
 
   const { id } = await params;
 
-  const { userId, tenantId, role } = auth;
+  const { userId, tenantId } = auth;
   const backupId = id;
 
   try {
-    // 获取用户的默认租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      include: { tenant: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "用户未关联任何租户" },
-        { status: 400 }
-      );
-    }
-
-    const tenantId = tenantUser.tenantId;
-
-    // 检查是否已配置 R2
-    if (!isR2Configured()) {
+    // 按租户查询 DB 是否已配置 R2，避免此前进程级单例导致的跨租户误报
+    if (!(await isR2Configured(tenantId))) {
       return NextResponse.json(
         { error: "云同步未配置，请先配置 Cloudflare R2" },
         { status: 400 }
@@ -87,27 +71,11 @@ export async function DELETE(
 
   const { id } = await params;
 
-  const { userId, tenantId, role } = auth;
+  const { tenantId } = auth;
   const backupId = id;
 
   try {
-    // 获取用户的默认租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      include: { tenant: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "用户未关联任何租户" },
-        { status: 400 }
-      );
-    }
-
-    const tenantId = tenantUser.tenantId;
-
-    // 检查是否已配置 R2
-    if (!isR2Configured()) {
+    if (!(await isR2Configured(tenantId))) {
       return NextResponse.json(
         { error: "云同步未配置，请先配置 Cloudflare R2" },
         { status: 400 }
