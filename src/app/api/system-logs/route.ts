@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { timingSafeEqual } from "crypto";
 import { db } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 
@@ -106,8 +107,27 @@ export async function GET(request: NextRequest) {
 
 // ─── POST /api/system-logs — 记录系统日志 ─────────────
 export async function POST(request: NextRequest) {
-  // 内部使用，需要验证内部调用
-  // 实际生产中应该有内部API密钥验证
+  // 内部使用：要求 x-internal-key 与 INTERNAL_API_KEY 环境变量常量时间匹配。
+  // 此前 POST 完全无鉴权且信任 body.tenantId，任意未认证请求可向任意租户/
+  // 全局注入日志（污染审计、DoS 日志查询）。src 内无任何调用方，故未配置
+  // INTERNAL_API_KEY 时 fail-closed（返回 403）不会影响现有功能。
+  const internalKey = process.env.INTERNAL_API_KEY;
+  const providedKey = request.headers.get('x-internal-key');
+  if (!internalKey || !providedKey) {
+    return NextResponse.json(
+      { error: '未授权：内部日志写入需要有效的 x-internal-key' },
+      { status: 403 }
+    );
+  }
+  const expectedBuf = Buffer.from(internalKey);
+  const providedBuf = Buffer.from(providedKey);
+  if (expectedBuf.length !== providedBuf.length || !timingSafeEqual(expectedBuf, providedBuf)) {
+    return NextResponse.json(
+      { error: '未授权：内部日志写入需要有效的 x-internal-key' },
+      { status: 403 }
+    );
+  }
+
   try {
     const body = await request.json();
     const { level = 'info', module = 'system', message, details, tenantId } = body;
