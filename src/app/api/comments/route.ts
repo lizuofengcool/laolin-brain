@@ -40,19 +40,7 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      const tenantUser = await db.tenantUser.findFirst({
-        where: { userId },
-        select: { tenantId: true },
-      });
-
-      if (!tenantUser) {
-        return NextResponse.json(
-          { error: "Tenant not found" },
-          { status: 404 }
-        );
-      }
-
-      const stats = commentManager.getStats(targetId, targetType, tenantUser.tenantId);
+      const stats = commentManager.getStats(targetId, targetType, tenantId);
       return NextResponse.json({ success: true, data: stats });
     }
 
@@ -71,22 +59,10 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      const tenantUser = await db.tenantUser.findFirst({
-        where: { userId },
-        select: { tenantId: true },
-      });
-
-      if (!tenantUser) {
-        return NextResponse.json(
-          { error: "Tenant not found" },
-          { status: 404 }
-        );
-      }
-
       const exportContent = commentManager.exportComments(
         targetId,
         targetType,
-        tenantUser.tenantId,
+        tenantId,
         {
           format,
           includeReplies: includeRepliesExport,
@@ -113,22 +89,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
-    // 验证文件是否存在且属于该租户
+    // 验证文件是否存在且属于该租户（tenantId 已由 authenticateRequest 解析）
     const file = await db.file.findFirst({
       where: {
         id: fileId,
@@ -303,20 +264,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
     if (actualTargetType === 'file') {
       const file = await db.file.findFirst({
         where: {
@@ -339,6 +286,21 @@ export async function POST(request: NextRequest) {
       select: { id: true, name: true, email: true, avatar: true },
     });
 
+    // 校验父评论归属：parentId 来自请求体，必须属于当前租户，
+    // 否则攻击者可借此向其它租户的评论注入回复计数或建立跨租户回复链。
+    if (parentId) {
+      const parent = await db.comment.findFirst({
+        where: { id: parentId, tenantId },
+        select: { id: true },
+      });
+      if (!parent) {
+        return NextResponse.json(
+          { error: '父评论不存在' },
+          { status: 404 }
+        );
+      }
+    }
+
     const safeContent = stripHtml(content);
 
     const comment = await db.comment.create({
@@ -356,8 +318,9 @@ export async function POST(request: NextRequest) {
     });
 
     if (parentId) {
-      await db.comment.update({
-        where: { id: parentId },
+      // 按租户隔离递增父评论回复数（updateMany 支持非唯一 where）
+      await db.comment.updateMany({
+        where: { id: parentId, tenantId },
         data: {
           replyCount: { increment: 1 },
         },

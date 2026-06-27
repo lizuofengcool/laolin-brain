@@ -17,21 +17,7 @@ export async function POST(
   const { id: commentId } = await params;
 
   try {
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
-    // 查询评论
+    // 查询评论（tenantId 已由 authenticateRequest 解析）
     const comment = await db.comment.findFirst({
       where: {
         id: commentId,
@@ -65,9 +51,9 @@ export async function POST(
 
     newLikes = likedBy.length;
 
-    // 更新评论
-    await db.comment.update({
-      where: { id: commentId },
+    // 更新评论（按租户隔离写入，前置 findFirst 已校验归属）
+    await db.comment.updateMany({
+      where: { id: commentId, tenantId },
       data: {
         likes: newLikes,
         likedBy: JSON.stringify(likedBy),

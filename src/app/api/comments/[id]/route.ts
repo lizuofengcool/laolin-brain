@@ -26,20 +26,7 @@ export async function GET(
   const { id: commentId } = await params;
 
   try {
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
+    // tenantId 已由 authenticateRequest 解析
     const comment = await db.comment.findFirst({
       where: {
         id: commentId,
@@ -108,21 +95,7 @@ export async function PATCH(
       );
     }
 
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId, role: userRole } = tenantUser;
-
-    // 查询评论
+    // tenantId 已由 authenticateRequest 解析
     const comment = await db.comment.findFirst({
       where: {
         id: commentId,
@@ -212,21 +185,9 @@ export async function DELETE(
   const { id: commentId } = await params;
 
   try {
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
+    const userRole = role;
 
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId, role: userRole } = tenantUser;
-
-    // 查询评论
+    // 查询评论（tenantId 已由 authenticateRequest 解析）
     const comment = await db.comment.findFirst({
       where: {
         id: commentId,
@@ -249,10 +210,10 @@ export async function DELETE(
       );
     }
 
-    // 如果是回复，更新父评论的回复数
+    // 如果是回复，更新父评论的回复数（按租户隔离，避免误减其它租户评论计数）
     if (comment.parentId) {
-      await db.comment.update({
-        where: { id: comment.parentId },
+      await db.comment.updateMany({
+        where: { id: comment.parentId, tenantId },
         data: {
           replyCount: { decrement: 1 },
         },
