@@ -286,16 +286,20 @@ export async function PATCH(
       return NextResponse.json({ error: "Version not found" }, { status: 404 });
     }
 
-    // 更新版本（注意：FileVersion模型没有description字段，这里我们更新fileName作为备注）
-    // 如果需要description字段，需要先在Prisma schema中添加
-    // 这里我们暂时用fileName来存储版本备注
-    const updatedVersion = await db.fileVersion.update({
-      where: { id: versionId },
-      data: {
-        // 如果有description字段就更新，否则保持原样
-        // 这里我们保持现有字段不变，只是返回成功
-      },
+    // 范围化写入：FileVersion 无 tenantId 列，按 fileId 范围化（fileId 已由上方
+    // tenantDb.file.findFirst 校验为当前租户所属），杜绝越权改写其他文件版本。
+    // 注：FileVersion 模型当前无 description 字段，此处 data 为空属既有的 no-op 行为，
+    // 范围化后若未来补字段也不会遗留 where:{id} 越权写入隐患。
+    await db.fileVersion.updateMany({
+      where: { id: versionId, fileId },
+      data: {},
     });
+    const updatedVersion = await tenantDb.fileVersion.findFirst({
+      where: { id: versionId, fileId },
+    });
+    if (!updatedVersion) {
+      return NextResponse.json({ error: "Version not found" }, { status: 404 });
+    }
 
     return NextResponse.json(updatedVersion);
   } catch (error) {

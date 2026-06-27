@@ -123,10 +123,13 @@ export async function PUT(
       data.textContent = body.textContent;
     }
 
-    const file = await db.file.update({
-      where: { id },
-      data,
-    });
+    // 写入走 TenantDb（内部 updateMany 注入 tenantId），对写入本身范围化，
+    // 杜绝越权写入其他租户文件（前置 findFirst 已校验归属，此处为防御性二次范围化）
+    await tenantDb.file.update({ where: { id }, data });
+    const file = await tenantDb.file.findFirst({ where: { id } });
+    if (!file) {
+      return NextResponse.json({ error: "文件不存在" }, { status: 404 });
+    }
 
     return NextResponse.json({ ...file, tags: safeJsonParseArray(file.tags) });
   } catch (error) {
@@ -185,13 +188,14 @@ export async function DELETE(
       }
     }
 
-    // Cascade delete associated records in a transaction
+    // 级联删除：每条 deleteMany 均注入 tenantId / file.tenantId 过滤，对写入本身范围化，
+    // 杜绝越权删除其他租户数据（前置 findFirst 已校验文件归属，此处为防御性二次范围化）
     // Note: FileVersion and FileShare have onDelete: Cascade in Prisma schema
     // FileEmbedding and FaceInstance are not related via Prisma, so we delete manually
     await db.$transaction([
-      db.fileEmbedding.deleteMany({ where: { fileId: id } }),
-      db.faceInstance.deleteMany({ where: { fileId: id } }),
-      db.file.delete({ where: { id } }),
+      db.fileEmbedding.deleteMany({ where: { fileId: id, tenantId } }),
+      db.faceInstance.deleteMany({ where: { fileId: id, file: { tenantId } } }),
+      db.file.deleteMany({ where: { id, tenantId } }),
     ]);
 
     return NextResponse.json({ success: true });
