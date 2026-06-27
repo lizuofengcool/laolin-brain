@@ -9,9 +9,10 @@ import { checkAiUsage } from "../ai-usage";
 /**
  * 检查AI配额并获取租户信息
  * @param userId 用户ID
+ * @param tenantId 用户所属租户ID（由 authenticateRequest 已查证返回，避免本函数重复查 tenantUser）
  * @returns 租户信息和配额状态
  */
-export async function checkAiQuotaAndTenant(userId: string) {
+export async function checkAiQuotaAndTenant(userId: string, tenantId: string) {
   // 检查用户配额
   const usage = checkAiUsage(userId);
   if (!usage.allowed) {
@@ -23,23 +24,9 @@ export async function checkAiQuotaAndTenant(userId: string) {
     };
   }
 
-  // 查询用户的租户
-  const tenantUser = await db.tenantUser.findFirst({
-    where: { userId },
-    select: { tenantId: true },
-  });
-
-  if (!tenantUser) {
-    return {
-      allowed: false,
-      error: "租户不存在",
-      remaining: usage.remaining,
-    };
-  }
-
-  // 检查租户的AI配额
+  // 检查租户的AI配额（tenantId 由调用方传入，避免重复 db.tenantUser.findFirst）
   const tenant = await db.tenant.findUnique({
-    where: { id: tenantUser.tenantId },
+    where: { id: tenantId },
     select: {
       aiQuota: true,
       aiUsed: true,
@@ -59,11 +46,11 @@ export async function checkAiQuotaAndTenant(userId: string) {
   // 检查租户配额是否已用完
   const today = new Date();
   const resetDate = tenant.aiResetDate;
-  
+
   // 如果重置日期不存在或已过期，重置配额
   if (!resetDate || resetDate < today) {
     await db.tenant.update({
-      where: { id: tenantUser.tenantId },
+      where: { id: tenantId },
       data: {
         aiUsed: 0,
         aiResetDate: new Date(today.getTime() + 24 * 60 * 60 * 1000),
@@ -82,7 +69,7 @@ export async function checkAiQuotaAndTenant(userId: string) {
 
   return {
     allowed: true,
-    tenantId: tenantUser.tenantId,
+    tenantId,
     tenant,
     remaining: usage.remaining,
   };

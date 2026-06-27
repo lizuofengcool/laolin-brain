@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateRequest } from '@/lib/api-auth';
+import { createTenantDb } from '@/lib/db';
 import { safeJsonParseArray } from '@/lib/safe-json-parse';
 
 export async function POST(request: NextRequest) {
@@ -27,7 +28,9 @@ export async function POST(request: NextRequest) {
     // Use authenticated userId for security — never trust client-sent userId
     const authenticatedUserId = auth.userId;
 
-    const { db } = await import('@/lib/db');
+    // TenantDb 自动注入 tenantId 过滤，防止跨租户读取向量索引与文件
+    const tenantDb = createTenantDb(auth.tenantId);
+
     const {
       generateEmbedding,
       cosineSimilarity,
@@ -46,8 +49,8 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Fetch all embeddings for this user
-    const fileEmbeddings = await db.fileEmbedding.findMany({
+    // Fetch all embeddings for this user (TenantDb 自动注入 tenantId 过滤)
+    const fileEmbeddings = await tenantDb.fileEmbedding.findMany({
       where: { userId: authenticatedUserId },
       take: 5000,
     });
@@ -84,7 +87,8 @@ export async function POST(request: NextRequest) {
     }
 
     const matchedFileIds = topResults.map((r) => r.fileId);
-    const files = await db.file.findMany({
+    // TenantDb 自动注入 tenantId 过滤，原 db.file.findMany 仅按 id 无 tenantId/userId 隔离
+    const files = await tenantDb.file.findMany({
       where: {
         id: { in: matchedFileIds },
         isDeleted: false,

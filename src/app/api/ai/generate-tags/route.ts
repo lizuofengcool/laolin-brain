@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateRequest } from '@/lib/api-auth';
 import { checkAiQuotaAndTenant, incrementTenantAiUsage, safeParseAiJsonResponse } from '@/lib/ai/ai-processor';
-import { db } from '@/lib/db';
+import { db, createTenantDb } from '@/lib/db';
 import { safeJsonParseArray } from '@/lib/safe-json-parse';
 import ZAI from 'z-ai-web-dev-sdk';
 
@@ -35,8 +35,8 @@ export async function POST(request: NextRequest) {
   const { userId, tenantId, role } = auth;
 
   try {
-    // 检查AI配额和租户信息
-    const quotaCheck = await checkAiQuotaAndTenant(userId);
+    // 检查AI配额和租户信息（tenantId 由 authenticateRequest 已查证返回，避免函数内重复查 tenantUser）
+    const quotaCheck = await checkAiQuotaAndTenant(userId, tenantId);
     if (!quotaCheck.allowed) {
       return NextResponse.json(
         { error: quotaCheck.error, resetTime: (quotaCheck as any).resetTime },
@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { tenantId } = quotaCheck as { allowed: true; tenantId: string; remaining: number };
+    const tenantDb = createTenantDb(tenantId);
 
     const body = await request.json();
     const { content, fileName, fileType, fileId, tagCount = 8, saveToFile = false } = body;
@@ -64,9 +64,10 @@ export async function POST(request: NextRequest) {
     }
 
     // 如果要保存到文件，验证文件存在且属于当前用户和租户
+    // TenantDb 自动注入 tenantId 过滤，防止跨租户访问
     if (saveToFile && fileId) {
-      const file = await db.file.findUnique({ where: { id: fileId } });
-      if (!file || file.userId !== userId || file.tenantId !== tenantId) {
+      const file = await tenantDb.file.findFirst({ where: { id: fileId } });
+      if (!file || file.userId !== userId) {
         return NextResponse.json(
           { error: '文件不存在或无权访问' },
           { status: 404 }
@@ -119,8 +120,10 @@ ${(content || '').slice(0, 6000)}`;
     tags = tags.slice(0, tagCount);
 
     // 如果需要保存到文件
+    // 复用前置校验（saveToFile && fileId 已由上方 tenantDb.file.findFirst 闸门保证归属），
+    // 此处仅做标签合并与回写；走 tenantDb 写入确保 tenantId 隔离
     if (saveToFile && fileId && tags.length > 0) {
-      const file = await db.file.findUnique({ where: { id: fileId } });
+      const file = await tenantDb.file.findFirst({ where: { id: fileId } });
       if (file) {
         const existingTags = safeJsonParseArray(file.tags as any);
         // 合并标签并去重
