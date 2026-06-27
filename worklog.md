@@ -6918,3 +6918,44 @@ Status: 完成
 - 补真实微信 V3 回调集成测试（AES-256-GCM 解密成功/失败两条路径）
 - 补 shares 路由 handler 测试（mock `@/lib/api-auth` + `@/lib/shares`）
 - ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计是否还有冗余 tenantUser 查询
+
+## 2026-06-27 06:20 自动迭代
+
+第十轮自动迭代。全新 clone（无 node_modules），fetch origin/main + github/main 后三者同处 `5efd76a`，工作树干净、无未推送 commit、无远端更新需 rebase。复查任务清单"优先级 1 剩余项"五项——tenant-db.ts raw 后门（stack+console.warn 审计）、alipay/wechat RSA2 验签（createVerify('RSA-SHA256')/真实验签、删除"非空即通过"）、files/route 走 TenantDb、sync-engine keep_both（本地重命名为冲突副本+云端版本新 id 落地）、api-auth.test.ts 匹配实现（4 字段/async/拒 query param）——**均已于第三~七轮完成并逐项复查确认**，本轮继续优先级 2，承接第九轮"下一轮候选"首项：审计并修复 `src/app/api/tags/route.ts` + `src/app/api/shortcuts/`（2 文件）。
+
+环境：仓库 tracked `package-lock.json`（npm），`npm ci` 安装（963 包，49s，不改动 lockfile）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1006/1006 通过（61 文件，68.8s），零回归。
+
+### 改动
+
+1. **`src/app/api/tags/route.ts`** + **`src/app/api/shortcuts/route.ts`** + **`src/app/api/shortcuts/[id]/route.ts`** — `eb0f74e` `fix(tags,shortcuts): 复用 auth tenantId 移除冗余 tenantUser 查询并补 where 纵深防御`
+   - 7 个 handler（tags GET/POST/DELETE、shortcuts GET/POST、[id] PATCH/DELETE）此前均在 `authenticateRequest` 已返回可信 `tenantId` 之后，仍重复 `db.tenantUser.findFirst({where:{userId}})` 查询，并在 `try` 块内 `const { tenantId } = tenantUser` **影子覆盖**（shadow）auth 的 tenantId
+   - 注意：因内层 `const { tenantId }` 位于 try 块嵌套作用域，TS 视为合法变量遮蔽而非重声明，故 `tsc --noEmit` 此前一直通过——但运行时仍是冗余查询覆盖 auth tenantId 的同型 bug（与第五~七轮 files/folders/ai 一致）
+   - 并发隐患：两次查询在并发场景可能返回不一致租户；`tenantUser.findFirst` 无记录走 404，而 `authenticateRequest` 会兜底建租户，行为不一致（404 为死代码）
+   - 修复：删除全部冗余 `tenantUser` 查询，直接复用 auth 的 `tenantId`
+   - 纵深防御补齐（前置 findFirst/findMany 已闸门校验归属）：
+     · tags POST/DELETE 事务内 `tx.file.update` → `tx.file.updateMany`，where 补 `tenantId`（结果仅用于计数，不依赖返回完整记录）
+     · shortcuts/[id] DELETE `db.shortcut.delete` → `deleteMany`，where 补 `tenantId`（结果未使用）
+     · shortcuts/[id] PATCH `db.shortcut.update` 保留 `where:{id}`：Prisma update 仅接受唯一字段无法附加 tenantId，且需返回完整记录，沿用第六轮约定，由前置 `findFirst(tenantId+userId)` 闸门保证归属
+   - 对单租户用户（常见场景）零行为变化；多租户场景避免重复查询潜在不一致
+
+### Commit
+- `eb0f74e fix(tags,shortcuts): 复用 auth tenantId 移除冗余 tenantUser 查询并补 where 纵深防御`
+
+### 推送状态
+- Gitee: 待推送
+- GitHub: 待推送
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1006/1006 通过（61 文件，68.8s），零回归
+- 改动量：3 文件 +18/-115 行（净减 97 行，主要为冗余 tenantUser 查询样板 + 死代码 404 分支）
+- tags/shortcuts 目录无直接单测覆盖，改动不影响现有 mock 测试
+- 运行时 vitest 日志中 `parsePdf` 的 stderr 警告为 pdf-parse 模块加载噪音（parser-pdf.test.ts 自身 9/9 通过），与本次改动无关
+- 至此第九轮"下一轮候选"首项（tags + shortcuts 冗余查询清理）已完成
+
+### 下一轮候选
+- 微信/alipay `createPayment`/`queryPayment`/`refund` 在 isPaymentConfigured 为 true 时仍返回 mock（第二/七/九轮提及），需接入真实 SDK 或在已配置时返回明确"未实现"错误而非静默 mock 成功
+- 补真实微信 V3 回调集成测试（AES-256-GCM 解密成功/失败两条路径）
+- 补 shares 路由 handler 测试（mock `@/lib/api-auth` + `@/lib/shares`）
+- ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计是否还有冗余 tenantUser 查询
+- 继续扩展租户隔离审计到剩余目录：`src/app/api/api-keys/`、`src/app/api/webhooks/`、`src/app/api/automation/`、`src/app/api/backup*/` 等是否仍有同型冗余 tenantUser 查询或 where 缺 tenantId 模式
