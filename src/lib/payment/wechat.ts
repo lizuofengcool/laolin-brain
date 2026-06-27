@@ -12,7 +12,7 @@ import {
   RefundResult,
 } from './types';
 import { getPaymentConfig, isPaymentConfigured } from './config';
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHmac, timingSafeEqual, createDecipheriv } from 'crypto';
 
 export class WechatPayProvider implements PaymentProvider {
   private config: ReturnType<typeof getPaymentConfig>['wechat'];
@@ -128,8 +128,27 @@ export class WechatPayProvider implements PaymentProvider {
         };
       }
 
-      // 3. 提取订单信息
-      const resource = params.resource || {};
+      // 3. 解密 resource 并提取订单信息
+      // 微信支付 V3 回调的 resource 字段为 AES-256-GCM 加密密文（APIv3 密钥为 key），
+      // 不能直接当明文读取。解密失败时拒绝回调，避免基于伪造/空 resource 误判支付成功。
+      const resourceRaw = params.resource;
+      let resource: Record<string, any> = {};
+      if (resourceRaw && typeof resourceRaw === 'object') {
+        if (typeof resourceRaw.ciphertext === 'string') {
+          // V3 标准加密 resource：含 ciphertext/nonce/associated_data
+          const decrypted = this.decryptResource(resourceRaw);
+          if (!decrypted) {
+            return {
+              success: false,
+              error: 'resource 解密失败，可能 APIv3 密钥不匹配或数据被篡改',
+            };
+          }
+          resource = decrypted;
+        } else {
+          // 兼容：resource 为明文对象（非 V3 标准回调，如部分沙箱/历史数据）
+          resource = resourceRaw;
+        }
+      }
       return {
         success: true,
         orderNo: resource.out_trade_no || params.out_trade_no,
@@ -212,6 +231,55 @@ export class WechatPayProvider implements PaymentProvider {
       return timingSafeEqual(a, b);
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * 解密微信支付 V3 回调 resource 字段
+   *
+   * 微信支付 V3 回调中 resource 为 AES-256-GCM 加密密文：
+   *   - key          = APIv3 密钥（apiKey，32 字节字符串）
+   *   - iv           = resource.nonce（12 字节字符串）
+   *   - aad          = resource.associated_data（字符串）
+   *   - ciphertext   = base64 解码后的字节，末尾 16 字节为 GCM auth tag
+   *
+   * 解密成功返回解析后的明文对象，密钥不匹配或数据被篡改返回 null。
+   */
+  private decryptResource(resource: {
+    ciphertext: string;
+    nonce: string;
+    associated_data?: string;
+  }): Record<string, any> | null {
+    const apiKey = this.config.apiKey;
+    if (!apiKey || !resource.ciphertext || !resource.nonce) {
+      return null;
+    }
+
+    try {
+      const key = Buffer.from(apiKey, 'utf-8');
+      if (key.length !== 32) {
+        // APIv3 密钥必须为 32 字节（256-bit）
+        return null;
+      }
+      const data = Buffer.from(resource.ciphertext, 'base64');
+      if (data.length < 16) {
+        return null;
+      }
+      const ciphertext = data.subarray(0, data.length - 16);
+      const authTag = data.subarray(data.length - 16);
+      const iv = Buffer.from(resource.nonce, 'utf-8');
+      const aad = resource.associated_data ? Buffer.from(resource.associated_data, 'utf-8') : undefined;
+
+      const decipher = createDecipheriv('aes-256-gcm', key, iv);
+      decipher.setAuthTag(authTag);
+      if (aad) {
+        decipher.setAAD(aad);
+      }
+      const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf-8');
+      return JSON.parse(decrypted);
+    } catch (error) {
+      console.error('Wechat resource decryption failed:', error);
+      return null;
     }
   }
 
