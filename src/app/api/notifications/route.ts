@@ -24,22 +24,7 @@ export async function GET(request: NextRequest) {
     const type = searchParams.get('type');
     const unreadOnly = searchParams.get('unreadOnly') === 'true';
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
-    // 构建查询条件
+    // 构建查询条件（tenantId 已由 authenticateRequest 解析）
     const where: any = {
       userId,
       tenantId,
@@ -91,7 +76,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { type, title, content, targetUserId, targetTenantId } = body;
+    const { type, title, content, targetUserId } = body;
 
     if (!type || !title) {
       return NextResponse.json(
@@ -100,23 +85,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 确定通知的接收者
-    const notifyUserId = targetUserId || userId;
-    let notifyTenantId = targetTenantId;
+    // 安全：通知必须落在调用方所属租户内，忽略请求体里的 targetTenantId，
+    // 避免跨租户注入。若指定 targetUserId（向同租户其他用户发通知），
+    // 需校验该用户确实是当前租户成员，否则回退到调用方本人。
+    const notifyTenantId = tenantId;
+    let notifyUserId = userId;
 
-    if (!notifyTenantId) {
-      const tenantUser = await db.tenantUser.findFirst({
-        where: { userId: notifyUserId },
+    if (targetUserId && targetUserId !== userId) {
+      const membership = await db.tenantUser.findFirst({
+        where: { userId: targetUserId, tenantId },
         select: { tenantId: true },
       });
-      notifyTenantId = tenantUser?.tenantId;
-    }
-
-    if (!notifyTenantId) {
-      return NextResponse.json(
-        { error: 'Tenant not found' },
-        { status: 404 }
-      );
+      if (!membership) {
+        return NextResponse.json(
+          { error: '目标用户不在当前租户内' },
+          { status: 403 }
+        );
+      }
+      notifyUserId = targetUserId;
     }
 
     // 创建通知
@@ -150,21 +136,6 @@ export async function PATCH(request: NextRequest) {
   try {
     const body = await request.json();
     const { notificationIds, markAll = false } = body;
-
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
 
     let updatedCount = 0;
 
@@ -234,22 +205,7 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
-    // 批量删除通知
+    // 批量删除通知（tenantId 已由 authenticateRequest 解析）
     const result = await db.notification.deleteMany({
       where: {
         id: { in: notificationIds },
