@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { createTenantDb } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 
 export async function POST(request: NextRequest) {
@@ -8,20 +8,8 @@ export async function POST(request: NextRequest) {
   const { userId, tenantId, role } = auth;
 
   try {
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
+    // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
+    const tenantDb = createTenantDb(tenantId);
 
     const body = await request.json();
     const { name, parentId } = body;
@@ -56,7 +44,8 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
-      const parentFolder = await db.folder.findUnique({ where: { id: parentId } });
+      // TenantDb 自动注入 tenantId 过滤，防止跨租户访问父文件夹
+      const parentFolder = await tenantDb.folder.findFirst({ where: { id: parentId } });
       if (!parentFolder || parentFolder.userId !== userId) {
         return NextResponse.json(
           { error: "父文件夹不存在" },
@@ -65,9 +54,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const folder = await db.folder.create({
+    // 通过 TenantDb 创建，自动写入 tenantId 归属
+    const folder = await tenantDb.folder.create({
       data: {
-        tenantId,
         userId,
         name,
         parentId: parentId || null,
@@ -89,7 +78,9 @@ export async function GET(request: NextRequest) {
   const { userId, tenantId, role } = auth;
 
   try {
-    const folders = await db.folder.findMany({
+    // TenantDb 自动注入 tenantId 过滤，防止跨租户列出他人目录
+    const tenantDb = createTenantDb(tenantId);
+    const folders = await tenantDb.folder.findMany({
       where: { userId },
       orderBy: { createdAt: "asc" },
       take: 500,
