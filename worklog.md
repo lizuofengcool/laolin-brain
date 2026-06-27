@@ -6770,3 +6770,61 @@ Status: 完成
 - 微信 V3 回调 `resource` 密文用 APIv3 密钥 AES-256-GCM 解密后取 `out_trade_no`/`transaction_id`，替代当前明文 resource 读取简化（第二/四/五轮均提及，仍未动）
 - alipay 回调 GET/POST 两条路径可抽公共解析，减少重复（第四/五轮提及）
 - 其他目录路由的租户隔离审计：`src/app/api/folders/`、`src/app/api/ai/`、`src/app/api/search/` 等是否也存在绕过 tenantId 仅按 userId 校验的模式，需排查
+
+## 2026-06-27 04:03 自动迭代
+
+本次为自动化迭代开发机制的第七轮执行，一次性处理上一轮"下一轮候选"全部三项剩余项：`folders/`+`ai/`+`search/` 三目录的租户隔离审计与迁移、微信 V3 回调 resource AES-256-GCM 解密、alipay 回调公共解析重构。环境沿用第六轮已装好的 `node_modules`（无需重装），`npx tsc --noEmit` 退出码 0 零类型错误，全量 `npx vitest run` 1006/1006 通过（61 文件，71.8s），零回归。
+
+本轮先用 search 子代理对 folders/ai/search 三目录 16 个 route.ts 做结构化租户隔离审计，识别出 Type 1（DB 层未隔离）真实漏洞 7 处、Type 2（冗余 tenantUser 查询）4 处，逐路由修复。微信 resource 解密用 node 脚本验证 roundtrip + 篡改 aad/错误密钥均正确拒绝。
+
+### 改动
+
+1. **src/app/api/folders/route.ts** + **src/app/api/folders/[id]/route.ts** — `4161fa2` `fix(folders): route 与 [id] 路由走 TenantDb 隔离并移除冗余 tenantUser 查询`
+   - POST 重复 `db.tenantUser.findFirst` 覆盖 auth.tenantId（Type 2）+ parentFolder 校验 `db.folder.findUnique({where:{id:parentId}})` 无 tenantId（Type 1）
+   - GET `db.folder.findMany({where:{userId}})` 无 tenantId（Type 1）
+   - [id] DELETE folder 校验 `db.folder.findUnique({where:{id}})` 无 tenantId + 级联 `db.file.updateMany({where:{folderId:id}})` 完全无隔离（Type 1 最严重）
+   - 修复：folder/file/folder.delete 统一走 `createTenantDb(tenantId)`，由 TenantDb 在 DB 层注入 tenantId 过滤；folder.create 走 tenantDb 自动写入 tenantId 归属
+
+2. **src/app/api/search/semantic/route.ts** + **src/app/api/ai/generate-tags/route.ts** + **src/lib/ai/ai-processor.ts** — `42c0ca4` `fix(search,ai): semantic/generate-tags 走 TenantDb 隔离；ai-processor 去冗余查询`
+   - search/semantic：`fileEmbedding.findMany` 仅 userId 无 tenantId（Type 1）+ `file.findMany` 无 tenantId 无 userId（Type 1 最严重）；动态 import 改顶层 createTenantDb
+   - generate-tags：`checkAiQuotaAndTenant` 内部冗余查询覆盖 auth tenantId（Type 2）+ file.findUnique 事后双字段校验（Type 1）+ 第二次 findUnique+update 仅按 id 无任何隔离（Type 1 漏洞）；file 查询走 tenantDb findFirst 闸门
+   - ai-processor：`checkAiQuotaAndTenant(userId)` 新增 `tenantId` 参数删除内部冗余 db.tenantUser.findFirst；唯一调用方 generate-tags 已同步
+
+3. **src/app/api/ai/graph/route.ts** + **src/app/api/ai/related/route.ts** — `bbc7464` `fix(ai): graph/related 用 createTenantDb(auth.tenantId) 替换 getTenantDbFromUserId 冗余查询`
+   - `getTenantDbFromUserId(auth.userId)` 内部再查一次 tenantUser，属冗余（Type 2）；DB 查询本身已用 tenantDb 安全，仅去冗余
+   - 改为 `createTenantDb(auth.tenantId)` 直接复用 auth tenantId，减少每次请求一次 DB 往返
+
+4. **src/lib/payment/wechat.ts** — `0ee92ec` `fix(payment): wechat V3 回调 resource 用 AES-256-GCM 解密替代明文读取`
+   - 原直接 `params.resource` 当明文读取，但 V3 resource 是 AES-256-GCM 加密密文 `{ciphertext,nonce,associated_data}`，明文读取拿 undefined 字段导致 orderNo/tradeNo 永远为空，回调被静默丢弃
+   - 实现 `decryptResource(resource)`：key=APIv3 密钥（校验 32 字节）、iv=nonce、aad=associated_data、ciphertext 末尾 16 字节为 GCM auth tag，`createDecipheriv('aes-256-gcm')`+setAuthTag+setAAD 解密后 JSON.parse
+   - verifyCallback：resource 含 ciphertext 走解密（失败拒绝回调，避免基于伪造/空 resource 误判支付成功）；明文对象兼容沙箱/历史数据
+   - 已用 node 脚本验证 roundtrip + 篡改 aad 拒绝 + 错误密钥拒绝
+
+5. **src/app/api/payment/callback/alipay/route.ts** — `d851c4b` `refactor(payment): alipay 回调 GET/POST 抽公共 handleAlipayCallback`
+   - POST/GET 重复 processPaymentCallback 调用+success/fail 响应+日志三段逻辑，仅参数解析方式不同（formData vs searchParams）
+   - 抽取 `handleAlipayCallback(params, source)` 承载处理+响应+日志，POST/GET 仅解析 params 后委托；行为零变化，减少重复约 20 行
+
+### Commit
+- `4161fa2 fix(folders): route 与 [id] 路由走 TenantDb 隔离并移除冗余 tenantUser 查询`
+- `42c0ca4 fix(search,ai): semantic/generate-tags 走 TenantDb 隔离；ai-processor 去冗余查询`
+- `bbc7464 fix(ai): graph/related 用 createTenantDb(auth.tenantId) 替换 getTenantDbFromUserId 冗余查询`
+- `0ee92ec fix(payment): wechat V3 回调 resource 用 AES-256-GCM 解密替代明文读取`
+- `d851c4b refactor(payment): alipay 回调 GET/POST 抽公共 handleAlipayCallback`
+
+### 推送状态
+- Gitee: ✅ `37d5659..` 起推 5 个代码 commit + 本 worklog commit 至 main
+- GitHub: ✅ 同上
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1006/1006 通过（61 文件，71.8s），零回归
+- 审计范围：folders/（2 文件）+ ai/（11 文件）+ search/（3 文件）共 16 个 route.ts，已全部排查；其中 search/route.ts（全程 tenantDb）、ai/providers/route.ts（显式 where 带 tenantId）、ai/graph+related 的 DB 查询部分（tenantDb+userId 二次过滤）已确认安全，仅去冗余查询
+- 微信 resource 解密的 verifyCallback 真实路径此前未被任何测试覆盖（mock 模式走 verifyMockCallback），本轮改动不影响现有 mock 测试；可考虑后续补真实 V3 回调的集成测试
+- 写回路径（generate-tags 的 db.file.update、[id] 的 folder.delete）保留 db.* 以返回完整记录或匹配 API 契约，均由前置 tenant 校验 findFirst 闸门保证归属安全
+
+### 下一轮候选
+- 继续扩展租户隔离审计到其他目录：`src/app/api/comments/`、`src/app/api/shares/`、`src/app/api/tags/`、`src/app/api/shortcuts/`、`src/app/api/notifications/` 等是否同样存在绕过 tenantId 仅按 userId 校验的模式
+- 微信支付 `createPayment`/`queryPayment`/`refund` 三个方法在 isPaymentConfigured 为 true 时仍返回 mock 结果（line 38/92/234），需接入真实 wechatpay-node-v3 SDK
+- alipay `createPayment`/`queryPayment`/`refund` 同样在已配置时返回 mock（同型问题）
+- 补真实微信 V3 回调的集成测试（覆盖 AES-256-GCM 解密成功/失败两条路径）
+- ai-processor 的 `incrementTenantAiUsage` 等其他 AI 工具函数可一并审计是否还有冗余 tenantUser 查询
