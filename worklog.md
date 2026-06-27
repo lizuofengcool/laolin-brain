@@ -7209,9 +7209,47 @@ Status: 完成
 - 至此任务清单"优先级 1 剩余项"#3（files 路由写操作越权）的写侧已闭环；读侧 info 路由 raw-db 与 P1 影子覆盖留待后续
 
 ### 下一轮候选
-- **`src/app/api/files/[id]/info/route.ts` raw-db 读取**：`db.file.findFirst({ where: { id, tenantId, userId, isDeleted:false } })` 改走 `tenantDb.file.findFirst`（与同目录其他 GET 路由一致），闭合 files 目录最后一个 raw-db 读取点
+- **`src/app/api/files/[id]/info/route.ts` raw-db 读取**：`db.file.findFirst({ where: { id, tenantId, userId, isDeleted:false } })` 改走 `tenantDb.file.findFirst`（与同目录其他 GET 路由一致），闭合 files 目录最后一个 raw-db 读取点 ✅ 本轮已闭环
 - **P1 批量清理（剩余 ~31 文件）**：api-keys/webhooks/automation/backup/cloud-sync(access-history/activity-logs/embeddings/export-import/faces/invitations/stats/storage/tenant/trash 等仍存在 `tenantUser.findFirst` 影子覆盖 `auth.tenantId` 模式，可一次性机械清理
 - **`tenant-db.ts` raw 审计加固**：`rawDb` 导出与 `transaction()` helper 当前无审计，可加 warn 钩子或改为按需受控导出（`raw` getter 的软审计目前未被任何 app 代码行使）
 - **`storageConfig.config` 落库加密**：明文 JSON 存储 secretAccessKey/accessKeyId，改为 encrypt 存储 + getStorageProvider/aliyun-oss/r2-storage-class 读取侧 decrypt
 - 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files handler 级路由测试；补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 payment provider 单测；补 shares 路由 handler 测试
+- ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
+
+## 2026-06-28 03:00 自动迭代
+
+第十六轮自动迭代。本轮沙箱无现成工作目录，从 origin(Gitee) clone（`https://oauth2:***@gitee.com/fay1314/laolin-brain.git`），补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `39be0cd`，工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：上轮 worklog 的"下一轮候选"首项即 `src/app/api/files/[id]/info/route.ts` raw-db 读取——`db.file.findFirst({ where: { id, tenantId, userId, isDeleted:false } })` 手动传 tenantId 绕过租户隔离层，是 `src/app/api/files/[id]` 子目录最后一个未走 TenantDb 的读取点。其余候选（P1 批量清理 / raw 审计加固 / storageConfig 落库加密 / 补测试）均属 P1/P2，非安全缺陷。本轮据此立项，聚焦闭合该缺口（保持单次 1-3 commit 的规模控制）。
+
+环境：`npm ci`（package-lock.json，963 包 46s）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1013/1013 通过（62 文件，73.8s），与第十五轮基线一致，零回归。
+
+### 改动
+
+1. **`src/app/api/files/[id]/info/route.ts`** — `d685d58` `fix(files): info 路由走 TenantDb 闭合 files/[id] 最后一个 raw-db 读取点`
+   - 导入 `db` → `createTenantDb`（`db` 在文件内已无其它引用，移除干净）。
+   - `db.file.findFirst({ where: { id, tenantId, userId, isDeleted:false } })` → `createTenantDb(tenantId).file.findFirst({ where: { id, userId, isDeleted:false } })`。TenantDb 的 `findFirst` 将传入 `where` 与 `tenantId` 合并，最终查询条件 = `{ id, userId, isDeleted:false, tenantId }`，与改前完全等价（行为零变化，仅去掉手动传 tenantId 的越权隐患）。
+   - 与同目录 GET/PUT/DELETE/share/versions/preview/download 一致，至此 `src/app/api/files/[id]` 子目录所有读取均经 TenantDb。
+   - 注：`src/app/api/files/route.ts:270` 的 POST 上传去重查询仍用 `db.file.findFirst`，但其 where 已显式带 `tenantId`（属 worklog 既述"CREATE 显式带 tenantId 入库，租户安全；P1 机械清理项"），非安全缺陷，留待批量轮次。
+
+### Commit
+- `d685d58 fix(files): info 路由走 TenantDb 闭合 files/[id] 最后一个 raw-db 读取点`
+
+### 推送状态
+- Gitee: 待推送
+- GitHub: 待推送
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1013/1013 通过（62 文件，73.8s），零回归
+- 改动量：1 文件 +4/-4 行
+- 无现存 handler 级单测覆盖 GET `/api/files/[id]/info`（info 路由无对应测试文件），故本轮改动不影响现有测试；可后续补 handler 级测试（mock `@/lib/api-auth` + `@/lib/db`，覆盖 404/正常 200/includeContent 文本读取/跨租户 id 返回 404）
+- 运行时 vitest 日志中 `parsePdf` 的 stderr 警告为 pdf-parse 模块加载噪音（parser-pdf.test.ts 自身 9/9 通过），与本次改动无关
+- 至此任务清单"优先级 1 剩余项"#3（files 路由绕过 TenantDb）的 `[id]` 子目录读侧已全部闭环；files 顶层 `route.ts` POST 去重查询的 TenantDb 化留待 P1 批量轮次
+
+### 下一轮候选
+- **P1 批量清理（剩余 ~31 文件）**：api-keys/webhooks/automation/backup/cloud-sync(access-history/activity-logs/embeddings/export-import/faces/invitations/stats/storage/tenant/trash 等仍存在 `tenantUser.findFirst` 影子覆盖 `auth.tenantId` 模式，可一次性机械清理；含 `src/app/api/files/route.ts:270` POST 去重查询改走 TenantDb
+- **`tenant-db.ts` raw 审计加固**：`rawDb` 导出与 `transaction()` helper 当前无审计，可加 warn 钩子或改为按需受控导出（`raw` getter 的软审计目前未被任何 app 代码行使）
+- **`storageConfig.config` 落库加密**：明文 JSON 存储 secretAccessKey/accessKeyId，改为 encrypt 存储 + getStorageProvider/aliyun-oss/r2-storage-class 读取侧 decrypt
+- 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files(info) handler 级路由测试；补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 payment provider 单测；补 shares 路由 handler 测试
 - ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
