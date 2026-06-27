@@ -7064,3 +7064,47 @@ Status: 完成
 - 补 `requirePlatformAdmin` 单测（mock ADMIN_EMAILS：空→403、白名单内→返回 auth、白名单外→403、authenticateRequest 401 透传）
 - 补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 payment provider 单测；补 shares 路由 handler 测试
 - ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
+
+## 2026-06-28 00:00 自动迭代
+
+第十三轮自动迭代。本轮工作目录为空（全新沙箱），从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `965f860`，工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：任务清单"优先级 1 剩余项"五项（tenant-db.ts raw 后门审计、alipay/wechat RSA2 真实验签、files/route 走 TenantDb、sync-engine keep_both、api-auth.test.ts 匹配实现）均已于第三~七轮完成并多轮复查确认，本轮不再重复。
+
+承接第十二轮"下一轮候选"首项（P0 未认证跨租户端点）：`src/app/api/saas/`（3 文件 7 handler）此前完全无鉴权且信任 query/body 的 `tenantId`/`userId`——`orders` POST 信任 body.tenantId 建单、`subscription` DELETE/POST(resume) 信任 query tenantId 取消/恢复订阅、`tenant` GET 信任 query tenantId+userId 读取租户信息/状态/订阅，任意未认证请求可对任意租户执行上述操作。grep 确认 src 内零调用方（仅 worklog.md 历史提及），`billing/` 为活跃替代。本轮按"接入 `authenticateRequest`+`auth.tenantId` 对齐 `billing/`"方向修复（保留 API 表面仅关闭安全缺口，不做删除以避免破坏潜在外部契约）。
+
+环境：`npm ci`（package-lock.json，963 包）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1006/1006 通过（61 文件，66.2s），零回归。
+
+### 改动
+
+1. **`src/app/api/saas/orders/route.ts`** + **`src/app/api/saas/subscription/route.ts`** + **`src/app/api/saas/tenant/route.ts`** — `8430198` `fix(saas): saas 路由接入 authenticateRequest 阻断未认证跨租户操作`
+   - 7 个 handler（orders GET/POST、subscription GET/DELETE/POST、tenant GET）顶部统一 `const auth = await authenticateRequest(request); if (auth instanceof NextResponse) return auth;`，`tenantId` 一律取自可信 `auth`，与 `billing/orders`、`comments`、`notifications`、`shares` 三行 auth 模式同款
+   - **orders GET 单订单路径**：`getOrder(orderId)` 后补 `if (order.tenantId !== tenantId) return 404` 越权校验（前置 `getOrder` 仅按 id 查询无 tenant 过滤，纵深防御补齐；404 而非 403 避免泄露订单存在性）
+   - **orders POST**：忽略 `body.tenantId`，按 `auth.tenantId` 调用 `createOrder`（原"缺少必要参数"校验同步移除 tenantId 检查，plan/interval 校验保留）
+   - **subscription GET/DELETE/POST(resume)**：`getCurrentSubscription`/`checkTenantStatus`/`isSubscriptionExpiringSoon`/`cancelSubscription`/`reactivateSubscription` 全部改用 `auth.tenantId`
+   - **tenant GET**：移除未使用的 `getUserTenants` 导入与 query `tenantId`/`userId` 解析（userId 此前解析后从未使用），闭环原 `// TODO: 从 token 中解析 tenantId 和 userId` 注释——现已从 token 解析
+   - 类型签名 `Request` → `NextRequest`（`authenticateRequest` 入参类型要求）
+   - 调用方影响：saas/ 目录 grep 确认 src 内零调用方，前端走 `billing/`；改动不影响任何现有功能，仅关闭未认证访问缺口
+
+### Commit
+- `8430198 fix(saas): saas 路由接入 authenticateRequest 阻断未认证跨租户操作`
+
+### 推送状态
+- Gitee: 待推送
+- GitHub: 待推送
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1006/1006 通过（61 文件，66.2s），零回归
+- 改动量：3 文件 +45/-60 行（净减 15 行，移除 query/body tenantId 解析与冗余 400 校验，新增 auth 三行样板）
+- saas/ 目录无现存单测，改动不影响现有测试；可后续补 saas 路由 handler 测试（mock `@/lib/api-auth` + `@/lib/saas/*`，覆盖 401 透传 + 越权 404 + 正常 200）
+- 运行时 vitest 日志中 `parsePdf` 的 stderr 警告为 pdf-parse 模块加载噪音（parser-pdf.test.ts 自身 9/9 通过），与本次改动无关
+- 至此第十二轮"下一轮候选"首项（saas/ 未认证 P0）已闭环
+
+### 下一轮候选
+- **`src/app/api/cloud-sync/config/route.ts` POST + `r2-storage.ts` 模块级单例**：`initR2Client(config)` 把 R2 client 存进 process 全局 `s3Client`/`currentConfig` 无 tenant key，租户 A 配置后 `isR2Configured()` 全局返回 true，租户 B 的 `GET /api/cloud-sync/config` 与 `backups/` 路由（均检查 `isR2Configured()`）误判已配置。改为按 `tenantId` key 的 Map 或落库加密存储；并补 owner/admin role gate（POST 当前任意已认证用户均可改全局配置）。注：`sync-engine.ts` 实际走 `R2Storage` class（per-call 实例，非单例），故泄漏面限于 `isR2Configured()` 标志位与 config POST 本身
+- **P1 批量清理**：api-keys/webhooks/automation/backup/cloud-sync(access-history/activity-logs/embeddings/export-import/faces/invitations/stats/storage/tenant/trash 等)共 ~33 文件的冗余 `tenantUser.findFirst` 影子覆盖 `auth.tenantId` 模式（前置 authenticateRequest 已返回可信 tenantId），可一次性机械清理
+- 补 `requirePlatformAdmin` 单测（mock ADMIN_EMAILS：空→403、白名单内→返回 auth、白名单外→403、authenticateRequest 401 透传）
+- 补 saas 路由 handler 测试（覆盖本轮新行为：401 透传 + orders GET 越权 404 + 正常 200）
+- 补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 payment provider 单测；补 shares 路由 handler 测试
+- ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
