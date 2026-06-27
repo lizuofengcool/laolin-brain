@@ -7249,7 +7249,57 @@ Status: 完成
 
 ### 下一轮候选
 - **P1 批量清理（剩余 ~31 文件）**：api-keys/webhooks/automation/backup/cloud-sync(access-history/activity-logs/embeddings/export-import/faces/invitations/stats/storage/tenant/trash 等仍存在 `tenantUser.findFirst` 影子覆盖 `auth.tenantId` 模式，可一次性机械清理；含 `src/app/api/files/route.ts:270` POST 去重查询改走 TenantDb
-- **`tenant-db.ts` raw 审计加固**：`rawDb` 导出与 `transaction()` helper 当前无审计，可加 warn 钩子或改为按需受控导出（`raw` getter 的软审计目前未被任何 app 代码行使）
+- **`tenant-db.ts` raw 审计加固**：`rawDb` 导出与 `transaction()` helper 当前无审计，可加 warn 钩子或改为按需受控导出（`raw` getter 的软审计目前未被任何 app 代码行使） ✅ 本轮已闭环（见下第十七轮：transaction 加软审计、rawDb 移除、补单测）
 - **`storageConfig.config` 落库加密**：明文 JSON 存储 secretAccessKey/accessKeyId，改为 encrypt 存储 + getStorageProvider/aliyun-oss/r2-storage-class 读取侧 decrypt
+- 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files(info) handler 级路由测试；补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 payment provider 单测；补 shares 路由 handler 测试
+- ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
+
+## 2026-06-28 04:00 自动迭代
+
+第十七轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `3ebac4e`，工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：上轮 worklog "下一轮候选" 首项标的是 `tenant-db.ts` raw 审计加固——`rawDb` 导出与 `transaction()` helper 当前无审计，而 `raw` getter 已有 warn-only 软审计。逐项核验三个 raw 后门的实际行使情况：
+1. `raw` getter：grep 全仓 `tenantDb\.raw` 零命中（仅自身定义），软审计未被实际行使，防御性存在。
+2. `rawDb` 导出：grep 全仓 `rawDb` 仅命中自身定义（`db/index.ts:39` re-export + `tenant-db.ts:985` source）与 worklog 历史提及，**零 app 代码 import**。
+3. `transaction()` helper：grep `tenantDb\.transaction` 零命中；全仓 Prisma 事务均走 `db.$transaction(...)` 直连（21 处，如 `files/[id]/route.ts:195`、`versions/route.ts:139` 等），**无任何调用方经 `tenantDb.transaction()`**。
+
+即三个后门当前均处于"潜伏"状态——逃生口存在但无人行使。`raw` 已带审计，`rawDb`/`transaction()` 则完全裸奔。本轮据此立项：为 `transaction()` 补与 `raw` 同款的软审计（warn + 调用方堆栈），并移除 `rawDb` 这一无审计的模块级原始客户端导出（零调用，移除安全）。`raw` getter 维持现状不动。此为任务清单"优先级 1 剩余项"中 `tenant-db.ts` 暴露 raw 后门 → 加使用审计或限制 的收尾。
+
+环境：`npm ci`（package-lock.json）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run src/__tests__/lib/tenant-isolation.test.ts` 11/11 通过（原 9 + 新增 2 审计用例）；`npx vitest run` 全量 1015/1015 通过（62 文件，50.9s），较第十六轮基线 1013 +2，零回归。
+
+### 改动
+
+1. **`src/lib/db/tenant-db.ts`** — `574cc97` `fix(tenant-db): 关闭 rawDb 无审计导出并为 transaction() 加软审计`
+   - **`transaction()`**：此前 `return this.prisma.$transaction(fn)` 一行直转，回调内 `tx` 是原始事务客户端无 tenantId 注入，却无任何审计痕迹。现按 `raw` getter 同款方式：`new Error().stack?.split('\n')[3]` 取调用方，`console.warn('[TenantDb.transaction] tenantId=... 越过租户隔离层执行原始事务，回调 tx 无 tenantId 注入，调用方: ...')`。语义与 `raw` 对齐——既然绕过隔离层就应留痕。
+   - **移除 `export { db as rawDb }`**：模块级裸导出原始 PrismaClient，无任何审计钩子（const re-export 无法挂 getter warn）。grep 全仓确认零调用点（仅自身定义 + worklog 历史提及）。替换为注释指引三条合规路径：①优先 `createTenantDb` 模型访问器；②确需原始客户端走 `TenantDb.raw`（带软审计）；③管理后台系统级场景直接 `import { db }`（已在路由层鉴权）。
+
+2. **`src/lib/db/index.ts`** — 同一 commit
+   - `export { TenantDb, createTenantDb, rawDb }` → `export { TenantDb, createTenantDb }`，并在注释标注 `rawDb` 已移除及替代方案。移除一个无审计的对外出口。
+
+3. **`src/__tests__/lib/tenant-isolation.test.ts`** — `26801c2` `test(tenant-db): 补 raw/transaction 越权审计单测`
+   - mock `@/lib/db` 的 `db` 对象补 `$transaction: vi.fn()`（原 mock 仅 file/folder）。
+   - 新增 `describe('越权审计 - raw / transaction')` 块两用例：①`raw` getter 访问应触发 1 次 warn（消息含 `[TenantDb.raw]` 与 `tenantId=`）并返回原始 prisma；②`transaction(cb)` 应触发 1 次 warn（含 `[TenantDb.transaction]` 与 `tenantId=`）、将 cb 转发给 `$transaction`、透传返回值。锁定"每次访问均留痕"这一审计契约，防后续误删软审计。
+
+### Commit
+- `574cc97 fix(tenant-db): 关闭 rawDb 无审计导出并为 transaction() 加软审计`
+- `26801c2 test(tenant-db): 补 raw/transaction 越权审计单测`
+
+### 推送状态
+- Gitee: 待推送
+- GitHub: 待推送
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1015/1015 通过（62 文件，50.9s），零回归
+- 改动量：3 文件 +66/-9 行
+- 运行时 vitest 日志中 `parsePdf` 的 stderr 警告为 pdf-parse 模块加载噪音（parser-pdf.test.ts 自身 9/9 通过），与本次改动无关
+- 移除 `rawDb` 导出属 API 收窄，但全仓零引用（含 src/e2e/scripts/src-tauri），无破坏面；若未来确需跨租户原始客户端，已有 `TenantDb.raw`（带审计）与 `import { db }` 两条合规出口
+- 至此任务清单"优先级 1 剩余项" `tenant-db.ts` 暴露 raw 后门 → 加使用审计或限制 已闭环（三个后门：`raw` 既有软审计、`transaction()` 新增软审计、`rawDb` 移除）
+- 注：全仓 `db.$transaction(...)` 直连的 21 处回调内 `tx` 同样无 tenantId 注入，但属各路由自管隔离的既有模式（P1 批量清理范畴），非本轮范围
+
+### 下一轮候选
+- **P1 批量清理（剩余 ~31 文件）**：api-keys/webhooks/automation/backup/cloud-sync(access-history/activity-logs/embeddings/export-import/faces/invitations/stats/storage/tenant/trash 等仍存在 `tenantUser.findFirst` 影子覆盖 `auth.tenantId` 模式，可一次性机械清理；含 `src/app/api/files/route.ts:270` POST 去重查询改走 TenantDb
+- **`storageConfig.config` 落库加密**：明文 JSON 存储 secretAccessKey/accessKeyId，改为 encrypt 存储 + getStorageProvider/aliyun-oss/r2-storage-class 读取侧 decrypt
+- **`db.$transaction` 回调租户隔离**：21 处直连事务回调内 `tx` 无 tenantId 注入，可评估是否提供 `tenantDb.transaction` 的租户感知变体（现已带审计）或文档化各路由自管约定
 - 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files(info) handler 级路由测试；补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 payment provider 单测；补 shares 路由 handler 测试
 - ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
