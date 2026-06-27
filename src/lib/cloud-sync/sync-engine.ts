@@ -461,6 +461,22 @@ async function uploadFileToCloud(
 }
 
 /**
+ * 从云端获取并解密文件数据（不写本地库）
+ * 供 downloadFileFromCloud 和 keep_both 冲突解决复用
+ */
+async function fetchCloudFileData(
+  storage: StorageProvider,
+  tenantId: string,
+  fileId: string,
+  password: string
+): Promise<any> {
+  const dataKey = `${FILES_PREFIX}${tenantId}/${fileId}${DATA_SUFFIX}`;
+  const encryptedData = await storage.downloadObject(dataKey);
+  const decryptedData = decrypt(encryptedData, password);
+  return JSON.parse(decryptedData.toString('utf8'));
+}
+
+/**
  * 从云端下载单个文件
  */
 async function downloadFileFromCloud(
@@ -469,12 +485,7 @@ async function downloadFileFromCloud(
   fileId: string,
   password: string
 ): Promise<void> {
-  const dataKey = `${FILES_PREFIX}${tenantId}/${fileId}${DATA_SUFFIX}`;
-  const encryptedData = await storage.downloadObject(dataKey);
-
-  // 解密数据
-  const decryptedData = decrypt(encryptedData, password);
-  const fileData = JSON.parse(decryptedData.toString('utf8'));
+  const fileData = await fetchCloudFileData(storage, tenantId, fileId, password);
 
   // 更新或创建本地文件
   const existingFile = await db.file.findUnique({
@@ -658,22 +669,48 @@ export async function resolveConflict(
       await downloadFileFromCloud(storage, tenantId, fileId, password);
       break;
 
-    case 'keep_both':
-      // 保留两者：创建冲突副本，然后下载云端文件
+    case 'keep_both': {
+      // 保留两者：本地文件重命名为冲突副本，云端版本作为新文件落地（新 id）
       const file = await db.file.findUnique({ where: { id: fileId } });
       if (file) {
-        // 重命名本地文件（添加冲突标记）
-        const conflictFileName = `[冲突副本] ${file.fileName}`;
+        // 先取云端数据（在写库之前，避免与重命名耦合）
+        const cloudData = await fetchCloudFileData(storage, tenantId, fileId, password);
+
+        // 重命名本地文件为冲突副本，保留本地版本（之前直接覆盖会丢失本地版本）
         await db.file.update({
           where: { id: fileId },
-          data: { fileName: conflictFileName },
+          data: {
+            fileName: `[冲突副本] ${file.fileName}`,
+            syncStatus: SYNC_STATUS.SYNCED,
+            lastSyncAt: new Date(),
+          },
         });
 
-        // 下载云端文件（作为新文件）
-        // 这里简化处理：直接用云端版本覆盖，实际应该创建新文件
-        await downloadFileFromCloud(storage, tenantId, fileId, password);
+        // 将云端版本创建为新文件（新 id 由 cuid 生成），与本地版本并存
+        // 使用本地 file 的 userId / folderId 以保证外键有效
+        await db.file.create({
+          data: {
+            tenantId,
+            userId: file.userId,
+            fileName: cloudData.fileName ?? file.fileName,
+            fileType: cloudData.fileType ?? file.fileType,
+            fileSize: cloudData.fileSize ?? file.fileSize,
+            filePath: cloudData.filePath ?? file.filePath ?? null,
+            textContent: cloudData.textContent ?? null,
+            thumbnailUrl: cloudData.thumbnailUrl ?? null,
+            folderId: file.folderId,
+            tags: cloudData.tags ?? '',
+            isFavorite: cloudData.isFavorite ?? false,
+            fileHash: cloudData.fileHash ?? null,
+            summary: cloudData.summary ?? null,
+            keyPoints: cloudData.keyPoints ?? '',
+            syncStatus: SYNC_STATUS.SYNCED,
+            lastSyncAt: new Date(),
+          },
+        });
       }
       break;
+    }
   }
 
   // 更新文件同步状态
