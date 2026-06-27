@@ -2,13 +2,20 @@ import { NextRequest, NextResponse } from "next/server";
 import { parseWord } from "@/lib/parser/word";
 import { parsePdf } from "@/lib/parser/pdf";
 import { parsePptx } from "@/lib/parser/ppt";
+import { authenticateRequest } from "@/lib/api-auth";
 
 /**
  * POST /api/files/extract-text
- * 本地模式下，前端上传文件后调用此接口提取文档文本内容
+ * 上传文件后调用此接口提取文档文本内容
  * 请求体为 multipart/form-data，包含一个 file 字段
  */
 export async function POST(request: NextRequest) {
+  // 文本提取会触发 CPU 密集的 docx/pdf/pptx 解析，必须先鉴权，
+  // 否则任意未认证调用方可上传 50MB 文件造成 DoS。
+  // 与 /api/files 主路由保持一致的 authenticateRequest 鉴权方式。
+  const auth = await authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const formData = await request.formData();
     const file = formData.get("file");
