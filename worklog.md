@@ -7168,3 +7168,50 @@ Status: 完成
 - 补 `requirePlatformAdmin` 单测；补 saas 路由 handler 测试；补 cloud-sync/config POST handler 测试（role gate 403/落库 upsert/连接测试失败 400）
 - 补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 payment provider 单测；补 shares 路由 handler 测试
 - ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
+
+## 2026-06-28 02:00 自动迭代
+
+第十五轮自动迭代。本轮从 origin(Gitee) clone（沙箱无现成工作目录），补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `fac55f5`，工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：用子代理逐项核验任务清单"优先级 1 剩余项"五项当前状态——
+1. `tenant-db.ts` raw 后门：`raw` getter 有 warn-only 软审计（捕获调用栈 console.warn），但 `transaction()` 与 `rawDb` 导出无审计；grep 确认 `raw` getter 未被任何 app 代码引用（仅防御性存在）。软审计、未被实际行使，本轮不动。
+2. `alipay.ts`/`wechat.ts` RSA2 验签：**已闭环**。alipay `verifyRSA2Sign` 走 `createVerify('RSA-SHA256')`；wechat `verifyWechatSign` 走 HMAC-SHA256 + `timingSafeEqual`，缺任一字段/密钥即 fail-closed（JSDoc 明确"不再非空即通过"）；mock 仅在 `!isPaymentConfigured(...)` dev 分支生效。
+3. `files` 路由：**部分遗留**——读取链路（GET / `[id]` / download / preview / versions / share / restore）已走 TenantDb；但**写操作** PUT/DELETE `[id]` 与 PATCH `[id]/versions` 仍用 `where:{id}` 不带租户条件，绕过 TenantDb，属越权写入隐患。本轮据此立项。
+4. `sync-engine.ts` keep_both：**已闭环**。正确保留双版本（本地重命名为"[冲突副本] …" + 云端版本以新 cuid 创建为新文件），注释明确引用旧"直接覆盖"bug。
+5. `api-auth.test.ts` vs `api-auth.ts`：**已对齐**。三轴一致——均返回 4 字段 `{userId,email,tenantId,role}`、`verifyToken` 同步调用、仅读 Authorization 头（拒绝 query param）。
+
+据复查，唯一仍有实质未闭环的优先级 1 项是 #3 的写操作越权。本轮聚焦关闭该缺口（读取与 CREATE 不动：CREATE upload/import/batch 显式带 tenantId 入库，租户安全；info 路由 raw-db 读取属 P1 影子覆盖，留待批量轮次）。
+
+环境：`npm ci`（package-lock.json）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1013/1013 通过（62 文件，73.0s），与上轮基线一致，零回归。
+
+### 改动
+
+1. **`src/app/api/files/[id]/route.ts`** — `74f8097` `fix(files): 写入按 tenantId/fileId 范围化，关闭跨租户越权写入`
+   - **PUT**：`db.file.update({ where: { id }, data })` → `tenantDb.file.update({ where: { id }, data })`（内部 updateMany 注入 tenantId）+ `tenantDb.file.findFirst({ where: { id } })` 重新取记录返回。updateMany 返回 `{count}` 不返回行，故需重新 findFirst；count 隐含于 findFirst 的 null 守卫（count===0 时 findFirst 返回 null → 404）。写入本身现按 tenantId 范围化，与前置 findFirst 的 userId 归属校验解耦。
+   - **DELETE**：级联 `db.$transaction([...])` 三条 deleteMany 均注入租户条件——`fileEmbedding.deleteMany({ where: { fileId, tenantId } })`（FileEmbedding 有 tenantId 列）、`faceInstance.deleteMany({ where: { fileId, file: { tenantId } } })`（FaceInstance 无 tenantId 列，走 `file` 关联过滤）、`db.file.delete({ where: { id } })` → `db.file.deleteMany({ where: { id, tenantId } })`。deleteMany 返回 `{count}` 但返回值未使用（handler 返回 `{success:true}`），签名变更无副作用。
+
+2. **`src/app/api/files/[id]/versions/route.ts`** — 同一 commit
+   - **PATCH**：`db.fileVersion.update({ where: { id: versionId }, data: {} })` → `db.fileVersion.updateMany({ where: { id: versionId, fileId }, data: {} })` + `tenantDb.fileVersion.findFirst({ where: { id: versionId, fileId } })` 重新取记录返回。FileVersion 无 tenantId 列，按 fileId 范围化（fileId 已由上方 `tenantDb.file.findFirst({ where: { id: fileId } })` 校验为当前租户所属）。注：`data: {}` 为既有的 no-op（FileVersion 无 description 字段），范围化后若未来补字段也不遗留 `where:{id}` 越权写入隐患；新增 null 守卫返回 404。
+
+### Commit
+- `74f8097 fix(files): 写入按 tenantId/fileId 范围化，关闭跨租户越权写入`
+
+### 推送状态
+- Gitee: 待推送
+- GitHub: 待推送
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1013/1013 通过（62 文件，73.0s），零回归
+- 改动量：2 文件 +25/-17 行
+- 无现存 handler 级单测覆盖 PUT/DELETE/PATCH `[id]`（soft-delete.test.ts 测的是提取的纯数据变换逻辑、tenant-isolation.test.ts 测的是 TenantDb 直接调用，均不经路由 handler），故本轮改动不影响现有测试；可后续补 handler 级测试（mock `@/lib/api-auth` + `@/lib/db`，覆盖 404/403/正常 200/越权 id 404）
+- 运行时 vitest 日志中 `parsePdf` 的 stderr 警告为 pdf-parse 模块加载噪音（parser-pdf.test.ts 自身 9/9 通过），与本次改动无关
+- 至此任务清单"优先级 1 剩余项"#3（files 路由写操作越权）的写侧已闭环；读侧 info 路由 raw-db 与 P1 影子覆盖留待后续
+
+### 下一轮候选
+- **`src/app/api/files/[id]/info/route.ts` raw-db 读取**：`db.file.findFirst({ where: { id, tenantId, userId, isDeleted:false } })` 改走 `tenantDb.file.findFirst`（与同目录其他 GET 路由一致），闭合 files 目录最后一个 raw-db 读取点
+- **P1 批量清理（剩余 ~31 文件）**：api-keys/webhooks/automation/backup/cloud-sync(access-history/activity-logs/embeddings/export-import/faces/invitations/stats/storage/tenant/trash 等仍存在 `tenantUser.findFirst` 影子覆盖 `auth.tenantId` 模式，可一次性机械清理
+- **`tenant-db.ts` raw 审计加固**：`rawDb` 导出与 `transaction()` helper 当前无审计，可加 warn 钩子或改为按需受控导出（`raw` getter 的软审计目前未被任何 app 代码行使）
+- **`storageConfig.config` 落库加密**：明文 JSON 存储 secretAccessKey/accessKeyId，改为 encrypt 存储 + getStorageProvider/aliyun-oss/r2-storage-class 读取侧 decrypt
+- 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files handler 级路由测试；补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 payment provider 单测；补 shares 路由 handler 测试
+- ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
