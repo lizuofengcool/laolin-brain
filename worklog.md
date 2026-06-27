@@ -6959,3 +6959,54 @@ Status: 完成
 - 补 shares 路由 handler 测试（mock `@/lib/api-auth` + `@/lib/shares`）
 - ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计是否还有冗余 tenantUser 查询
 - 继续扩展租户隔离审计到剩余目录：`src/app/api/api-keys/`、`src/app/api/webhooks/`、`src/app/api/automation/`、`src/app/api/backup*/` 等是否仍有同型冗余 tenantUser 查询或 where 缺 tenantId 模式
+
+## 2026-06-27 15:00 自动迭代
+
+第十一轮自动迭代。本轮工作目录为空（全新沙箱），从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `455bc82`，工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+承接第十轮"下一轮候选"首项（也是第二/七/九轮反复提及的遗留项）：微信/alipay `createPayment`/`queryPayment`/`refund` 在 `isPaymentConfigured` 为 true 时仍返回 mock（静默 mock 成功）。本次按"在已配置时返回明确'未实现'错误而非静默 mock 成功"方向修复。
+
+环境：`npm ci`（package-lock.json，963 包）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1006/1006 通过（61 文件，69.6s），零回归。
+
+### 问题分析
+
+`src/lib/payment/alipay.ts` & `wechat.ts` 两 provider 的 `createPayment`/`queryPayment`/`refund` 在 `isPaymentConfigured(provider)` 返回 **true**（已配置真实密钥）时，仍走 mock 分支：
+- `createPayment` 调用 `createMockPayment(params)`，返回指向 `/api/payment/mock/{alipay,wechat}` 的 mock `payUrl`（mock 页"确认支付"会 POST 到 `/api/payment/callback/*`，所幸回调 `verifyCallback` 已是真实验签——alipay RSA2、wechat V3 HMAC-SHA256+AES-256-GCM——mock 签名会被拒绝，故不会直接造成"免费升级"）；但已配置真实密钥的生产环境让用户进入"⚠️ 模拟支付页面"属行为错误且具误导性
+- `queryPayment` 返回伪造 `pending`，掩盖真实查询未实现
+- `refund` 返回伪造 `REFUND${Date.now()}` 退款号，造成"退款已发起"假象
+
+### 改动
+
+1. **`src/lib/payment/alipay.ts`** + **`src/lib/payment/wechat.ts`** — `2102aaa` `fix(payment): 已配置密钥时 createPayment/queryPayment/refund 返回明确错误而非静默 mock`
+   - 三方法各自的"已配置"分支统一改为返回 `success:false` + 明确"尚未接入 SDK"错误：
+     · `createPayment`：`{success:false, error:'支付宝/微信真实支付尚未接入 SDK，请在未配置密钥的开发环境使用模拟支付，或接入 alipay-sdk/wechatpay-node-v3'}`
+     · `queryPayment`：`{success:false, status:'failed', error:'支付宝/微信真实支付查询尚未接入 SDK'}`（status 字段类型必填，取 'failed' 与同方法 catch 块一致；调用方 `status/[orderId]` 路由以 `payResult.success` 为前置条件，`!success` 时回退本地订单状态，'failed' 不会被外泄）
+     · `refund`：`{success:false, error:'支付宝/微信真实退款尚未接入 SDK'}`
+   - 调用方影响复核：
+     · `create/route.ts` 已 `if (!payResult.success) return 500` → 配置但未接入时返回 500 错误而非 mock 链接
+     · `status/[orderId]/route.ts` `if (payResult.success && payResult.status !== 'pending')` → `!success` 跳过，回退返回 DB 订单状态
+     · `refundPayment`（index.ts 包装）经 grep 确认 **无任何 caller**，行为变更无现存消费方影响
+   - 未配置密钥的开发环境仍走 mock：`createMockPayment`/`verifyMockCallback`/`generateMockSign` 私有方法与 `!isPaymentConfigured` 分支保持不变；回调验签路径（RSA2 / V3 真实验签）不受影响
+
+### Commit
+- `2102aaa fix(payment): 已配置密钥时 createPayment/queryPayment/refund 返回明确错误而非静默 mock`
+
+### 推送状态
+- Gitee: 待推送
+- GitHub: 待推送
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1006/1006 通过（61 文件，69.6s），零回归
+- 改动量：2 文件 +30/-14 行（纯控制流，无新增依赖、无 mock 默认还原）
+- payment 目录无现存单测（glob `*payment*.{test,spec}.ts` 与 `__tests__/**/*payment*` 均无命中），改动不影响现有测试
+- 运行时 vitest 日志中 `parsePdf` 的 stderr 警告为 pdf-parse 模块加载噪音（parser-pdf.test.ts 自身 9/9 通过），与本次改动无关
+- 至此第二/七/九/十轮反复提及的"createPayment/queryPayment/refund 静默 mock 成功"遗留项已闭环
+
+### 下一轮候选
+- 补真实微信 V3 回调集成测试（AES-256-GCM 解密成功/失败两条路径）
+- 补 alipay RSA2 回调验签集成测试（normalizePublicKey 单行/PEL 两种输入 + 验签通过/失败）
+- 补 payment provider 单测：mock `isPaymentConfigured` 为 true 时 createPayment/queryPayment/refund 返回明确错误、为 false 时返回 mock（覆盖本轮新行为，防回归）
+- 补 shares 路由 handler 测试（mock `@/lib/api-auth` + `@/lib/shares`）
+- ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计是否还有冗余 tenantUser 查询
+- 继续扩展租户隔离审计到剩余目录：`src/app/api/api-keys/`、`src/app/api/webhooks/`、`src/app/api/automation/`、`src/app/api/backup*/` 等是否仍有同型冗余 tenantUser 查询或 where 缺 tenantId 模式
