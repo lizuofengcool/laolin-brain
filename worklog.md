@@ -6870,3 +6870,51 @@ Status: 完成
 - 微信/alipay `createPayment`/`queryPayment`/`refund` 在 isPaymentConfigured 为 true 时仍返回 mock（第二/七轮提及），需接入真实 SDK 或至少在已配置时返回明确"未实现"错误而非静默 mock 成功
 - 补真实微信 V3 回调集成测试（AES-256-GCM 解密成功/失败两条路径）
 - ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计是否还有冗余 tenantUser 查询
+
+## 2026-06-27 05:15 自动迭代
+
+第九轮自动迭代。fetch origin/main + github/main 后三者同处 `de36899`，工作树干净、无未推送 commit，无远端更新需 rebase。复查任务清单"优先级 1 剩余项"（tenant-db raw 后门、alipay/wechat RSA2 验签、files/route 绕过 TenantDb、sync-engine keep_both、api-auth.test.ts 不符）——均已在第三~七轮完成，本轮继续优先级 2，承接第八轮"下一轮候选"首项：审计并修复 `src/app/api/shares/` 全目录。
+
+**分享访问模型确认**（解决第八轮遗留的安全顾虑）：经逐文件 + grep 确认，公开分享 token 访问走 `/api/share-access` POST（基于 `shareManager.verifyShareAccess({token, password})`，无登录），与 `/api/shares/*` 完全分离。`/api/shares/*` 全部是管理类端点（列表/创建/删除/详情/更新/设置/统计/访问日志），均应登录后访问，给其加鉴权不会破坏公开分享功能。`templates/route.ts` 调用 `shareManager.getTemplates()` 取全局静态 `SHARE_TEMPLATES` 且方法本身不接受 tenantId，无需鉴权，保持不变。
+
+环境为全新 clone（无 node_modules），仓库 tracked `package-lock.json`（npm），用 `npm ci` 安装（963 包，41s，不改动 lockfile）。
+
+### 改动
+
+1. **`src/app/api/shares/route.ts`**（GET/POST/DELETE 三 handler）— `59e5c82` `fix(shares): 管理类路由接入 authenticateRequest 替换硬编码 default_tenant/default_user`
+   - 原三处 `const tenantId = 'default_tenant'; const userId = 'default_user'`（POST 还有 `userName = '默认用户'`）硬编码且无鉴权，任意未认证请求可读取/创建/批量删除任意租户的分享
+   - 三 handler 顶部统一接入 `authenticateRequest`（与 comments/notifications 同款三行模式：`const auth = await authenticateRequest(request); if (auth instanceof NextResponse) return auth; const { tenantId/ userId/ email } = auth;`），置于 try 块之前
+   - POST 的 `userName` 改用 `auth.email`（auth 仅返回 userId/email/tenantId/role，email 为最合理的展示标识）
+
+2. **`src/app/api/shares/[id]/route.ts`**（GET/PATCH/DELETE）+ **`[id]/access-logs/route.ts`**（GET）+ **`settings/route.ts`**（GET/PATCH）+ **`stats/route.ts`**（GET）— 同一 commit
+   - 同型问题：6 handler 全部硬编码 `tenantId = 'default_tenant'`（[id]/route.ts PATCH/DELETE 还硬编码 userId='default_user'）且无鉴权
+   - 统一接入 `authenticateRequest`，按需解构（[id] GET / access-logs / settings / stats 只需 tenantId；[id] PATCH/DELETE 需 tenantId+userId）
+   - 路由内不再有任何 `default_tenant`/`default_user` 字面量
+
+**templates/route.ts 未改动**：`getTemplates()` 全局静态、无 tenantId 参数，无需鉴权。
+
+### 影响面
+
+- `shareManager` 全部被调用方法（queryShares/createShare/createShareFromTemplate/batchDeleteShares/getShare/getAccessLogs/updateShare/getShareSettings/updateShareSettings/getStats）的签名均已支持 tenantId（位置各异：1st/2nd positional 或在 params 对象内），原 call site 已正确传参，仅需替换字面量来源，零签名变更
+- `default_tenant`/`default_user` 字面量经 grep 确认仅存在于本目录 5 个 route 文件 + worklog.md 文档中，无任何测试 fixture 引用，移除不影响测试
+
+### Commit
+- `59e5c82 fix(shares): 管理类路由接入 authenticateRequest 替换硬编码 default_tenant/default_user`
+
+### 推送状态
+- Gitee: 待推送
+- GitHub: 待推送
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1006/1006 通过（61 文件，69.7s），零回归
+- 改动量：5 文件 +46/-35 行（净增主要来自三行 auth 模式样板，移除字面量+注释对冲）
+- shares/ 目录无直接单测覆盖，改动不影响现有 mock 测试；可考虑后续补 shares 路由 handler 测试（mock `@/lib/api-auth` + `@/lib/shares`，新约定）
+- 任务清单"优先级 1 剩余项"经复查全部已完成，本轮起转入优先级 2（功能/审计补全）
+
+### 下一轮候选
+- **`src/app/api/tags/route.ts` + `src/app/api/shortcuts/`（2 文件）**：`tx.file.update({where:{id}})`（tags，事务内）/ `db.shortcut.update|delete({where:{id}})`（shortcuts）where 缺 tenantId（前置 findFirst/findMany 已闸门，纵深防御补齐）+ 多处冗余 tenantUser 查询，可一次性清理
+- 微信/alipay `createPayment`/`queryPayment`/`refund` 在 isPaymentConfigured 为 true 时仍返回 mock（第二/七轮提及），需接入真实 SDK 或在已配置时返回明确"未实现"错误而非静默 mock 成功
+- 补真实微信 V3 回调集成测试（AES-256-GCM 解密成功/失败两条路径）
+- 补 shares 路由 handler 测试（mock `@/lib/api-auth` + `@/lib/shares`）
+- ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计是否还有冗余 tenantUser 查询
