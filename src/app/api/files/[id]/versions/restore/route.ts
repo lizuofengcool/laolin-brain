@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, createTenantDb } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 import { safeJsonParseArray } from "@/lib/safe-json-parse";
 import { unlink } from "fs/promises";
@@ -25,14 +25,15 @@ export async function POST(
       );
     }
 
-    // Verify file belongs to user
-    const file = await db.file.findUnique({ where: { id: fileId } });
+    // Verify file belongs to user and tenant (TenantDb 自动注入 tenantId 过滤)
+    const tenantDb = createTenantDb(tenantId);
+    const file = await tenantDb.file.findFirst({ where: { id: fileId } });
     if (!file || file.userId !== userId) {
       return NextResponse.json({ error: "文件不存在" }, { status: 404 });
     }
 
-    // Get the version to restore
-    const version = await db.fileVersion.findFirst({
+    // Get the version to restore (按 file.tenantId 关联过滤)
+    const version = await tenantDb.fileVersion.findFirst({
       where: { id: versionId, fileId },
     });
 

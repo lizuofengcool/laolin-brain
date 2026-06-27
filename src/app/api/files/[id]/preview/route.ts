@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, createTenantDb } from "@/lib/db";
 import { readFile } from "fs/promises";
 import path from "path";
 import { createHash, timingSafeEqual } from "crypto";
@@ -100,7 +100,9 @@ export async function GET(
   const { userId, tenantId, role } = auth;
 
   try {
-    const file = await db.file.findUnique({ where: { id } });
+    // TenantDb 自动注入 tenantId 过滤，防止跨租户访问
+    const tenantDb = createTenantDb(tenantId);
+    const file = await tenantDb.file.findFirst({ where: { id } });
 
     if (!file || !file.filePath) {
       return NextResponse.json({ error: "File not found" }, { status: 404 });

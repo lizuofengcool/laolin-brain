@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, createTenantDb } from "@/lib/db";
 import { randomUUID, createHash, timingSafeEqual } from "crypto";
 import { authenticateRequest } from "@/lib/api-auth";
 
@@ -105,8 +105,10 @@ export async function POST(
     // Treat empty string password as null; hash non-empty passwords before storage
     const sharePassword = (typeof password === 'string' && password.length > 0) ? hashSharePassword(password) : null;
 
-    // Find the file
-    const file = await db.file.findUnique({
+    const tenantDb = createTenantDb(tenantId);
+
+    // Find the file (TenantDb 自动注入 tenantId 过滤，防止跨租户访问)
+    const file = await tenantDb.file.findFirst({
       where: { id },
     });
 
@@ -125,7 +127,8 @@ export async function POST(
       ? new Date(Date.now() + expiresIn * 60 * 60 * 1000)
       : null;
 
-    const share = await db.fileShare.create({
+    // 通过 TenantDb 创建，自动写入 tenantId 归属
+    const share = await tenantDb.fileShare.create({
       data: {
         fileId: id,
         token,
