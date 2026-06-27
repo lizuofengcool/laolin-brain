@@ -7,11 +7,16 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { shareManager } from '@/lib/shares';
+import { authenticateRequest } from '@/lib/api-auth';
 import { ShareTargetType, ShareMethod, ShareStatus } from '@/lib/shares/types';
 
 // ==================== GET - 获取分享列表 ====================
 
 export async function GET(request: NextRequest) {
+  const auth = await authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { tenantId } = auth;
+
   try {
     const { searchParams } = new URL(request.url);
 
@@ -46,10 +51,6 @@ export async function GET(request: NextRequest) {
         shareMethod = shareMethod[0];
       }
     }
-
-    // 模拟租户ID（实际应该从认证中获取）
-    const tenantId = 'default_tenant';
-    const userId = 'default_user';
 
     // 查询分享
     const result = shareManager.queryShares({
@@ -93,6 +94,10 @@ export async function GET(request: NextRequest) {
 // ==================== POST - 创建分享 ====================
 
 export async function POST(request: NextRequest) {
+  const auth = await authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { tenantId, userId, email } = auth;
+
   try {
     const body = await request.json();
     const {
@@ -123,10 +128,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 模拟租户ID和用户信息（实际应该从认证中获取）
-    const tenantId = 'default_tenant';
-    const userId = 'default_user';
-    const userName = '默认用户';
+    const userName = email;
 
     let share;
 
@@ -191,6 +193,10 @@ export async function POST(request: NextRequest) {
 // ==================== DELETE - 批量删除分享 ====================
 
 export async function DELETE(request: NextRequest) {
+  const auth = await authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { tenantId, userId } = auth;
+
   try {
     const body = await request.json();
     const { shareIds } = body;
@@ -201,10 +207,6 @@ export async function DELETE(request: NextRequest) {
         { status: 400 }
       );
     }
-
-    // 模拟租户ID和用户信息（实际应该从认证中获取）
-    const tenantId = 'default_tenant';
-    const userId = 'default_user';
 
     const result = shareManager.batchDeleteShares(shareIds, tenantId, userId);
 

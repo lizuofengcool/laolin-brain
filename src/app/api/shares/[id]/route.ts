@@ -7,6 +7,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { shareManager } from '@/lib/shares';
+import { authenticateRequest } from '@/lib/api-auth';
 
 // ==================== GET - 获取分享详情 ====================
 
@@ -14,11 +15,12 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { tenantId } = auth;
+
   try {
     const { id } = await params;
-
-    // 模拟租户ID（实际应该从认证中获取）
-    const tenantId = 'default_tenant';
 
     const share = shareManager.getShare(id, tenantId);
 
@@ -58,13 +60,13 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { tenantId, userId } = auth;
+
   try {
     const { id } = await params;
     const body = await request.json();
-
-    // 模拟租户ID和用户信息（实际应该从认证中获取）
-    const tenantId = 'default_tenant';
-    const userId = 'default_user';
 
     const updatedShare = shareManager.updateShare(id, tenantId, userId, body);
 
@@ -96,12 +98,12 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+  const { tenantId, userId } = auth;
+
   try {
     const { id } = await params;
-
-    // 模拟租户ID和用户信息（实际应该从认证中获取）
-    const tenantId = 'default_tenant';
-    const userId = 'default_user';
 
     const result = shareManager.batchDeleteShares([id], tenantId, userId);
 
