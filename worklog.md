@@ -6699,3 +6699,43 @@ Status: 完成
 - `src/app/api/files/` 子路由迁移 TenantDb：`[id]/route.ts`、`[id]/versions/route.ts`（4 handler 全部重复查 tenantUser）、`[id]/share/route.ts`、`[id]/download/route.ts`、`[id]/preview/route.ts`、`[id]/versions/restore/route.ts` 均绕过 tenantId 仅按 userId 归属校验；`[id]/route.ts`、`batch/route.ts`、`import/route.ts` 有重复查 tenantUser 需去除（本轮未动，涉及多路由需分批）
 - 微信 V3 回调 `resource` 密文用 APIv3 密钥 AES-256-GCM 解密后取 `out_trade_no`/`transaction_id`，替代当前明文 resource 读取简化
 - alipay 回调 GET/POST 两条路径可抽公共解析，减少重复
+
+## 2026-06-27 03:18 自动迭代
+
+本次为自动化迭代开发机制的第五轮执行，清理上一轮"下一轮候选"首项的核心部分：`[id]` 子树 6 个路由的 TenantDb 迁移与冗余查询消除。上一轮候选提及的 `batch/route.ts`、`import/route.ts` 重复查 tenantUser 涉及业务更重，本轮未动留作下一轮，避免铺大摊子。环境：`npm ci`（963 包，46s）+ `npx prisma generate`，`npx tsc --noEmit` 退出码 0 零类型错误，全量 `npx vitest run` 1006/1006 通过（61 文件，72.7s），零回归（基线同第四轮）。
+
+### 改动
+
+1. **src/app/api/files/[id]/route.ts** + **src/app/api/files/[id]/versions/route.ts** — `fix(files): [id] 与 versions 路由复用 auth tenantId 并走 TenantDb 隔离`（`1fed3f6`）
+   - `[id]/route.ts`（GET/PUT/DELETE）三个 handler 均调用 `getTenantIdFromUserId(userId)` 重新查询 tenantId，**覆盖** `authenticateRequest` 已返回的可信 tenantId；并发场景下两次查询可能返回不一致租户，且 `getTenantIdFromUserId` 在用户无 tenantUser 时抛错而 auth 会兜底建租户，行为不一致
+   - `[id]/versions/route.ts`（GET/POST/DELETE/PATCH）四个 handler 全部重复 `db.tenantUser.findFirst({ where:{userId} })`，并用 `db.file.findUnique({where:{id}})` 事后比对 `file.tenantId !== tenantId`，属"查全表再过滤"绕过 DB 层隔离
+   - 修复：删除全部冗余 `tenantUser`/`getTenantIdFromUserId` 查询，复用 auth 的 tenantId；文件、版本、目录查询统一走 `createTenantDb(tenantId)`，由 TenantDb 在查询层注入 tenantId（FileVersion 经 `file.tenantId` 关联过滤）
+   - PUT 移动文件到目标 folder 改用 `tenantDb.folder.findFirst`，补齐原 `db.folder.findUnique` 缺失的 tenantId 校验，防跨租户 folder 注入
+   - 写回（`db.file.update` / `db.$transaction` 级联 / 版本事务）保留 `db.*` 以返回完整记录或保证事务原子性，均由前置 tenant 校验的 findFirst 闸门保证归属安全
+   - 净减 43 行（48 增 / 91 删）
+
+2. **src/app/api/files/[id]/share/route.ts** + **download/route.ts** + **preview/route.ts** + **versions/restore/route.ts** — `fix(files): share/download/preview/restore 鉴权流走 TenantDb 隔离`（`dcf046f`）
+   - 四个路由的鉴权分支此前 `db.file.findUnique({where:{id}})` 仅按 userId 做事后归属校验，未在查询层注入 tenantId，属"绕过 tenantId 仅按 userId 校验"的隔离漏洞：多租户用户在 A 租户鉴权后，仍可凭文件 id 访问其名下属于 B 租户的文件
+   - share/download/preview 鉴权分支改用 `createTenantDb(tenantId).file.findFirst`，DB 层注入 tenantId；公开 share-token 分支按 token 全局查询保持不变（分享链接本就跨租户公开）
+   - share 创建分享改用 `tenantDb.fileShare.create`，为 FileShare 记录写入 tenantId 归属（原 `db.fileShare.create` 未写 tenantId）
+   - restore 版本恢复的文件与版本查询改走 TenantDb，事务内回写保留 `db.*` 以返回完整记录，由前置 tenant 校验闸门保证归属
+   - 对单租户用户（常见场景）零行为变化；多租户场景下正确限制跨租户访问
+
+### Commit
+- `1fed3f6 fix(files): [id] 与 versions 路由复用 auth tenantId 并走 TenantDb 隔离`
+- `dcf046f fix(files): share/download/preview/restore 鉴权流走 TenantDb 隔离`
+
+### 推送状态
+- Gitee: ✅ `cdc8c61..` 起推 2 个代码 commit + 本 worklog commit 至 main
+- GitHub: ✅ 同上
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1006/1006 通过（61 文件，72.7s），零回归
+- `[id]/info/route.ts` 经查已在 where 中带 `tenantId` 过滤（非绕过点），未列入迁移；`batch/route.ts`、`import/route.ts` 的重复 tenantUser 查询留待下一轮
+- 写回路径（update/delete 事务）未切 TenantDb 的原因：TenantDb 的 `update`/`delete` 走 updateMany/deleteMany 仅返回 `{count}`，无法满足返回完整记录的 API 契约；由前置 tenant 校验 findFirst 闸门保证归属安全，等价隔离效果
+
+### 下一轮候选
+- `src/app/api/files/batch/route.ts`、`import/route.ts`：重复 `db.tenantUser.findFirst` 查询需去除并按 TenantDb 改造（上一轮候选遗留，本轮未动）
+- 微信 V3 回调 `resource` 密文用 APIv3 密钥 AES-256-GCM 解密后取 `out_trade_no`/`transaction_id`，替代当前明文 resource 读取简化
+- alipay 回调 GET/POST 两条路径可抽公共解析，减少重复
