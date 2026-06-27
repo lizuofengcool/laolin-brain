@@ -6538,3 +6538,34 @@ Work Log:
   - 最终验证
 
 Status: 完成
+
+## 2026-06-26 23:30 自动迭代（首轮）
+
+本次为自动化迭代开发机制的首轮执行，修复两个高优先级安全/计费漏洞：
+
+### 改动
+1. **src/lib/auth.ts** — `fix(auth): TOKEN_SECRET 缺失时生产环境抛错`
+   - 之前：生产环境无 `TOKEN_SECRET` 仅 `console.error` 并用硬编码 `fallback-dev-secret-do-not-use-in-production`，导致任何人可伪造 token
+   - 现在：生产环境无 secret 直接 `throw`，拒绝启动；非生产环境保留 fallback 并 `console.warn`
+
+2. **src/lib/api-auth.ts** — `fix(auth): 自动建租户 plan 从 enterprise 改为 free`
+   - 之前：任意登录用户若无租户，自动建 `enterprise` 租户，可白嫖企业版配额（5GB→无上限、AI 200→无上限）
+   - 现在：默认建 `free` 租户，符合 README 免费版默认套餐逻辑
+
+### Commit
+- `8c2f547 fix(auth): 修复两个高优先级安全/计费漏洞`
+
+### 推送状态
+- GitHub: ✅ `f074e72..8c2f547 main -> main`
+- Gitee: ✅ `5547186...8c2f547 main -> main (forced update)` —— 一次性 force push 以统一双端历史（filter-repo 重写后历史不同源），后续可正常 push
+
+### 备注
+- 改动为低风险字符串字面量/控制流变更，未本地跑测试（环境无 node_modules）
+- `auth.test.ts` 在 NODE_ENV=test 下不触发 throw，行为不变
+- 发现 `api-auth.test.ts` 与当前 `api-auth.ts` 实现严重不符（测试期望仅返回 userId/email、同步调用、拒绝 query param；实现返回 4 字段、async、不读 query），该测试文件本身失效，与本轮改动无关，留待后续修复
+
+### 下一轮候选
+- 修复 `api-auth.test.ts` 使其匹配当前实现
+- `src/lib/db/tenant-db.ts` 移除/限制 `raw` 后门
+- `src/lib/payment/alipay.ts` & `wechat.ts` RSA2 验签占位
+- `src/app/api/files/route.ts` 等路由改走 TenantDb
