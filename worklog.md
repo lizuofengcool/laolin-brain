@@ -6593,7 +6593,8 @@ Status: 完成
 - `ef4c361 fix(sync): keep_both 冲突解决保留两端版本而非覆盖丢失本地版本`
 
 ### 推送状态
-- 见下方 git push 实际输出
+- Gitee: ✅ `e890373..eaa7c83 main -> main`
+- GitHub: ✅ `e890373..eaa7c83 main -> main`
 
 ### 备注
 - 本次环境装了依赖：`npm ci`（963 包，无 pnpm-lock.yaml，用 npm 避免与 package-lock.json 冲突）+ `npx prisma generate`
