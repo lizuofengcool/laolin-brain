@@ -6569,3 +6569,39 @@ Status: 完成
 - `src/lib/db/tenant-db.ts` 移除/限制 `raw` 后门
 - `src/lib/payment/alipay.ts` & `wechat.ts` RSA2 验签占位
 - `src/app/api/files/route.ts` 等路由改走 TenantDb
+
+## 2026-06-27 01:20 自动迭代
+
+本次为自动化迭代开发机制的第二轮执行，清理首轮遗留的失效测试并修复一个数据丢失逻辑 bug。
+
+### 改动
+
+1. **src/\_\_tests\_\_/lib/api-auth.test.ts** — `test(auth): 重写 api-auth.test.ts 匹配当前 authenticateRequest 实现`
+   - 首轮备注中记录的失效测试：原测试与 `src/lib/api-auth.ts` 实现严重不符（实现 async 返回 4 字段、仅读 Authorization 头；测试却同步调用、只期望 2 字段、断言 query param 行为、且未 mock `@/lib/db`），导致 valid token 用例直接抛错
+   - 重写：用 `vi.hoisted` mock `@/lib/db`（tenantUser/tenant 的 findFirst/create），全部用例改为 `async/await`
+   - 覆盖场景：已存在租户成员关系返回 4 字段、无租户自动加入已有租户（owner）、无任何租户时新建 `free` 租户、无 Authorization 头 401、令牌无效 401、query param 令牌被拒（仅读 header）、Bearer 大小写不敏感
+   - 本地 `npx vitest run` 7/7 通过
+
+2. **src/lib/cloud-sync/sync-engine.ts** — `fix(sync): keep_both 冲突解决保留两端版本而非覆盖丢失本地版本`
+   - `resolveConflict` 的 `keep_both` 分支有数据丢失 bug：先把本地文件重命名为 `[冲突副本] xxx`，随后调用 `downloadFileFromCloud(fileId)`，而后者对同 fileId 执行 `db.file.update`，用云端版本覆盖刚重命名的本地文件 → 本地版本被完全丢失，"保留两者"实际退化为 `cloud_wins`
+   - 修复：抽取 `fetchCloudFileData` 助手（仅下载+解密、不写库）供 `downloadFileFromCloud` 与 `keep_both` 复用，消除重复
+   - `keep_both` 改为：本地文件重命名为冲突副本并标记 synced；云端版本以新 id（cuid）创建为新文件，`userId`/`folderId` 取本地文件值以保证外键有效
+   - 本地 `cloud-sync-tenant.test.ts` 9/9 通过，`tsc --noEmit` 在改动文件无类型错误
+
+### Commit
+- `7f9a404 test(auth): 重写 api-auth.test.ts 匹配当前 authenticateRequest 实现`
+- `ef4c361 fix(sync): keep_both 冲突解决保留两端版本而非覆盖丢失本地版本`
+
+### 推送状态
+- 见下方 git push 实际输出
+
+### 备注
+- 本次环境装了依赖：`npm ci`（963 包，无 pnpm-lock.yaml，用 npm 避免与 package-lock.json 冲突）+ `npx prisma generate`
+- 跑了 `npx vitest run src/__tests__/lib/`：836 passed / 1 failed
+- 唯一失败 `security.test.ts > detectSqlInjection("' OR '1'='1")` 经 `git stash` 验证为**先于本轮存在的既有 bug**（与本次改动无关），security 模块的 SQL 注入正则未覆盖 `' OR '1'='1` 形态，列入下一轮候选
+
+### 下一轮候选
+- `src/lib/utils/security.ts`：`detectSqlInjection` 漏检 `' OR '1'='1`（既有失败测试 security.test.ts:126）
+- `src/lib/db/tenant-db.ts`：`raw` getter 暴露原始 PrismaClient 后门 → 加使用审计或限制
+- `src/lib/payment/alipay.ts` & `wechat.ts`：RSA2 验签占位"非空即通过" → 接入官方 alipay-sdk 或实现真实验签，删除 mock 默认
+- `src/app/api/files/route.ts` 等路由绕过 TenantDb 直接按 userId 过滤 → 改走 TenantDb
