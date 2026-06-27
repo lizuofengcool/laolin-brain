@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticateRequest } from '@/lib/api-auth';
 import { checkAiUsage, AI_DAILY_LIMIT } from '@/lib/ai-usage';
 import ZAI from 'z-ai-web-dev-sdk';
-import { getTenantDbFromUserId } from '@/lib/db';
+import { createTenantDb } from '@/lib/db';
 
 let zaiPromise: Promise<Awaited<ReturnType<typeof ZAI.create>>> | null = null;
 
@@ -149,7 +149,8 @@ export async function POST(request: NextRequest) {
     })).filter((f: GraphFile) => f.id);
 
     // Verify all file IDs belong to the current tenant
-    const tenantDb = await getTenantDbFromUserId(auth.userId);
+    // 直接复用 auth.tenantId，避免 getTenantDbFromUserId 内部重复查 tenantUser
+    const tenantDb = createTenantDb(auth.tenantId);
     const fileIds = graphFiles.map(f => f.id);
     const dbFiles = await tenantDb.file.findMany({
       where: { id: { in: fileIds }, isDeleted: false },
