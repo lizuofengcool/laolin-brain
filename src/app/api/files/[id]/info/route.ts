@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { createTenantDb } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 import fs from "fs";
 
@@ -53,11 +53,11 @@ export async function GET(
     const { searchParams } = new URL(request.url);
     const includeContent = searchParams.get("includeContent") === "true";
 
-    // 查询文件
-    const file = await db.file.findFirst({
+    // tenantId 由 authenticateRequest 已查证返回，走 TenantDb 自动注入租户过滤
+    const tenantDb = createTenantDb(tenantId);
+    const file = await tenantDb.file.findFirst({
       where: {
         id,
-        tenantId,
         userId,
         isDeleted: false,
       },
