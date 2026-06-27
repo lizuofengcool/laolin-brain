@@ -6657,3 +6657,45 @@ Status: 完成
 - `src/app/api/payment/callback/*` route 需从 HTTP 头提取 timestamp/nonce/body/signature 透传给 `verifyCallback`，配合本轮 wechat V3 真实验签
 - `src/lib/security/security-tools.ts` 为死代码副本（detectSqlInjection 重复实现，无任何 import），可考虑删除或与 `utils/security.ts` 合并
 - `src/app/api/files/extract-text/route.ts` 无认证无 DB，任意人可调用文本提取，需评估加认证
+
+## 2026-06-27 10:24 自动迭代
+
+本次为自动化迭代开发机制的第四轮执行，收尾第三轮遗留"下一轮候选"中的 3 项（wechat 回调透传、extract-text 鉴权、security-tools 死代码清理）；剩余 1 项（files 子路由 TenantDb 迁移）涉及多路由、需分批处理，本轮未动。环境：`npm ci`（963 包，28s）+ `npx prisma generate`，`npx tsc --noEmit` 退出码 0 零类型错误，全量 `npx vitest run` 1006/1006 通过（61 文件，72s），零回归。
+
+### 改动
+
+1. **src/app/api/payment/callback/wechat/route.ts** — `fix(payment): 微信回调路由透传 V3 签名头与原始请求体`
+   - 第三轮将 `verifyWechatSign` 改为真实验签后，回调路由未从 HTTP 头提取 `Wechatpay-Timestamp`/`Nonce`/`Signature` 与原始 body 透传给 `verifyCallback`，导致生产模式下微信 V3 回调四签名字段全为 `undefined` 必然验签失败（被自身的安全增强误伤）
+   - 改为先 `request.text()` 读原始请求体再 `JSON.parse`：既拿到验签所需原始 body 文本，又修复原实现 `request.json()` 失败后 `request.formData()` 的"请求体只能读一次"二次读取潜在 bug；非 JSON 以 `URLSearchParams` 兜底
+   - 从 `Wechatpay-*` 头提取 timestamp/nonce/signature 注入 params，rawBody 作为 `params.body` 供 HMAC-SHA256 计算；模拟模式不读这些字段，透传无害（mock 回调页 POST 的 `mock_sign` 流程不受影响）
+   - 支付宝回调 `sign`/`sign_type` 本就在表单体内、route 已透传，本轮无需改动
+
+2. **src/app/api/files/extract-text/route.ts** — `fix(security): extract-text 路由增加 authenticateRequest 鉴权`
+   - 该路由无认证无 DB，任意未认证调用方可上传 50MB 文件触发 CPU 密集的 docx/pdf/pptx 解析，构成 DoS 向量
+   - 与 `/api/files` 主路由保持一致：入口先 `authenticateRequest(request)`，`instanceof NextResponse` 即 401 返回，再解析 formData
+   - 确认仓库内无前端调用方（仅本文件引用 extract-text），加鉴权不破坏现有流程
+
+3. **src/lib/security/security-tools.ts** — `refactor(security): 删除无引用的 security-tools.ts 死代码`
+   - 726 行早期重复实现，与 `src/lib/security/index.ts`（validatePassword/RateLimiter/XSSProtection/SQLInjectionProtection 等）及 `src/lib/utils/security.ts`（detectSqlInjection/checkPasswordStrength 等）功能全面重叠
+   - 全仓 grep 确认零 import 引用（仅 worklog 提及）；`security.test.ts`/`utils/__tests__/security.test.ts` 均从 `@/lib/utils/security` 或本地 mock 导入，不依赖本文件
+   - 纯删除，零行为变更
+
+### Commit
+- `33b7612 fix(payment): 微信回调路由透传 V3 签名头与原始请求体`
+- `2e98e55 fix(security): extract-text 路由增加 authenticateRequest 鉴权`
+- `cde82d6 refactor(security): 删除无引用的 security-tools.ts 死代码`
+
+### 推送状态
+- Gitee: ✅ `fc64192..cde82d6 main -> main`（3 个代码 commit）
+- GitHub: ✅ `fc64192..cde82d6 main -> main`（3 个代码 commit）
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1006/1006 通过（61 文件，72s），零回归（基线同第三轮）
+- 未触碰任何 `sk_` 前缀占位密钥，GitHub push protection 未拦截
+- 微信 V3 回调的 `resource` 字段实际为 APIv3 密钥 AES-256-GCM 加密密文，当前 `verifyCallback` 仍按明文 resource 取 `out_trade_no`（既有简化），真实验签 + 资源解密完整接入留待后续
+
+### 下一轮候选
+- `src/app/api/files/` 子路由迁移 TenantDb：`[id]/route.ts`、`[id]/versions/route.ts`（4 handler 全部重复查 tenantUser）、`[id]/share/route.ts`、`[id]/download/route.ts`、`[id]/preview/route.ts`、`[id]/versions/restore/route.ts` 均绕过 tenantId 仅按 userId 归属校验；`[id]/route.ts`、`batch/route.ts`、`import/route.ts` 有重复查 tenantUser 需去除（本轮未动，涉及多路由需分批）
+- 微信 V3 回调 `resource` 密文用 APIv3 密钥 AES-256-GCM 解密后取 `out_trade_no`/`transaction_id`，替代当前明文 resource 读取简化
+- alipay 回调 GET/POST 两条路径可抽公共解析，减少重复
