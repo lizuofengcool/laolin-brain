@@ -2,27 +2,31 @@
  * 订单管理 API
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { createOrder, getOrder, getTenantOrders, getPaymentParams } from '@/lib/saas/billing.service';
+import { authenticateRequest } from '@/lib/api-auth';
 
 // 获取订单列表
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
   try {
-    const url = new URL(request.url);
-    const tenantId = url.searchParams.get('tenantId');
-    const orderId = url.searchParams.get('orderId');
+    const auth = await authenticateRequest(request);
+    if (auth instanceof NextResponse) return auth;
+    const { tenantId } = auth;
 
-    if (!tenantId) {
-      return NextResponse.json(
-        { error: '缺少租户 ID' },
-        { status: 400 }
-      );
-    }
+    const url = new URL(request.url);
+    const orderId = url.searchParams.get('orderId');
 
     // 如果指定了订单 ID，获取单个订单
     if (orderId) {
       const order = await getOrder(orderId);
       if (!order) {
+        return NextResponse.json(
+          { error: '订单不存在' },
+          { status: 404 }
+        );
+      }
+      // 纵深防御：仅允许读取本租户订单，防止跨租户越权
+      if (order.tenantId !== tenantId) {
         return NextResponse.json(
           { error: '订单不存在' },
           { status: 404 }
@@ -44,12 +48,16 @@ export async function GET(request: Request) {
 }
 
 // 创建订单
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { tenantId, plan, interval, quantity = 1 } = body;
+    const auth = await authenticateRequest(request);
+    if (auth instanceof NextResponse) return auth;
+    const { tenantId } = auth;
 
-    if (!tenantId || !plan || !interval) {
+    const body = await request.json();
+    const { plan, interval, quantity = 1 } = body;
+
+    if (!plan || !interval) {
       return NextResponse.json(
         { error: '缺少必要参数' },
         { status: 400 }
@@ -74,7 +82,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // 创建订单
+    // 创建订单（tenantId 来自可信 auth，忽略请求体中的 tenantId）
     const order = await createOrder(tenantId, plan, interval, quantity);
 
     // 获取支付参数（预留支付宝/微信对接）

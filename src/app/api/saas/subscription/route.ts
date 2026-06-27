@@ -2,22 +2,17 @@
  * 订阅管理 API
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentSubscription, checkTenantStatus } from '@/lib/saas/tenant.service';
 import { cancelSubscription, reactivateSubscription, isSubscriptionExpiringSoon } from '@/lib/saas/billing.service';
+import { authenticateRequest } from '@/lib/api-auth';
 
 // 获取当前订阅信息
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
   try {
-    const url = new URL(request.url);
-    const tenantId = url.searchParams.get('tenantId');
-
-    if (!tenantId) {
-      return NextResponse.json(
-        { error: '缺少租户 ID' },
-        { status: 400 }
-      );
-    }
+    const auth = await authenticateRequest(request);
+    if (auth instanceof NextResponse) return auth;
+    const { tenantId } = auth;
 
     // 获取当前订阅
     const subscription = await getCurrentSubscription(tenantId);
@@ -43,17 +38,11 @@ export async function GET(request: Request) {
 }
 
 // 取消订阅
-export async function DELETE(request: Request) {
+export async function DELETE(request: NextRequest) {
   try {
-    const url = new URL(request.url);
-    const tenantId = url.searchParams.get('tenantId');
-
-    if (!tenantId) {
-      return NextResponse.json(
-        { error: '缺少租户 ID' },
-        { status: 400 }
-      );
-    }
+    const auth = await authenticateRequest(request);
+    if (auth instanceof NextResponse) return auth;
+    const { tenantId } = auth;
 
     const result = await cancelSubscription(tenantId);
 
@@ -72,18 +61,14 @@ export async function DELETE(request: Request) {
 }
 
 // 恢复订阅
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   try {
-    const url = new URL(request.url);
-    const tenantId = url.searchParams.get('tenantId');
-    const action = url.searchParams.get('action');
+    const auth = await authenticateRequest(request);
+    if (auth instanceof NextResponse) return auth;
+    const { tenantId } = auth;
 
-    if (!tenantId) {
-      return NextResponse.json(
-        { error: '缺少租户 ID' },
-        { status: 400 }
-      );
-    }
+    const url = new URL(request.url);
+    const action = url.searchParams.get('action');
 
     if (action === 'resume') {
       const result = await reactivateSubscription(tenantId);
