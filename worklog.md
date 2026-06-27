@@ -6828,3 +6828,45 @@ Status: 完成
 - alipay `createPayment`/`queryPayment`/`refund` 同样在已配置时返回 mock（同型问题）
 - 补真实微信 V3 回调的集成测试（覆盖 AES-256-GCM 解密成功/失败两条路径）
 - ai-processor 的 `incrementTenantAiUsage` 等其他 AI 工具函数可一并审计是否还有冗余 tenantUser 查询
+
+## 2026-06-27 04:27 自动迭代
+
+第八轮自动迭代。先核验任务清单中"优先级 1 剩余项"的当前状态：经逐文件复查，alipay/wechat 的 RSA2 验签占位（"非空即通过"）、`files/route.ts` 绕过 TenantDb、`sync-engine.ts` keep_both 直接覆盖、`api-auth.test.ts` 与实现不符、`tenant-db.ts` raw 后门（已加 stack 审计 console.warn）——**五项均已在更早轮次（第三~七轮）修复完毕**，本轮不再重复处理。故转入优先级 2：延续第五~七轮的租户隔离审计模式，对 `comments/`+`notifications/` 两目录（任务清单第七轮"下一轮候选"首项的子集）做结构化审计与修复。
+
+环境为全新 clone（无 node_modules），仓库 tracked 的是 `package-lock.json`（npm 而非 pnpm），故用 `npm ci` 安装（963 包，41s，不改动 lockfile）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1006/1006 通过（61 文件，71.3s），零回归。
+
+先用 search 子代理对 comments（3 文件）+ notifications（1 文件）共 4 个 route.ts 逐 handler 审计，识别出：notifications POST 跨租户注入（CRITICAL，body 的 targetTenantId/targetUserId 直接落库）、comments POST parentId 增量无租户校验（可向其它租户评论注入回复计数）、comments/[id] 与 [id]/like 的 update/delete 写操作 where 缺 tenantId（前置 findFirst 已闸门，属纵深防御补齐）、以及 11 处冗余 `db.tenantUser.findFirst` 查询。
+
+### 改动
+
+1. **src/app/api/notifications/route.ts** — `172d735` `fix(notifications): 阻断 POST 跨租户通知注入并移除冗余 tenantUser 查询`
+   - POST：原 `notifyTenantId=targetTenantId`（body）/`notifyUserId=targetUserId||userId`（body），认证用户可向任意租户/用户注入通知（跨租户 IDOR）。改为强制 `notifyTenantId=auth.tenantId`（忽略 body 的 targetTenantId）；`targetUserId` 需为同租户成员（`tenantUser.findFirst({where:{userId:targetUserId,tenantId}})` 校验）否则 403，未提供则回退调用方本人。保留"向同租户其他用户发通知"的合法用法，仅切断跨租户路径
+   - GET/PATCH/DELETE：三处冗余 `db.tenantUser.findFirst({where:{userId}})` 删除，直接复用 `authenticateRequest` 已解析的 tenantId（auth 兜底建租户，原 `if(!tenantUser) 404` 为死代码）
+
+2. **src/app/api/comments/route.ts** + **comments/[id]/route.ts** + **comments/[id]/like/route.ts** — `34d44a0` `fix(comments): 写操作按租户隔离，parentId 增量前校验归属，移除冗余查询`
+   - comments/route.ts POST：原 `db.comment.update({where:{id:parentId}})` 递增 replyCount，parentId 来自请求体且无租户校验，攻击者可向其它租户评论注入回复计数或建立跨租户回复链。改为先 `findFirst({where:{id:parentId,tenantId}})` 校验归属（不存在 404），增量改用 `updateMany({where:{id:parentId,tenantId}})` 按租户隔离写入
+   - comments/[id]/route.ts DELETE：父评论 replyCount 递减改 `updateMany({where:{id:comment.parentId,tenantId}})`；`db.comment.delete({where:{id:commentId}})` 与 PATCH 的 `update({where:{id:commentId}})` 保留（前置 findFirst 已带 tenantId+ownership 闸门，且需返回完整记录/匹配 API 契约，同第六轮约定）
+   - comments/[id]/like/route.ts POST：点赞写入改 `updateMany({where:{id:commentId,tenantId}})`（结果未使用，纵深防御补齐 where 层隔离）
+   - 共删除 8 处冗余 `db.tenantUser.findFirst`（comments GET stats/export/main、POST、[id] GET/PATCH/DELETE、[id]/like POST），复用 auth 的 tenantId/role；[id] DELETE 保留 `const userRole=role` 供权限判断
+
+### Commit
+- `172d735 fix(notifications): 阻断 POST 跨租户通知注入并移除冗余 tenantUser 查询`
+- `34d44a0 fix(comments): 写操作按租户隔离，parentId 增量前校验归属，移除冗余查询`
+
+### 推送状态
+- Gitee: ✅ 2 个代码 commit + 本 worklog commit 推送至 main
+- GitHub: ✅ 同上
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1006/1006 通过（61 文件，71.3s），零回归
+- 审计范围：comments（3 文件）+ notifications（1 文件）共 4 个 route.ts 已全部修复；这 4 个文件无直接单测覆盖，改动不影响现有 mock 测试
+- 净减 134 行（多为冗余 tenantUser 查询样板），新增的租户校验/隔离 where 为安全增强
+- 任务清单"优先级 1 剩余项"经复查全部已于前序轮次完成，本轮起转入优先级 2（功能/审计补全）
+
+### 下一轮候选
+- **`src/app/api/shares/` 全目录（6 文件 8 handler）完全无 authenticateRequest + 硬编码 `default_tenant`/`default_user`**（本轮审计发现的最严重问题）：需先确认分享访问模型——`shares/[id]` GET 等是否走公开分享 token（无登录）访问，避免误给公开分享端点加鉴权破坏功能；确认后给管理类端点（create/update/delete/settings）补 `authenticateRequest` 并用 auth tenantId/userId
+- `src/app/api/tags/route.ts` 与 `src/app/api/shortcuts/`（2 文件）：同型问题——`tx.file.update({where:{id}})`（tags，事务内）/ `db.shortcut.update|delete({where:{id}})`（shortcuts）where 缺 tenantId（前置 findFirst/findMany 已闸门，纵深防御补齐）+ 多处冗余 tenantUser 查询，可一次性清理
+- 微信/alipay `createPayment`/`queryPayment`/`refund` 在 isPaymentConfigured 为 true 时仍返回 mock（第二/七轮提及），需接入真实 SDK 或至少在已配置时返回明确"未实现"错误而非静默 mock 成功
+- 补真实微信 V3 回调集成测试（AES-256-GCM 解密成功/失败两条路径）
+- ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计是否还有冗余 tenantUser 查询
