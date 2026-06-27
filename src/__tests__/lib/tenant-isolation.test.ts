@@ -38,6 +38,7 @@ vi.mock('@/lib/db', () => ({
       deleteMany: vi.fn(),
       count: vi.fn(),
     },
+    $transaction: vi.fn(),
   },
 }));
 
@@ -257,5 +258,56 @@ describe('多租户数据隔离 - TenantDb', () => {
       );
       expect(result).toBe(42);
     });
+  });
+});
+
+/**
+ * 越权审计测试：raw getter 与 transaction() 均绕过租户隔离层，
+ * 应在每次访问时输出包含 tenantId 与调用方的 warn 日志，便于审计越权访问。
+ */
+describe('越权审计 - raw / transaction', () => {
+  const tenantId = 'tenant-audit-x';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('raw getter 应输出越权审计 warn 并返回原始 PrismaClient', async () => {
+    const tenantDb = createTenantDb(tenantId);
+    const { db } = await import('@/lib/db');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const raw = tenantDb.raw;
+
+    expect(raw).toBe(db);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('[TenantDb.raw]');
+    expect(warnSpy.mock.calls[0][0]).toContain(`tenantId=${tenantId}`);
+
+    warnSpy.mockRestore();
+  });
+
+  it('transaction() 应输出越权审计 warn 并将回调转发至 $transaction', async () => {
+    const tenantDb = createTenantDb(tenantId);
+    const { db } = await import('@/lib/db');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fakeTx = { __isTx: true };
+    const callback = vi.fn(async (tx: unknown) => {
+      expect(tx).toBe(fakeTx);
+      return 'tx-result';
+    });
+    (db.$transaction as any).mockImplementation(async (fn: any) => fn(fakeTx));
+
+    const result = await tenantDb.transaction(callback);
+
+    expect(result).toBe('tx-result');
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+    expect(db.$transaction).toHaveBeenCalledWith(callback);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('[TenantDb.transaction]');
+    expect(warnSpy.mock.calls[0][0]).toContain(`tenantId=${tenantId}`);
+
+    warnSpy.mockRestore();
   });
 });
