@@ -25,23 +25,8 @@ export async function GET(request: NextRequest) {
     const dateFrom = searchParams.get('dateFrom');
     const dateTo = searchParams.get('dateTo');
 
-    // 查询用户的租户和角色
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId, role: userRole } = tenantUser;
-
     // 权限检查：只有owner和admin可以查看系统日志
-    if (userRole !== 'owner' && userRole !== 'admin') {
+    if (role !== 'owner' && role !== 'admin') {
       return NextResponse.json(
         { error: '没有权限查看系统日志' },
         { status: 403 }
