@@ -8148,3 +8148,45 @@ Status: 完成
 - 补 saas/cloud-sync files(info)/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 /api/api-keys/[id] 的 DELETE/PUT 路由补全密钥生命周期，或 activity-logs：可复用 route + [id] 双文件测试范式与 member 403 控制流锁定思路）
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 16:00 自动迭代
+
+第三十五轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `199469a`（第三十四轮 worklog commit），工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：维持第三十四轮"全部闭环"结论不变——本轮 spot-check 未发现新增的安全/逻辑问题，优先级 1 项（tenant-db raw 审计 / alipay+wechat 真实验签 / files 走 TenantDb / sync-engine keep_both / api-auth 测试匹配实现）均已在前序轮次闭环。本轮转向优先级 3（补测试）。
+
+**本轮立项（吃掉第三十四轮候选 #1 的首项建议）**：第三十四轮 worklog"下一轮候选"明确建议"下一轮可优先补 /api/api-keys/[id] 的 DELETE/PUT 路由补全密钥生命周期"。当前 `src/__tests__/api/api-keys-route.test.ts` 已覆盖 GET/POST（route.ts，9 例），但 `[id]/route.ts` 的 PATCH/DELETE（密钥更新与删除生命周期）零测试覆盖。本轮落地该缺口，复用 api-keys-route.test.ts 的 vi.hoisted MockNextResponse 范式补一份 `[id]` 路由测试文件。机械、无生产代码变更、无外部依赖，适合单轮收口。
+
+**实现要点（1 个测试 commit）**：新增 `src/__tests__/api/api-keys-id-route.test.ts`（11 例），覆盖 PATCH(6) + DELETE(5)：
+
+- **PATCH**：①未认证 401 透传 authenticateRequest 响应、不触达 findFirst/update；②member 角色 403、不触达 DB；③findFirst 未命中 404 且**断言 findFirst 以 `{id, tenantId}` 双键作用域调用**（防跨租户越权读取/修改）、不触达 update；④全字段更新成功 → updateData 仅含 body 提供的 name/scopes(JSON.stringify 落库)/enabled/expiresAt、update 以 `where.id=keyId` 调用（前置 findFirst 已做租户鉴权）、response **剥离 secret**（即使 DB 行带 secret 也不回显）、scopes 以 JSON.parse 回显；⑤部分更新（仅 enabled=false）→ updateData 仅含 enabled、不动 name/scopes/expiresAt；⑥update 抛错 500。
+- **DELETE**：①未认证 401 透传；②member 403；③findFirst 未命中 404 且双键作用域断言、不触达 delete；④成功 → delete 以 `where.id=keyId` 调用、response 含 success + message；⑤delete 抛错 500。
+
+**核心安全契约锁定**：PATCH/DELETE 的 findFirst 均以 `{id, tenantId}` 双键作用域（防跨租户越权），update/delete 虽然 where 仅用 `{id}` 但前置 findFirst 已做租户鉴权、findFirst 失败即 404 拦截跨租户操作。测试显式断言 findFirst 的 where 形状，锁死该契约防止后续重构意外去掉 tenantId 作用域。另锁定 PATCH response 剥离 secret（与 GET 列表剥离 secret 的契约一致，防密钥哈希泄露）。
+
+环境：`npm ci`（package-lock.json，沿用第三十~三十四轮 installer 选择避免 lockfile 冲突，963 packages / 50s）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 **1147/1147** 通过（72 文件，61.55s，第三十四轮基线 1136/71 + 本轮新增 11 例/1 文件 = 1147/72，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/api-keys-id-route.test.ts`**（新文件，11 例）— /api/api-keys/[id] PATCH/DELETE 路由 handler 级集成测试，覆盖 401/403/404/成功/500 + findFirst 双键作用域 + response 剥离 secret + scopes 序列化往返 + 部分更新
+
+### Commit
+- `2527cd7 test(api-keys): 补 /api/api-keys/[id] PATCH/DELETE 路由 handler 级集成测试`
+
+### 推送状态
+- Gitee：待推送 `199469a..2527cd7 main -> main`
+- GitHub：待推送 `199469a..2527cd7 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1147/1147 通过（72 文件，61.55s），零回归
+- 改动量：1 文件（新测试文件 +335），纯测试 commit，无生产代码变更
+- **关于注释中过时的 reset 路由**：`[id]/route.ts` 顶部注释提到 `POST /api/api-keys/[id]/reset`，但实际无 reset 路由文件（只有 PATCH/DELETE）。该注释为历史遗留，本轮不处理（非本轮范围，避免无关改动）
+- **update/delete where 仅用 {id} 的安全性**：PATCH/DELETE 的 update/delete 调用 `where: { id: keyId }` 未带 tenantId，看似有越权风险，但前置 `findFirst({ where: { id, tenantId } })` 已做租户鉴权——findFirst 未命中即 404 拦截，命中才进入 update/delete。此"先 findFirst 鉴权再操作"模式与 GET/POST 的"直接以 tenantId 作用域"模式不同但等价安全，测试通过断言 findFirst 的 where 形状锁死该契约
+
+### 下一轮候选
+- **/api/api-keys/[id] PATCH/DELETE 路由测试已闭环**（11 例锁定 401/403/404/成功/500 + findFirst 双键作用域 + secret 剥离 + scopes 序列化），自本轮起从候选清单移除
+- **`db.$transaction` 回调租户隔离**：维持"21 处均显式 tenantId 作用域、无实际泄漏、文档化自管约定"结论，若后续要强约束可评估 `tenantDb.transaction` 租户感知变体（架构级，单列）
+- 补 saas/cloud-sync files(info)/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 activity-logs：可复用本轮 route + [id] 双文件测试范式与 member 403 控制流锁定思路，或 access-history/storage 等单 route 文件）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
