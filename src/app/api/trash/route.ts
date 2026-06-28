@@ -24,21 +24,6 @@ export async function GET(request: NextRequest) {
     const fileType = searchParams.get('fileType');
     const search = searchParams.get('search') || '';
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
     // 构建查询条件
     const where: any = {
       userId,
@@ -117,7 +102,7 @@ export async function POST(request: NextRequest) {
 
     if (action === 'empty') {
       // 清空回收站
-      return await emptyTrash(userId);
+      return await emptyTrash(userId, tenantId);
     }
 
     // 恢复文件
@@ -130,21 +115,6 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
 
     // 如果指定了目标文件夹，验证目标文件夹存在
     if (targetFolderId) {
@@ -233,21 +203,6 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
     // 使用事务永久删除
     const result = await db.$transaction(async (tx) => {
       // 验证所有文件都在回收站且属于当前用户和租户
@@ -292,23 +247,8 @@ export async function DELETE(request: NextRequest) {
 }
 
 // ─── 清空回收站 ─────────────
-async function emptyTrash(userId: string) {
+async function emptyTrash(userId: string, tenantId: string) {
   try {
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
     // 统计要删除的文件数量
     const count = await db.file.count({
       where: {
