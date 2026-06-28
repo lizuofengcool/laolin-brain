@@ -23,20 +23,8 @@ export async function GET(request: NextRequest) {
     const pageSize = Math.min(100, parseInt(searchParams.get('pageSize') || '20', 10));
     const accessType = searchParams.get('accessType') || 'view';
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
+    // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
+    // （原实现重复 db.tenantUser.findFirst 且与 auth 取的 tenantId 可能不一致）
 
     let files: any[] = [];
     let total = 0;
@@ -268,20 +256,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
+    // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
+    // （原实现重复 db.tenantUser.findFirst 且与 auth 取的 tenantId 可能不一致）
 
     // 验证文件存在
     const file = await db.file.findFirst({
@@ -353,20 +329,8 @@ export async function DELETE(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const fileId = searchParams.get('fileId');
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
+    // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
+    // （原实现重复 db.tenantUser.findFirst 且与 auth 取的 tenantId 可能不一致）
 
     if (fileId) {
       // 删除单个文件的访问记录
