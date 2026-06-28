@@ -8429,3 +8429,55 @@ Status: 完成
 - **trash 路由分发的设计观察（非本轮范围，记录备查）**：trash POST 按 `url.pathname.includes('/restore')` 分发，但仅有 `/api/trash/route.ts` 存在（无 `/api/trash/restore/route.ts` 或 `/api/trash/empty/route.ts`）。生产环境下 `POST /api/trash/restore` 不会触达本 handler（Next.js App Router 无对应 route 文件→404），而 `POST /api/trash` 因 pathname 不含 /restore 恒走 empty 分支。本轮测试为 handler 级（直接 import POST 函数 + 构造任意 URL pathname），锁定的是 handler 逻辑契约而非路由分发契约。若前端确需 restore 端点，需补 `/api/trash/restore/route.ts`（可 re-export 本 handler 或独立实现）——列为后续候选，需先确认前端调用路径再决策
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 06:00 自动迭代
+
+第四十一轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `06c820b`（第四十轮 worklog commit），工作树干净、无未提交改动、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复核 + 立项**：本轮对任务清单所列 5 项剩余问题做了一次完整复核（subagent 逐文件读源码验证），结论与第四十轮 worklog 一致——①`tenant-db.ts` 的 `raw` getter 已带 `new Error().stack` 调用方软审计（line 56-62）；②`alipay.ts`/`wechat.ts` 的 verifyCallback 已走真实 `createVerify('RSA-SHA256')` / `createHmac('sha256')+timingSafeEqual`，mock 字样均为"未配置真实密钥时返回明确错误"的有意降级路径（gated behind `isPaymentConfigured`）；③`sync-engine.ts` 的 `keep_both` 已正确"重命名本地为 `[冲突副本] xxx` + 云端版本以新 id create"（line 675-716）；④`api-auth.test.ts` 与 `api-auth.ts` 实现已完全对齐（async / 4 字段 / header-only / 拒 query param / verifyToken 契约 / tenantUser where 形状 / auto-tenant plan:'free' 均匹配）。
+
+复核中发现 ③ 有一处**真正的剩余优先级 1 问题**：`src/app/api/files/route.ts` 与 `[id]/route.ts` 已在第三十六~三十八轮改走 TenantDb，但**同目录的 `batch/route.ts` 与 `import/route.ts` 仍直接用 raw `db`** 配合手动 `where/data` 注入 tenantId。其中 `batch/route.ts` 全部 db 调用都在 `$transaction(async (tx) => ...)` 回调内（tx 是原始事务客户端，TenantDb.transaction 也返回原始 tx，迁移无实质安全增益，维持"自管约定"结论）；但 **`import/route.ts` 的 db 调用全部在 $transaction 之外**（folder.findUnique / folder.create / folder.findFirst / file.create + $queryRaw 配额查询），可安全迁移到 TenantDb 由 wrapper 强制注入 tenantId。本轮立项修 import 路由。
+
+**另一观察（非 bug，记录澄清）**：第四十轮 worklog"下一轮候选"提到的"trash 路由分发设计观察"——`POST /api/trash/restore` 在生产环境会 404。本轮 subagent 全量 grep 前端代码确认：**前端从未调用 `/api/trash` 任何端点**，回收站恢复/永久删/清空全部走 `ServerStorageAdapter` → `PUT /api/files/:id`（恢复，body `{isDeleted:false}`）/ `DELETE /api/files/:id`（永久删）。`/api/trash` 路由是 orphaned handler（UI 不触达），其 pathname 分发逻辑不会在生产被触发。因此这不是需要修的 bug，第四十轮"记录备查、需先确认前端调用路径再决策"的结论经本轮确认可关闭——无需补 `/api/trash/restore/route.ts`。
+
+**实现要点（1 个 fix commit）**：`src/app/api/files/import/route.ts` 改走 TenantDb，5 处 db 调用迁移 4 处、保留 1 处：
+
+- **保留 `db.$queryRaw`（line 45-47）**：TenantDb 不代理 raw SQL，配额查询 `SELECT COALESCE(SUM("fileSize"),0) FROM "File" WHERE "userId"=... AND "tenantId"=... AND "isDeleted"=false` 已在 SQL 内显式带 tenantId，安全。补注释说明保留原因。
+- **`db.folder.findUnique` → `tenantDb.folder.findUnique`（line 62）**：parentId 归属校验。TenantDb.folder.findUnique 实现为 `prisma.folder.findFirst` + tenantId 注入 where，跨租户 parentId 直接返回 null（DB 层强制，非 JS 层）。JS 归属校验由原 `!parentFolder || parentFolder.userId !== userId || parentFolder.tenantId !== tenantId` 简化为 `!parentFolder || parentFolder.userId !== userId`——tenantId 维度已由 wrapper 在 DB 层兜底，JS 侧的 tenantId 比对成为恒真死代码，移除以避免误导（保留 userId 比对因 TenantDb 不代理 userId 维度）。
+- **`db.folder.create` → `tenantDb.folder.create`（line 69）**：data 移除显式 `tenantId`（wrapper 通过 `{ ...args.data, tenantId }` 注入，同值覆盖无副作用）。保留 `userId`（TenantDb 不代理 userId）。
+- **`db.folder.findFirst` → `tenantDb.folder.findFirst`（line 126）**：where 移除显式 `tenantId`（wrapper 注入）。保留 `userId`。
+- **`db.file.create` → `tenantDb.file.create`（line 135）**：data 移除显式 `tenantId`（wrapper 注入）。保留 `userId`。
+
+**安全契约升级**：tenantId 从"手动写 where/data（漏写即跨租户泄漏）"升级为"TenantDb wrapper 强制注入（漏写不了）"。与 `files/route.ts`（line 271/460）、`files/[id]/route.ts`（line 18/48/154）已统一的范式对齐。`batch/route.ts` 因全在 $transaction 回调内（tx 原始客户端），迁移无实质增益，维持现状 + 自管约定。
+
+**行为等价性**：迁移是"同值注入路径变更"——原手动写的 tenantId 与 wrapper 注入的 tenantId 是同一个值（均来自 `authenticateRequest` 返回的 `auth.tenantId`）。`folder.findUnique` 由 `findUnique` 改为 `findFirst`（TenantDb 实现）对调用方透明（返回类型仍 `Folder | null`，跨租户/不存在均返回 null）。userId 维度不变（仍显式传）。
+
+环境：`npm ci`（package-lock.json，沿用第三十~四十轮 installer 选择避免 lockfile 冲突，963 packages / 33s）+ `npx prisma generate`（重新生成 client，233ms）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 **1247/1247 通过**（77 文件，64.82s，与第四十轮基线 1247/77 完全一致，零回归——import 路由无专属测试，靠 tsc + 全量套件间接验证）。
+
+### 改动
+
+1. **`src/app/api/files/import/route.ts`**（+14/-11）— 5 处 db 调用迁移 4 处到 TenantDb（folder.findUnique/findFirst/create + file.create），$queryRaw 保留 db 直连并补注释；folder.findUnique 的 JS 归属校验移除冗余 tenantId 比对（已由 wrapper 在 DB 层强制）
+
+### Commit
+- `f8df678 fix(files): import 路由改走 TenantDb 租户隔离层`
+
+### 推送状态
+- Gitee：待推送 `06c820b..f8df678 main -> main`
+- GitHub：待推送 `06c820b..f8df678 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1247/1247 通过（77 文件，64.82s），零回归
+- 改动量：1 文件（+14/-11），纯生产代码 fix commit，无测试变更
+- **import 路由无专属测试**：本路由 handler 级集成测试尚未补（控制流较丰富：50MB/500 文件/5GB 配额三道前置校验 + folder/file 双循环 + parentId/folderId 归属校验 + fileSize/textContent/tags 三维度字段校验 + per-item try/catch 容错）。迁移靠 tsc 类型检查 + 全量套件间接验证零回归。后续可补 import-route.test.ts 锁定 tenantId 注入契约（mock createTenantDb 断言被调用 + where/data 形状）
+- **batch 路由维持现状的理由**：batch/route.ts 全部 db 调用都在 `db.$transaction(async (tx) => ...)` 回调内，tx 是原始事务客户端。TenantDb.transaction 也返回原始 tx（仅加 console.warn 审计），迁移后 tx.file.updateMany 等仍需手动写 tenantId，无实质安全增益。维持第四十轮"21 处 $transaction 回调均显式 tenantId 作用域、文档化自管约定"结论
+- **trash 路由 orphaned handler 澄清**：本轮 subagent 全量 grep 确认前端从未调用 `/api/trash`（恢复走 `PUT /api/files/:id`、永久删走 `DELETE /api/files/:id`，均经 ServerStorageAdapter）。第四十轮"trash 路由分发设计观察"经本轮确认可关闭——无需补 `/api/trash/restore/route.ts`，handler 是 orphaned 但已由第四十轮 29 例测试锁定逻辑契约，留着无妨
+- **沙箱时钟说明**：本会话 `TZ=Asia/Shanghai date` 报 2026-06-29 06:00，与第四十轮 worklog 头（2026-06-29 05:00）顺序一致。轮次编号（第四十一轮）为排序权威键，时间戳仅供溯源
+
+### 下一轮候选
+- **`files/import/route.ts` TenantDb 迁移已闭环**（4/5 db 调用改走 tenantDb，$queryRaw 保留 db 直连），自本轮起从优先级 1 候选清单移除
+- **`files/batch/route.ts` 维持现状**：全在 $transaction 回调内，迁移无实质增益，维持自管约定。若后续要做架构级强约束，可评估 `tenantDb.transaction` 租户感知变体（让 tx 也自动注入 tenantId），单列
+- 补 saas/cloud-sync files(info)/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 invitations：含 GET role 门控 + POST 创建邀请（email 校验/角色校验/duplicate user 检查/duplicate pending invitation 检查/randomUUID token 生成），状态机比 trash 更丰富；或 tenant-users：含租户成员管理 CRUD + role 变更）。可复用第四十轮 $transaction 回调形式 mock 范式
+- 补 `files/import/route.ts` handler 级集成测试（锁定 tenantId 注入契约 + 50MB/500 文件/5GB 配额三道前置校验 + folder/file 双循环 + parentId/folderId 归属校验 + 字段校验 + per-item 容错），与本轮迁移形成"先迁移后补测"的闭环
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
