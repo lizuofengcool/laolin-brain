@@ -8533,3 +8533,66 @@ Status: 完成
 - 补 files/route.ts、files/[id]/route.ts 的 handler 级集成测试（锁定 TenantDb 注入契约，可复用本轮 raw db vs tenantDb mock 分离范式 + hand-crafted request 范式）
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 08:00 自动迭代
+
+第四十三轮自动迭代。本轮沙箱工作目录已存在（沿用前轮 clone），`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `d8ad0a3`（第四十二轮 worklog commit），工作树干净、无未提交改动、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复核**：第四十二轮 worklog 已确认任务清单所列 5 项剩余问题全部关闭。本轮 `grep TODO|FIXME|桩` 复核 src/lib，命中文件与第四十二轮一致——已知外部服务集成桩（registry.ts / model-manager.ts / document-qna.ts）+ 支付降级路径（wechat.ts，gated behind isPaymentConfigured）+ 三处新发现的外部集成桩：
+- `src/lib/saas/billing.service.ts:290` "TODO: 实际对接支付宝/微信支付，这里返回模拟数据"——订阅账单查询的 mock 降级，需真实支付凭证才能落地
+- `src/lib/monitoring/index.ts:408` "TODO: 实现各渠道的通知发送"——告警通知渠道发送桩（仅 console.log），需告警渠道配置才能落地
+- `src/lib/integrations/wecom.ts:44/60/78/86/98` 企业微信 API 桩（testConnection / handleAuthCallback / sendMessage / syncData / handleWebhook），其中 `handleWebhook` 的"TODO: 验证签名并处理Webhook事件"是 webhook 签名验证桩——但该集成需企业微信凭证/回调配置才启用，与 alipay/wechat 支付降级同属"gated behind 配置"的有意降级路径，非活跃代码路径的逻辑 bug
+
+三处新发现均属"需真实外部服务集成条件具备才能落地"的桩（沙箱无凭证/网络），与既有 registry/model-manager/document-qna 桩同类，**本轮不立项**，维持"文档化自管约定"结论记录备查。优先级 1 无待修，转向优先级 3（补测试）。
+
+**优先级 3 立项（吃掉第四十二轮候选 #2 的 invitations）**：第四十二轮 worklog"下一轮候选"明确建议"下一轮可优先补 invitations：含 GET role 门控 + POST 创建邀请（email 校验/角色校验/duplicate user 检查/duplicate pending invitation 检查/randomUUID token 生成），状态机比 trash 更丰富"。本轮立项落地该候选。
+
+**路由现状澄清**：`src/app/api/invitations/route.ts` 仅实现 GET + POST，文件头注释提及的 `DELETE /api/invitations/[id]` 与 `POST /api/invitations/[token]/accept` 无对应 route 文件（与 trash 路由同样的 orphaned 注释，handler 未实现）。本轮测试范围限定于已实现的 GET/POST，DELETE/accept 不在范围内（无源码可测）。
+
+**实现要点（1 个 test commit，24 例）**：新增 `src/__tests__/api/invitations-route.test.ts`（GET 10 + POST 14），覆盖 /api/invitations 路由的完整安全与控制流契约：
+
+- **GET（10 例）**：①未认证 → 401 透传，不触达 db.invitation；②role=member → 403 {error:'没有权限查看邀请列表'}，count/findMany 均不触达（门控在 DB 之前）；③role=viewer → 403，不触达 DB；④role=admin → 放行（admin 与 owner 均可查邀请列表）；⑤默认 → count+findMany 收到同一 where {tenantId:'tenant-1'}，orderBy {createdAt:'desc'}，skip=0 take=20，返回 {data,total,page,pageSize,totalPages,hasMore} 全等断言；⑥status 过滤 → where {tenantId, status}；⑦分页 page=2&pageSize=2 → skip=2 take=2，totalPages=ceil(5/2)=3，hasMore=2*2<5=true；⑧pageSize=500 → Math.min(100,500) 截断为 100（响应 pageSize + findMany take 双锁定）；⑨count 抛错 → 500 {error:'获取邀请列表失败'}，findMany 不触达；⑩findMany 抛错 → 500。
+- **POST（14 例）**：①未认证 → 401 透传，不触达任何 DB；②**email 缺失 + member 身份 → 400 {error:'邮箱不能为空'}（email 校验先于 role 门控）**——锁定门控顺序契约，member 不应因门控先达 403；③role='owner' → 400 {error:'无效的角色'}（**owner 不可被邀请**，白名单仅 ['admin','member','viewer']）；④role='superadmin' → 400；⑤**member 身份 + 合法 email + 合法 role → 403 {error:'没有权限邀请用户'}（门控在 email/role 校验之后）**——与 ② 对照锁定顺序：先 400 校验、后 403 门控；⑥viewer 身份 → 403；⑦用户已存在且已在本租户 → user.findFirst {where:{email}, include:{tenantMemberships:{where:{tenantId}}}} 返回 tenantMemberships.length>0 → 400 {error:'该用户已经在租户中'}；⑧用户存在但不在本租户（tenantMemberships 空数组）→ 放行继续 pending 检查并创建；⑨pending 邀请已存在 → invitation.findFirst where {tenantId,email,status:'pending',expiresAt:{gt:now}} → 400 {error:'该邮箱已有未过期的邀请'}；⑩owner + 全新邮箱 + role 默认 member + expiresInHours 默认 72 → create data {tenantId,email,role:'member',token(UUID),invitedBy:userId,expiresAt:now+72h} → 200 {success,data,message:'邀请已发送'}；⑪owner + role='admin' + expiresInHours=24 → create data role='admin', expiresAt=now+24h；⑫admin 身份亦可邀请 → 成功（admin 与 owner 均可创建邀请）；⑬user.findFirst 抛错 → 500 {error:'创建邀请失败'}，invitation.findFirst/create 不触达；⑭invitation.create 抛错 → 500。
+
+**核心安全契约锁定（手动 tenantId 注入）**：本路由用 raw db 手动注入 tenantId（非 TenantDb），与第四十一轮"21 处 $transaction 回调均显式 tenantId 作用域、文档化自管约定"一致。测试用全等断言锁死每一处 where/data 的 tenantId 形状——GET 的 count/findMany where {tenantId}（+status 可选）、POST 的 invitation.findFirst where 四键 {tenantId,email,status:'pending',expiresAt:{gt:now}}、POST 的 invitation.create data {tenantId,...}。若后续重构意外去掉 tenantId（跨租户泄漏邀请列表/创建跨租户邀请），全等断言立即失败。
+
+**duplicate user 检查的租户作用域特殊形态**：本路由的"用户已在租户中"检查走 `db.user.findFirst({where:{email}, include:{tenantMemberships:{where:{tenantId}}}})`——user 表本身无 tenantId 字段（多租户关系经 TenantUser 关联表），租户归属由 include 的 filtered relation where 限定，而非 where.tenantId。测试显式锁定 include.tenantMemberships.where.tenantId 形状，防后续误改为 where.tenantId（user 表无此字段，将导致查询异常或跨租户误判）。这是与 files/trash 路由（直接 where.tenantId）不同的第四种租户作用域形态，值得用测试锁死。
+
+**角色门控模型第五对照**：invitations 的 GET/POST 均 owner/admin 放行、member/viewer 403，属"租户级管理数据 + role 门控"，与 system-logs 一致（区别于 trash/storage 的个人数据无门控、access-history 的双键无门控）。但 invitations 独有的是 **POST role 门控顺序**——门控在 email/role 校验之后（先 400 后 403），而 GET 的门控在最前（auth 后即门控，不触达 DB）。测试用"member + 缺 email → 400 而非 403"与"member + 合法 email+role → 403"两条对照用例锁定此顺序契约，防后续误把 POST 门控前移（会改变缺 email 时的响应码 400→403，破坏 API 契约）。
+
+**token 生成契约**：randomUUID() 产生 UUIDv4 格式字符串写入 invitation.token。测试用 UUID 正则 `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i` 断言 token 形状 + 断言 create.data.token 为该字符串。**不 mock crypto 模块**（避免内置模块 mock 风险），正则锁定"是 randomUUID 输出"契约即可。
+
+**expiresAt 计算契约**：`new Date(Date.now() + expiresInHours*60*60*1000)`。测试用 `vi.spyOn(Date,'now').mockReturnValue(FIXED_NOW)` 固定时间戳，使 expiresAt 可全等断言（默认 72h → `new Date(FIXED_NOW + 72*HOUR_MS)`，自定义 24h → `new Date(FIXED_NOW + 24*HOUR_MS)`）。pending 检查的 `expiresAt:{gt:new Date()}` 因 `new Date()` 无参调用不经 Date.now() 方法（V8 内部 CurrentTime 直读），用 `expect.any(Date)` 断言形状。afterEach 中 mockRestore Date.now 防泄漏到其他测试文件。
+
+环境：node_modules 已存在（沿用前轮 install），无需重装。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run src/__tests__/api/invitations-route.test.ts` 单文件 24/24 通过；`npx vitest run` 全量 **1295/1295 通过**（79 文件，90.06s，第四十二轮基线 1271/78 + 本轮新增 24 例/1 文件 = 1295/79，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/invitations-route.test.ts`**（新文件，24 例，+464）— /api/invitations GET/POST 路由 handler 级集成测试，覆盖 401/400/403/500 全状态码 + GET role 门控（owner/admin 放行、member/viewer 403 不触达 DB）+ 手动 tenantId 注入全等断言（count/findMany/findFirst/create）+ duplicate user 检查 include filtered relation 特殊形态 + POST role 门控顺序契约（先 400 后 403）+ invited-role 白名单（owner 不可被邀请）+ randomUUID token + expiresAt 计算（默认 72h/自定义 24h）+ 分页 pageSize 上限 100 截断
+
+### Commit
+- `1234758 test(invitations): 补 /api/invitations GET/POST 路由 handler 级集成测试`
+
+### 推送状态
+- Gitee：待推送 `d8ad0a3..1234758 main -> main`
+- GitHub：待推送 `d8ad0a3..1234758 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1295/1295 通过（79 文件，90.06s），零回归
+- 改动量：1 文件（新测试文件 +464），纯测试 commit，无生产代码变更
+- **invitations 路由用 raw db 手动 tenantId（非 TenantDb）**：与 files 路由族（已迁移 TenantDb）不同，invitations 的 db 调用全部在 $transaction 之外且手动 where/data 注入 tenantId 即可保证隔离，无迁移 TenantDb 的实质安全增益（TenantDb 主要价值在 $transaction 回调外的强制注入防漏写，但本路由 where/data 较简单且测试已全等断言锁死 tenantId）。维持第四十一轮"21 处自管约定"结论，不强行迁移
+- **租户作用域形态第五对照**：access-history 双键无门控（个人数据）/ system-logs 单键+role 门控（租户级管理数据）/ storage 双键+isDeleted 维度无门控（个人存储）/ trash 三键(isDeleted:true)无门控（个人回收站）/ **invitations 单键(tenantId)+role 门控 + duplicate user 检查走 include filtered relation**（租户级管理数据，user 表无 tenantId 字段经 TenantUser 关联表作用域）。五套作用域模型各有其合理性，测试分别全等断言锁死 where/include 形状
+- **POST role 门控顺序契约**：invitations POST 的"先 400 校验、后 403 门控"是与 GET（门控在最前）的独有差异。测试用 member 身份的两条对照用例（缺 email → 400、合法 email+role → 403）锁定顺序，防后续误把门控前移导致缺 email 时响应码从 400 变 403
+- **token 不 mock crypto 的理由**：mock 内置 `crypto` 模块有兼容性风险（vitest 对 builtin 模块 mock 的行为依赖运行时），且 randomUUID 的契约本质是"产生 UUIDv4 格式字符串"。用正则断言形状即可锁定契约，无需固定具体值。该手法可复用于后续任何使用 randomUUID 的路由测试
+- **Date.now spy + new Date(num) 全等断言**：`vi.spyOn(Date,'now')` 固定时间戳后，路由的 `new Date(Date.now()+X)` 因 Date.now() 返回固定值、`new Date(num)` 直接用 num 构造（不经 Date.now() 方法），expiresAt 可全等断言。但 `new Date()`（无参）直读 V8 CurrentTime 不经 Date.now() 方法，故 pending 检查的 `expiresAt:{gt:new Date()}` 用 expect.any(Date) 断言形状。该区分可复用于后续任何混合使用 Date.now() 与 new Date() 的路由测试
+- **DELETE / [token]/accept orphaned 注释**：invitations route.ts 文件头注释提及 DELETE /api/invitations/[id] 与 POST /api/invitations/[token]/accept，但无对应 route 文件（与 trash 路由同样的 orphaned 注释）。本轮测试范围限定于已实现的 GET/POST，DELETE/accept 不在范围内（无源码可测）。若前端确需撤销邀请/接受邀请端点，需补对应 route.ts——列为后续候选，需先确认前端调用路径再决策
+- **沙箱时钟说明**：本会话 `TZ=Asia/Shanghai date` 报 2026-06-29 07:35，worklog 头取整为 08:00（高于第四十二轮 07:00 保持单调）。轮次编号（第四十三轮）为排序权威键，时间戳仅供溯源
+
+### 下一轮候选
+- **`/api/invitations` GET/POST handler 级集成测试已闭环**（24 例锁定 401/400/403/500 + role 门控 + 手动 tenantId 注入 + include filtered relation + 门控顺序 + 白名单 + token + expiresAt + 分页），自本轮起从候选清单移除
+- 补 saas/cloud-sync files(info)/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 tenant-users：含租户成员管理 CRUD + role 变更，状态机与 invitations 互补——invitations 是"邀请未注册用户"，tenant-users 是"管理已加入成员"）。可复用本轮 role 门控 + 手动 tenantId 注入断言范式
+- 补 files/route.ts、files/[id]/route.ts 的 handler 级集成测试（锁定 TenantDb 注入契约，可复用第四十二轮 raw db vs tenantDb mock 分离范式 + hand-crafted request 范式）
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）——若前端确需撤销/接受邀请，需补对应 route.ts + 测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
