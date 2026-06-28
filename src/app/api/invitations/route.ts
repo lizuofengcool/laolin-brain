@@ -24,23 +24,8 @@ export async function GET(request: NextRequest) {
     const pageSize = Math.min(100, parseInt(searchParams.get('pageSize') || '20', 10));
     const status = searchParams.get('status');
 
-    // 查询用户的租户和角色
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId, role: userRole } = tenantUser;
-
     // 权限检查：只有owner和admin可以查看邀请列表
-    if (userRole !== 'owner' && userRole !== 'admin') {
+    if (role !== 'owner' && role !== 'admin') {
       return NextResponse.json(
         { error: '没有权限查看邀请列表' },
         { status: 403 }
@@ -90,7 +75,7 @@ export async function POST(request: NextRequest) {
   const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId, tenantId, role } = auth;
+  const { userId, tenantId, role: authRole } = auth;
 
   try {
     const body = await request.json();
@@ -110,23 +95,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 查询当前用户的租户和角色
-    const currentTenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
-
-    if (!currentTenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId, role: currentRole } = currentTenantUser;
-
     // 权限检查：只有owner和admin可以邀请用户
-    if (currentRole !== 'owner' && currentRole !== 'admin') {
+    if (authRole !== 'owner' && authRole !== 'admin') {
       return NextResponse.json(
         { error: '没有权限邀请用户' },
         { status: 403 }
