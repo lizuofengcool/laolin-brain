@@ -7941,3 +7941,48 @@ Status: 完成
 - **`db.$transaction` 回调租户隔离**：21 处直连事务回调内 `tx` 无 tenantId 注入，可评估是否提供 `tenantDb.transaction` 的租户感知变体（现已带审计）或文档化各路由自管约定
 - 补 saas/cloud-sync files(info)/api-keys/webhooks/stats/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 saas/api-keys 或 webhooks：权限模型清晰、无外部依赖，可复用本轮 route handler 测试范式）
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+
+## 2026-06-28 18:00 自动迭代
+
+第三十一轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `827280a`（第三十轮 worklog commit），工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：用户任务清单"优先级 1 剩余项"经第二十八~三十轮 worklog 确认已全部闭环，本轮逐项 spot-check 维持结论（tenant-db raw 审计 / alipay+wechat 真实验签 / files 等路由 TenantDb 收口 / sync-engine keep_both 保留两端 / api-auth.test.ts 匹配 async 4 字段实现）。
+
+继续 worklog "下一轮候选"首项——**补 /api/api-keys 路由 handler 级集成测试**（第三十轮 worklog 明示"下一轮可优先补 saas/api-keys 或 webhooks：权限模型清晰、无外部依赖，可复用本轮 route handler 测试范式"）。
+
+立项依据：`/api/api-keys` 路由（[src/app/api/api-keys/route.ts](src/app/api/api-keys/route.ts)）承担 API 密钥的签发与列举，是凭证泄露面的写入闸门。其核心安全契约——POST 时 `apiSecret`（`randomBytes(32)`）经 `createHash('sha256')` 哈希后落库（`db.apiKey.create.data.secret`），明文仅此一次随响应返回；GET 列表严格剥离 `secret` 字段；`count`/`findMany`/`create` 均以 `auth.tenantId` 作用域调用（防多租户越权）——此前零路由级覆盖，若后续重构误将明文落库、或漏掉 `secret` 剥离、或回退为影子 `tenantUser` 查询，均无回归保护。该契约与第二十八轮 `storageConfig.config` 落库加密同属"敏感值入库前变换"边界，适合以相同精神锁定。路由无外部依赖（不触达网络/文件系统/真实 DB），权限模型为 owner/admin，适合单轮收口。
+
+**实现要点**：
+- 新增 `src/__tests__/api/api-keys-route.test.ts`（12 例，复用第三十轮 `vi.hoisted` 共享 `MockNextResponse` + 全模块隔离范式）：
+  - GET 6 例：401 透传（不触达 DB）/ member 403（不触达 count/findMany）/ 成功（count/findMany 以 `auth.tenantId` 作用域、列表剥离 `secret`——故意在 mock DB 行带 `secret` 断言响应不含、scopes 经 `JSON.parse` 回显、默认分页 page=1/pageSize=20、total=5→totalPages=1/hasMore=false）/ 分页数学（page=2&pageSize=2,total=5→skip=2/take=2/totalPages=3/hasMore=true）/ pageSize 上限（pageSize=500→`Math.min(100,…)`=100）/ count 抛错 500。
+  - POST 6 例：401 透传（不触达 create）/ member 403（不触达 create）/ 缺 name 400 / 成功（无 expiresInDays）锁定核心安全契约 / 成功（带 expiresInDays=7）→ expiresAt 约为未来 7 天（±2s 计时松弛）/ create 抛错 500。
+- **核心安全契约断言**（成功用例）：从响应取明文 `plaintextSecret = body.data.secret`，独立计算 `expectedHash = createHash('sha256').update(plaintextSecret).digest('hex')`，断言 `create.data.secret === expectedHash`（落库的是明文的 sha256）且 `create.data.secret !== plaintextSecret`（绝不能把明文落库）；明文与哈希均匹配 `/^[0-9a-f]{64}$/`；`create.data.key` 匹配 `/^ak_[0-9a-f]{48}$/`（'ak_' + 24 字节 hex）；`create.data.scopes === JSON.stringify(...)` 落库、响应 `JSON.parse` 回显；`create.data.tenantId/userId` 来自 auth 权威值；无 expiresInDays 时 `expiresAt === null`。若后续重构误回退为明文落库或漏哈希，此断言立即失败。
+- Mock 策略：仅隔离 `next/server`（`MockNextResponse` class，使路由 `auth instanceof NextResponse` 命中）/ `@/lib/api-auth`（`authenticateRequest: vi.fn()`）/ `@/lib/db`（`apiKey.count/findMany/create`）；**不 mock node `crypto`**（`randomBytes`/`createHash` 真实运行），以真实 exercise 哈希契约而非验证 mock 自身；`beforeEach` 默认 `mockAuthenticate` 返回 owner 身份，逐用例按需覆盖；`create` 用 `mockImplementation` 回填路由读取的字段（name/key/scopes/expiresAt/enabled/createdAt）。
+
+环境：`npm ci`（package-lock.json，无 pnpm-lock.yaml，沿用第三十轮 installer 选择避免 lockfile 冲突）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 **1096/1096** 通过（67 文件，78.90s，第三十轮基线 1084/66 + 本轮新增 12 例/1 文件 = 1096/67，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/api-keys-route.test.ts`**（新文件，352 行，12 例）— /api/api-keys 路由 handler 级集成测试，覆盖 GET 6 例 + POST 6 例，锁定 secret 哈希落库契约 / 列表剥离 secret / 租户作用域 / 权限闸门 / 分页与 pageSize 上限 / expiresAt 计算
+
+### Commit
+- `7ef2f29 test(api-keys): 补 /api/api-keys 路由 handler 级集成测试覆盖 secret 哈希落库与权限`
+
+### 推送状态
+- Gitee：待推送 `827280a..7ef2f29 main -> main`
+- GitHub：待推送 `827280a..7ef2f29 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1096/1096 通过（67 文件，78.90s），零回归
+- 改动量：1 文件 +352 行（纯测试，无生产代码变更）
+- 运行时 vitest 日志中 GET 500 与 POST 500 两例的 stderr 为路由 `catch` 块 `console.error` 预期输出（测试本身通过），与第三十轮同源，与本次改动无关
+- 不 mock node `crypto` 的选择：mock `randomBytes`/`createHash` 会把测试降级为"验证 mock 自身返回值"，无法锁定路由是否真的调用了 sha256；保持真实运行后，`create.data.secret === sha256(plaintext)` 断言才具备回归意义（任何漏哈希/误存明文/换算法均会失败）
+- `mockApiKeyCreate` 用 `mockImplementation` 而非 `mockResolvedValue`：路由读取 `newApiKey.{name,key,scopes,expiresAt,enabled,createdAt}` 等字段，须从入参 `data` 回填以保证响应字段非 undefined，且 `scopes` 字段须原样回传 JSON 字符串以测 `JSON.parse` 回显路径
+- 与第三十轮 `cloud-sync-config-route.test.ts` 范式一致：`vi.hoisted` 共享 `MockNextResponse` class + `(...args) => mockX(...args)` 透传包装 + `beforeEach` 默认 owner 身份；后续 saas 其他路由 handler 测试可继续复用
+
+### 下一轮候选
+- **/api/api-keys route handler 级集成测试已闭环**，自本轮起从候选清单移除
+- **`db.$transaction` 回调租户隔离**：21 处直连事务回调内 `tx` 无 tenantId 注入，可评估是否提供 `tenantDb.transaction` 的租户感知变体（现已带审计）或文档化各路由自管约定
+- 补 saas/cloud-sync files(info)/webhooks/stats/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 webhooks：与 api-keys 同构 owner/admin 权限模型，含 `generateSecret` 开关与 URL 校验分支，可复用本轮范式；或补 /api/api-keys/[id] 的 DELETE/PUT 路由补全密钥生命周期）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
