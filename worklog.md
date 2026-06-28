@@ -7986,3 +7986,56 @@ Status: 完成
 - **`db.$transaction` 回调租户隔离**：21 处直连事务回调内 `tx` 无 tenantId 注入，可评估是否提供 `tenantDb.transaction` 的租户感知变体（现已带审计）或文档化各路由自管约定
 - 补 saas/cloud-sync files(info)/webhooks/stats/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 webhooks：与 api-keys 同构 owner/admin 权限模型，含 `generateSecret` 开关与 URL 校验分支，可复用本轮范式；或补 /api/api-keys/[id] 的 DELETE/PUT 路由补全密钥生命周期）
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+
+## 2026-06-28 19:00 自动迭代
+
+第三十二轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `ea0f0a0`（第三十一轮 worklog commit），工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：用户任务清单"优先级 1 剩余项"经第二十八~三十一轮 worklog 确认已全部闭环，本轮逐项 spot-check 维持结论：
+- `tenant-db.ts` raw 后门：`get raw()` getter 软审计 + 文档化三层约定 ✓
+- `alipay.ts` & `wechat.ts` RSA2 验签：真实 `verifyRSA2Sign`/`verifyWechatSign`，mock 仅开发环境、生产显式失败 ✓
+- `files` 等路由绕过 TenantDb：grep `tenantUser\.findFirst` 剩余命中均为合法路径（`api-auth.ts` 权威鉴权 / `tenant-context.ts`/`tenant-permissions.ts` 工具 / `migrations/index.ts` 迁移内 tx / `ai-processor.ts` 注释 / `activity-logs`+`access-history` 注释），app/api 下"影子覆盖"模式已彻底清除 ✓
+- `sync-engine.ts` keep_both 保留两端 ✓
+- `api-auth.test.ts` 匹配 async 4 字段实现 ✓
+
+继续 worklog "下一轮候选"首项——**补 /api/webhooks 路由 handler 级集成测试**（第三十一轮 worklog 明示"下一轮可优先补 webhooks：与 api-keys 同构 owner/admin 权限模型，含 `generateSecret` 开关与 URL 校验分支，可复用本轮范式"）。
+
+立项依据：`/api/webhooks`（[src/app/api/webhooks/route.ts](src/app/api/webhooks/route.ts)）与 `/api/webhooks/[id]`（[src/app/api/webhooks/[id]/route.ts](src/app/api/webhooks/[id]/route.ts)）共同承担 Webhook 凭证的生命周期管理，是凭证泄露面的写入/读取闸门。其核心安全契约——GET 列表与 PATCH 响应严格剥离 `secret` 明文（仅回 `hasSecret` 布尔）、POST `generateSecret` 开关生成的 secret **明文落库**（与 api-keys 的 sha256 哈希不同，webhook 不哈希）且仅此一次随创建响应返回、`findFirst` 一律以 `{id, tenantId}` 作用域调用防跨租户越权、owner/admin 权限闸门、POST 的 URL 格式校验——此前零路由级覆盖。若后续重构误将 secret 明文回传列表、或回退为影子 `tenantUser` 查询、或漏掉 `findFirst` 的 tenantId 约束导致跨租户读写，均无回归保护。路由无外部依赖（不触达网络/文件系统/真实 DB），权限模型为 owner/admin，适合单轮收口并补全整个 CRUD 生命周期（GET/POST/PATCH/DELETE 四 handler）。
+
+**实现要点**：
+- 新增 `src/__tests__/api/webhooks-route.test.ts`（24 例，复用第三十~三十一轮 `vi.hoisted` 共享 `MockNextResponse` + 全模块隔离范式，首次覆盖同一资源的 route.ts + [id]/route.ts 两个文件）：
+  - **GET 6 例**：401 透传（不触达 DB）/ member 403（不触达 count/findMany）/ 成功（count/findMany 以 `auth.tenantId` 作用域、`orderBy createdAt desc`、默认 page=1/pageSize=20；列表**剥离 secret 明文**仅回 `hasSecret` 布尔——故意在 mock DB 行带 `secret` 断言响应不含、events 经 `JSON.parse` 回显、分页元数据 total/totalPages/hasMore）/ 分页数学（page=2&pageSize=2,total=5→skip=2/take=2/totalPages=3/hasMore=true）/ pageSize 上限（500→`Math.min(100,…)`=100）/ count 抛错 500。
+  - **POST 7 例**：401 透传 / member 403（**注意 POST 权限检查在 name/url 必填与 URL 格式校验之后**，故 member 用例须传合法 body 才能抵达 403，锁定该控制流顺序）/ 缺 name 400 / 无效 URL 400 / 成功（generateSecret=false）→ secret=null 落库且响应 secret=null、message 为 undefined、events 序列化落库、tenantId/userId 来自 auth / 成功（generateSecret=true）→ **核心契约：secret 为 32 字节 hex（64 字符）明文落库且响应明文 === 落库明文**（与 api-keys 哈希落库刻意区分）、message 含"保存" / create 抛错 500。
+  - **PATCH 6 例**：401 透传 / member 403（权限检查在 findFirst 之前，不触达 findFirst/update）/ findFirst 返回 null → 404 且不触达 update（断言 findFirst 以 `{id, tenantId}` 作用域防越权）/ url 无效 → 400 / 成功（findFirst 以 `{id,tenantId}` 作用域、update 以 `{id}` 为 where、`update.data` 仅含传入字段且 events 经 `JSON.stringify`、响应**剥离 secret 明文**仅回 `hasSecret` 布尔、events `JSON.parse` 回显）/ update 抛错 500。
+  - **DELETE 5 例**：401 透传 / member 403 / findFirst 返回 null → 404（findFirst 以 `{id,tenantId}` 作用域）/ 成功（findFirst 作用域 + delete 以 `{id}` 为 where + 响应 success/message）/ delete 抛错 500。
+- **核心安全契约断言**：GET 与 PATCH 成功用例故意在 mock DB 返回行带 `secret` 明文字段，断言响应 `not.toHaveProperty("secret")` 且 `hasSecret === true`——若后续重构误回传 secret 明文，此断言立即失败。POST generateSecret=true 用例独立锁定"明文落库 + 明文一次性返回"契约（`body.data.secret === createData.secret` 且匹配 `/^[0-9a-f]{64}$/`），与 api-keys 的"哈希落库"断言形成对照，防止两类资源的凭证处理逻辑被误混。
+- Mock 策略：仅隔离 `next/server`（`MockNextResponse` class，使路由 `auth instanceof NextResponse` 命中）/ `@/lib/api-auth`（`authenticateRequest: vi.fn()`）/ `@/lib/db`（`webhook.{count,findMany,create,findFirst,update,delete}` 六方法，覆盖两个路由文件的全部 DB 调用）；**不 mock node `crypto`**（`randomBytes` 真实运行），以真实 exercise secret 生成契约；PATCH/DELETE 的 `params: Promise<{id:string}>` 以 `Promise.resolve({id})` 提供，匹配 Next.js 16 动态路由 params 为 Promise 的新签名。
+
+环境：`npm ci`（package-lock.json，963 包，34s，无 pnpm-lock.yaml 沿用第三十~三十一轮 installer 选择避免 lockfile 冲突）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 **1120/1120** 通过（68 文件，52.47s，第三十一轮基线 1096/67 + 本轮新增 24 例/1 文件 = 1120/68，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/webhooks-route.test.ts`**（新文件，674 行，24 例）— /api/webhooks 与 /api/webhooks/[id] 路由 handler 级集成测试，覆盖 GET 6 例 + POST 7 例 + PATCH 6 例 + DELETE 5 例，锁定 secret 剥离契约（GET/PATCH 仅回 hasSecret 布尔）/ generateSecret 明文落库一次性返回 / 跨租户 findFirst 作用域 / 权限闸门 / URL 校验 / 分页与 pageSize 上限
+
+### Commit
+- `dcdb279 test(webhooks): 补 /api/webhooks 路由 handler 级集成测试覆盖 secret 剥离与权限`
+
+### 推送状态
+- Gitee：待推送 `ea0f0a0..dcdb279 main -> main`
+- GitHub：待推送 `ea0f0a0..dcdb279 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1120/1120 通过（68 文件，52.47s），零回归
+- 改动量：1 文件 +674 行（纯测试，无生产代码变更）
+- 运行时 vitest 日志中 POST/PATCH/DELETE 500 三例的 stderr 为路由 `catch` 块 `console.error` 预期输出（测试本身通过），与第三十~三十一轮同源，与本次改动无关；`parsePdf` 的 stderr 警告为 pdf-parse 模块加载噪音（parser-pdf.test.ts 自身 9/9 通过）
+- 不 mock node `crypto` 的选择（同第三十一轮 api-keys）：保持 `randomBytes` 真实运行后，`createData.secret` 匹配 `/^[0-9a-f]{64}$/` 断言才具备回归意义（任何换算法/漏生成都会失败）
+- webhook secret **明文落库**（route.ts 第 123/133 行 `generateWebhookSecret()` → `randomBytes(32).toString('hex')` 直接写 `data.secret`，不哈希）是既有生产行为，本轮测试如实锁定而非施加哈希——与 api-keys 的 sha256 哈希落库刻意区分，两类资源凭证处理逻辑独立。GET/PATCH 永不回传明文（仅 `hasSecret` 布尔）已由断言锁定，泄露面仅限创建时的一次性响应
+- POST 权限检查顺序（在 name/url 必填与 URL 校验之后）与 PATCH/DELETE（在 findFirst 之前）不同，本轮 member 403 用例分别按各自控制流构造入参（POST 须传合法 body；PATCH/DELETE 无须），锁定该顺序差异防止后续重构误调整
+- 与第三十~三十一轮 `cloud-sync-config-route.test.ts` / `api-keys-route.test.ts` 范式一致：`vi.hoisted` 共享 `MockNextResponse` class + `(...args) => mockX(...args)` 透传包装 + `beforeEach` 默认 owner 身份；本轮为首次覆盖同一资源的 route.ts + [id]/route.ts 两文件（PATCH/DELETE 经 `Promise.resolve({id})` params 适配 Next.js 16 动态路由新签名），后续 saas 其他带 [id] 资源的 handler 测试可继续复用
+
+### 下一轮候选
+- **/api/webhooks route handler 级集成测试已闭环**（含 [id] PATCH/DELETE），自本轮起从候选清单移除
+- **`db.$transaction` 回调租户隔离**：21 处直连事务回调内 `tx` 无 tenantId 注入，可评估是否提供 `tenantDb.transaction` 的租户感知变体（现已带审计）或文档化各路由自管约定
+- 补 saas/cloud-sync files(info)/stats/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 /api/api-keys/[id] 的 DELETE/PUT 路由补全密钥生命周期，或 stats/activity-logs：可复用本轮 route + [id] 双文件测试范式与 member 403 控制流锁定思路）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
