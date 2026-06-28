@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, createTenantDb } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 
 const VALID_FILE_TYPES = ["image", "pdf", "word", "pptx", "markdown", "txt", "other"];
@@ -9,9 +9,12 @@ export async function POST(request: NextRequest) {
   if (auth instanceof NextResponse) return auth;
   const { userId, tenantId, role } = auth;
 
-  try {
-    // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
+  // 走 TenantDb 租户隔离层：tenantDb.folder/file.* 自动注入 tenantId 过滤，
+  // 避免手动 where/data 漏写 tenantId 导致跨租户泄漏。
+  // $queryRaw 配额查询因 TenantDb 不代理 raw SQL，仍走 db 直连（SQL 内已显式带 tenantId）。
+  const tenantDb = createTenantDb(tenantId);
 
+  try {
     // Early reject requests over 50MB based on Content-Length
     const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
     if (contentLength > 50 * 1024 * 1024) {
@@ -53,18 +56,18 @@ export async function POST(request: NextRequest) {
         if (!folder.name || typeof folder.name !== 'string' || folder.name.length > 255) continue;
 
         // Validate parentId ownership
+        // tenantDb.folder.findUnique 自动注入 tenantId 过滤，跨租户 parentId 返回 null
         let parentId = folder.parentId || null;
         if (parentId) {
-          const parentFolder = await db.folder.findUnique({ where: { id: parentId } });
-          if (!parentFolder || parentFolder.userId !== userId || parentFolder.tenantId !== tenantId) {
+          const parentFolder = await tenantDb.folder.findUnique({ where: { id: parentId } });
+          if (!parentFolder || parentFolder.userId !== userId) {
             parentId = null;
           }
         }
 
         try {
-          await db.folder.create({
+          await tenantDb.folder.create({
             data: {
-              tenantId,
               userId,
               name: folder.name,
               parentId,
@@ -117,10 +120,11 @@ export async function POST(request: NextRequest) {
 
       try {
         // Validate folderId ownership if provided
+        // tenantDb.folder.findFirst 自动注入 tenantId 过滤
         let validFolderId = file.folderId || null;
         if (validFolderId) {
-          const folderExists = await db.folder.findFirst({
-            where: { id: validFolderId, userId, tenantId },
+          const folderExists = await tenantDb.folder.findFirst({
+            where: { id: validFolderId, userId },
             select: { id: true },
           });
           if (!folderExists) {
@@ -128,9 +132,8 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        await db.file.create({
+        await tenantDb.file.create({
           data: {
-            tenantId,
             userId,
             fileName: file.fileName,
             fileType: VALID_FILE_TYPES.includes(file.fileType) ? file.fileType : "other",
