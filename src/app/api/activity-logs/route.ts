@@ -23,20 +23,8 @@ export async function GET(request: NextRequest) {
     const dateFrom = searchParams.get('dateFrom');
     const dateTo = searchParams.get('dateTo');
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId, role } = tenantUser;
+    // tenantId / role 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
+    // （原实现重复 db.tenantUser.findFirst 且与 auth 取的 tenantId/role 可能不一致）
 
     // 构建查询条件
     const where: any = {
