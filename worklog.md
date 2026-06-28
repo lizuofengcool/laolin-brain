@@ -8481,3 +8481,55 @@ Status: 完成
 - 补 `files/import/route.ts` handler 级集成测试（锁定 tenantId 注入契约 + 50MB/500 文件/5GB 配额三道前置校验 + folder/file 双循环 + parentId/folderId 归属校验 + 字段校验 + per-item 容错），与本轮迁移形成"先迁移后补测"的闭环
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 07:00 自动迭代
+
+第四十二轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `9f9f922`（第四十一轮 worklog commit），工作树干净、无未提交改动、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复核**：第四十一轮 worklog 已确认任务清单所列 5 项剩余问题全部关闭（tenant-db raw 软审计 / alipay+wechat 真实验签 / sync-engine keep_both 正确 / api-auth.test 对齐 / files 路由族 batch+import TenantDb 迁移）。本轮复核无新增优先级 1 问题。
+
+**优先级 3 立项（补测试，闭环第四十一轮迁移）**：第四十一轮"下一轮候选"明确列出"补 `files/import/route.ts` handler 级集成测试（锁定 tenantId 注入契约 + 50MB/500 文件/5GB 配额三道前置校验 + folder/file 双循环 + parentId/folderId 归属校验 + 字段校验 + per-item 容错），与本轮迁移形成'先迁移后补测'的闭环"。本轮立项落地该候选。
+
+**实现要点（1 个 test commit）**：新增 `src/__tests__/api/files-import-route.test.ts`（24 例），覆盖 /api/files/import POST 路由的完整安全与控制流契约：
+
+- **前置校验三道（按顺序短路，5 例）**：①未认证 → 401 透传 authenticateRequest 响应，不触达 DB（createTenantDb/$queryRaw 均未调用）；②Content-Length > 50MB → 413 `{ error: 'Request body exceeds 50MB limit' }`，在 request.json 之前短路（$queryRaw 未触达）；③files 缺失 → 400 `{ error: 'files 必须是一个数组' }`；④files 非数组 → 400；⑤files.length > 500 → 400 `{ error: '单次最多导入500个文件' }`。
+- **$queryRaw 配额查询契约（2 例）**：①默认 → $queryRaw 收到 tagged template，values[0]=userId、values[1]=tenantId（按 SQL 模板插值顺序），SQL 字符串含 `"userId"`/`"tenantId"`/`"isDeleted" = false` 三键（活跃文件配额，不含回收站）；返回 200 `{success:true, importedCount:0, skippedCount:0, message:'成功导入 0 个文件'}`；②$queryRaw 抛错 → 500 `{ error: '数据导入失败' }` catch-all 兜底，不触达任何 tenantDb 调用。
+- **createTenantDb + tenantId 注入契约（1 例，核心安全契约）**：createTenantDb 以 auth.tenantId 构造（`toHaveBeenCalledWith('tenant-1')`）；**负向断言** raw db 的 folder.findFirst/findUnique/create + file.create 恒不被调用（路由不绕过 tenantDb 直连 raw db）。
+- **folder 导入（5 例）**：①parentId 存在且归属当前用户 → findUnique `{where:{id,tenantId}}` + create `{data:{userId,name,parentId,createdAt,tenantId}}`（wrapper 注入 tenantId 后的 where/data 全等断言）；②parentId 不存在（findUnique 返回 null）→ create 时 parentId=null；③parentId 跨用户（userId 不匹配）→ create 时 parentId=null（防跨用户挂载）；④folder.name 缺失/非字符串/>255 → continue 跳过（findUnique/create 均不调用）；⑤folder.create 抛错 → per-item 容错（folders 不计入 importedCount）。
+- **file 导入（11 例）**：①默认成功 → folder.findFirst `{where:{id,userId,tenantId},select:{id}}` + file.create `{data:{13 字段含 tenantId}}`（wrapper 注入 tenantId 后的全等断言）；②fileType 不在白名单 → 落为 "other"；③folderId 不存在（findFirst 返回 null）→ file.create 时 folderId=null；④fileName 缺失/非字符串/>255 → 跳过；⑤fileSize 为负 → 跳过；⑥fileSize > 5GB → 跳过；⑦textContent > 5MB → 跳过；⑧tags > 50 项 → 跳过；⑨单个 tag > 100 字符 → 跳过；⑩配额超限 → break（后续 file 不创建，importedCount 仅含已成功的，skippedCount = files.length - importedCount）；⑪file.create 抛错 → per-item 容错（importedCount 不增，后续 file 继续）。
+
+**核心安全契约双重锁定（本测试的关键设计）**：通过"分离 raw db mock 与 tenantDb mock"实现——mockRawFolderFindFirst/FindUnique/Create + mockRawFileCreate 恒不被调用（负向断言，若未来重构回 raw db 手动 where 立即失败），mockTenantFolderFindUnique/FindFirst/Create + mockTenantFileCreate 承接路由的所有 folder/file 调用（正向断言），且这些 mock 收到的 where/data 经 hand-written createTenantDb wrapper 注入了 tenantId（模拟真实 TenantDb 行为，真实 TenantDb 注入由 tenant-isolation.test.ts 单独覆盖）。raw db 仅 $queryRaw 被路由直接使用（配额查询，TenantDb 不代理 raw SQL）。
+
+**Content-Length 测试手法**：Content-Length 是 fetch forbidden header，无法经 Request 构造器显式设置（undici 会用实际 body 大小覆盖），故用 hand-crafted request 对象 + `vi.spyOn(headers, 'get').mockImplementation(...)` 覆盖 headers.get，使路由的 `request.headers.get('content-length')` 返回受控值（50MB+1）。同时 hand-crafted 对象提供 `json()` 供路由读取 body。非 413 用例不设 contentLength，headers.get('content-length') 返回 null → 路由 `null || '0'` → 0 → 不触发 413。
+
+**fileSize > 5GB 用例的机制说明**：fileSize=5368709121（> 5GB 配额 5368709120），路由的配额检查 `Number(currentTotal) + totalImportSize > quotaBytes` 先于 fileSize 值校验触发（fileSize 单值已超 5GB 配额），故实际走 break 路径而非 fileSize 校验 continue 路径。测试断言的是 OUTCOME（file.create 未被调用），机制是 quota-break。fileSize 值校验分支（`fileSize < 0 || fileSize > 5GB`）的可达性由"fileSize 为负"用例独立覆盖（负数 truthy 但 `Number(0) + (-1) > 5GB` 为 false，不触发 break，进入 fileSize 校验 → `< 0` continue）。
+
+环境：`npm ci`（package-lock.json，沿用第三十~四十一轮 installer 选择避免 lockfile 冲突，963 packages / 29s）+ `npx prisma generate`（重新生成 client）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run src/__tests__/api/files-import-route.test.ts` 单文件 24/24 通过；`npx vitest run` 全量 **1271/1271 通过**（78 文件，90.01s，第四十一轮基线 1247/77 + 本轮新增 24 例/1 文件 = 1271/78，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/files-import-route.test.ts`**（新文件，24 例，+613）— /api/files/import POST 路由 handler 级集成测试，覆盖前置校验三道（401/413/400）+ $queryRaw 配额查询契约（SQL 三键 + catch-all 500）+ createTenantDb/tenantId 双重注入契约（raw db 负向断言 + wrapper 注入正向断言）+ folder 导入（parentId 归属校验 + name 校验 + per-item 容错）+ file 导入（folderId 校验 + fileName/fileSize/textContent/tags 四维字段校验 + 配额超限 break + fileType fallback + per-item 容错）
+
+### Commit
+- `813c870 test(files): 补 /api/files/import POST 路由 handler 级集成测试`
+
+### 推送状态
+- Gitee：待推送 `9f9f922..813c870 main -> main`
+- GitHub：待推送 `9f9f922..813c870 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1271/1271 通过（78 文件，90.01s），零回归
+- 改动量：1 文件（新测试文件 +613），纯测试 commit，无生产代码变更
+- **"先迁移后补测"闭环**：第四十一轮将 import 路由 4/5 db 调用改走 TenantDb（生产代码 fix），本轮补 24 例测试锁定迁移后的 tenantId 注入契约与完整控制流。两轮组合形成"迁移 → 补测"的完整闭环，与第三十六~四十轮 files 路由族（route/[id]/batch/import）的迁移+补测节奏一致
+- **raw db vs tenantDb mock 分离范式**：本测试将 raw db（mockRawFolder*/mockRawFileCreate）与 tenantDb（mockTenantFolder*/mockTenantFileCreate）用独立 mock 分离，使"路由是否绕过 tenantDb"可显式负向断言。该范式可复用于后续任何已迁移到 TenantDb 的路由补测（如 files/route.ts、files/[id]/route.ts 若需补测 tenantId 注入契约）
+- **hand-crafted request + spy 范式**：Content-Length 等 fetch forbidden header 的受控注入用 hand-crafted request 对象 + `vi.spyOn(headers, 'get')` 实现，可复用于后续任何需控制 forbidden header 的路由测试
+- **fileSize > 5GB 与配额 break 的交互**：fileSize > 5GB 单值已超 5GB 配额，配额检查先于 fileSize 值校验触发 break。测试锁 OUTCOME（不创建），机制由"fileSize 为负"用例独立覆盖 fileSize 值校验分支可达性。两用例组合覆盖 fileSize 校验的两条路径（< 0 与 > 5GB），其中 > 5GB 路径在单文件场景下由配额 break 兜底
+- **沙箱时钟说明**：本会话 `TZ=Asia/Shanghai date` 报 2026-06-29 07:00，与第四十一轮 worklog 头（2026-06-29 06:00）顺序一致。轮次编号（第四十二轮）为排序权威键，时间戳仅供溯源
+
+### 下一轮候选
+- **`files/import/route.ts` handler 级集成测试已闭环**（24 例锁定前置校验三道 + $queryRaw 配额契约 + tenantId 双重注入 + folder/file 双循环 + 字段校验 + per-item 容错），自本轮起从候选清单移除
+- 补 saas/cloud-sync files(info)/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 invitations：含 GET role 门控 + POST 创建邀请（email 校验/角色校验/duplicate user 检查/duplicate pending invitation 检查/randomUUID token 生成），状态机比 trash 更丰富；或 tenant-users：含租户成员管理 CRUD + role 变更）。可复用第四十轮 $transaction 回调形式 mock 范式 + 本轮 raw/tenant mock 分离范式
+- 补 files/route.ts、files/[id]/route.ts 的 handler 级集成测试（锁定 TenantDb 注入契约，可复用本轮 raw db vs tenantDb mock 分离范式 + hand-crafted request 范式）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
