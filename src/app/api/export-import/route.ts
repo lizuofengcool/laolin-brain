@@ -24,21 +24,6 @@ export async function GET(request: NextRequest) {
     const includeTags = searchParams.get('includeTags') !== 'false';
     const includeSettings = searchParams.get('includeSettings') === 'true';
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
     // 构建导出数据
     const exportData: any = {
       version: '1.0',
@@ -170,21 +155,6 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
 
     // 解析导入数据
     let importData: any;
