@@ -7789,3 +7789,62 @@ Status: 完成
 - 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files(info)/api-keys/webhooks/stats/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试；补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 shares 路由 handler 测试
 - ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+
+## 2026-06-28 15:00 自动迭代
+
+第二十八轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `d8f459b`（第二十七轮 worklog commit），工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：用户任务清单"优先级 1 剩余项"经逐项 spot-check 确认已在第十八~二十七轮全部闭环（与第二十七轮 worklog 结论一致）：
+- `tenant-db.ts` raw 后门 → `get raw()` getter 已加调用堆栈软审计（`console.warn` 打印 caller stack），并在文件尾部文档化三层使用约定 ✓
+- `alipay.ts` & `wechat.ts` RSA2 验签占位"非空即通过" → 已实现真实 `verifyRSA2Sign`（RSA-SHA256 + 公钥 PEM/base64 自适应）/ `verifyWechatSign`（缺字段或密钥未配置直接拒绝），mock 仅在未配置密钥的开发环境生效，已配置真实密钥的生产环境显式失败而非静默返回 mock 链接 ✓
+- `files/route.ts` 等路由绕过 TenantDb → 第十九~二十七轮累计收口 15 个目录的 `tenantUser.findFirst` 影子覆盖（最后一轮 backup/backups 闭环），app/api 下该模式已彻底清除 ✓
+- `sync-engine.ts` keep_both "简化处理直接覆盖" → 已改为先 `fetchCloudFileData` 取云端、再重命名本地为 `[冲突副本]`、最后以新 id 落地云端版本，保留两端 ✓
+- `api-auth.test.ts` 与实现不符 → 测试已重写为匹配 async 4 字段（userId/email/tenantId/role）实现，mock verifyToken/tenantUser/tenant ✓
+
+继续 worklog "下一轮候选" 首项——**`storageConfig.config` 落库加密（安全项）**。
+
+立项依据：`prisma/schema.prisma` 第 137 行 `config String // JSON 格式的配置信息（加密存储）` 标注了加密存储的契约，但 `cloud-sync/config/route.ts` POST 实际以 `JSON.stringify(config)` 明文落库，`sync-engine.getStorageProvider` 以 `JSON.parse(storageConfig.config)` 明文读取——`secretAccessKey`/`accessKeyId` 在 SQLite 数据库文件中裸露，违反 schema 自身契约且构成凭证泄露面。此为读/写各一处的封闭改动（grep 确认 `storageConfig\.(upsert|create|update|findUnique|findFirst|findMany)` 全项目仅 6 处：tenant-db.ts 包装器仅注入 tenantId 不碰 config 内容 / r2-storage.ts findUnique 仅 select id / route.ts upsert 是唯一内容写入 / sync-engine.ts 是唯一内容读取），适合单轮收口。
+
+**实现要点**：
+- 新增 `src/lib/cloud-sync/config-crypto.ts`：AES-256-GCM，密钥由 `STORAGE_CONFIG_ENCRYPTION_KEY` 经 PBKDF2(100000 轮, sha256, 应用级固定盐 `laolin-brain:storage-config:v1`) 派生 256 位；加密输出 `v1:` + base64(iv(12)+tag(16)+ciphertext)，每次随机 IV（相同输入产生不同密文）；GCM 认证标签保证密文篡改即解密失败。
+- 旧数据兼容：`decryptConfig` 对非 `v1:` 前缀的存量明文 JSON 行自动回退 `JSON.parse`，免迁移即可继续读取；下次 POST 写入时即自动加密（迁移路径：旧明文 → 新密文，单测锁定该路径）。
+- 安全默认（与 `requirePlatformAdmin` 的 `ADMIN_EMAILS` 失败关闭约定一致）：`production` 环境未配置密钥 → 抛错 fail-closed；`development/test` 未配置 → 使用内置开发密钥并打印一次 `console.warn`（`devKeyWarned` 标志防刷屏），便于本地与单测。与 `crypto.ts` 的用户密码派生加密（文件内容、随机盐）互不干扰——本模块为服务器密钥派生（固定盐，因密钥本身已保密）。
+- 写入侧 `cloud-sync/config/route.ts` POST：`testR2Connection(config)` 仍用明文配置测连（需真实凭证），落库前 `encryptConfig(config)` 加密；create/update 两处 `config` 字段统一改 `encryptedConfig`。
+- 读取侧 `sync-engine.getStorageProvider` 第 144 行 `JSON.parse(storageConfig.config)` → `decryptConfig(storageConfig.config)`，下游 `config as AliyunOSSConfig / R2Config` 类型断言不变。
+- `.env.example` 安全配置段补 `STORAGE_CONFIG_ENCRYPTION_KEY`（32+ 字符随机字符串，production 必配，未配 fail-closed）。
+
+环境：`npm ci`（package-lock.json，963 包，42s）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 **1064/1064** 通过（65 文件，56.01s，第二十七轮基线 1051 + 本轮新增 13 例 = 1064，零回归）。
+
+### 改动
+
+1. **`src/lib/cloud-sync/config-crypto.ts`**（新文件，120 行）— AES-256-GCM 配置加密模块
+   - `resolveKey()`：env 密钥 PBKDF2 派生；production 未配 fail-closed；dev/test 回退内置开发密钥 + 一次性 warn
+   - `encryptConfig(config)`：随机 IV + GCM tag，输出 `v1:` + base64(iv+tag+ciphertext)
+   - `decryptConfig(stored)`：`v1:` 前缀解密（GCM 认证防篡改），否则回退 `JSON.parse`（向后兼容存量明文行）；非字符串/载荷过短显式抛错
+2. **`src/app/api/cloud-sync/config/route.ts`** — POST 落库前 `encryptConfig(config)` 加密（create/update 两处），`testR2Connection` 仍用明文测连
+3. **`src/lib/cloud-sync/sync-engine.ts`** — `getStorageProvider` 第 144 行 `JSON.parse` → `decryptConfig`，import `./config-crypto`
+4. **`.env.example`** — 安全配置段补 `STORAGE_CONFIG_ENCRYPTION_KEY` 说明
+5. **`src/__tests__/lib/config-crypto.test.ts`**（新文件，13 例）— 往返一致 / v1: 前缀且不含明文敏感字段 / 随机 IV / 任意可序列化对象 / 明文 JSON 回退 / 迁移路径 / 篡改抛错 / 载荷过短抛错 / 非字符串抛错 / production 未配 encrypt fail-closed / production 未配 decrypt fail-closed / production 配配后正常 / 异密钥解密失败
+
+### Commit
+- `f7d7973 feat(cloud-sync): storageConfig.config 落库加密消除明文密钥裸露`
+
+### 推送状态
+- Gitee: 待推送 `d8f459b..f7d7973 main -> main`
+- GitHub: 待推送 `d8f459b..f7d7973 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1064/1064 通过（65 文件，56.01s），零回归
+- 改动量：5 文件 +265/-3 行（新 config-crypto.ts 120 + 新测试 139 + route.ts +8/-2 + sync-engine.ts +4/-1 + .env.example +5/-0）
+- 运行时 vitest 日志中 `parsePdf` 的 stderr 警告为 pdf-parse 模块加载噪音（parser-pdf.test.ts 自身 9/9 通过），与本次改动无关
+- 既有 `r2-storage.test.ts` mock `@/lib/cloud-sync/r2-storage-class` 且 `isR2Configured` 仅 `select: { id: true }`，不触达 config 内容，未受影响；无既有 cloud-sync/config route handler 测试，本轮新增的 config-crypto 单测覆盖加解密单元行为（route 集成测试仍属后续候选）
+- 安全说明：dev/test 回退密钥 `'dev-only-insecure-key-do-not-use-in-prod'` 为明文标记串，非真实凭证，不触发 GitHub secret scanning；生产环境由 `STORAGE_CONFIG_ENCRYPTION_KEY` 提供，未配时 fail-closed
+- 与 `crypto.ts`（用户密码派生、文件内容加密）解耦：本模块为服务器密钥派生、配置落库加密，两者独立
+
+### 下一轮候选
+- **`storageConfig.config` 落库加密已闭环**，自本轮起从候选清单移除
+- **`db.$transaction` 回调租户隔离**：21 处直连事务回调内 `tx` 无 tenantId 注入，可评估是否提供 `tenantDb.transaction` 的租户感知变体（现已带审计）或文档化各路由自管约定
+- 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files(info)/api-keys/webhooks/stats/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（本轮可补 cloud-sync/config route handler 级集成测试：mock config-crypto + r2-storage + db，覆盖 POST testR2Connection 失败 400 / owner 之外 403 / upsert 入参 config 为加密值 / tenant.storageProvider 切换 r2）
+- ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
