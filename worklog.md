@@ -8095,3 +8095,56 @@ Status: 完成
 - 补 saas/cloud-sync files(info)/stats/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 /api/api-keys/[id] 的 DELETE/PUT 路由补全密钥生命周期，或 stats/activity-logs：可复用本轮 route + [id] 双文件测试范式与 member 403 控制流锁定思路）
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-28 21:00 自动迭代
+
+第三十四轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `079ce52`（第三十三轮 worklog commit），工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：用户任务清单"优先级 1 剩余项"逐项 spot-check 维持"已闭环"结论——①tenant-db.ts `raw` getter 带调用堆栈软审计（line 56-59）；②alipay.ts `verifyRSA2Sign` 用 `createVerify('RSA-SHA256')` + 公钥真实验签、wechat.ts `verifyWechatSign` "不再非空即通过"（缺字段/密钥直接拒绝）；③files/route.ts 走 `createTenantDb` 租户隔离层（findFirst/findMany 自动注入 tenantId）；④sync-engine.ts `keep_both` 分支已正确重命名本地为冲突副本 + 新 id 创建云端版本（line 675-709），line 885"简化处理"是"云端有本地无时不自动删本地"的安全设计、非 keep_both bug；⑤api-auth.test.ts 期望 4 字段(userId/email/tenantId/role)+async、与 api-auth.ts 实现一致。优先级 1 全部闭环，本轮转向优先级 2。
+
+**本轮立项（吃掉第三十三轮候选 #1）**：第三十三轮 worklog"下一轮候选"首项即"AiUsageLog 表 + getAiStats 按类型拆分"。第三十三轮已把 summarize/ocr/describe 接入租户级配额双闸门 + aiUsed 计数、getAiStats 接入 Tenant.aiUsed 总量，但**按类型(summary/ocr/describe/tags)拆分仍返回全 0**（注释"需独立 AiUsageLog 表，当前未落地"）。本轮落地该缺口：新增 AiUsageLog 明细表，每次 AI 调用原子写入一条 log，getAiStats 按 operation 聚合当前配额窗口内的明细填 summaryCalls/ocrCalls/describeCalls/tagCalls。机械、无 schema 破坏性变更（仅新增表+索引）、无外部依赖，适合单轮收口。
+
+**实现要点（3 个相关 commit）**：
+
+1. `feat(ai)`：①schema.prisma 新增 `AiUsageLog{id,tenantId,userId,operation,createdAt}` + Tenant.aiUsageLogs 关联 + `(tenantId,createdAt)`/`(tenantId,operation)` 两索引；②`incrementTenantAiUsage` 签名 `(tenantId)` → `(tenantId, operation: 'summary'|'ocr'|'describe'|'tags', userId)`，改用 `db.$transaction([tenant.update({aiUsed:{increment:1}}), aiUsageLog.create({tenantId,userId,operation})])` 数组形式原子提交（任一失败整体回滚，避免 aiUsed 计了而明细缺失/反之）；③四类 AI 路由按各自 operation+userId 入参调用（summarize→'summary'、ocr→'ocr'、describe→'describe'、generate-tags→'tags'）；④同步更新 ai-quota-route.test.ts 三处成功用例断言为 `(tenantId, operation, userId)` 契约 + it 描述/docstring。
+
+2. `feat(stats)`：getAiStats 配额窗口激活时(aiResetDate>now)按 operation group 聚合 AiUsageLog 填四类计次，窗口起点=`aiResetDate-24h`（与 checkAiQuotaAndTenant 的 24h 重置口径一致，正确排除上一窗口的 log）；窗口未激活时不查 groupBy，各类型计次与 quotaUsed 一并按 0 报告（只读端点不写回清零，避免 GET 产生副作用写）。totalCalls 仍取 Tenant.aiUsed，响应 key 形状不变、前端兼容。
+
+3. `test(ai)`：新增两份测试（共 7 例）锁定改动：①`stats-ai-route.test.ts`（4 例）覆盖 401 透传/非 owner-admin 403/窗口激活 groupBy 按 operation 拆分且 where 以 {tenantId,createdAt>=windowStart} 作用域+totalCalls=aiUsed+quotaPercent/窗口未激活不查 groupBy 全 0；②`ai-processor-increment.test.ts`（3 例）覆盖 $transaction 数组形式原子执行 update+create/operation 透传/$transaction reject 不抛出（吞没并 console.error，避免打断 AI 路由成功响应）。
+
+环境：`npm ci`（package-lock.json，沿用第三十~三十三轮 installer 选择避免 lockfile 冲突）+ `npx prisma generate`（重新生成 client 使 db.aiUsageLog 类型可用）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 **1136/1136** 通过（71 文件，77.36s，第三十三轮基线 1129/69 + 本轮新增 7 例/2 文件 = 1136/71，零回归）。
+
+### 改动
+
+1. **`prisma/schema.prisma`** — 新增 `AiUsageLog` 模型 + Tenant.aiUsageLogs 关联 + 两索引
+2. **`src/lib/ai/ai-processor.ts`** — `incrementTenantAiUsage(tenantId, operation, userId)` 用 $transaction 数组原子自增 aiUsed + 写 AiUsageLog
+3. **`src/app/api/ai/{summarize,ocr,describe,generate-tags}/route.ts`** — 按 operation+userId 调用 increment
+4. **`src/app/api/stats/route.ts`** — getAiStats 按 operation 聚合 AiUsageLog 填四类计次，窗口对齐 aiResetDate-24h
+5. **`src/__tests__/api/ai-quota-route.test.ts`** — 三处成功用例断言更新为 (tenantId, operation, userId) 契约
+6. **`src/__tests__/api/stats-ai-route.test.ts`**（新文件，4 例）— getAiStats 按类型聚合路由级集成测试
+7. **`src/__tests__/lib/ai-processor-increment.test.ts`**（新文件，3 例）— increment 原子写日志单元测试
+
+### Commit
+- `f755ec4 feat(ai): 新增 AiUsageLog 模型，incrementTenantAiUsage 原子写入按类型明细`
+- `e292dc0 feat(stats): getAiStats 按 operation 聚合 AiUsageLog 替代全零占位`
+- `f09e4bd test(ai): 补 getAiStats 按类型聚合与 increment 原子写日志测试`
+
+### 推送状态
+- Gitee：待推送 `079ce52..f09e4bd main -> main`
+- GitHub：待推送 `079ce52..f09e4bd main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1136/1136 通过（71 文件，77.36s），零回归
+- 改动量：7 文件（schema +16、ai-processor +24/-7、4 路由各 +1/-1、stats +38/-5、ai-quota 测试 +7/-7、2 新测试文件 +263），含 2 生产代码 commit + 1 测试 commit
+- **$transaction 数组形式 vs 回调形式**：本轮用数组形式 `db.$transaction([update, create])` 而非回调形式 `db.$transaction(async tx => {...})`。数组形式不需要 tx 句柄、Prisma 自动协调两操作原子性，且不涉及"tx 回调内租户隔离"的既有候选争议（Tenant 与 AiUsageLog 均以显式 tenantId 作用域写入，非租户隔离层管辖的业务表读）。回调形式的 21 处既有事务维持文档化结论不变
+- **窗口对齐**：getAiStats 聚合窗口起点 = `aiResetDate - 24h`，与 checkAiQuotaAndTenant 重置时设 `aiResetDate = now + 24h` 的口径自洽：重置后旧 log 的 createdAt < 新 windowStart，自动排除在聚合外，无需显式清理历史 log
+- **getAiStats 仍只读**：窗口未激活时按 0 口径报告、不写回清零 aiUsed，避免 GET 产生副作用写；实际清零仍由下一次 AI 调用的 checkAiQuotaAndTenant 触发
+- **未触达**：`db.$transaction` 回调租户感知变体（维持文档化结论）、payment callback 测试、其余 saas route 测试、registry/document-qna/model-manager 桩（待外部集成条件）
+
+### 下一轮候选
+- **AiUsageLog 表 + getAiStats 按类型拆分已闭环**（模型+原子写入+窗口聚合+7 例测试锁定），自本轮起从候选清单移除
+- **`db.$transaction` 回调租户隔离**：维持"21 处均显式 tenantId 作用域、无实际泄漏、文档化自管约定"结论，若后续要强约束可评估 `tenantDb.transaction` 租户感知变体（架构级，单列）
+- 补 saas/cloud-sync files(info)/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 /api/api-keys/[id] 的 DELETE/PUT 路由补全密钥生命周期，或 activity-logs：可复用 route + [id] 双文件测试范式与 member 403 控制流锁定思路）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
