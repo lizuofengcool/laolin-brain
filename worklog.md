@@ -7692,3 +7692,55 @@ Status: 完成
 - 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files(info)/api-keys/webhooks/stats/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings handler 级路由测试；补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 shares 路由 handler 测试
 - ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+
+## 2026-06-28 13:00 自动迭代
+
+第二十六轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `9a7463e`，工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：第十八~二十五轮已确认任务清单"优先级 1 剩余项"全部闭环（tenant-db raw 后门、alipay/wechat RSA2 验签、sync-engine keep_both、api-auth.test 不符、files 顶层/[id] raw-db 读侧、api-keys/webhooks/stats/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings 影子覆盖）。本轮读取 `src/lib/cloud-sync/sync-engine.ts` 复核 keep_both 分支已为"重命名本地为冲突副本 + 云端版本以新 id 落地"的正确实现（fetchCloudFileData 先取云端再写库，非直接覆盖）；读取 `src/__tests__/lib/api-auth.test.ts` 复核测试已匹配实现（4 字段 userId/email/tenantId/role、async await、仅读 Authorization 头拒绝 query param）。继续 worklog "下一轮候选" 首项——**P1 批量清理（`tenantUser.findFirst` 影子覆盖 `auth.tenantId/role` 模式）**，按第二十五轮 faces/embeddings 范式收口 2 个目录：cloud-sync（status + sync + conflicts[GET+POST] + queue[GET+DELETE]，6 处）与 automation/rules（route[GET+POST] + [id][GET+PATCH+DELETE]，5 处）。
+
+立项依据：与 faces/embeddings/trash/invitations/tenant-users/export-import 同源缺陷——cloud-sync 各路由与 automation/rules 各路由均存在 `db.tenantUser.findFirst({ where:{ userId } })` 影子覆盖 `auth.tenantId`。该重查**无 orderBy**，而 `authenticateRequest` 内部按 `orderBy:{ joinedAt:'asc' }` 确定性选取租户，对多租户用户两者可能取到不同租户。cloud-sync 路由的 getSyncStatus/getRecentSyncLogs/triggerSync/getConflictFiles/resolveConflict/resolveConflictsAuto/getSyncQueue/cleanupCompletedQueue 全部基于影子的 `tenantUser.tenantId`（跨租户同步状态/日志/队列/冲突文件泄露 + 越权触发他租户同步 + 越权解决他租户冲突）；automation/rules 的 automationRule 查询/创建/更新/删除全部基于影子 `tenantId`（跨租户规则泄露 + 越权读写删他人规则）。
+
+**本轮 6 文件均无 body 同名变量影子**：sync body 仅 `password`、conflicts body 仅 `fileId/resolution/password/auto`、rules body 仅 `name/trigger/conditions/actions/enabled/priority`、[id] 无 body 或同上——故无需重命名 `tenantId`，删除冗余查询块 + 404 死分支 + 影子解构后直接复用顶部 auth 解构的 `tenantId` 即可，零行为变化仅去掉越权隐患。
+
+环境：`npm ci`（package-lock.json，963 包 48s，与第二十五轮基线一致）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1051/1051 通过（64 文件，53.79s），与第二十五轮基线完全一致，零回归。
+
+### 改动
+
+1. **`src/app/api/cloud-sync/{status,sync,conflicts,queue}/route.ts`**（4 文件）— `a77e60e` `fix(cloud-sync): 移除 tenantUser 影子查询改用 authenticateRequest 权威 tenantId`
+   - **GET /api/cloud-sync/status**：删除冗余 `db.tenantUser.findFirst({ where:{ userId } })` + "租户不存在" 404 死分支。下游 `getSyncStatus` / `getRecentSyncLogs` 改用 auth.tenantId。
+   - **POST /api/cloud-sync/sync**：删除冗余查询 + 404 死分支。下游 `triggerSync(tenantId, userId, password)` 改用 auth.tenantId。
+   - **GET+POST /api/cloud-sync/conflicts**：GET 删除冗余查询 + 404 死分支，下游 `getConflictFiles` 改用 auth.tenantId；POST 删除冗余查询 + 404 死分支，下游 `resolveConflictsAuto` / `resolveConflict` 的 tenantId 入参改用 auth.tenantId。
+   - **GET+DELETE /api/cloud-sync/queue**：GET 删除冗余查询 + 404 死分支，下游 `getSyncQueue` 改用 auth.tenantId；DELETE 删除冗余查询 + 404 死分支，下游 `cleanupCompletedQueue` 改用 auth.tenantId。
+   - 注：4 文件顶部 `role` 解构但未使用（pre-existing，cloud-sync 路由无角色权限分支），按"bug fix 不顺手清理无关死代码"原则保留不动；`noUnusedLocals` 未开启，tsc 通过。4 文件 `db` 仅用于该影子查询，移除后 `import { db } from "@/lib/db"` 一并删除（下游 sync-engine 函数均以 tenantId 入参形式调用，不依赖路由级 db）；cloud-sync/config/route.ts 未触碰（其 `db.$transaction` 为合法 storageConfig.upsert + tenant.update，非影子覆盖模式）。
+   - 备注：第二十五轮 worklog 提示"sync 路由含 `db.$transaction` 回调需确认 tenantId 闭包捕获"——复核 sync/route.ts 本身无 `$transaction`，仅调用 `triggerSync(tenantId,...)`，`$transaction` 位于 sync-engine.ts 的 downloadAndRestoreBackup 内且已通过函数入参捕获 tenantId，无闭包隐患。
+
+2. **`src/app/api/automation/rules/{route,[id]/route}.ts`**（2 文件）— `a7c77d7` `fix(automation): 移除 rules 路由 tenantUser 影子查询改用 authenticateRequest 权威 tenantId`
+   - **GET+POST /api/automation/rules**：GET 删除冗余 `db.tenantUser.findFirst({ where:{ userId }, select:{ tenantId } })` + "Tenant not found" 404 死分支 + 影子解构 `const { tenantId } = tenantUser;`（覆盖顶部已从 auth 解构的 `tenantId`），下游 `where:{ tenantId, userId }` / `automationRule.count` / `automationRule.findMany` 改用 auth.tenantId；POST 同样删除冗余查询 + 404 死分支 + 影子解构，下游 `automationRule.create.data.tenantId` 改用 auth.tenantId。
+   - **GET+PATCH+DELETE /api/automation/rules/[id]**：三处均删除冗余查询 + 404 死分支 + 影子解构 `const { tenantId } = tenantUser;`（覆盖 auth.tenantId），下游 `automationRule.findFirst.where:{ id, tenantId, userId }`（GET/PATCH 检查存在）/ `automationRule.update` / `automationRule.delete` 改用 auth.tenantId。
+   - 注：2 文件顶部 `role` 解构但未使用（pre-existing，rules 路由无角色权限分支）保留不动；`db` import 保留（automationRule 模型 count/findMany/create/findFirst/update/delete 仍需）；body 无同名 `tenantId` 变量，无需重命名。
+
+### Commit
+- `a77e60e fix(cloud-sync): 移除 tenantUser 影子查询改用 authenticateRequest 权威 tenantId`
+- `a7c77d7 fix(automation): 移除 rules 路由 tenantUser 影子查询改用 authenticateRequest 权威 tenantId`
+
+### 推送状态
+- Gitee: 待推送 `9a7463e..a7c77d7 main -> main`
+- GitHub: 待推送 `9a7463e..a7c77d7 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1051/1051 通过（64 文件，53.79s），零回归
+- 改动量：6 文件 +8/-141 行（cloud-sync 4 文件 +8/-66 + automation 2 文件 +0/-75，净减 133 行，主要来自删除 11 处冗余 tenantUser 查询块 + 11 处 404 死分支 + 11 处影子解构/影子覆写）
+- 运行时 vitest 日志中 `parsePdf` 的 stderr 警告为 pdf-parse 模块加载噪音（parser-pdf.test.ts 自身 9/9 通过），与本次改动无关
+- 无现存 handler 级单测覆盖 `/api/cloud-sync/*` 与 `/api/automation/rules/*`，故本轮改动不影响现有测试；可后续补 handler 级测试（mock `@/lib/api-auth` + `@/lib/cloud-sync/sync-engine` + `@/lib/db`，覆盖 status 返回结构 / sync 缺密码 400 + triggerSync 透传 / conflicts auto 批量 vs 单个 400 短路 / queue searchParam status+limit 分页 + DELETE 清理 / rules GET 分页+enabled/trigger 筛选 / POST 缺 name/trigger 400 / [id] 跨租户 404 / PATCH 部分字段 / DELETE 存在性校验）
+- P1 批量清理进度：按精确多行 grep `db\.tenantUser\.findFirst\(\{\s*\n\s*where: \{ userId \}` 统计，app/api 下含该影子覆盖模式的文件由本轮前的 9 降至 **3**（cloud-sync 4 + automation/rules 2 共 6 文件已收口）；剩余 3 文件共 **6 处**影子查询（17 处 − cloud-sync 6 − automation 5 = 6 处，数字一致）
+- 复查 `notifications/route.ts` 已于前轮闭环（从候选清单移除，见第二十一轮 worklog）
+
+### 下一轮候选
+- **P1 批量清理（剩余 3 文件，6 处）**：backup+backups(3 文件 6 处: backup 2 + backups 2 + backups/[id] 2) 仍存在 `tenantUser.findFirst` 影子覆盖 `auth.tenantId/role` 模式，按本轮 cloud-sync/automation 范式（删冗余查询 + 用 auth.tenantId/role + 注意 body 同名变量影子需重命名 + 区分 currentTenantUser 影子与 targetTenantUser 合法查询）推进；下一轮即可收口全部 P1 影子覆盖清理（3 文件 6 处，单目录收口，注意 backups/[id] 可能含 currentTenantUser 影子与 targetTenantUser 合法查询需区分，考点同 tenant/users/[id]）
+- **`storageConfig.config` 落库加密**：明文 JSON 存储 secretAccessKey/accessKeyId，改为 encrypt 存储 + getStorageProvider/aliyun-oss/r2-storage-class 读取侧 decrypt
+- **`db.$transaction` 回调租户隔离**：21 处直连事务回调内 `tx` 无 tenantId 注入，可评估是否提供 `tenantDb.transaction` 的租户感知变体（现已带审计）或文档化各路由自管约定
+- 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files(info)/api-keys/webhooks/stats/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation handler 级路由测试；补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 shares 路由 handler 测试
+- ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
