@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateRequest } from '@/lib/api-auth';
-import { checkAiUsage, AI_DAILY_LIMIT } from '@/lib/ai-usage';
+import { checkAiQuotaAndTenant, incrementTenantAiUsage } from '@/lib/ai/ai-processor';
 import ZAI from 'z-ai-web-dev-sdk';
 
 let zaiPromise: Promise<Awaited<ReturnType<typeof ZAI.create>>> | null = null;
@@ -19,12 +19,15 @@ export async function POST(request: NextRequest) {
   const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  // Per-user daily AI usage check
-  const usage = checkAiUsage(auth.userId);
-  if (!usage.allowed) {
+  const { userId, tenantId } = auth;
+
+  // 检查AI配额和租户信息（与 generate-tags 一致：用户级 + 租户级双闸门，
+  // tenantId 由 authenticateRequest 权威返回，避免函数内重复查 tenantUser）
+  const quotaCheck = await checkAiQuotaAndTenant(userId, tenantId);
+  if (!quotaCheck.allowed) {
     return NextResponse.json(
-      { error: `AI调用已达每日限额(${AI_DAILY_LIMIT}次)，请明天再试`, resetTime: usage.resetTime },
-      { status: 429, headers: { 'X-Ai-Usage-Remaining': '0' } },
+      { error: quotaCheck.error, resetTime: (quotaCheck as any).resetTime },
+      { status: 429, headers: { 'X-Ai-Usage-Remaining': String(quotaCheck.remaining) } },
     );
   }
 
@@ -106,12 +109,15 @@ export async function POST(request: NextRequest) {
       };
     }
 
+    // 计入租户级 AI 用量（与 generate-tags 一致），保证 Tenant.aiUsed 反映全部 AI 调用
+    await incrementTenantAiUsage(tenantId);
+
     return NextResponse.json({
       summary: parsed.summary || '无法生成摘要',
       keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints : [],
       suggestedTags: Array.isArray(parsed.suggestedTags) ? parsed.suggestedTags : [],
     }, {
-      headers: { 'X-Ai-Usage-Remaining': String(usage.remaining) },
+      headers: { 'X-Ai-Usage-Remaining': String(quotaCheck.remaining) },
     });
   } catch (error) {
     console.error('Summarize API error:', error);
