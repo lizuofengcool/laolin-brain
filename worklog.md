@@ -8331,3 +8331,50 @@ Status: 完成
 - 补 saas/cloud-sync files(info)/storage/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 storage：单 route 文件含 overview/by-type/large-files 三 GET 分支，`role` 解构但未用、恒以 (userId,tenantId) 双键作用域，可复用本轮 MockNextResponse + where 形状断言范式；trash/invitations 含 POST/PATCH/DELETE 控制流更丰富亦可考虑）
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 04:00 自动迭代
+
+第三十九轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `31ba46a`（第三十八轮 worklog commit），工作树干净、无未提交改动、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复核**：第三十六~三十八轮已逐项读源码 + grep 复核确认 5 项剩余问题全部闭环（tenant-db raw 审计 / alipay+wechat 真实验签 / api-auth.test 匹配实现 / files route 走 TenantDb / sync-engine keep_both 保留本地版本）。本轮 `grep -rn 'TODO|FIXME|mock|占位' src/lib/payment/ src/lib/db/tenant-db.ts src/lib/cloud-sync/sync-engine.ts` 抽样复核：payment 模块剩余 `mock` 字样均为"未配置真实密钥时返回明确错误 + 仅在 mock 链接路径生成临时 tradeNo"的**有意降级路径**（注释明示"已配置真实密钥但尚未接入 alipay-sdk：返回明确错误，而非静默返回 mock 支付链接"），verifyCallback 已走真实 createHmac('sha256') + timingSafeEqual（第三十六轮已核验），不再"非空即通过"。优先级 1 无待修，转向优先级 3（补测试）。
+
+**立项（吃掉第三十八轮候选 #3 的 storage 建议）**：第三十八轮 worklog"下一轮候选"明确建议"下一轮可优先补 storage：单 route 文件含 overview/by-type/large-files 三 GET 分支，`role` 解构但未用、恒以 (userId,tenantId) 双键作用域，可复用本轮 MockNextResponse + where 形状断言范式"。选 storage——它有三 GET 分支（overview/by-type/large-files）+ 4 个 DB 调用（file.aggregate/folder.count/file.count/tenant.findUnique/file.findMany）+ 计算契约（usagePercent 封顶 100 / remainingStorage 封底 0 / storageQuota 默认 10GB / _sum.fileSize null→0 / fileType null→'other'）+ 分页契约（Math.min(100,pageSize) 截断 / Math.ceil(total/pageSize) / page*pageSize<total），控制流远比 system-logs 单一 GET 丰富，且其"role 解构但未用、恒双键作用域"与 system-logs 的"role 门控 + 单键作用域"形成第三种对照（access-history 双键无门控 / system-logs 单键+门控 / storage 双键无门控但含 isDeleted 维度），值得用测试锁死防回归。
+
+**实现要点（1 个测试 commit，19 例）**：新增 `src/__tests__/api/storage-route.test.ts`（overview 9 例 + by-type 5 例 + large-files 5 例），覆盖 GET 全部控制流：
+
+- **GET type=overview（默认，9 例）**：①未认证 401 透传不触达 DB；②默认 type=overview → 四个 DB 调用 where 形状正确（file.aggregate where {userId,tenantId,isDeleted:false} 双键+false / folder.count where {userId,tenantId} 双键无 isDeleted / file.count where {userId,tenantId,isDeleted:true} 双键+true 回收站取反 / tenant.findUnique where {id:tenantId} 单键 select storageQuota+aiQuota），返回 7 字段 totalFiles/totalFolders/totalStorage/storageQuota/usagePercent/remainingStorage/deletedFiles；③显式 type=overview → 与默认等价；④type=未知 → fallthrough 到 overview（default 分支，by-type/large-files 不触达）；⑤tenant 为 null → storageQuota 默认 10GB / _sum.fileSize null → totalStorage=0 / usagePercent=0 / remainingStorage=10GB；⑥tenant.storageQuota=0（falsy）→ 走 `||` 默认 10GB（锁定 `Number(tenant?.storageQuota || 10GB)` 的 falsy 短路）；⑦totalStorage 超过 quota → usagePercent 封顶 100 / remainingStorage 封底 0（Math.min/Math.max 锁定）；⑧member 角色 → 仍可读自己的存储分析（**核心契约：role 未参与作用域**，与 system-logs 的 member→403 形成对照）；⑨aggregate 抛错 → 500 { error: '存储分析失败' }。
+- **GET type=by-type（5 例）**：①file.findMany where 双键+isDeleted:false，select fileType+fileSize；返回 data 按 size 降序 + countPercent/sizePercent + total{count,size}；②fileType 为 null/空 → 归类 'other'（`file.fileType || 'other'` 锁定，两条合并为一条）；③文件列表空 → data=[] / total.count=0 / total.size=0（reduce 不报错）；④fileSize 为 null → size 累加按 0 处理（`file.fileSize || 0` 锁定）；⑤findMany 抛错 → 500。
+- **GET type=large-files（5 例）**：①默认分页 → file.count + file.findMany where 双键+isDeleted:false；orderBy fileSize desc；skip=0/take=20；select 7 字段（id/fileName/fileType/fileSize/createdAt/folderId/isFavorite）；totalPages=ceil(5/20)=1 / hasMore=1*20<5=false；②page=2&pageSize=2 → skip=2/take=2/totalPages=3/hasMore=true；③pageSize=500&limit=500 → 均截断为 100（Math.min(100,...) 锁定）；④total=0 → totalPages=0/hasMore=false/data=[]；⑤count 抛错 → 500。
+
+**核心安全契约锁定**：贯穿 19 例的核心断言是"所有 db.file 调用的 where 恒以 (userId, tenantId) 双键作用域 + isDeleted 维度"——overview 的 aggregate（isDeleted:false）/ count（isDeleted:true 回收站取反）/ large-files 的 count+findMany（isDeleted:false）均显式 `toEqual` 断言双键+isDeleted 形状，锁死防后续重构意外去掉 userId（导致 admin 越权读他人存储占用）或 tenantId（导致多租户越权）。folder.count 的 where 仅双键无 isDeleted（folder 无删除标记字段，非缺陷）显式锁定。tenant.findUnique 的 `{id:tenantId}` 单键也显式锁定。**member 仍可读**用例锁定"role 未参与作用域"设计——存储配额按用户消费归属是个人数据，admin 也不应看他人占用，与 system-logs 的"租户级管理数据 + role 门控"形成对照，测试分别用 `toEqual` 全等断言锁定两套作用域模型，防止后续重构混淆。
+
+**计算契约锁定**：①`storageQuota: Number(tenant?.storageQuota || 10GB)` 的 `||` falsy 短路——用 storageQuota=0 用例锁定走 10GB 默认（非 0）；②`usagePercent: Math.min(100, total/quota*100)` 封顶 100——用 total>quota 用例锁定；③`remainingStorage: Math.max(0, quota-total)` 封底 0——用 total>quota 用例锁定不返回负数；④`totalStorage: Number(_sum.fileSize || 0)` null→0——用 _sum.fileSize=null 用例锁定；⑤`fileType || 'other'` 与 `fileSize || 0` 的 null 降级——by-type 用例锁定；⑥large-files 的 `Math.min(100, pageSize)` 与 `Math.min(100, limit)` 双截断——用 pageSize=500&limit=500 用例锁定均截断为 100；⑦`totalPages: Math.ceil(total/pageSize)` 与 `hasMore: page*pageSize<total`——用 total=0/pageSize=20/total=5/pageSize=2 三场景锁定三种边界。
+
+环境：`npm ci`（package-lock.json，沿用第三十~三十八轮 installer 选择避免 lockfile 冲突，963 packages / 49s）+ `npx prisma generate`（重新生成 client）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run src/__tests__/api/storage-route.test.ts` 单文件 19/19 通过；`npx vitest run` 全量 **1218/1218** 通过（76 文件，89.21s，第三十八轮基线 1199/75 + 本轮新增 19 例/1 文件 = 1218/76，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/storage-route.test.ts`**（新文件，19 例）— /api/storage GET overview/by-type/large-files 路由 handler 级集成测试，覆盖 401/500 + (userId,tenantId) 双键作用域 + isDeleted 维度 + 4 个 DB 调用 where 形状 + 计算契约（usagePercent 封顶/remainingStorage 封底/storageQuota 默认 10GB/null 降级）+ 分页契约（pageSize/limit 截断 100/totalPages/hasMore）
+
+### Commit
+- `5a44a0e test(storage): 补 /api/storage GET overview/by-type/large-files 路由 handler 级集成测试`
+
+### 推送状态
+- Gitee：待推送 `31ba46a..5a44a0e main -> main`
+- GitHub：待推送 `31ba46a..5a44a0e main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1218/1218 通过（76 文件，89.21s），零回归
+- 改动量：1 文件（新测试文件 +454），纯测试 commit，无生产代码变更
+- **storage 与 access-history/system-logs 作用域模型三对照**：access-history 以 (tenantId,userId) 双键无门控（个人数据，admin 也不读他人历史）；system-logs 以 (tenantId) 单键 + role 门控（租户级管理数据，owner/admin 可读租户全部，member 禁读）；storage 以 (tenantId,userId) 双键无门控 + isDeleted 维度（个人存储占用，admin 也不读他人占用，但需区分活跃/回收站）。三套作用域模型各有其合理性，测试分别用 `toEqual` 全等断言锁定 where 形状，防止后续重构混淆（如误给 storage 加 role 门控导致 member 看不到自己的存储分析，或误给 system-logs 加 userId 导致 owner 看不到租户全量日志）
+- **storage 的 isDeleted 维度**：overview 同时统计活跃文件（isDeleted:false，aggregate）与回收站文件（isDeleted:true，count），分别返回 totalFiles 与 deletedFiles。这是 storage 独有的维度（access-history 无此维度因访问历史不区分删除态），测试通过"aggregate where isDeleted:false / count where isDeleted:true"两条 `toEqual` 显式锁定取反关系，防止后续重构误把两者 where 写同向（导致 totalFiles 含回收站或 deletedFiles 不含回收站）
+- **tenant.findUnique 单键的安全性**：tenant 表本身是租户表，`where: { id: tenantId }` 取租户自身的 storageQuota 是合理的——这里读的是"租户配额上限"而非"用户数据"，无跨租户越权风险（tenantId 已由 authenticateRequest 校验属于当前用户）。测试通过 `toEqual({ where: { id: 'tenant-1' }, select: {...} })` 锁定该单键形状
+- **沙箱时钟说明**：本会话 `TZ=Asia/Shanghai date` 报 2026-06-29 04:00，与第三十八轮 worklog 头（2026-06-29 03:00）顺序一致（沙箱时钟跨会话存在回拨，第三十七轮报 18:00、第三十八轮报 03:00、本轮报 04:00）。轮次编号（第三十九轮）为排序权威键，时间戳仅供溯源
+
+### 下一轮候选
+- **/api/storage GET overview/by-type/large-files 路由测试已闭环**（19 例锁定 401/500 + (userId,tenantId) 双键作用域 + isDeleted 维度 + 4 个 DB 调用 where 形状 + 计算契约 + 分页契约），自本轮起从候选清单移除
+- **`db.$transaction` 回调租户隔离**：维持"21 处均显式 tenantId 作用域、无实际泄漏、文档化自管约定"结论，若后续要强约束可评估 `tenantDb.transaction` 租户感知变体（架构级，单列）
+- 补 saas/cloud-sync files(info)/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 trash 或 invitations：均含 POST/PATCH/DELETE 控制流更丰富，trash 涉及 isDeleted 软删/恢复双向流转、invitations 涉及 invitee 角色/状态机，可复用本轮 MockNextResponse + where 形状断言范式）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
