@@ -7896,3 +7896,48 @@ Status: 完成
 - **`db.$transaction` 回调租户隔离**：21 处直连事务回调内 `tx` 无 tenantId 注入，可评估是否提供 `tenantDb.transaction` 的租户感知变体（现已带审计）或文档化各路由自管约定
 - 补 saas/cloud-sync config/files(info)/api-keys/webhooks/stats/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可补 cloud-sync/config route handler 级集成测试：mock config-crypto + r2-storage + db，覆盖 POST testR2Connection 失败 400 / owner 之外 403 / upsert 入参 config 为加密值 / tenant.storageProvider 切换 r2）
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+
+## 2026-06-28 17:00 自动迭代
+
+第三十轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `4dfc2f3`（第二十九轮 worklog commit），工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：用户任务清单"优先级 1 剩余项"经第二十八~二十九轮 worklog 确认已全部闭环，本轮逐项 spot-check 维持结论（tenant-db raw 审计 / alipay+wechat 真实验签 / files 等路由 TenantDb 收口 / sync-engine keep_both 保留两端 / api-auth.test.ts 匹配 async 4 字段实现）。
+
+继续 worklog "下一轮候选"首项——**补 cloud-sync/config route handler 级集成测试**（直接回归第二十八轮 storageConfig.config 落库加密的安全改动）。
+
+立项依据：第二十八轮为 `storageConfig.config` 引入 AES-256-GCM 加密（`config-crypto.ts`）并改造 `cloud-sync/config/route.ts` 的 POST 落库 + `sync-engine.getStorageProvider` 读取，但仅有 `config-crypto.ts` 单元测试覆盖加解密原语，路由层"加密值是否真的落库 / 明文是否泄露 / 权限闸门 / 连接测试与落库的明文-密文边界"等集成行为零覆盖。路由是凭证泄露面的最后一道写入闸门，缺测试则加密改动在后续重构中可能被无声回退（如误将 `encryptConfig` 调用删除、或 upsert 误用明文 config）。本测试为纯新增、不触达生产代码，适合单轮收口。
+
+**实现要点**：
+- 新增 `src/__tests__/api/cloud-sync-config-route.test.ts`（项目首个 route handler 级测试，建立 `src/__tests__/api/` 目录约定），11 例：
+  - GET 4 例：401 透传（`authenticateRequest` 返回 NextResponse 时路由原样返回且不查 DB）/ `configured: true` 且 `isR2Configured` 以 `auth.tenantId` 调用（锁定租户作用域，防历史进程级单例跨租户误报回归）/ `configured: false` / `isR2Configured` 抛错 → 500。
+  - POST 7 例：401 透传 / `member` 角色 403 且不触达连接测试与落库 / zod 校验失败（缺 `secretAccessKey`）400 且不触达后续 / `testR2Connection` 返回 false → 400 且**以明文 config 调用**（连接测试需真实凭证）且不落库 / `admin` 角色与 owner 同权 200 / 成功：`encryptConfig` 以明文 config 调用、`storageConfig.upsert` 的 `create.config` 与 `update.config` 均为加密值且**不含明文 `secretAccessKey`**、`tenant.update` 设 `storageProvider='r2'`、二者在同一 `db.$transaction([...])` 数组内 / `$transaction` 抛错 → 500。
+- Mock 策略：`vi.hoisted` 定义共享 `MockNextResponse` 类（使路由 `auth instanceof NextResponse` 与 mock `authenticateRequest` 返回值共用同一构造器，`instanceof` 必命中——与第二十九轮 api-auth.test.ts class 化 mock 同源思路）；隔离 `@/lib/api-auth`（`authenticateRequest: vi.fn()`）/ `@/lib/cloud-sync/r2-storage`（`isR2Configured`+`testR2Connection`）/ `@/lib/cloud-sync/config-crypto`（`encryptConfig` 返回固定 `'v1:mock-encrypted-payload'` 便于断言落库值）/ `@/lib/db`（`$transaction`+`storageConfig.upsert`+`tenant.update`）；`zod` 保持真实运行以覆盖校验路径。
+- 关键断言锁定安全契约：`upsertArg.create.config === 'v1:mock-encrypted-payload'` 且 `not.toContain(sampleConfig.secretAccessKey)`——若后续重构误回退为明文落库，此断言立即失败。
+
+环境：`npm ci`（package-lock.json，963 包，54s）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 **1084/1084** 通过（66 文件，79.81s，第二十九轮基线 1073/65 + 本轮新增 11 例/1 文件 = 1084/66，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/cloud-sync-config-route.test.ts`**（新文件，278 行，11 例）— cloud-sync/config 路由 handler 级集成测试，覆盖 GET 4 例 + POST 7 例，锁定加密落库 / 权限闸门 / 明文-密文边界 / 事务原子性
+
+### Commit
+- `593c49c test(cloud-sync): 补 config 路由 handler 级集成测试覆盖加密落库与权限`
+
+### 推送状态
+- Gitee：待推送 `4dfc2f3..593c49c main -> main`
+- GitHub：待推送 `4dfc2f3..593c49c main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1084/1084 通过（66 文件，79.81s），零回归
+- 改动量：1 文件 +278 行（纯测试，无生产代码变更）
+- 运行时 vitest 日志中 GET 500 与 POST 500 两例的 stderr 为路由 `catch` 块 `console.error` 预期输出（测试本身通过），与本次改动无关；`parsePdf` 的 stderr 警告为 pdf-parse 模块加载噪音
+- `db.$transaction([...])` 数组形式：`storageConfig.upsert`/`tenant.update` 在传入 `$transaction` 前已被同步求值（mock 记录调用参数），故可断言 upsert 入参的 `config` 字段为加密值；`$transaction` mock 仅 resolve 数组，不改变子调用记录
+- 既有 `r2-storage.test.ts` mock `@/lib/cloud-sync/r2-storage-class` 且 `isR2Configured` 仅 `select: { id: true }`，与本路由测试隔离 `r2-storage` 整模块互不干扰
+- 本轮为项目首个 route handler 级测试，建立 `src/__tests__/api/<route>-route.test.ts` 命名约定与 `vi.hoisted` 共享 `MockNextResponse` + 全模块隔离的 mock 范式，后续 saas 其他路由 handler 测试可复用
+
+### 下一轮候选
+- **cloud-sync/config route handler 级集成测试已闭环**，自本轮起从候选清单移除
+- **`db.$transaction` 回调租户隔离**：21 处直连事务回调内 `tx` 无 tenantId 注入，可评估是否提供 `tenantDb.transaction` 的租户感知变体（现已带审计）或文档化各路由自管约定
+- 补 saas/cloud-sync files(info)/api-keys/webhooks/stats/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 saas/api-keys 或 webhooks：权限模型清晰、无外部依赖，可复用本轮 route handler 测试范式）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
