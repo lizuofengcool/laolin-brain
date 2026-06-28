@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateRequest } from "@/lib/api-auth";
-import { db } from "@/lib/db";
 import { getSyncStatus, getRecentSyncLogs } from "@/lib/cloud-sync/sync-engine";
 
 /**
@@ -13,20 +12,11 @@ export async function GET(request: NextRequest) {
   const { userId, tenantId, role } = auth;
 
   try {
-    // 获取用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json({ error: "租户不存在" }, { status: 404 });
-    }
-
     // 获取同步状态
-    const status = await getSyncStatus(tenantUser.tenantId);
+    const status = await getSyncStatus(tenantId);
 
     // 获取最近的同步日志
-    const recentLogs = await getRecentSyncLogs(tenantUser.tenantId, 5);
+    const recentLogs = await getRecentSyncLogs(tenantId, 5);
 
     return NextResponse.json({
       success: true,

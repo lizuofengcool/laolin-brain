@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateRequest } from "@/lib/api-auth";
-import { db } from "@/lib/db";
 import {
   getConflictFiles,
   resolveConflict,
@@ -17,17 +16,8 @@ export async function GET(request: NextRequest) {
   const { userId, tenantId, role } = auth;
 
   try {
-    // 获取用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json({ error: "租户不存在" }, { status: 404 });
-    }
-
     // 获取冲突文件
-    const conflicts = await getConflictFiles(tenantUser.tenantId);
+    const conflicts = await getConflictFiles(tenantId);
 
     return NextResponse.json({
       success: true,
@@ -55,19 +45,10 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { fileId, resolution, password, auto } = body;
 
-    // 获取用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json({ error: "租户不存在" }, { status: 404 });
-    }
-
     if (auto) {
       // 批量自动解决
       const resolved = await resolveConflictsAuto(
-        tenantUser.tenantId,
+        tenantId,
         userId,
         password,
         'last_write_wins'
@@ -80,7 +61,7 @@ export async function POST(request: NextRequest) {
     } else if (fileId && resolution) {
       // 单个解决
       await resolveConflict(
-        tenantUser.tenantId,
+        tenantId,
         userId,
         fileId,
         resolution as 'local_wins' | 'cloud_wins' | 'keep_both',

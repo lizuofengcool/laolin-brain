@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateRequest } from "@/lib/api-auth";
-import { db } from "@/lib/db";
 import { triggerSync } from "@/lib/cloud-sync/sync-engine";
 
 /**
@@ -20,17 +19,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "请提供加密密码" }, { status: 400 });
     }
 
-    // 获取用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json({ error: "租户不存在" }, { status: 404 });
-    }
-
     // 触发同步
-    const result = await triggerSync(tenantUser.tenantId, userId, password);
+    const result = await triggerSync(tenantId, userId, password);
 
     return NextResponse.json({
       success: true,

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateRequest } from "@/lib/api-auth";
-import { db } from "@/lib/db";
 import { getSyncQueue, cleanupCompletedQueue } from "@/lib/cloud-sync/sync-engine";
 
 /**
@@ -13,22 +12,13 @@ export async function GET(request: NextRequest) {
   const { userId, tenantId, role } = auth;
 
   try {
-    // 获取用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json({ error: "租户不存在" }, { status: 404 });
-    }
-
     // 获取查询参数
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status') || undefined;
     const limit = parseInt(searchParams.get('limit') || '50', 10);
 
     // 获取队列
-    const queue = await getSyncQueue(tenantUser.tenantId, status, limit);
+    const queue = await getSyncQueue(tenantId, status, limit);
 
     return NextResponse.json({
       success: true,
@@ -53,17 +43,8 @@ export async function DELETE(request: NextRequest) {
   const { userId, tenantId, role } = auth;
 
   try {
-    // 获取用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json({ error: "租户不存在" }, { status: 404 });
-    }
-
     // 清理已完成的队列项
-    const cleaned = await cleanupCompletedQueue(tenantUser.tenantId, 7);
+    const cleaned = await cleanupCompletedQueue(tenantId, 7);
 
     return NextResponse.json({
       success: true,
