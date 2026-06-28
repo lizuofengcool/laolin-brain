@@ -7545,3 +7545,51 @@ Status: 完成
 - 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files(info)/api-keys/webhooks/stats/activity-logs/access-history/storage/system-logs handler 级路由测试；补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 shares 路由 handler 测试
 - ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+
+## 2026-06-28 10:00 自动迭代
+
+第二十三轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `d1de32a`，工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：第十八~二十二轮已确认任务清单"优先级 1 剩余项"全部闭环（tenant-db raw 后门、alipay/wechat RSA2 验签、sync-engine keep_both、api-auth.test 不符、files 顶层/[id] raw-db 读侧、api-keys/webhooks/stats/activity-logs/access-history/storage/system-logs 影子覆盖）。本轮以精确多行 grep `db\.tenantUser\.findFirst\(\{\s*\n\s*where: \{ userId \}` 复核，确认剩余 19 文件含影子覆盖模式，与第二十二轮 worklog 计数一致；继续 worklog "下一轮候选" 首项——**P1 批量清理（`tenantUser.findFirst` 影子覆盖 `auth.tenantId/role` 模式）**，按第二十二轮 storage/system-logs 范式收口 2 个目录：trash（route.ts，4 处）与 invitations（route.ts，2 处）。
+
+立项依据：与 storage/system-logs 同源缺陷——trash 的 GET/POST(restore)/DELETE/emptyTrash 四个入口与 invitations 的 GET/POST 两个入口均存在 `db.tenantUser.findFirst({ where:{ userId } })` 影子覆盖 `auth.tenantId/role`。该重查**无 orderBy**，而 `authenticateRequest` 内部按 `orderBy:{ joinedAt:'asc' }` 确定性选取租户，对多租户用户两者可能取到不同租户。trash 的回收站 list/restore/permanent-delete/empty 全部基于影子的 `tenantId`（越权读写跨租户回收站文件，restore/delete 事务内 `where:{ userId, tenantId, isDeleted:true }` 与目标文件夹校验 `targetFolder.tenantId !== tenantId` 均基于影子值，放大越权面）；invitations 的"仅 owner/admin 可查看/创建邀请"权限分支基于影子的 `role`（取错租户的同时取错角色，普通用户可能越权读全租户邀请列表、越权发邀请），下游 `existingUser.tenantMemberships`/`existingInvitation`/`invitation.create` 的 `tenantId` 同样基于影子值。
+
+环境：`npm ci`（package-lock.json，963 包）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 1051/1051 通过（64 文件，54.56s），与第二十二轮基线完全一致，零回归。
+
+### 改动
+
+1. **`src/app/api/trash/route.ts`** — `c1a8c34` `fix(trash): 移除 tenantUser 影子查询改用 authenticateRequest 权威 tenantId`
+   - GET / POST(restore) / DELETE 三个 handler 均删除冗余 `db.tenantUser.findFirst({ where:{ userId }, select:{ tenantId:true } })` + "Tenant not found" 404 死分支 + 影子解构 `const { tenantId } = tenantUser`（同时覆盖顶部已从 auth 解构的 `tenantId`，是真正的影子覆写点）。
+   - 下游 `where:{ userId, tenantId, isDeleted:true }`（list count/findMany、restore 事务内 findMany/updateMany、DELETE 事务内 findMany/deleteMany）、目标文件夹校验 `targetFolder.tenantId !== tenantId`、`emptyTrash` 内 count/deleteMany 的 tenantId 入参均改用 auth.tenantId（auth 顶部已解构 `{ userId, tenantId, role }`，删除影子后 tenantId 直接复用 auth 值，零行为变化仅去掉越权隐患）。
+   - **`emptyTrash` helper 特殊处理**：原签名 `emptyTrash(userId: string)` 仅接收 userId，函数内部 `db.tenantUser.findFirst` 是其唯一 tenantId 来源（非纯粹"影子"但同样无 orderBy 非确定性）。为彻底收口该目录的 4 处非确定性查询，改签名 `emptyTrash(userId: string, tenantId: string)` 并删除内部查询 + 404 死分支，POST handler 调用点同步改为 `emptyTrash(userId, tenantId)`（POST 顶部 auth.tenantId 在调用点已可用）。
+   - 注：`role` 在 GET/POST/DELETE 顶部解构但未使用（pre-existing，trash 无角色权限分支），按"bug fix 不顺手清理无关死代码"原则保留不动；`noUnusedLocals` 未开启，tsc 通过。`db` import 保留（file/folder 模型尚未纳入 TenantDb 访问器）。
+
+2. **`src/app/api/invitations/route.ts`** — `e672584` `fix(invitations): 移除 tenantUser 影子查询改用 authenticateRequest 权威 tenantId/role`
+   - GET handler 删除冗余 `db.tenantUser.findFirst({ where:{ userId }, select:{ tenantId:true, role:true } })` + 404 死分支 + 影子解构 `const { tenantId, role: userRole } = tenantUser`（同时影子覆盖 auth.tenantId 与 auth.role）。权限分支 `if (userRole !== 'owner' && userRole !== 'admin')` 改用 `role`（GET 中 auth.role 未被 body 覆盖，可直接复用）；下游 `where:{ tenantId }` 改用 auth.tenantId。
+   - POST handler 删除冗余 `db.tenantUser.findFirst({ where:{ userId }, select:{ tenantId:true, role:true } })`（变量名 `currentTenantUser`）+ 404 死分支 + 影子解构 `const { tenantId, role: currentRole } = currentTenantUser`。
+   - **POST `role` 影子覆盖特殊处理**：POST 顶部 `const { userId, tenantId, role } = auth` 与 body 解构 `const { email, role = 'member', expiresInHours = 72 } = body` 同名 `role`——body 的 `role`（被邀请人角色）在 try 块内层作用域影子覆盖 auth 的 `role`（邀请人角色），原代码靠 `currentRole`（来自 DB 查询）绕过该影子做邀请人权限校验。删除查询后改为顶部 `const { userId, tenantId, role: authRole } = auth`（重命名避开 body 影子，同时消除一处变量影子 lint 隐患），权限分支 `if (currentRole !== 'owner' && currentRole !== 'admin')` 改用 `authRole`；下游 `existingUser.tenantMemberships.where:{ tenantId }` / `existingInvitation.where.tenantId` / `invitation.create.data.tenantId` 改用 auth.tenantId，`invitation.create.data.role` 保持 body.role（被邀请人角色，语义正确）。零行为变化仅去掉越权隐患。
+   - 注：GET 顶部 `userId` 解构但未使用（pre-existing，invitations 按 tenantId 过滤而非 userId），按"bug fix 不顺手清理无关死代码"原则保留不动；POST 顶部 `userId` 用于 `invitation.create.data.invitedBy`，保留。`db` import 保留（invitation/user 模型尚未纳入 TenantDb 访问器）。
+
+### Commit
+- `c1a8c34 fix(trash): 移除 tenantUser 影子查询改用 authenticateRequest 权威 tenantId`
+- `e672584 fix(invitations): 移除 tenantUser 影子查询改用 authenticateRequest 权威 tenantId/role`
+
+### 推送状态
+- Gitee: 已推送 `d1de32a..e672584 main -> main`
+- GitHub: 已推送 `d1de32a..e672584 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1051/1051 通过（64 文件，54.56s），零回归
+- 改动量：2 文件 +5/-95 行（净减 90 行，主要来自删除 6 处冗余 tenantUser 查询块 + 6 处 404 死分支 + emptyTrash 签名收口）
+- 无现存 handler 级单测覆盖 `/api/trash` 与 `/api/invitations`，故本轮改动不影响现有测试；可后续补 handler 级测试（mock `@/lib/api-auth` + `@/lib/db`，覆盖 trash list/restore/delete/empty 多租户 tenantId 一致性、invitations 权限 403/正常 200/POST role 影子覆盖场景/多租户 tenantId 一致性）
+- P1 批量清理进度：按精确多行 grep `db\.tenantUser\.findFirst\(\{\s*\n\s*where: \{ userId \}` 统计，app/api 下含该影子覆盖模式的文件由本轮前的 19 降至 **17**（trash/invitations 两目录已收口）；剩余 17 文件共 **28 处**影子查询（19 文件 34 处 − trash 4 − invitations 2 = 28 处，数字一致）
+- 复查 `notifications/route.ts` 已于前轮闭环（从候选清单移除，见第二十一轮 worklog）
+
+### 下一轮候选
+- **P1 批量清理（剩余 17 文件，28 处）**：tenant/users(2 文件 3 处，注意 [id] 含 currentTenantUser 影子 + targetTenantUser 合法查询需区分，勿误删目标用户查询)/export-import(1 文件 2 处)/faces(4 文件 4 处: groups/merge/groups/process-all/detect)/embeddings/generate(1 文件 2 处)/cloud-sync(4 文件 6 处: conflicts 2/queue 2/status 1/sync 1)/automation/rules(2 文件 5 处: [id] 3/route 2)/backup+backups(3 文件 6 处: backup 2 + backups 2 + backups/[id] 2) 仍存在 `tenantUser.findFirst` 影子覆盖 `auth.tenantId/role` 模式，按本轮 trash/invitations 范式（删冗余查询 + 用 auth.tenantId/role + 注意 body 同名变量影子需重命名 + helper 函数签名注入 tenantId）推进；建议每轮收口 1-2 个目录保持 1-3 commit 规模；下一轮建议优先 tenant/users（2 文件，含 [id] currentTenantUser/targetTenantUser 区分考点，收口后可复用范式至其余目录）+ export-import（1 文件 2 处）
+- **`storageConfig.config` 落库加密**：明文 JSON 存储 secretAccessKey/accessKeyId，改为 encrypt 存储 + getStorageProvider/aliyun-oss/r2-storage-class 读取侧 decrypt
+- **`db.$transaction` 回调租户隔离**：21 处直连事务回调内 `tx` 无 tenantId 注入，可评估是否提供 `tenantDb.transaction` 的租户感知变体（现已带审计）或文档化各路由自管约定
+- 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files(info)/api-keys/webhooks/stats/activity-logs/access-history/storage/system-logs/trash/invitations handler 级路由测试；补真实微信 V3 回调 / alipay RSA2 回调集成测试；补 shares 路由 handler 测试
+- ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
