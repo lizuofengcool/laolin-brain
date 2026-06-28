@@ -8190,3 +8190,53 @@ Status: 完成
 - 补 saas/cloud-sync files(info)/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 activity-logs：可复用本轮 route + [id] 双文件测试范式与 member 403 控制流锁定思路，或 access-history/storage 等单 route 文件）
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 17:00 自动迭代
+
+第三十六轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `2527cd7`（第三十五轮 test commit），工作树干净、无未提交改动、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查（读真实代码逐项核验，非仅信 worklog）**：本轮对任务清单所列 5 项"剩余"优先级 1 问题逐一 spot-check 源码，确认均已在前序轮次闭环——任务描述中的"剩余如下"为模板原文，实际已无待修：
+
+- `src/lib/db/tenant-db.ts`：`raw` getter 与 `transaction` 回调均带 `console.warn` 调用方堆栈软审计（`new Error().stack` 取第 3 帧），文件尾部注释明确"原始 Prisma 客户端不再以 rawDb 形式无审计导出"，闭环 ✓
+- `src/lib/payment/alipay.ts`：`verifyRSA2Sign` 用 `createVerify('RSA-SHA256')` + `RSA_PKCS1_PADDING` 真实验签，`normalizePublicKey` 自动补 PEM 头尾；`!isPaymentConfigured` 才走 mock，已配置但未接 SDK 时 `createPayment/queryPayment/refund` 显式返回失败而非静默 mock，闭环 ✓
+- `src/lib/payment/wechat.ts`：`verifyWechatSign` 用 `createHmac('sha256', apiKey)` + `timingSafeEqual` 恒定时间比较（缺字段直接 false，不再"非空即通过"），`decryptResource` 用 `aes-256-gcm` 解密 V3 resource（校验 key 32 字节、authTag 16 字节），闭环 ✓
+- `src/app/api/files/route.ts`：GET 与 POST 去重均经 `createTenantDb(tenantId).file.*`（自动注入 tenantId），配额 `$queryRaw` 的 WHERE 同时含 `userId` AND `tenantId`（无跨租户泄漏），闭环 ✓
+- `src/lib/cloud-sync/sync-engine.ts` keep_both：先 `fetchCloudFileData` 取云端数据，再把本地文件重命名为 `[冲突副本] ...`（保留本地版本），最后以 `db.file.create` 落地云端版本为新文件（新 cuid id），不再"直接覆盖"丢失本地版本，闭环 ✓
+- `src/__tests__/lib/api-auth.test.ts`：已匹配当前实现（返回 4 字段 userId/email/tenantId/role、async、不读 query param），第三十五轮前已修，闭环 ✓
+
+本轮转向优先级 3（补测试）。**立项（吃掉第三十五轮候选 #1 的首项建议）**：第三十五轮 worklog"下一轮候选"明确建议"下一轮可优先补 activity-logs：可复用本轮 route + [id] 双文件测试范式与 member 403 控制流锁定思路"。当前 `activity-logs` 仅有 `route.ts`（GET，无 [id]），故为单文件测试。复用 `api-keys-route.test.ts` 的 `vi.hoisted` 共享 `MockNextResponse` 范式（使路由 `auth instanceof NextResponse` 命中）补一份 GET 路由测试。机械、无生产代码变更、无外部依赖，适合单轮收口。
+
+**实现要点（1 个测试 commit）**：新增 `src/__tests__/api/activity-logs-route.test.ts`（10 例），覆盖 GET 全部控制流：
+
+- **鉴权/权限**：①未认证 401 透传 authenticateRequest 响应、不触达 count/findMany；②member 角色 → count/findMany 的 where **同时含 tenantId 与 userId**（核心安全契约：防 member 越权读他人日志），并断言 orderBy/skip/take 默认值；③admin 角色 → where 仅含 tenantId、不带 userId 过滤（看租户全部）；④owner + action/resourceType 过滤 → where 合并 action 与 resourceType（仍以 tenantId 作用域）。
+- **过滤叠加**：⑤dateFrom + dateTo 同时存在 → where.createdAt 含 gte 与 lte（均为 Date 实例，校验 toISOString）；⑥member + action 过滤 → where 同时含 tenantId/userId/action（member 作用域与业务过滤叠加，防"加过滤后漏掉 userId 越权"）。
+- **分页/错误**：⑦page=2&pageSize=2&total=5 → skip=2/take=2/totalPages=3/hasMore=true；⑧pageSize=500 被截断为 100；⑨默认 page=1/pageSize=20&total=0 → data 空/totalPages=0/hasMore=false；⑩count 抛错 → 500 { error: '获取活动日志失败' }。
+
+**核心安全契约锁定**：count 与 findMany 的 where 形状在 6 个用例中被显式 `toEqual` 断言——where 必以 `tenantId` 作用域（防多租户越权），member 角色额外注入 `userId`（防 member 越权读他人日志）。锁死该契约防止后续重构意外去掉 tenantId/userId 作用域。
+
+环境：`npm ci`（package-lock.json，沿用第三十~三十五轮 installer 选择避免 lockfile 冲突，963 packages / 41s）+ `npx prisma generate`（重新生成 client）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 **1157/1157** 通过（73 文件，74.69s，第三十五轮基线 1147/72 + 本轮新增 10 例/1 文件 = 1157/73，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/activity-logs-route.test.ts`**（新文件，10 例）— /api/activity-logs GET 路由 handler 级集成测试，覆盖 401/member 作用域/admin 全量/过滤合并/dateFrom+dateTo/分页/pageSize 截断/默认空/500
+
+### Commit
+- `874fe59 test(activity-logs): 补 /api/activity-logs GET 路由 handler 级集成测试`
+
+### 推送状态
+- Gitee：待推送 `2527cd7..874fe59 main -> main`
+- GitHub：待推送 `2527cd7..874fe59 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1157/1157 通过（73 文件，74.69s），零回归
+- 改动量：1 文件（新测试文件 +284），纯测试 commit，无生产代码变更
+- **关于 activity-logs 无 [id] 路由**：与 api-keys（route + [id]）不同，activity-logs 仅 route.ts（GET 列表），无单条详情/删除端点。故本轮为单文件测试，第三十五轮候选所述"route + [id] 双文件范式"在此处退化为单 route 文件
+- **where 形状断言策略**：与 api-keys-id-route 一致，对 count/findMany 的 where 做 `toEqual` 全等断言（而非 `toMatchObject`），确保 where 不含多余字段（如 admin 不应带 userId）、不缺作用域字段
+
+### 下一轮候选
+- **/api/activity-logs GET 路由测试已闭环**（10 例锁定 401/member 作用域/admin 全量/过滤合并/dateFrom+dateTo/分页/pageSize 截断/默认空/500），自本轮起从候选清单移除
+- **`db.$transaction` 回调租户隔离**：维持"21 处均显式 tenantId 作用域、无实际泄漏、文档化自管约定"结论，若后续要强约束可评估 `tenantDb.transaction` 租户感知变体（架构级，单列）
+- 补 saas/cloud-sync files(info)/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 access-history 或 storage：均为单 route 文件，可复用本轮 MockNextResponse + where 形状断言范式，access-history 预期含 member 作用域控制流）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
