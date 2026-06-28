@@ -12,19 +12,6 @@ export async function POST(request: NextRequest) {
 
   try {
     const { db } = await import('@/lib/db');
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-    const { tenantId } = tenantUser;
-
     const body = await request.json();
     const { fileIds } = body;
 
@@ -185,19 +172,6 @@ export async function GET(request: NextRequest) {
 
   try {
     const { db } = await import('@/lib/db');
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-    const { tenantId } = tenantUser;
-
     const totalFiles = await db.file.count({
       where: { userId, tenantId, isDeleted: false },
     });
