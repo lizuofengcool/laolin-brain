@@ -8288,3 +8288,46 @@ Status: 完成
 - 补 saas/cloud-sync files(info)/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 storage 或 system-logs：均为单 route 文件，可复用本轮 MockNextResponse + where 形状断言范式）
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 03:00 自动迭代
+
+第三十八轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `1ee8331`（第三十七轮 worklog commit），工作树干净、无未提交改动、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复核**：第三十六/三十七轮已逐项读源码 + grep 复核确认 5 项剩余问题全部闭环（tenant-db raw 审计 / alipay+wechat 真实验签 / api-auth.test 匹配实现 / files route 走 TenantDb / sync-engine keep_both 保留本地版本）。本轮 `grep -rn 'TODO|FIXME' src` 抽样复核：剩余 TODO 均为 plugins/registry、ai/document-qna、ai/model-manager、integrations/wecom、monitoring、billing 等需真实外部服务集成的桩（沙箱无凭证/网络，前序轮次已结论"待集成条件具备再落地"），无新引入的逻辑/安全问题。优先级 1 无待修，转向优先级 3（补测试）。
+
+**立项（吃掉第三十七轮候选 #3 的 system-logs 建议）**：第三十七轮 worklog"下一轮候选"明确建议"下一轮可优先补 storage 或 system-logs：均为单 route 文件，可复用本轮 MockNextResponse + where 形状断言范式"。选 system-logs 而非 storage——system-logs 的控制流更丰富且安全契约更强：①GET 有 role 门控（仅 owner/admin，member → 403），与 access-history 的"role 解构但未用"形成对照；②GET 的 where 以 tenantId 单键作用域（系统日志是租户级管理数据，非用户级），where 形状与 role 门控共同构成"按租户作用域 + 按角色授权"分层契约；③POST 不走 authenticateRequest 而以 x-internal-key + INTERNAL_API_KEY 做常量时间（timingSafeEqual）匹配，未配置/缺/错 key 均 fail-closed → 403（防任意未认证请求向任意租户/全局注入日志污染审计）。这些均为安全关键控制流，值得用测试锁死防回归。
+
+**实现要点（1 个测试 commit，21 例）**：新增 `src/__tests__/api/system-logs-route.test.ts`（GET 13 例 + POST 8 例），覆盖 GET/POST 全部控制流：
+
+- **GET（13 例）**：①未认证 401 透传不触达 DB；②member 角色 → 403 { error: '没有权限查看系统日志' } 不触达 DB（role 门控前置，count/findMany 均不调用）；③owner 默认（无过滤）→ where 仅含 tenantId（**核心契约：无 userId**，与 access-history 双键对照），count 与 findMany 收到同一 where，findMany orderBy createdAt desc、skip=0/take=20；④admin 角色 → 通过 role 门控（与 owner 同路径）不返回 403；⑤level 过滤 → where 含 tenantId+level；⑥module 过滤 → where 含 tenantId+module；⑦level+module 叠加 → where 含三者；⑧dateFrom+dateTo 同时 → where.createdAt 含 gte 与 lte（均为 Date 实例，校验 toISOString）；⑨dateFrom 单独 → where.createdAt 仅含 gte（锁定 `...where.createdAt` spread-from-undefined 行为，不含 lte）；⑩分页 page=2&pageSize=2 → skip=2/take=2/totalPages=3/hasMore=true + pageSize=500 截断为 100；⑪默认 page=1/pageSize=20/total=0 → data 空/totalPages=0/hasMore=false；⑫返回 data 仅映射 id/level/module/message/details/createdAt（剥离 tenantId 等内部字段，防租户信息泄漏到响应体）；⑬count 抛错 → 500 { error: '获取系统日志失败' }。
+- **POST（8 例）**：①INTERNAL_API_KEY 未配置 → 403 fail-closed 不触达 create；②缺 x-internal-key header → 403 不触达 create；③x-internal-key 长度不同 → 403（`expectedBuf.length !== providedBuf.length` 短路，不调 timingSafeEqual）不触达 create；④x-internal-key 同长度但内容不符 → 403（timingSafeEqual 返回 false）不触达 create；⑤缺 message → 400 { error: 'message is required' } 不触达 create；⑥有效+完整 body → create data 含 level/module/message/details(JSON.stringify)/tenantId，返回 { success:true, message:'日志已记录' }；⑦body 缺省 level/module/details/tenantId → create data 以默认值落库（level=info/module=system/details=null/tenantId=null）；⑧create 抛错 → 500 { error: '记录日志失败' }。
+
+**核心安全契约锁定**：贯穿 21 例的两条契约——①GET 的"按租户作用域 + 按角色授权"分层契约：where 恒含 tenantId（`toEqual` 全等断言不含 userId，锁死"租户级而非用户级"语义）、role 门控前置（member 403 不触达 DB），缺一即越权（去掉 tenantId → 多租户越权；放宽 role 门控 → member 越权读管理日志）；②POST 的"内部 key 常量时间匹配 + fail-closed"契约：未配置/缺/错 key 四场景均 403 不触达 create，锁死防任意未认证请求注入日志。**不 mock crypto**——POST 的 timingSafeEqual 走真实实现，以验证常量时间比较契约（同长度内容不符用例显式触发 timingSafeEqual 返回 false 路径）。
+
+环境：`npm ci`（package-lock.json，沿用第三十~三十七轮 installer 选择避免 lockfile 冲突，963 packages / 49s）+ `npx prisma generate`（重新生成 client）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 **1199/1199** 通过（75 文件，89.45s，第三十七轮基线 1178/74 + 本轮新增 21 例/1 文件 = 1199/75，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/system-logs-route.test.ts`**（新文件，21 例）— /api/system-logs GET/POST 路由 handler 级集成测试，覆盖 401/403/400/500 + role 门控 + (tenantId) 单键作用域 + level/module/dateFrom/dateTo 过滤合并 + 分页 + 返回字段剥离 + 内部 key 常量时间匹配 fail-closed
+
+### Commit
+- `d5d0f82 test(system-logs): 补 /api/system-logs GET/POST 路由 handler 级集成测试`
+
+### 推送状态
+- Gitee：待推送 `1ee8331..d5d0f82 main -> main`
+- GitHub：待推送 `1ee8331..d5d0f82 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1199/1199 通过（75 文件，89.45s），零回归
+- 改动量：1 文件（新测试文件 +457），纯测试 commit，无生产代码变更
+- **system-logs 与 access-history 作用域语义对照**：access-history 以 (tenantId, userId) 双键作用域（个人数据，admin 也不读他人历史）；system-logs 以 (tenantId) 单键作用域 + role 门控（租户级管理数据，owner/admin 可读租户全部，member 禁读）。两套作用域模型各有其合理性，测试分别用 `toEqual` 全等断言锁定 where 形状，防止后续重构混淆（如误给 system-logs 加 userId 导致 owner 看不到租户全量日志，或误给 access-history 去 userId 导致 admin 越权读他人历史）
+- **POST 不走 authenticateRequest 的合理性**：system-logs POST 是内部日志写入端点（src 内无调用方，预留给外部/后台任务），用 x-internal-key 而非用户 token 鉴权是正确的——内部服务不应依赖用户会话。fail-closed（未配置 INTERNAL_API_KEY 时 403）是安全默认，不会影响现有功能（无调用方）。测试通过"未配置/缺/错 key"四场景锁死该 fail-closed 契约
+- **沙箱时钟说明**：本会话 `TZ=Asia/Shanghai date` 报 2026-06-29 03:10，而第三十七轮 worklog 头为 2026-06-29 18:00——沙箱时钟跨会话存在回拨（前序会话时钟领先），本轮时间戳取本会话真实上海时间。轮次编号（第三十八轮）为排序权威键，时间戳仅供溯源
+
+### 下一轮候选
+- **/api/system-logs GET/POST 路由测试已闭环**（21 例锁定 401/403/400/500 + role 门控 + (tenantId) 单键作用域 + 过滤合并 + 分页 + 返回字段剥离 + 内部 key 常量时间匹配 fail-closed），自本轮起从候选清单移除
+- **`db.$transaction` 回调租户隔离**：维持"21 处均显式 tenantId 作用域、无实际泄漏、文档化自管约定"结论，若后续要强约束可评估 `tenantDb.transaction` 租户感知变体（架构级，单列）
+- 补 saas/cloud-sync files(info)/storage/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 storage：单 route 文件含 overview/by-type/large-files 三 GET 分支，`role` 解构但未用、恒以 (userId,tenantId) 双键作用域，可复用本轮 MockNextResponse + where 形状断言范式；trash/invitations 含 POST/PATCH/DELETE 控制流更丰富亦可考虑）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
