@@ -319,17 +319,32 @@ async function getActivityStats(tenantId: string, dateFrom?: string | null, date
 
 // ─── 获取AI使用统计 ─────────────
 async function getAiStats(tenantId: string) {
-  // TODO: 集成AI使用统计
-  // 目前先返回模拟数据或基础数据
+  // 读取租户 AI 配额。Tenant.aiUsed / aiQuota 由 checkAiQuotaAndTenant 在每次 AI 调用时
+  // 维护：summarize / ocr / describe / generate-tags 四类 AI 路由均经 incrementTenantAiUsage
+  // 计入租户用量，故 aiUsed 反映当前配额窗口内的全部 AI 调用。
+  const tenant = await db.tenant.findUnique({
+    where: { id: tenantId },
+    select: { aiQuota: true, aiUsed: true, aiResetDate: true },
+  });
+
+  const now = new Date();
+  // 配额按日重置：重置日期已过期（或从未设置）时，当前窗口的已用计次按 0 口径报告
+  // （实际清零由下一次 AI 调用的 checkAiQuotaAndTenant 写回，此处只读、不写）
+  const windowActive = !!tenant?.aiResetDate && tenant.aiResetDate > now;
+  const quotaTotal = tenant?.aiQuota ?? 0;
+  const quotaUsed = windowActive ? tenant?.aiUsed ?? 0 : 0;
+  const quotaPercent = quotaTotal > 0 ? Math.round((quotaUsed / quotaTotal) * 100) : 0;
 
   return {
-    totalCalls: 0,
+    // 今日 AI 调用总次数（= 当前配额窗口内已用计次，四类 AI 路由统一计入 Tenant.aiUsed）
+    totalCalls: quotaUsed,
+    // 按类型(summary/ocr/describe/tags)拆分需独立的 AiUsageLog 表记录，当前尚未落地，如实返回 0
     summaryCalls: 0,
     ocrCalls: 0,
     describeCalls: 0,
     tagCalls: 0,
-    quotaUsed: 0,
-    quotaTotal: 1000, // 默认配额
-    quotaPercent: 0,
+    quotaUsed,
+    quotaTotal,
+    quotaPercent,
   };
 }
