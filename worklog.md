@@ -8240,3 +8240,51 @@ Status: 完成
 - 补 saas/cloud-sync files(info)/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 access-history 或 storage：均为单 route 文件，可复用本轮 MockNextResponse + where 形状断言范式，access-history 预期含 member 作用域控制流）
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 18:00 自动迭代
+
+第三十七轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `1fdb6a9`（第三十六轮 worklog commit），工作树干净、无未提交改动、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复核（抽样核验，非仅信 worklog）**：本轮对任务清单"剩余"5 项做抽样 spot-check 确认前序轮次已闭环（第三十六轮已逐项读源码核验，本轮只做 2 项关键项 grep 复核避免重复劳动）：
+
+- `src/lib/cloud-sync/sync-engine.ts` keep_both：`grep` 命中 L675-686 `case 'keep_both'` → 重命名本地文件为 `[冲突副本] ${file.fileName}` 保留本地版本、云端版本以新 id 落地，闭环 ✓（不再"直接覆盖"丢失本地版本）
+- `src/lib/payment/wechat.ts` verifyWechatSign：`grep` 命中 L234 `createHmac('sha256', apiKey)` + L238 `timingSafeEqual` 恒定时间比较，闭环 ✓（不再"非空即通过"）
+- 其余 3 项（tenant-db raw 审计 / alipay RSA2 真实验签 / api-auth.test 匹配实现 / files route 走 TenantDb）第三十六轮已读源码确认，本轮沿用其结论不重复核验
+
+任务描述中"剩余如下"为模板原文，实际优先级 1 已无待修。本轮转向优先级 3（补测试）。**立项（吃掉第三十六轮候选 #3 的首项建议）**：第三十六轮 worklog"下一轮候选"明确建议"下一轮可优先补 access-history 或 storage：均为单 route 文件，可复用本轮 MockNextResponse + where 形状断言范式，access-history 预期含 member 作用域控制流"。选 access-history：它含 GET/POST/DELETE 三方法、4 个 GET type 分支，控制流远比 storage 丰富，且其"role 解构但未使用、恒以 (tenantId,userId) 双键作用域"的设计值得用测试锁死防回归。
+
+**实现要点（1 个测试 commit）**：新增 `src/__tests__/api/access-history-route.test.ts`（21 例），覆盖 GET/POST/DELETE 全部控制流：
+
+- **GET（11 例）**：①未认证 401 透传不触达 DB；②type=recent（默认）→ accessHistory.findMany/count 的 where 同时含 tenantId+userId+accessType(view)，orderBy lastAccessedAt desc，file.findMany 以 `{ id:{in}, tenantId }` 作用域（防跨租户读文件元数据）；③type=frequent → orderBy accessCount desc（where 同 recent）；④type=recent + accessType 过滤合并进 where；⑤admin/owner 仍仅看自己历史（role 未参与作用域，where 恒含 userId）——**核心安全契约**；⑥type=recent-uploaded → file.findMany/count where 含 tenantId+userId+isDeleted:false，orderBy createdAt desc；⑦type=recent-modified → orderBy updatedAt desc；⑧recent 分支 file 不在租户内（fileMap 未命中）→ '未知文件' 被过滤、data 空但 total 仍取 accessHistory.count；⑨分页 page=2&pageSize=2 → skip=2/take=2/totalPages=3/hasMore=true + pageSize=500 截断为 100；⑩默认 page=1/pageSize=20/total=0 → data 空/totalPages=0/hasMore=false；⑪findMany 抛错 → 500 { error: '获取访问历史失败' }。
+- **POST（6 例）**：①未认证 401 不触达 DB；②缺 fileId → 400 { error: 'fileId is required' } 不触达 file.findFirst；③file.findFirst 未命中 → 404 { error: '文件不存在' }，findFirst 以 `{ id, tenantId }` 双键作用域（防跨租户文件登记）；④已有记录 → update increment accessCount + lastAccessedAt，accessHistory.findFirst 以 tenantId+userId+fileId+accessType **四键作用域**（防串改他人记录）；⑤无记录 → create data 含 tenantId+userId+fileId+accessType+accessCount:1（默认 accessType=view）；⑥create 抛错 → 500 { error: '记录访问失败' }。
+- **DELETE（4 例）**：①未认证 401 不触达 deleteMany；②带 fileId → deleteMany where 含 tenantId+userId+fileId；③不带 fileId → deleteMany where 仅含 tenantId+userId（仅清自己全部历史，**绝不清租户全部他人历史**，断言 where 不含 fileId）；④deleteMany 抛错 → 500 { error: '清除访问历史失败' }。
+
+**核心安全契约锁定**：贯穿 21 例的核心断言是"所有 where 恒以 (tenantId, userId) 双键作用域"——access-history 不区分角色（role 解构但未使用），即便 admin/owner 也只能读写自己的访问历史。GET 的 where（accessHistory.findMany/count 与 file.findMany）、POST 的 findFirst/create/update、DELETE 的 deleteMany 均显式 `toEqual`/`toMatchObject` 断言双键作用域形状，锁死该契约防止后续重构意外去掉 userId 作用域（导致 admin 越权读他人历史）或 tenantId 作用域（导致多租户越权）。另锁定 POST file.findFirst 的 `{ id, tenantId }` 双键（防跨租户文件登记）与 accessHistory.findFirst 的四键（防串改他人记录）。
+
+环境：`npm ci`（package-lock.json，沿用第三十~三十六轮 installer 选择避免 lockfile 冲突）+ `npx prisma generate`（重新生成 client）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 **1178/1178** 通过（74 文件，84.41s，第三十六轮基线 1157/73 + 本轮新增 21 例/1 文件 = 1178/74，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/access-history-route.test.ts`**（新文件，21 例）— /api/access-history GET/POST/DELETE 路由 handler 级集成测试，覆盖 401/400/404/500 + (tenantId,userId) 双键作用域 + 4 个 GET type 分支 + POST findFirst 双键/四键作用域 + DELETE 双键/三键作用域
+
+### Commit
+- `8a19a73 test(access-history): 补 /api/access-history GET/POST/DELETE 路由 handler 级集成测试`
+
+### 推送状态
+- Gitee：待推送 `1fdb6a9..8a19a73 main -> main`
+- GitHub：待推送 `1fdb6a9..8a19a73 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1178/1178 通过（74 文件，84.41s），零回归
+- 改动量：1 文件（新测试文件 +509），纯测试 commit，无生产代码变更
+- **关于 access-history 的 role 未使用**：路由三方法均 `const { userId, tenantId, role } = auth` 解构 role 但全文未引用，故 access-history 是"按用户"而非"按角色"作用域——这是有意设计（访问历史天然是个人数据，admin 也不应看他人访问历史），非缺陷。测试通过"admin/owner 仍仅看自己历史"用例显式锁定该设计，防止后续误改为"admin 看租户全部访问历史"导致越权
+- **recent 分支 total 与 data 不一致的合理性**：recent 分支 total 取 accessHistory.count（含 fileMap 未命中的记录），data 经"未知文件"过滤后可能更短。这是已知行为（file 被删/跨租户后 accessHistory 残留），测试用例⑧显式锁定 total=1/data=[] 不一致场景，防止后续"修复"为 total 取过滤后长度而破坏分页契约
+- **POST update where 仅用 { id } 的安全性**：update 的 `where: { id: existingRecord.id }` 未带 tenantId/userId，看似有越权风险，但前置 `accessHistory.findFirst({ where: { tenantId, userId, fileId, accessType } })` 已做四键鉴权——findFirst 未命中即走 create 分支，命中才进入 update。此"先 findFirst 四键鉴权再 update"模式与 api-keys [id] PATCH 的"先 findFirst 双键再 update"模式等价安全，测试通过断言 findFirst 的 where 形状锁死该契约
+
+### 下一轮候选
+- **/api/access-history GET/POST/DELETE 路由测试已闭环**（21 例锁定 401/400/404/500 + (tenantId,userId) 双键作用域 + 4 个 GET type 分支 + POST findFirst 双键/四键 + DELETE 双键/三键），自本轮起从候选清单移除
+- **`db.$transaction` 回调租户隔离**：维持"21 处均显式 tenantId 作用域、无实际泄漏、文档化自管约定"结论，若后续要强约束可评估 `tenantDb.transaction` 租户感知变体（架构级，单列）
+- 补 saas/cloud-sync files(info)/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 storage 或 system-logs：均为单 route 文件，可复用本轮 MockNextResponse + where 形状断言范式）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
