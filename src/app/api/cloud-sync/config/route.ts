@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateRequest } from "@/lib/api-auth";
 import { isR2Configured, testR2Connection } from "@/lib/cloud-sync/r2-storage";
+import { encryptConfig } from "@/lib/cloud-sync/config-crypto";
 import { db } from "@/lib/db";
 import { z } from "zod";
 
@@ -76,17 +77,20 @@ export async function POST(request: NextRequest) {
     // 并切换租户存储提供商为 r2，使 sync-engine.getStorageProvider 命中该配置。
     // 此前仅在内存中保存（服务重启即丢失、且与 sync-engine 的 DB 数据源脱节），
     // 现与实际同步链路统一到 DB，配置后备份/同步方可真正生效。
+    // config 字段以 AES-256-GCM 加密落库（见 config-crypto），避免 secretAccessKey /
+    // accessKeyId 在数据库文件中裸露；读取侧 sync-engine.getStorageProvider 调 decryptConfig。
+    const encryptedConfig = encryptConfig(config);
     await db.$transaction([
       db.storageConfig.upsert({
         where: { tenantId_provider: { tenantId: auth.tenantId, provider: "r2" } },
         create: {
           tenantId: auth.tenantId,
           provider: "r2",
-          config: JSON.stringify(config),
+          config: encryptedConfig,
           isDefault: true,
         },
         update: {
-          config: JSON.stringify(config),
+          config: encryptedConfig,
           isDefault: true,
         },
       }),

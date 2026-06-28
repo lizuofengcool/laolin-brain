@@ -6,6 +6,7 @@
  */
 import { db } from "@/lib/db";
 import { encrypt, decrypt, hashFileContent } from "./crypto";
+import { decryptConfig } from "./config-crypto";
 import { R2Storage, R2Config } from "./r2-storage-class";
 import { AliyunOSSStorage, AliyunOSSConfig } from "./aliyun-oss";
 
@@ -141,7 +142,9 @@ async function getStorageProvider(tenantId: string): Promise<StorageProvider> {
     throw new Error(`Storage config not found for provider: ${provider}`);
   }
 
-  const config = JSON.parse(storageConfig.config);
+  // config 字段自第二十八轮起以 AES-256-GCM 加密落库；decryptConfig 对历史明文 JSON
+  // 行自动回退 JSON.parse（向后兼容），新写入均带 "v1:" 前缀。
+  const config = decryptConfig(storageConfig.config);
 
   switch (provider) {
     case 'aliyun':
