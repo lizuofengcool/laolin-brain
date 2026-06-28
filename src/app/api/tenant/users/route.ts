@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
   const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId, tenantId, role } = auth;
+  const { tenantId, role: authRole } = auth;
 
   try {
     const { searchParams } = new URL(request.url);
@@ -23,23 +23,8 @@ export async function GET(request: NextRequest) {
     const search = searchParams.get('search');
     const role = searchParams.get('role');
 
-    // 查询用户的租户和角色
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId, role: userRole } = tenantUser;
-
     // 权限检查：只有owner和admin可以查看用户列表
-    if (userRole !== 'owner' && userRole !== 'admin') {
+    if (authRole !== 'owner' && authRole !== 'admin') {
       return NextResponse.json(
         { error: '没有权限查看用户列表' },
         { status: 403 }

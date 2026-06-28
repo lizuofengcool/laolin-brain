@@ -16,7 +16,7 @@ export async function PATCH(
   const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId, tenantId, role } = auth;
+  const { userId, tenantId, role: authRole } = auth;
   const { id: targetUserId } = await params;
 
   try {
@@ -30,23 +30,8 @@ export async function PATCH(
       );
     }
 
-    // 查询当前用户的租户和角色
-    const currentTenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
-
-    if (!currentTenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId, role: currentRole } = currentTenantUser;
-
     // 权限检查：只有owner可以修改角色
-    if (currentRole !== 'owner') {
+    if (authRole !== 'owner') {
       return NextResponse.json(
         { error: '没有权限修改用户角色' },
         { status: 403 }
@@ -112,23 +97,8 @@ export async function DELETE(
   const { id: targetUserId } = await params;
 
   try {
-    // 查询当前用户的租户和角色
-    const currentTenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
-
-    if (!currentTenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId, role: currentRole } = currentTenantUser;
-
     // 权限检查：只有owner和admin可以移除用户
-    if (currentRole !== 'owner' && currentRole !== 'admin') {
+    if (role !== 'owner' && role !== 'admin') {
       return NextResponse.json(
         { error: '没有权限移除用户' },
         { status: 403 }
