@@ -110,7 +110,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 计入租户级 AI 用量（与 generate-tags 一致），保证 Tenant.aiUsed 反映全部 AI 调用
-    await incrementTenantAiUsage(tenantId);
+    await incrementTenantAiUsage(tenantId, 'summary', userId);
 
     return NextResponse.json({
       summary: parsed.summary || '无法生成摘要',

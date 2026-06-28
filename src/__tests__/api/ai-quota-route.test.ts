@@ -9,7 +9,7 @@
  *     （失败/拒绝路径不计入用量，防止配额未消耗却被计数）。
  *   - 成功 → 200 + 计数：checkAiQuotaAndTenant 以 (userId, tenantId) 入参（锁定
  *     tenantId 取自 authenticateRequest 权威值、而非函数内重复查 tenantUser），
- *     AI 提供方被调用，incrementTenantAiUsage(tenantId) 被调用一次。
+ *     AI 提供方被调用，incrementTenantAiUsage(tenantId, operation, userId) 被调用一次。
  *
  * 本轮（第三十三轮）修复点：这三个路由此前仅用 checkAiUsage（用户级内存配额），
  * 未走 checkAiQuotaAndTenant 的租户级 DB 闸门、也不调用 incrementTenantAiUsage，
@@ -163,14 +163,14 @@ describe("AI 路由租户级配额一致性（summarize/ocr/describe 对齐 gene
       expect(mockIncrement).not.toHaveBeenCalled();
     });
 
-    it("成功 → 200，配额校验以 (userId, tenantId) 入参，AI 模型被调用且 incrementTenantAiUsage(tenantId) 被调用", async () => {
+    it("成功 → 200，配额校验以 (userId, tenantId) 入参，AI 模型被调用且 incrementTenantAiUsage(tenantId, operation, userId) 被调用", async () => {
       const res = (await summarizePOST(
         makePostRequest({ content: "hello", fileName: "a.txt", fileType: "text" }),
       )) as MockRes;
       expect(res.status).toBe(200);
       expect(mockCheckQuota).toHaveBeenCalledWith("user-1", "tenant-1");
       expect(mockChatCreate).toHaveBeenCalledTimes(1);
-      expect(mockIncrement).toHaveBeenCalledWith("tenant-1");
+      expect(mockIncrement).toHaveBeenCalledWith("tenant-1", "summary", "user-1");
       expect(mockIncrement).toHaveBeenCalledTimes(1);
       const body = await res.json();
       expect(body).toHaveProperty("summary", "摘要");
@@ -201,14 +201,14 @@ describe("AI 路由租户级配额一致性（summarize/ocr/describe 对齐 gene
       expect(mockIncrement).not.toHaveBeenCalled();
     });
 
-    it("成功 → 200，extractTextFromImage 被调用且 incrementTenantAiUsage(tenantId) 被调用", async () => {
+    it("成功 → 200，extractTextFromImage 被调用且 incrementTenantAiUsage(tenantId, operation, userId) 被调用", async () => {
       const res = (await ocrPOST(
         makePostRequest({ imageBase64: "data:image/png;base64,xxx" }),
       )) as MockRes;
       expect(res.status).toBe(200);
       expect(mockCheckQuota).toHaveBeenCalledWith("user-1", "tenant-1");
       expect(mockExtractText).toHaveBeenCalledTimes(1);
-      expect(mockIncrement).toHaveBeenCalledWith("tenant-1");
+      expect(mockIncrement).toHaveBeenCalledWith("tenant-1", "ocr", "user-1");
       expect(mockIncrement).toHaveBeenCalledTimes(1);
       const body = await res.json();
       expect(body).toHaveProperty("text", "ocr-text");
@@ -239,14 +239,14 @@ describe("AI 路由租户级配额一致性（summarize/ocr/describe 对齐 gene
       expect(mockIncrement).not.toHaveBeenCalled();
     });
 
-    it("成功 → 200，describeImage 被调用且 incrementTenantAiUsage(tenantId) 被调用", async () => {
+    it("成功 → 200，describeImage 被调用且 incrementTenantAiUsage(tenantId, operation, userId) 被调用", async () => {
       const res = (await describePOST(
         makePostRequest({ imageBase64: "data:image/png;base64,xxx" }),
       )) as MockRes;
       expect(res.status).toBe(200);
       expect(mockCheckQuota).toHaveBeenCalledWith("user-1", "tenant-1");
       expect(mockDescribeImage).toHaveBeenCalledTimes(1);
-      expect(mockIncrement).toHaveBeenCalledWith("tenant-1");
+      expect(mockIncrement).toHaveBeenCalledWith("tenant-1", "describe", "user-1");
       expect(mockIncrement).toHaveBeenCalledTimes(1);
       const body = await res.json();
       expect(body).toHaveProperty("description", "image-description");

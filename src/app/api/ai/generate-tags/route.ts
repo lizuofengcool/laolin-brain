@@ -136,7 +136,7 @@ ${(content || '').slice(0, 6000)}`;
     }
 
     // 记录租户AI使用量
-    await incrementTenantAiUsage(tenantId);
+    await incrementTenantAiUsage(tenantId, 'tags', userId);
 
     return NextResponse.json({
       tags,

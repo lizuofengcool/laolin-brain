@@ -38,9 +38,25 @@ model Tenant {
   chatMessages    ChatMessage[]
   aiProviderConfigs AiProviderConfig[]
   settings        Setting[]
+  aiUsageLogs     AiUsageLog[]
 
   @@index([status])
   @@index([plan])
+}
+
+// AI 调用明细日志：按 operation(summary/ocr/describe/tags) 拆分统计的依据。
+// 由 incrementTenantAiUsage 在每次成功 AI 调用时与 Tenant.aiUsed 原子写入。
+model AiUsageLog {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String
+  operation String // summary | ocr | describe | tags
+  createdAt DateTime @default(now())
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, operation])
 }
 
 model TenantUser {

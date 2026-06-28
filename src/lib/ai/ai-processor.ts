@@ -78,17 +78,31 @@ export async function checkAiQuotaAndTenant(userId: string, tenantId: string) {
 /**
  * 记录租户AI使用量
  * @param tenantId 租户ID
+ * @param operation AI 操作类型（summary/ocr/describe/tags），用于按类型拆分统计
+ * @param userId 触发调用的用户ID，落 AiUsageLog 以备审计
+ *
+ * 在单个事务内同时自增 Tenant.aiUsed 与写入 AiUsageLog 明细，保证配额计数与
+ * 明细日志一致（任一失败则整体回滚，避免 aiUsed 计了而明细缺失、或反之）。
  */
-export async function incrementTenantAiUsage(tenantId: string) {
+export async function incrementTenantAiUsage(
+  tenantId: string,
+  operation: 'summary' | 'ocr' | 'describe' | 'tags',
+  userId: string,
+) {
   try {
-    await db.tenant.update({
-      where: { id: tenantId },
-      data: {
-        aiUsed: {
-          increment: 1,
+    await db.$transaction([
+      db.tenant.update({
+        where: { id: tenantId },
+        data: {
+          aiUsed: {
+            increment: 1,
+          },
         },
-      },
-    });
+      }),
+      db.aiUsageLog.create({
+        data: { tenantId, userId, operation },
+      }),
+    ]);
   } catch (error) {
     console.error('Failed to increment tenant AI usage:', error);
   }
