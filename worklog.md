@@ -8378,3 +8378,54 @@ Status: 完成
 - 补 saas/cloud-sync files(info)/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 trash 或 invitations：均含 POST/PATCH/DELETE 控制流更丰富，trash 涉及 isDeleted 软删/恢复双向流转、invitations 涉及 invitee 角色/状态机，可复用本轮 MockNextResponse + where 形状断言范式）
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 05:00 自动迭代
+
+第四十轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `1f16df3`（第三十九轮 worklog commit），工作树干净、无未提交改动、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复核**：本轮 `grep` 复核 5 项剩余问题的最新状态——①`src/lib/db/tenant-db.ts` 的 `raw` getter 已带调用方堆栈软审计（`[TenantDb.raw] tenantId=... 越过租户隔离层访问原始 PrismaClient，调用方: ${caller}`）；②`src/lib/payment/alipay.ts` & `wechat.ts` 的 verifyCallback 已走真实 `createHmac('sha256')` + `timingSafeEqual`，注释明示"不再非空即通过"，mock 字样均为"未配置真实密钥时返回明确错误 + 仅 mock 链接路径生成临时 tradeNo"的有意降级路径；③`src/lib/cloud-sync/sync-engine.ts` 的 `keep_both` 分支已正确"重命名本地文件为 `[冲突副本] xxx` + 将云端版本以新 id create"（line 675-694），不再"直接覆盖丢失本地版本"；④files route 走 TenantDb + api-auth.test 匹配实现 均已在第三十六~三十八轮闭环。优先级 1 无待修，转向优先级 3（补测试）。
+
+**立项（吃掉第三十九轮候选 #3 的 trash 建议）**：第三十九轮 worklog"下一轮候选"明确建议"下一轮可优先补 trash 或 invitations：均含 POST/PATCH/DELETE 控制流更丰富，trash 涉及 isDeleted 软删/恢复双向流转、invitations 涉及 invitee 角色/状态机"。选 trash——它有 3 个 HTTP 方法（GET/POST/DELETE）+ POST 按 URL pathname 分发 restore|empty（`url.pathname.includes('/restore') ? 'restore' : 'empty'`，第四种分发范式，前三轮的 access-history/system-logs/storage 均无 URL 路径分发）+ `$transaction` 回调形式（findMany 验证→updateMany/deleteMany，与 cloud-sync-config 的数组形式对照）+ folder.findUnique targetFolder 归属校验（双键防恢复到他人/他租户文件夹）+ isDeleted 软删状态双向流转（restore: true→false/deletedAt:null；DELETE/empty: 硬删）+ emptyTrash 用 db.file.deleteMany（非 tx.file.deleteMany）的独立路径。控制流远比 storage 的三 GET 分支丰富，且其"三键作用域 (userId,tenantId,isDeleted:true) + role 未参与"与 access-history(双键无门控)/system-logs(单键+门控)/storage(双键+isDeleted 维度) 形成第四种对照，值得用测试锁死防回归。
+
+**实现要点（1 个测试 commit，29 例）**：新增 `src/__tests__/api/trash-route.test.ts`（GET 9 + POST restore 11 + POST empty 3 + DELETE 6），覆盖全部控制流：
+
+- **GET（9 例）**：①未认证 401 透传不触达 DB；②默认 → count+aggregate+findMany 收到同一 where 三键 {userId,tenantId,isDeleted:true}（`toEqual` 全等断言三调用 where 形状一致）；orderBy deletedAt desc；select 8 字段；返回 7 字段 data/total/totalSize/page/pageSize/totalPages/hasMore；③fileType 过滤 → where 含 fileType；④search 过滤 → where.fileName contains；⑤fileType+search 叠加；⑥分页 page=2&pageSize=2 → skip=2/take=2/totalPages=3/hasMore=true；⑦pageSize=500 → Math.min(100,...) 截断为 100（响应 pageSize=100 + findMany take=100 双锁定）；⑧`_sum.fileSize` 为 null → totalSize=0（`|| 0` 锁定）；⑨count 抛错 → 500 { error: '获取回收站列表失败' }。
+- **POST restore（11 例）**：①**核心契约：URL pathname 分发**——pathname `/api/trash`（不含 /restore）→ action='empty' → 走 emptyTrash，不读 body、不触达 folder.findUnique / $transaction restore 路径（body 为 restore 形态但 empty 分支忽略）；②未认证 401 透传；③缺 fileIds → 400 { error: 'fileIds is required' }；④fileIds 空数组 → 400；⑤targetFolderId 指定但文件夹不存在 → 404 { error: '目标文件夹不存在或无权访问' }（folder.findUnique where 单键 + select {id,userId,tenantId}）；⑥targetFolderId userId 不属于当前用户 → 404；⑦targetFolderId tenantId 不匹配 → 404；⑧$transaction 内 findMany 返回数量不匹配（fileIds 2 个但 findMany 返回 1 个）→ throw → 500 { error: '部分文件不在回收站或无权访问' }（updateMany 不触达）；⑨成功（无 targetFolderId）→ tx.file.findMany where 三键+`id:{in}` select {id,folderId}；tx.file.updateMany where 三键+`id:{in}` data {isDeleted:false,deletedAt:null}；返回 {success:true,restoredCount:2}；⑩成功（有 targetFolderId）→ updateMany data 含 folderId；⑪member 角色 → 仍可恢复（**核心契约：role 未参与作用域**，与 storage 一致、与 system-logs 的 member→403 对照）。
+- **POST empty（3 例）**：①pathname `/api/trash/empty` → action='empty' → emptyTrash 成功：db.file.count where 三键 + db.file.deleteMany where 三键（**非 tx.file.deleteMany**，emptyTrash 用 db 直连而非 $transaction）；返回 {success:true,deletedCount:4}；不触达 $transaction restore 路径；②count 抛错 → 500 { error: '清空回收站失败' }；③deleteMany 抛错 → 500。
+- **DELETE（6 例）**：①未认证 401 透传不触达 DB；②缺 fileIds → 400；③fileIds 空数组 → 400；④$transaction 内 findMany 返回数量不匹配 → throw → 500 { error: '部分文件不在回收站或无权访问' }（deleteMany 不触达）；⑤成功 → tx.file.findMany where 三键+`id:{in}` select {id}；tx.file.deleteMany where 三键+`id:{in}` 硬删；返回 {success:true,deletedCount:2}；⑥deleteMany 抛错 → 500 { error: 'fk constraint' }（`error.message || '永久删除失败'` 兜底契约：有 message 用 message，无 message 用兜底）。
+
+**核心安全契约锁定**：贯穿 29 例的核心断言是"所有 db.file / tx.file 调用的 where 恒以 (userId, tenantId, isDeleted:true) 三键作用域"——GET 的 count/aggregate/findMany 三调用同一 where 三键；POST restore 的 tx.file.findMany + tx.file.updateMany 双 where 三键+`id:{in}`；DELETE 的 tx.file.findMany + tx.file.deleteMany 双 where 三键+`id:{in}`；POST empty 的 db.file.count + db.file.deleteMany 双 where 三键。`toEqual` 全等断言锁死防后续重构意外去掉 userId（跨用户越权恢复/删除他人回收站）、tenantId（多租户越权）、isDeleted:true（误操作活跃文件）。**folder.findUnique targetFolder 校验**亦显式比对 `targetFolder.userId !== userId || targetFolder.tenantId !== tenantId` 双键，防恢复到他人/他租户文件夹（测试用 userId 不匹配 + tenantId 不匹配两条用例分别锁定短路）。**member 仍可恢复**用例锁定"role 未参与作用域"——回收站是个人级软删数据，admin 也不应恢复/删除他人回收站，与 storage 一致、与 system-logs 的"租户级管理数据 + role 门控"对照。
+
+**控制流契约锁定**：①**URL pathname 分发**——`url.pathname.includes('/restore') ? 'restore' : 'empty'`，测试用 `/api/trash`（→empty）、`/api/trash/empty`（→empty）、`/api/trash/restore`（→restore）三种 pathname 锁定分发逻辑，防后续误改为 query param 分发；②**$transaction 原子性**——restore 与 DELETE 均在 $transaction 内 findMany 验证所有权→updateMany/deleteMany，数量不匹配抛错回滚（updateMany/deleteMany 不触达），测试用 findMany 返回少于 fileIds 用例锁定；③**emptyTrash 独立路径**——emptyTrash 用 db.file.deleteMany（非 tx.file.deleteMany），测试通过 `mockFileDeleteMany`（db 层）与 `mockTxDeleteMany`（tx 层）分离的 mock 锁定二者不混淆；④**isDeleted 状态双向流转**——restore data {isDeleted:false,deletedAt:null}（软删恢复），DELETE/empty 硬删（deleteMany），测试分别 `toEqual` 锁定 data 形状与 where 形状。
+
+**$transaction 回调形式 mock 范式**：trash 路由的 `$transaction(async (tx) => {...})` 是回调形式（cloud-sync-config 是数组形式）。本轮 `mockTransaction.mockImplementation(async (fn) => fn(fakeTx))` 将 fakeTx 注入回调，fakeTx.file.findMany/updateMany/deleteMany 路由到独立 `mockTxFindMany/mockTxUpdateMany/mockTxDeleteMany`，与 db 层的 `mockFileCount/mockFileAggregate/mockFileFindMany/mockFileDeleteMany` 分离——使 restore/DELETE 的 tx 调用与 emptyTrash 的 db 调用可分别断言，防止 mock 共享导致的误判。该范式可复用于后续任何 $transaction 回调形式路由（如 invitations 若用事务、backup/backups 等）。
+
+环境：`npm ci`（package-lock.json，沿用第三十~三十九轮 installer 选择避免 lockfile 冲突，963 packages / 29s）+ `npx prisma generate`（重新生成 client）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run src/__tests__/api/trash-route.test.ts` 单文件 29/29 通过；`npx vitest run` 全量 **1247/1247** 通过（77 文件，83.90s，第三十九轮基线 1218/76 + 本轮新增 29 例/1 文件 = 1247/77，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/trash-route.test.ts`**（新文件，29 例）— /api/trash GET/POST/DELETE 路由 handler 级集成测试，覆盖 401/400/404/500 + URL pathname 分发 restore|empty + (userId,tenantId,isDeleted:true) 三键作用域 + $transaction 回调形式 findMany 验证→updateMany/deleteMany + folder.findUnique targetFolder 双键归属校验 + isDeleted 软删状态双向流转 + emptyTrash db 层独立路径 + member 无门控
+
+### Commit
+- `ed375a2 test(trash): 补 /api/trash GET/POST/DELETE 路由 handler 级集成测试`
+
+### 推送状态
+- Gitee：待推送 `1f16df3..ed375a2 main -> main`
+- GitHub：待推送 `1f16df3..ed375a2 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1247/1247 通过（77 文件，83.90s），零回归
+- 改动量：1 文件（新测试文件 +665），纯测试 commit，无生产代码变更
+- **trash 与 access-history/system-logs/storage 作用域模型四对照**：access-history 以 (tenantId,userId) 双键无门控（个人数据）；system-logs 以 (tenantId) 单键 + role 门控（租户级管理数据）；storage 以 (tenantId,userId) 双键无门控 + isDeleted 维度（个人存储占用，区分活跃/回收站）；trash 以 (tenantId,userId,isDeleted:true) 三键无门控（个人回收站，isDeleted:true 锁定仅软删文件可被触达）。四套作用域模型各有其合理性，测试分别用 `toEqual` 全等断言锁定 where 形状，防止后续重构混淆
+- **trash 的 isDeleted:true 维度**：与 storage 的 isDeleted 双向（aggregate isDeleted:false + count isDeleted:true 取反统计）不同，trash 全部操作的 where 恒为 isDeleted:true（仅操作回收站文件）。这是 trash 路由的独有契约——活跃文件（isDeleted:false）不可被本路由的恢复/永久删触达。测试通过 GET/POST restore/POST empty/DELETE 四方法的 where 均 `toEqual` 断言含 isDeleted:true 锁死
+- **$transaction 回调 vs 数组形式**：cloud-sync-config 的 $transaction 是数组形式（`$transaction([upsert, update])`，第三十轮已测）；trash 的 $transaction 是回调形式（`$transaction(async (tx) => {findMany; updateMany})`，本轮新测）。回调形式的事务客户端 tx 是独立对象，需用 `mockTransaction.mockImplementation(async (fn) => fn(fakeTx))` 注入 fakeTx，与数组形式的 `mockTransaction.mockResolvedValue([result1, result2])` 范式不同。两种范式现已均有测试覆盖，可复用于后续路由
+- **沙箱时钟说明**：本会话 `TZ=Asia/Shanghai date` 报 2026-06-29 05:00，与第三十九轮 worklog 头（2026-06-29 04:00）顺序一致。轮次编号（第四十轮）为排序权威键，时间戳仅供溯源
+
+### 下一轮候选
+- **/api/trash GET/POST/DELETE 路由测试已闭环**（29 例锁定 401/400/404/500 + URL pathname 分发 + 三键作用域 + $transaction 回调形式 + folder 归属校验 + isDeleted 双向流转 + emptyTrash 独立路径），自本轮起从候选清单移除
+- **`db.$transaction` 回调租户隔离**：维持"21 处均显式 tenantId 作用域、无实际泄漏、文档化自管约定"结论，若后续要强约束可评估 `tenantDb.transaction` 租户感知变体（架构级，单列）
+- 补 saas/cloud-sync files(info)/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 invitations：含 GET role 门控 + POST 创建邀请（email 校验/角色校验/duplicate user 检查/duplicate pending invitation 检查/randomUUID token 生成），状态机比 trash 更丰富；或 tenant-users：含租户成员管理 CRUD + role 变更）。可复用本轮 $transaction 回调形式 mock 范式
+- **trash 路由分发的设计观察（非本轮范围，记录备查）**：trash POST 按 `url.pathname.includes('/restore')` 分发，但仅有 `/api/trash/route.ts` 存在（无 `/api/trash/restore/route.ts` 或 `/api/trash/empty/route.ts`）。生产环境下 `POST /api/trash/restore` 不会触达本 handler（Next.js App Router 无对应 route 文件→404），而 `POST /api/trash` 因 pathname 不含 /restore 恒走 empty 分支。本轮测试为 handler 级（直接 import POST 函数 + 构造任意 URL pathname），锁定的是 handler 逻辑契约而非路由分发契约。若前端确需 restore 端点，需补 `/api/trash/restore/route.ts`（可 re-export 本 handler 或独立实现）——列为后续候选，需先确认前端调用路径再决策
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
