@@ -7848,3 +7848,51 @@ Status: 完成
 - 补 `requirePlatformAdmin` 单测；补 saas/cloud-sync config/files(info)/api-keys/webhooks/stats/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（本轮可补 cloud-sync/config route handler 级集成测试：mock config-crypto + r2-storage + db，覆盖 POST testR2Connection 失败 400 / owner 之外 403 / upsert 入参 config 为加密值 / tenant.storageProvider 切换 r2）
 - ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
+
+## 2026-06-28 16:00 自动迭代
+
+第二十九轮自动迭代。本轮沙箱工作目录为空，从 origin(Gitee) clone 后补加 github remote。`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `a286264`（第二十八轮 worklog commit），工作树干净、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复查**：用户任务清单"优先级 1 剩余项"经第二十八轮 worklog 确认已全部闭环，本轮逐项 spot-check 维持结论（tenant-db raw 审计 / alipay+wechat 真实验签 / files 等路由 TenantDb 收口 / sync-engine keep_both 保留两端 / api-auth.test.ts 匹配 async 4 字段实现）。本轮另对 worklog 候选"ai-processor 的 `incrementTenantAiUsage` 等 AI 工具函数审计冗余 tenantUser 查询"做 spot-check：`src/lib/ai/ai-processor.ts` 第 12-15 行 `checkAiQuotaAndTenant(userId, tenantId)` 注释明确"tenantId 由调用方传入，避免重复 `db.tenantUser.findFirst`"，第 82 行 `incrementTenantAiUsage(tenantId: string)` 直接接收 tenantId，均无影子查询——该候选已 clean，自本轮起从候选清单移除。
+
+继续 worklog "下一轮候选"首项——**补 `requirePlatformAdmin` 单测**（无任何既有覆盖的安全相关函数）。
+
+立项依据：`requirePlatformAdmin`（[src/lib/api-auth.ts:90](src/lib/api-auth.ts)）是平台级管理端点（`/api/admin/*`、`/api/auth/diagnostics`）的统一授权闸门，承担 fail-closed 安全约定（`ADMIN_EMAILS` 未配即全拒）。既有 `api-auth.test.ts` 仅覆盖 `authenticateRequest`（7 例），`requirePlatformAdmin` 零覆盖——其 fail-closed 分支、白名单大小写不敏感匹配、多邮箱 trim 解析、401 透传等关键行为均无回归保护，属高价值低风险的单测补全。
+
+**实现要点**：
+- 新增 `describe('requirePlatformAdmin')` 9 例：401 透传（未认证 / 无效令牌）、fail-closed 403（`ADMIN_EMAILS` 未配 / 空串 / 仅逗号与空白 三种）、令牌有效但非白名单 403、精确命中返回 AuthResult、大小写不敏感命中（`ADMIN_EMAILS` 大写、token email 小写）、多邮箱逗号分隔+前后空格 trim 命中其中之一。
+- 为支持 `requirePlatformAdmin` 中的 `auth instanceof NextResponse` 判定，将 `next/server` mock 由 plain object 改为真实 `class NextResponse`（`static json()` 返回 `new NextResponse()` 实例），同时保留 `_type/status/body` 三字段以兼容既有 7 例 `authenticateRequest` 测试（其断言 `_type === 'NextResponse'` / `status` / `body` 不变）。
+- mock 作用域修正：原 `beforeEach` 位于 `describe('authenticateRequest')` 块内，对本轮新增的兄弟 `describe('requirePlatformAdmin')` 不生效，导致跨测试 mock 调用记录残留。在 `requirePlatformAdmin` 的 `beforeEach` 中显式 `vi.clearAllMocks()` + `mockJsonResults.length = 0`；`afterEach` 保存/恢复 `process.env.ADMIN_EMAILS` 原值，避免污染其他测试文件。
+- import 行同步：`beforeEach` → `beforeEach, afterEach`；`authenticateRequest` → `authenticateRequest, requirePlatformAdmin`。
+
+环境：`npm ci`（package-lock.json，963 包，42s）+ `npx prisma generate`。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run` 全量 **1073/1073** 通过（65 文件，76.38s，第二十八轮基线 1064 + 本轮新增 9 例 = 1073，零回归）。
+
+### 改动
+
+1. **`src/__tests__/lib/api-auth.test.ts`** — 唯一改动文件，+158/-16 行
+   - `next/server` mock：plain object → 真实 `class NextResponse`（`json()` 返回实例），兼容 `_type/status/body` 既有断言
+   - import：补 `afterEach` 与 `requirePlatformAdmin`
+   - 新增 `describe('requirePlatformAdmin')` 9 例（401 透传 ×2 / fail-closed 403 ×3 / 非 admin 403 ×1 / 命中 ×3 含大小写与多邮箱 trim），含 `beforeEach` 清理 mock + `afterEach` 恢复 `ADMIN_EMAILS`
+
+### Commit
+- `f296c5e test(api-auth): 补 requirePlatformAdmin 单测覆盖 fail-closed 与白名单匹配`
+
+### 推送状态
+- Gitee：待推送 `a286264..f296c5e main -> main`
+- GitHub：待推送 `a286264..f296c5e main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1073/1073 通过（65 文件，76.38s），零回归
+- 改动量：1 文件 +158/-16 行（纯测试，无生产代码变更）
+- `next/server` mock 由 plain object 改为 class 是必要而非装饰：`requirePlatformAdmin` 第 94 行 `auth instanceof NextResponse` 对非 callable 右值会抛 `TypeError: Right-hand side of 'instanceof' is not callable`，原 mock 仅因 `authenticateRequest` 不使用 `instanceof` 而侥幸工作；class 化后 `instanceof` 与 `_type` 双判定路径均可用
+- `mockVerifyToken` 经 `(...args) => mockVerifyToken(...args)` 包装，`vi.clearAllMocks()` 仅清调用记录不清 `mockReturnValue` 实现，故各测试仍需自设返回值——本轮 9 例均按需显式 `mockReturnValue`，未依赖跨测试残留
+- 运行时 vitest 日志中 `parsePdf` 的 stderr 警告为 pdf-parse 模块加载噪音（parser-pdf.test.ts 自身通过），与本次改动无关
+- 既有 `authenticateRequest` 7 例在 class 化 mock 下全绿，确认 mock 改动向后兼容
+
+### 下一轮候选
+- **`requirePlatformAdmin` 单测已闭环**，自本轮起从候选清单移除
+- **ai-processor 冗余 tenantUser 查询审计已 clean**（`checkAiQuotaAndTenant`/`incrementTenantAiUsage` 均接收 tenantId 参数，无影子查询），自本轮起从候选清单移除
+- **`db.$transaction` 回调租户隔离**：21 处直连事务回调内 `tx` 无 tenantId 注入，可评估是否提供 `tenantDb.transaction` 的租户感知变体（现已带审计）或文档化各路由自管约定
+- 补 saas/cloud-sync config/files(info)/api-keys/webhooks/stats/activity-logs/access-history/storage/system-logs/trash/invitations/tenant-users/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可补 cloud-sync/config route handler 级集成测试：mock config-crypto + r2-storage + db，覆盖 POST testR2Connection 失败 400 / owner 之外 403 / upsert 入参 config 为加密值 / tenant.storageProvider 切换 r2）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测
