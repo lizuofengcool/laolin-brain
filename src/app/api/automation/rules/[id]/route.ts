@@ -22,21 +22,6 @@ export async function GET(
   const { id: ruleId } = await params;
 
   try {
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
     // 查询规则
     const rule = await db.automationRule.findFirst({
       where: {
@@ -92,21 +77,6 @@ export async function PATCH(
   try {
     const body = await request.json();
     const { name, conditions, actions, enabled, priority } = body;
-
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
 
     // 检查规则是否存在
     const existingRule = await db.automationRule.findFirst({
@@ -175,21 +145,6 @@ export async function DELETE(
   const { id: ruleId } = await params;
 
   try {
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
     // 检查规则是否存在
     const existingRule = await db.automationRule.findFirst({
       where: {

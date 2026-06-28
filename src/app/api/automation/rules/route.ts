@@ -22,21 +22,6 @@ export async function GET(request: NextRequest) {
     const enabled = searchParams.get('enabled');
     const trigger = searchParams.get('trigger');
 
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
-
     // 构建查询条件
     const where: any = {
       tenantId,
@@ -112,21 +97,6 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId } = tenantUser;
 
     // 创建规则
     const rule = await db.automationRule.create({
