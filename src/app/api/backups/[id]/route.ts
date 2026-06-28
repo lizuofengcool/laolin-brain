@@ -21,23 +21,8 @@ export async function GET(
   const { id: backupId } = await params;
 
   try {
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId, role: userRole } = tenantUser;
-
     // 权限检查：只有owner和admin可以管理备份
-    if (userRole !== 'owner' && userRole !== 'admin') {
+    if (role !== 'owner' && role !== 'admin') {
       return NextResponse.json(
         { error: '没有权限管理备份' },
         { status: 403 }
@@ -95,23 +80,8 @@ export async function DELETE(
   const { id: backupId } = await params;
 
   try {
-    // 查询用户的租户
-    const tenantUser = await db.tenantUser.findFirst({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { error: "Tenant not found" },
-        { status: 404 }
-      );
-    }
-
-    const { tenantId, role: userRole } = tenantUser;
-
     // 权限检查：只有owner和admin可以管理备份
-    if (userRole !== 'owner' && userRole !== 'admin') {
+    if (role !== 'owner' && role !== 'admin') {
       return NextResponse.json(
         { error: '没有权限管理备份' },
         { status: 403 }
