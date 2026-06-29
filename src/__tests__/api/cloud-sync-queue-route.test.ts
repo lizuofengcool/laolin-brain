@@ -9,6 +9,8 @@
  *   - ?status=pending → getSyncQueue(tenantId, 'pending', 50)（status 透传，limit 仍 50）
  *   - ?limit=100 → getSyncQueue(tenantId, undefined, 100)（limit 解析为 int 10）
  *   - ?status=completed&limit=10 → getSyncQueue(tenantId, 'completed', 10)（二者皆透传）
+ *   - ?limit=abc → 400 'limit 必须为正整数'（NaN 不透传给 getSyncQueue）
+ *   - ?limit=-5 / ?limit=0 → 400（非正数不透传）
  *   - getSyncQueue 抛错 → 500
  *   - 关键：所有调用均以 auth.tenantId（忽略 query 中的 tenantId/userId 注入）
  *
@@ -22,9 +24,9 @@
  * 路由经服务层访问数据（无直接 db 依赖），故无需 mock @/lib/db。复用 cloud-sync-config-route
  * 与 saas-subscription-route 的 vi.hoisted + MockNextResponse 范式。
  *
- * 注意：route 用 `parseInt(searchParams.get('limit') || '50', 10)` 解析 limit。
- * 未锁定的潜在逻辑空隙（记录备查，不立项）：limit 为非数字字符串（如 'abc'）时 parseInt 返回 NaN，
- * NaN 透传给 getSyncQueue —— 本轮不锁此 NaN 透传行为，避免锁定潜在 buggy 行为阻碍后续修复。
+ * 注意：route 用 `parseInt(searchParams.get('limit') || '50', 10)` 解析 limit，并校验
+ * `isNaN(limit) || limit < 1 → 400`（与 faces/groups/[id]/photos/route.ts 约定一致）。
+ * 历史 NaN 透传空隙（第四十七轮发现，延续至第六十一轮）已闭合。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { NextRequest } from "next/server";
@@ -142,6 +144,35 @@ describe("cloud-sync/queue 路由", () => {
 
       expect(res.status).toBe(200);
       expect(mockGetSyncQueue).toHaveBeenCalledWith("tenant-1", "completed", 10);
+    });
+
+    it("?limit=abc → 400 'limit 必须为正整数'（NaN 不透传给 getSyncQueue）", async () => {
+      const res = (await GET(
+        makeRequest("http://localhost/api/cloud-sync/queue?limit=abc")
+      )) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "limit 必须为正整数" });
+      // 关键：NaN 不应透传到 getSyncQueue（否则 Prisma take:NaN 行为未定义）
+      expect(mockGetSyncQueue).not.toHaveBeenCalled();
+    });
+
+    it("?limit=-5 → 400（负数不透传给 getSyncQueue）", async () => {
+      const res = (await GET(
+        makeRequest("http://localhost/api/cloud-sync/queue?limit=-5")
+      )) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(mockGetSyncQueue).not.toHaveBeenCalled();
+    });
+
+    it("?limit=0 → 400（零不透传，limit<1 拒绝）", async () => {
+      const res = (await GET(
+        makeRequest("http://localhost/api/cloud-sync/queue?limit=0")
+      )) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(mockGetSyncQueue).not.toHaveBeenCalled();
     });
 
     it("query 带 tenantId/userId → 仍以 auth.tenantId 调用（忽略 query 注入）", async () => {

@@ -17,6 +17,16 @@ export async function GET(request: NextRequest) {
     const status = searchParams.get('status') || undefined;
     const limit = parseInt(searchParams.get('limit') || '50', 10);
 
+    // 校验 limit：非数字（如 'abc' → NaN）或非正数拒绝，避免 NaN/负数透传给
+    // getSyncQueue → Prisma take:NaN/take:-N 的未定义行为。与 faces/groups/[id]/photos/route.ts
+    // 的 isNaN||<1 → 400 约定一致
+    if (isNaN(limit) || limit < 1) {
+      return NextResponse.json(
+        { error: "limit 必须为正整数" },
+        { status: 400 }
+      );
+    }
+
     // 获取队列
     const queue = await getSyncQueue(tenantId, status, limit);
 
