@@ -9616,3 +9616,78 @@ Status: 完成
 - **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true。若立项修复需先确认业务规则，修复时同步补对应测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 22:16 自动迭代
+
+第五十八轮自动迭代。本轮脱离连续多轮的"补 /api/files POST 测试"主线，回到优先级 1 的**已知逻辑问题**清理：落地 `DELETE/POST(resume) result=false → success:true 空隙`（第四十五轮发现，延续 13 轮未修）。
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-29 22:16 CST。commit 1c149e9 落于本轮。轮次编号（第五十八轮）为排序权威键，时间戳 22:16 高于第五十七轮 21:10 保持单调。
+
+**前置检查**：`git fetch origin main && git fetch github main` 双端均无新提交（HEAD == origin/main == github/main == fc87e25），工作树干净，无遗留未提交改动。本轮为全新 clone 后首次开发（沙箱 /workspace 原为空，`git clone origin` + `git remote add github`，remote URL 含 token 保持不变，未改 .git/config）。
+
+**优先级 1 复核（关键决策）**：任务清单仍列出 5 项"剩余优先级 1"，本轮**逐项核对实际代码**确认清单已过时——与第五十七轮 worklog 结论一致：
+1. `src/lib/db/tenant-db.ts` raw 后门：`raw` getter 与 `transaction` 均已加 `console.warn` 调用堆栈软审计（line 42-46 / 57-61），rawDb 无审计导出已移除（line 988-992 注释说明）。✅ 已闭环
+2. `alipay.ts` / `wechat.ts` RSA2 验签占位"非空即通过"：alipay 已实现真实 `verifyRSA2Sign`（`createVerify('RSA-SHA256')` + base64 解码 + RSA_PKCS1_PADDING，line 191-207）；wechat 注释明示"缺少任一字段或密钥未配置时直接拒绝，不再'非空即通过'"（line 219）。mock 默认仅 dev/test 模式 + mock_sign 校验，真实模式返明确错误。✅ 已闭环
+3. `api/files/route.ts` 绕过 TenantDb：POST dedup（line 271 `createTenantDb`）与 GET（line 460 `createTenantDb` + `tenantDb.file.findMany`）均走 TenantDb 自动注入 tenantId。仅余 line 397 IIFE `db.file.update({ where:{id:fileRecord.id} })`——按 fileRecord.id 更新（同请求内刚创建的租户内文件，非 userId 直滤越权），属 AI summary fire-and-forget，由 ②c-doc/③ 测试轮覆盖，非安全绕过。✅ 已闭环
+4. `sync-engine.ts` keep_both 直接覆盖：line 675-714 已改为"重命名本地文件为 `[冲突副本]` + 云端版本创建为新文件（新 id）"，注释明示"之前直接覆盖会丢失本地版本"。✅ 已闭环
+5. `api-auth.test.ts` 与实现不符：测试已对齐——返 4 字段（userId/email/tenantId/role，line 73-78）、async（await，line 71）、不读 query param（line 147-157 显式断言"不接受 URL query param 中的令牌"）、requirePlatformAdmin ADMIN_EMAILS fail-closed 矩阵完整。✅ 已闭环
+
+故清单 5 项全部已在历史轮次闭环，本轮转向 worklog 候选清单中**唯一无"需先确认业务规则"前置的明确逻辑 bug**：`DELETE/POST(resume) result=false → success:true 空隙`。
+
+**Bug 定位**：`src/lib/saas/billing.service.ts` 的 `cancelSubscription`（line 209）与 `reactivateSubscription`（line 230）签名均为 `Promise<boolean>`——`cancelSubscription` 在 `getCurrentSubscription` 返 null 时返 false；`reactivateSubscription` 在无订阅或 `!cancelAtPeriodEnd` 时返 false。但 `src/app/api/saas/subscription/route.ts` 的 DELETE（原 line 47-53）与 POST resume（原 line 73-80）**无条件** `return { success:true, ..., subscription: result }`——把 boolean 塞进名为 subscription 的字段（类型谎言），且服务层返 false 时仍谎报 success:true。客户端收到"取消成功/恢复成功"但实际操作未执行。
+
+**契约影响核查**：grep 全仓 `saas/subscription` 仅命中 route + service + test，**无任何前端组件 fetch 消费 DELETE/POST 响应的 subscription 字段**（GET 响应的 subscription 才是真实订阅对象，DELETE/POST 的是 boolean）。故移除该字段、改 success 语义无前端契约破坏风险。
+
+**修复**（route.ts）：
+- DELETE：`if (!result) return 404 { success:false, error:'无有效订阅可取消' }`；成功响应仅 `{ success:true, message }`（移除 subscription 字段）
+- POST resume：`if (!result) return 409 { success:false, error:'订阅未处于待取消状态，无法恢复' }`；成功响应仅 `{ success:true, message }`
+- 状态码选型：cancel 无订阅 → 404（资源不存在）；resume 未处于待取消状态 → 409（状态冲突，操作与当前订阅状态不兼容）。两分支均带注释说明服务层返 false 的语义来源
+
+**测试同步**（saas-subscription-route.test.ts）：
+- 更新 DELETE 成功用例：移除 `subscription:true` 断言，加 `expect(res.body).not.toHaveProperty('subscription')` 锁定字段移除
+- 更新 POST resume 成功用例：同上
+- 新增 DELETE `result=false` 用例：mockCancelSubscription(false) → 404 `{ success:false, error:'无有效订阅可取消' }`
+- 新增 POST resume `result=false` 用例：mockReactivateSubscription(false) → 409 `{ success:false, error:'订阅未处于待取消状态，无法恢复' }`
+- 更新文件头 docstring 契约描述（DELETE/POST 补 false 分支语义）
+- 该文件用例数 14 → 16
+
+### 范式复用与新增
+
+- **vi.hoisted + MockNextResponse + mockAuthenticate 范式延续**（既有范式）：本轮未改 mock 骨架，仅扩用例。MockNextResponse 保留 `body/status` 双字段使 `not.toHaveProperty` 断言可工作。
+- **`result===false` 分支补全范式（本轮提炼）**：服务层返 Promise<boolean> 的路由，成功/失败两分支均需独立用例覆盖。失败分支锁定 `{ success:false, error, status }` 三元组；成功分支锁定 `{ success:true, message }` 且 `not.toHaveProperty` 旧字段。可复用于其他"boolean 服务返回 + 路由 success 谎报"场景（候选清单中其余"需确认业务规则"项若立项，同范式落地）。
+- **类型谎言字段移除范式（本轮提炼）**：boolean 塞进对象语义字段（subscription:result）是常见反模式，移除时用 `not.toHaveProperty` 显式锁定移除，防回归。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules，无 pnpm-lock.yaml 追踪文件；install 1m8.6s，build scripts 跳过 prisma/sharp/unrs）
+- `npx prisma generate`（补 PrismaClient 类型，206ms）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，与本轮改动无关，非本轮引入）。本轮改动文件 route.ts + test.ts 零类型错误
+- `npx vitest run src/__tests__/api/saas-subscription-route.test.ts`：16/16 通过（含 2 条新 false 分支用例；stderr 为 throw→500 用例的预期 console.error，非失败）
+- `npx vitest run` 全量 1490/1490 通过（97 文件，116.29s），零回归（基线 1488/97 + 2/0 = 1490/97）
+
+### 改动量
+
+2 文件（route.ts +13/-4、test.ts +37/-5），共 +63/-9。1 个生产修复 commit + 1 个 worklog commit。
+
+### Commit
+
+- `1c149e9` fix(saas): 修正订阅取消/恢复 result=false 仍返 success:true 的逻辑空隙
+
+### 推送
+
+- origin (Gitee)：fc87e25..1c149e9 推送成功
+- github (GitHub)：fc87e25..1c149e9 推送成功
+
+### 下一轮候选
+
+- **`DELETE/POST(resume) result=false → success:true 空隙`已闭环**（DELETE→404 / POST resume→409，2 条 false 分支用例锁定），自本轮起从候选清单移除该项
+- 补 `/api/files` POST **rate-limit 触发 aiSkipped:true 专轮**（延续第五十七轮候选）：checkAiRateLimit 用模块级 Map 跨用例累积，需独立专轮处理状态隔离（每用例前重置 aiProcessingTimestamps 或用不同 userId 避免污染）。需覆盖：image 分支 rate-limit → aiSkipped:true + 图片 AI fetch 不触达；doc 分支 rate-limit → aiSkipped:true + doc IIFE 不启动
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **queue GET limit 非数字 NaN 透传**（第四十七轮发现，延续）：`parseInt('abc',10)` 返 NaN 透传给 getSyncQueue。立项时需先确认业务规则（NaN 兜底回 50 vs 返 400 拒绝非数字 limit），修复时同步补测试
+- **conflicts POST password 缺失透传 undefined**（第四十七轮发现，延续）：auto=true 与 fileId+resolution 两分支均不校验 password。立项时需先确认业务规则（是否应与 sync POST 的 `!password → 400` 一致），修复时同步补测试
+- **backups POST zod 不校验密码复杂度**（第四十八轮发现，延续）：password: z.string().min(6) 仅校验长度。若立项修复需先确认业务规则，修复时同步补对应测试
+- **backups/[id] DELETE 不区分 404/500**（第四十九轮发现，延续）：NoSuchKey 抛错统一返 500。若立项修复需先确认业务规则，修复时同步补对应测试
+- **backups/[id] POST 错误密码不区分 401/500**（第四十九轮发现，延续）：decrypt 抛错统一返 500。若立项修复需先确认业务规则，修复时同步补对应测试
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity。若立项修复需先确认业务规则，修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
