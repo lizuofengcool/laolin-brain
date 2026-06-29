@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
     const parentId = searchParams.get('parentId') || undefined;
     const sortBy = (searchParams.get('sortBy') as CommentSortBy) || 'newest';
     const page = parseInt(searchParams.get('page') || '1', 10);
-    const pageSize = Math.min(100, parseInt(searchParams.get('pageSize') || '20', 10));
+    const pageSizeRaw = parseInt(searchParams.get('pageSize') || '20', 10);
     const includeReplies = searchParams.get('includeReplies') === 'true';
     const maxDepth = parseInt(searchParams.get('maxDepth') || '1', 10);
     const action = searchParams.get('action');
@@ -104,6 +104,19 @@ export async function GET(request: NextRequest) {
         { status: 404 }
       );
     }
+
+    // 校验分页参数：非数字（'abc' → NaN）或非正数拒绝，避免 NaN/负数透传给
+    // db.comment.findMany → Prisma skip/take 的未定义行为（Math.min(100, NaN) 仍为 NaN）。
+    // 评论为文件级数据（无 role 门控），门控置于 stats/export 分支与文件存在性校验之后：
+    // ?action=stats/export 不使用分页（早返回）；?fileId=缺失/不存在 优先 400/404；
+    // ?page=abc 仅在已确认文件后拒绝。与 activity-logs/files/storage 等的 isNaN||<1 → 400 约定一致
+    if (isNaN(page) || page < 1) {
+      return NextResponse.json({ error: 'page 必须 >= 1' }, { status: 400 });
+    }
+    if (isNaN(pageSizeRaw) || pageSizeRaw < 1) {
+      return NextResponse.json({ error: 'pageSize 必须为正整数' }, { status: 400 });
+    }
+    const pageSize = Math.min(100, pageSizeRaw);
 
     // 构建查询条件
     const where: any = {
