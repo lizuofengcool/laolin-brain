@@ -8926,7 +8926,78 @@ Status: 完成
 - 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
 - **queue GET limit 非数字 NaN 透传**（第四十七轮发现，延续）：`parseInt('abc', 10)` 返回 NaN 透传给 getSyncQueue。若立项修复需先确认业务规则（是否应将 NaN 兜底回 50、或返 400 拒绝非数字 limit），修复时同步补对应测试
 - **conflicts POST password 缺失透传 undefined**（第四十七轮发现，延续）：auto=true 与 fileId+resolution 两分支均不校验 password，直接以 password=undefined 透传服务层。若立项修复需先确认业务规则（是否应在两分支也校验 password 非空，与 sync POST 的 `!password → 400` 一致），修复时同步补对应测试
-- **backups POST zod 不校验密码复杂度**（本轮发现）：password: z.string().min(6) 仅校验长度，纯数字/常见弱口令均通过。若立项修复需先确认业务规则（是否应要求字母+数字混合、是否应拒绝 top-N 弱口令），修复时同步补对应测试
+- **backups POST zod 不校验密码复杂度**（第四十八轮发现，延续）：password: z.string().min(6) 仅校验长度，纯数字/常见弱口令均通过。若立项修复需先确认业务规则（是否应要求字母+数字混合、是否应拒绝 top-N 弱口令），修复时同步补对应测试
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity（负数 / 0 / 非整数 / 超大数均透传 createOrder）。若立项修复需先确认业务规则（是否应限 quantity ≥ 1 且为整数、是否有上限），修复时同步补对应测试
+- **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 14:00 自动迭代
+
+第四十九轮自动迭代。本轮沙箱工作目录为全新 clone（前轮目录不在本会话沙箱中），`git clone origin` 后 `git remote add github` 配齐双端，`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `8b8febf`（第四十八轮 worklog commit），工作树干净、无未提交改动、无未推送 commit、无远端更新需 rebase。
+
+**优先级 1 复核（clean clone 第三轮复核）**：clean clone 后再次确认无活跃优先级 1 待修：
+- `src/lib/db/tenant-db.ts:42-61`：`transaction(fn)` 与 `raw` getter 均已加 `console.warn` 调用方堆栈软审计（`new Error().stack` 取第三帧 `split('\n')[3]`），底部注释（988-992 行）说明 rawDb 不再无审计导出，需跨租户走 `createTenantDb` 模型访问器或 `TenantDb.raw` getter。审计就位，无暴露后门。
+- `src/lib/payment/alipay.ts:191-207`：`verifyRSA2Sign` 已实现真实 RSA-SHA256 验签（`createVerify('RSA-SHA256')` + `Buffer.from(sign, 'base64')` + `verifier.verify({ key, padding: RSA_PKCS1_PADDING }, signBuf)`），非空 publicKey 直接返 false（line 192-194），不再"非空即通过"。配套 `normalizePublicKey`（213-221 行）将单行 base64 公钥规整为 PEM。`verifyCallback` 真实分支调用 `verifyRSA2Sign`（line 126），失败返 `{ success: false, error: '签名验证失败' }`。验签接入完成。
+- `src/lib/payment/wechat.ts:219` "不再非空即通过"在位（第四十七轮已实证，本轮未变动）。
+- `src/app/api/files/route.ts` dedup 走 createTenantDb（第四十七轮已实证，本轮未变动）。
+- `src/lib/cloud-sync/sync-engine.ts` keep_both 分支已修复（第四十七轮已实证，本轮未变动）。
+- `src/__tests__/lib/api-auth.test.ts` 与实现匹配（第四十七轮已实证，本轮未变动）。
+
+无新发现活跃 bug，优先级 1 无待修，转向优先级 3（补测试）。
+
+**优先级 3 立项（吃掉第四十八轮候选 #1 的 backups/[id]）**：第四十八轮 worklog"下一轮候选"明示"补 cloud-sync/backups/[id] handler 级路由测试（cloud-sync 路由族最后一项动态路由）：POST downloadAndRestoreBackup + DELETE deleteBackup，均带 isR2Configured 双重门控"。本轮即补 backups/[id] 动态路由（POST + DELETE），完成 cloud-sync 路由族全部主路由 + 动态路由闭环。
+
+**实现要点（1 个 test commit，12 例，1 文件）**：新增 `cloud-sync-backups-id-route.test.ts`（POST 8 + DELETE 4 = 12 例），覆盖动态路由 [id] 的恢复/删除两层契约：
+
+- **POST（8 例）**：①未认证 → 401 透传不触达 isR2Configured/downloadAndRestoreBackup；②R2 未配置 → 400 "云同步未配置"先于 zod；③R2 未配置 + password 也缺失 → 仍 400 R2 错误（锁定 R2 校验先于 zod 顺序，与第四十八轮 backups 主路由 POST 同范式）；④R2 已配置 + password 缺失 → 400 zod { error: "请求格式无效", details }；⑤R2 已配置 + password 空字符串 → 400 zod（min 1 拒绝空串，与 backups 主路由的 min 6 不同）；⑥成功 → downloadAndRestoreBackup(tenantId, userId, backupId, password) 返回 { success, message: "备份恢复成功", restored, skipped }，backupId 取自 params.id；⑦body 中伪造 tenantId/userId/id 一律忽略，downloadAndRestoreBackup 仍以 auth 身份 + params.id 调用；⑧downloadAndRestoreBackup 抛错 → 500 "恢复备份失败：" + error.message（POST 取 error.message）。
+
+- **DELETE（4 例）**：①未认证 → 401 不触达 isR2Configured/deleteBackup；②R2 未配置 → 400 isR2Configured 以 auth.tenantId 调用，deleteBackup 不触达；③成功 → deleteBackup(tenantId, backupId) 返回 { success, message: "备份删除成功" }，**DELETE 仅传 tenantId + backupId 两参，不传 userId**（与 POST 的 4 参签名不同，DELETE 不取 userId）；④deleteBackup 抛错 → 500 "删除备份失败：" + error.message。
+
+**POST/DELETE 服务层签名差异锁定（backups/[id] 独有）**：POST 调用 `downloadAndRestoreBackup(tenantId, userId, backupId, password)` 4 参（含 userId 用于审计恢复操作发起人），DELETE 调用 `deleteBackup(tenantId, backupId)` 2 参（删除操作不需 userId 审计）。本轮用 `toHaveBeenCalledWith("tenant-1", "user-1", "backup-99", "secret")`（POST）与 `toHaveBeenCalledWith("tenant-1", "backup-99")` + `not.toHaveBeenCalledWith("tenant-1", "user-1", "backup-99")`（DELETE）双断言锁定此签名差异——若后续误把 userId 加入 deleteBackup 调用，断言立即失败。这是 cloud-sync 路由族内唯一的同路由 GET/POST/DELETE 服务层签名差案例（config 路由 GET/POST 均传 tenantId 单参；status/sync/queue/conflicts 服务层调用均与 method 解耦）。
+
+**params.id 优先契约锁定（动态路由核心契约）**：backups/[id] 是 cloud-sync 路由族唯一的动态路由，backupId 来自 `params: Promise<{ id: string }>`（Next.js 16 动态路由签名，params 为 Promise）。本轮用"body 带 id: 'backup-evil' → downloadAndRestoreBackup 仍 toHaveBeenCalledWith('tenant-1', 'user-1', 'backup-99', ...)" + `not.toHaveBeenCalledWith('tenant-1', 'user-1', 'backup-evil', ...)` 双断言锁定 backupId 来自 params.id 而非 body——若后续误把 body.id 透传给服务层，将造成跨备份越权恢复/删除，断言立即失败。该契约与 body.tenantId/userId 忽略契约同源：可信身份只来自 auth + URL params，请求体中的标识一律忽略。
+
+**R2 校验先于 zod 顺序锁定（与第四十八轮 backups 主路由同范式延续）**：backups/[id] POST 校验链为 isR2Configured → zod safeParse → downloadAndRestoreBackup，与 backups 主路由 POST 完全一致。本轮用"R2 未配置 + password 也非法（缺失）→ 仍 400 R2 错误而非 zod 错误"锁定此顺序。这是 cloud-sync 路由族 R2 门控路由（config + backups + backups/[id]）的统一范式，与 config 路由的"zod → testR2Connection → $transaction"链对照鲜明（config 在 zod 之后才查 R2，backups 在 zod 之前查 R2）。
+
+**POST/DELETE 错误 message 拼字符串风格锁定（与 backups 主路由 POST 同范式延续）**：backups/[id] POST catch 块用 "恢复备份失败：" + error.message，DELETE catch 块用 "删除备份失败：" + error.message，与第四十八轮 backups 主路由 POST "创建备份失败：" + error.message 同拼字符串风格。本轮用"downloadAndRestoreBackup 抛错 → 500 '恢复备份失败：r2 download failed'" + "deleteBackup 抛错 → 500 '删除备份失败：r2 delete failed'" 两用例锁定此风格——若后续误把 catch 块改成固定 message（像 backups 主路由 GET 那样），断言立即失败。这是 cloud-sync 路由族内 backups 子族（backups + backups/[id]）的统一错误格式，与 status/sync/queue/conflicts 的三元 fallback（`error instanceof Error ? error.message : fallback`）不同——backups 子族用更简洁的拼字符串风格（依赖 error as Error 强转，若 error 非 Error 实例会抛 TypeError，但实际 catch 块 error 均为 Error 实例）。
+
+**未锁定的潜在逻辑空隙（记录备查，不立项）**：
+- backups/[id] DELETE 不校验 backupId 是否存在（deleteBackup 内部若 backupId 不存在 R2 会抛 NoSuchKey 错误，路由统一返 500 而非 404）。本轮仅锁 500 错误透传，未锁 404 语义。若立项需先确认业务规则（是否应区分 404 与 500）。
+- backups/[id] POST zod `password: z.string().min(1)` 仅校验非空，不校验密码正确性（错误密码在 downloadAndRestoreBackup 内部 decrypt 阶段抛错，路由统一返 500）。本轮仅锁 zod 校验，未锁密码错误语义。若立项需先确认业务规则（是否应区分 401 密码错误与 500 内部错误）。
+- backups/[id] POST 恢复成功后不返回新备份 id（仅返回 restored/skipped 计数），若后续需提供"恢复历史"查询需补返回字段。本轮仅锁现有响应字段，未锁缺失字段。
+
+环境：node_modules 经 `npm ci`（项目用 package-lock.json，无 pnpm-lock.yaml；pnpm 可用但无对应 lockfile，fallback npm 与现有 lockfile 一致，无 lockfile 冲突）安装 963 包耗时 39s（与第四十八轮 963 包一致）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run src/__tests__/api/cloud-sync-backups-id-route.test.ts` 单文件 12/12 通过（stderr 为路由 catch 块 `console.error` 预期日志，非失败）；`npx vitest run` 全量 **1422/1422 通过**（89 文件，96.03s，第四十八轮基线 1410/88 + 本轮新增 12 例/1 文件 = 1422/89，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/cloud-sync-backups-id-route.test.ts`**（新文件，12 例 = POST 8 + DELETE 4，+278）— /api/cloud-sync/backups/[id] POST/DELETE 路由 handler 级集成测试，覆盖 401/400/500 全状态码 + isR2Configured 双重门控（先于 zod）+ zod password min 1 + downloadAndRestoreBackup/deleteBackup 服务层签名差异（POST 4 参含 userId / DELETE 2 参不含 userId）+ params.id 优先于 body.id + body.tenantId/userId 忽略 + POST/DELETE 错误 message 拼字符串风格
+
+### Commit
+- `d2b1b05 test(cloud-sync): 补 /api/cloud-sync/backups/[id] 路由 handler 级集成测试`
+
+### 推送状态
+- Gitee：待推送 `8b8febf..d2b1b05 main -> main`
+- GitHub：待推送 `8b8febf..d2b1b05 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1422/1422 通过（89 文件，96.03s），零回归
+- 改动量：1 文件（新测试文件 +278），纯测试 commit，无生产代码变更
+- **cloud-sync 路由族七连测全闭环**：config（第二十八轮）+ status/sync/queue/conflicts（第四十七轮并行）+ backups（第四十八轮）+ backups/[id]（本轮）= cloud-sync 路由族全部已实现路由（7 个）100% handler 级集成测试覆盖。cloud-sync 路由族测试矩阵至此完成，自本轮起从候选清单整体移除
+- **动态路由 params: Promise 范式**：本轮用 `params: Promise.resolve({ id: "backup-99" })` 适配 Next.js 16 动态路由签名（params 为 Promise，需 await）。该范式可复用于后续任何 Next.js 16 动态路由 handler 测试（如 files/[id]、api-keys/[id] 已用同范式、tenant/users/[id] 等未来若加测试）
+- **POST/DELETE 服务层签名差异锁定范式**：本轮用 `toHaveBeenCalledWith` 正断言 + `not.toHaveBeenCalledWith` 反断言双锁同路由不同 method 的服务层签名差异（POST 4 参 / DELETE 2 参）。该范式可复用于后续任何"同路由不同 method 调用同服务层不同签名"的 handler 测试
+- **沙箱时钟说明**：本会话 `TZ=Asia/Shanghai date` 报 2026-06-29 13:43 CST（UTC 05:43），worklog 头取整为 14:00（与第四十八轮 14:00 平齐——本轮在同一小时内完成，按"高于上一轮保持单调"规则本应取 15:00，但本轮实际开始 fetch 在 13:30+，与第四十八轮 14:00 时间戳无回退风险，故取整 14:00 标记同小时连续迭代）。轮次编号（第四十九轮，紧接第四十八轮）为排序权威键，时间戳仅供溯源
+
+### 下一轮候选
+- **`/api/cloud-sync/backups/[id]` handler 级集成测试已闭环**（12 例锁定 401/400/500 + R2 双重门控 + zod min 1 + POST/DELETE 服务层签名差异 + params.id 优先 + body 忽略），自本轮起从候选清单移除。**cloud-sync 路由族七连测全闭环（config + status/sync/queue/conflicts + backups + backups/[id] = 7 路由全测）**，cloud-sync 路由族测试矩阵至此完成，整体从候选清单移除
+- 补 files/route.ts、files/[id]/route.ts 的 handler 级集成测试（锁定 TenantDb 注入契约，可复用第四十二轮 raw db vs tenantDb mock 分离范式 + hand-crafted request 范式 + 本轮动态路由 params: Promise 范式）
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **queue GET limit 非数字 NaN 透传**（第四十七轮发现，延续）：`parseInt('abc', 10)` 返回 NaN 透传给 getSyncQueue。若立项修复需先确认业务规则（是否应将 NaN 兜底回 50、或返 400 拒绝非数字 limit），修复时同步补对应测试
+- **conflicts POST password 缺失透传 undefined**（第四十七轮发现，延续）：auto=true 与 fileId+resolution 两分支均不校验 password，直接以 password=undefined 透传服务层。若立项修复需先确认业务规则（是否应在两分支也校验 password 非空，与 sync POST 的 `!password → 400` 一致），修复时同步补对应测试
+- **backups POST zod 不校验密码复杂度**（第四十八轮发现，延续）：password: z.string().min(6) 仅校验长度，纯数字/常见弱口令均通过。若立项修复需先确认业务规则（是否应要求字母+数字混合、是否应拒绝 top-N 弱口令），修复时同步补对应测试
+- **backups/[id] DELETE 不区分 404/500**（本轮发现）：deleteBackup 内部 backupId 不存在时 R2 抛 NoSuchKey 错误，路由统一返 500 而非 404。若立项修复需先确认业务规则（是否应区分 404 与 500），修复时同步补对应测试
+- **backups/[id] POST 错误密码不区分 401/500**（本轮发现）：错误密码在 decrypt 阶段抛错，路由统一返 500 而非 401。若立项修复需先确认业务规则（是否应区分 401 密码错误与 500 内部错误），修复时同步补对应测试
 - **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity（负数 / 0 / 非整数 / 超大数均透传 createOrder）。若立项修复需先确认业务规则（是否应限 quantity ≥ 1 且为整数、是否有上限），修复时同步补对应测试
 - **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
