@@ -12,7 +12,17 @@ export async function GET(request: NextRequest) {
     // 解析查询参数
     const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get('page') || '1', 10);
-    const pageSize = Math.min(100, parseInt(searchParams.get('pageSize') || '50', 10));
+    const pageSizeRaw = parseInt(searchParams.get('pageSize') || '50', 10);
+    // 分页参数校验（defense-in-depth）：人脸分组为个人级数据（无 role 门控，按
+    // userId+tenantId 双键作用域），门控直接置于解析后，避免 ?page=abc 透传 Prisma
+    // skip/take（Math.min(100,NaN)=NaN → 未定义行为，崩溃被 try/catch 吞为 500）。
+    if (isNaN(page) || page < 1) {
+      return NextResponse.json({ error: 'page 必须 >= 1' }, { status: 400 });
+    }
+    if (isNaN(pageSizeRaw) || pageSizeRaw < 1) {
+      return NextResponse.json({ error: 'pageSize 必须为正整数' }, { status: 400 });
+    }
+    const pageSize = Math.min(100, pageSizeRaw);
     const search = searchParams.get('search') || '';
     const sortBy = searchParams.get('sortBy') || 'photoCount'; // photoCount, faceCount, createdAt, name
     const sortOrder = searchParams.get('sortOrder') || 'desc'; // asc, desc
