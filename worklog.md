@@ -9887,3 +9887,55 @@ Status: 完成
 - **queue GET limit 上界 cap 缺失**（本轮新增候选）：本轮仅修 NaN/非正数下界，未引入上界（如 >100 → 400）。faces 路由有 100 上界约定，queue 无。是否对齐 faces 加 cap 属新业务规则（防 DoS vs 灵活性），留待后续确认
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-30 02:15 自动迭代
+
+第六十二轮自动迭代。本轮延续第六十/六十一轮"误判识别 + 同类 bug 横扫"范式：在评估"剩余优先级 1"候选时，实证复核 `backups POST 密码复杂度`候选，确认其确属业务规则决策（非约定复用），维持 defer；转而 grep 全仓分页路由，**新发现一类系统性 NaN-透传缺口**——与第六十一轮刚闭合的 `cloud-sync/queue` 同类，散布于 ~17 个分页路由，本轮闭合其中 3 个（files/storage/tags），剩余 16 个立项为后续多轮 sweep。
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-30 02:15 CST。本轮 2 个 dev commit（ea50069 / 1eb9565）+ 1 个 worklog commit。轮次编号（第六十二轮）为排序权威键，时间戳 02:15 高于第六十一轮 01:00 保持单调（同处 06-30）。
+
+**前置检查**：本轮为全新 clone 后首次开发（沙箱 /workspace 原为空，`git clone origin` + `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader）。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 8a1ed6b（第六十一轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**候选复核 —— 误判识别 vs 真业务规则**：
+- `backups POST 密码复杂度`（第四十八轮延续）：实证 `src/app/api/user/security/change-password/route.ts` 对**账户密码**强制 `checkPasswordStrength(score)<3 → 400`，但 backups 的 password 是**加密密码**（crypto 加解密密钥材料，语义不同于账户登录密码），且现有 `z.string().min(6)` 系刻意宽松。将账户密码强度规则套用到加密密码属新业务规则决策，**非约定复用**，维持 defer 待产品拍板。
+- 转向横扫：grep `parseInt(searchParams.get('page'|'limit'|'pageSize'))` 全仓，发现 **~17 个分页路由**用此模式且**无 NaN 守卫**，仅 `faces/groups/[id]/photos`（既有 `isNaN||<1||>100 → 400`）与 `cloud-sync/queue`（第六十一轮 `isNaN||<1 → 400`）有守卫。其余路由 `?page=abc` → `parseInt` 返 NaN → 透传 Prisma `skip/take`（未定义行为/崩溃）或 `Array.slice(0, NaN)`（静默返回空列表 + `hasMore: length>NaN=false`）。与第六十一轮闭合的 queue NaN-透传**同一类 bug**，可复用既定 `isNaN||<1 → 400` 约定闭合。
+
+**本轮闭合 3 路由**（逐文件读全文实证 bug 触达 Prisma/slice）：
+- `files/route.ts` GET：`page→skip`、`limit→take`，NaN 透传 tenantDb.file.findMany → Prisma 崩溃。改：解析后加 `isNaN(page)||page<1 → 400 'page 必须 >= 1'` / `isNaN(limitRaw)||limitRaw<1 → 400 'limit 必须为正整数'`，再 `Math.min(limitRaw, 500)` 封顶。合法大值 limit=600 仍封顶 500，行为不变。
+- `storage/route.ts` getLargeFiles：`page→skip`、`pageSize→take`，NaN 透传 db.file.findMany → Prisma 崩溃。改：同上 page/pageSize 守卫，再 `Math.min(100, pageSizeRaw)` 封顶。（注：该函数 `limit` 参数 line 162 为 dead code——已解析未参与计算，pageSize 承担实际分页；本轮未动 dead limit，留作单独清理候选。）
+- `tags/route.ts` GET：`limit→slice(0, limit)`，NaN 透传 slice 静默返回空列表（非崩溃但误导）。改：解析后加 `isNaN(limitRaw)||limitRaw<1 → 400 'limit 必须为正整数'`，再 `Math.min(100, limitRaw)` 封顶。合法大值 limit=200 仍封顶 100。
+
+**前端兼容性**：三路由均为 GET 查询接口，前端调用均传合法 page/limit 或不传（走默认值），`?page=abc`/`?limit=-5` 等非法值非正常 UI 路径，服务端 400 为纯 defense-in-depth，不破坏现有调用。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；63.9s，--ignore-scripts 跳过 sharp/unrs native build）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关，非本轮引入）。本轮改动零类型错误
+- `npx vitest run src/__tests__/api/{files-route,storage-route,tags-route}.test.ts`：51/51 通过（files 16 = 原 10 +6 / storage 25 = 原 19 +6 / tags 10 全新）
+- `npx vitest run` 全量 1527/1527 通过（99 文件，119.47s），零回归（基线 1505/98 + 本轮 22 = 1527/99）
+
+### 改动量
+
+5 文件改 + 1 新测试（3 路由 +24 / 3 测试 +166-1），2 dev commit。
+
+### Commit
+
+- `ea50069` fix(api): files/storage 分页参数 NaN/非正数返回 400 而非透传 Prisma skip/take
+- `1eb9565` fix(api): tags GET limit 非数字/非正数返回 400 而非静默返回空列表
+
+### 推送
+
+- origin (Gitee)：8a1ed6b..1eb9565 推送成功
+- github (GitHub)：8a1ed6b..1eb9565 推送成功
+
+### 下一轮候选
+
+- **分页路由 NaN-透传 系统性缺口（本轮新发现，最高优先）**：剩余 16 路由 `parseInt(page/pageSize/limit)` 无 NaN 守卫 → `?page=abc` 透传 Prisma skip/take 崩溃。列表：`activity-logs`、`shares`、`shares/[id]/access-logs`、`access-history`、`invitations`、`comments`、`tenant/users`、`automation/rules`、`faces/groups`、`trash`、`api-keys`、`files/[id]/versions`、`system-logs`、`notifications`、`backups`、`webhooks`。建议每轮闭合 3-4 个（逐文件读全文实证 bug 触达点 + 补 handler 级测试），复用本轮 faces/queue/files/storage/tags 既定 `isNaN||<1 → 400` 约定，合法大值保留 Math.min 封顶
+- **storage getLargeFiles `limit` dead code 清理**（本轮发现，次要）：line 162 解析 `limit` 但全文未用（pageSize 承担分页），可删；属 refactor 非 bug，低优
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：本轮实证确认属新业务规则（加密密码 vs 账户密码语义不同），非约定复用，维持 defer 待产品决策
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮，延续）
+- **queue GET limit 上界 cap 缺失**（第六十一轮新增）
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
