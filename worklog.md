@@ -9691,3 +9691,77 @@ Status: 完成
 - **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity。若立项修复需先确认业务规则，修复时同步补对应测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 22:51 自动迭代
+
+第五十九轮自动迭代。本轮回到连续多轮的"/api/files POST 测试"主线，落地候选清单中**唯一无"需先确认业务规则"前置的明确测试缺口**：`/api/files` POST **rate-limit 触发 aiSkipped:true 专轮**（第五十七轮候选，延续 2 轮）。
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-29 22:51 CST。commit 75ea9b3 落于本轮。轮次编号（第五十九轮）为排序权威键，时间戳 22:51 高于第五十八轮 22:16 保持单调。
+
+**前置检查**：`git fetch origin main && git fetch github main`，本地 HEAD（fc87e25）落后 origin/main 2 commit，`git pull --ff-only origin main` 快进至 fbb6cdf（第五十八轮成果）。工作树干净，无遗留未提交改动。本轮为全新 clone 后首次开发（沙箱 /workspace 原为空，`git clone origin` + `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader）。
+
+**优先级 1 复核**：与第五十七/五十八轮结论一致，任务清单 5 项"剩余优先级 1"全部已在历史轮次闭环（tenant-db raw 软审计、alipay/wechat 真实验签、files 路由走 TenantDb、sync-engine keep_both 重命名、api-auth.test 对齐实现）。剩余候选中"需先确认业务规则"的 6 项（queue NaN 透传 / conflicts password 缺失 / backups 密码复杂度 / backups DELETE 404-500 / backups POST 401-500 / saas orders quantity 值域）不宜 AI 自主拍板业务语义，延续。故本轮转向无前置的 rate-limit 测试专轮。
+
+**测试缺口定位**：route.ts 的 AI 处理速率限制用模块级 `aiProcessingTimestamps: Map<string, number[]>`（line 59）实现，`checkAiRateLimit(userId)`（line 60-67）在 `recent.length < 10` 时返 true（放行），≥10 时返 false（限流）。两处调用：
+- image 分支 line 230：`skipAiDueToRateLimit = !checkAiRateLimit(userId)` → 限流设 `aiSkipped=true`（line 231），line 240 `!skipAiDueToRateLimit` 短路使 AI fetch 块不进入（line 242 不 push、line 244 fetch 不触达）。
+- doc 分支 line 372：`skipDocAiDueToRateLimit = !checkAiRateLimit(userId)` → 限流设 `aiSkipped=true`（line 373），line 375 `!skipDocAiDueToRateLimit` 短路使 fire-and-forget IIFE 不启动（line 379 不 push、fetch 不触达、db.file.update 不触达）。
+
+②c-image/②c-doc 已锁非限流路径（aiSkipped=undefined），但限流触发 aiSkipped:true 的分支此前无测试覆盖（worklog 显式标注"需独立专轮处理状态隔离"）。
+
+**核心难点 —— 模块级 Map 状态隔离**：`aiProcessingTimestamps` 是 route.ts 模块级 Map，**非导出**，测试侧无法直接 reset。timestamp 仅在 AI 实际进行时被 push（image line 242 阻塞块内、doc line 379 IIFE 内），`checkAiRateLimit` 自身只 filter+check 不 push。触发限流需 Map 中该 userId 已有 ≥10 条 recent timestamp。
+
+**隔离策略（本轮核心提炼 —— 模块级 Map seeding 范式）**：
+1. vitest 默认 `isolate:true`，每个测试文件独立 module registry → `aiProcessingTimestamps` 在本文件内 fresh，不跨文件污染（②c-image/②c-doc 用 user-1 累积的 timestamp 不渗入本文件）。
+2. `beforeAll` 用 userId="user-ratelimit" 连做 10 次 image 上传（不带 skipAi）填充 Map：每次 image 上传 line 230 通过（<10）→ line 242 push 1 条。第 10 次上传时 line 230 通过（9<10）push 第 10 条，但 line 372 doc-branch checkAiRateLimit 返 false（10≥10）设 aiSkipped=true（image 不在 docTypes 故无 IIFE 副作用，仅响应字段；种子响应不参与断言）。种子完成后 Map["user-ratelimit"] 恰好 10 条。
+3. 限流分支不 push（AI 块不进入/IIFE 不启动），故 10 条计数稳定，多轮限流用例可复用同一种子。
+4. 对照用例用 fresh userId="user-fresh"（Map 无条目 → 0<10 通过 → 不限流），证明 aiSkipped=true 确由限流触发而非其他因素（causation 锁定）。
+
+**用例设计**（3 例）：
+- ① image rate-limit：user-ratelimit 第 11 次 image 上传 → line 230 false → aiSkipped=true → fetch 不触达；generateThumbnail 仍触达（line 227 在 line 230 之前）；$transaction/file.create 仍完成（限流不阻断存储）；响应 aiSkipped:true、textContent:undefined（无 OCR）、tags:[]。
+- ② doc rate-limit：user-ratelimit doc 上传 → 非 image 跳过 image 块 → line 372 false → aiSkipped=true → IIFE 不启动 → fetch 不触达、db.file.update 不触达（settleIife flush 后断言）；响应 aiSkipped:true、textContent=buffer.toString（IIFE 未覆盖）、tags:[]、无 summary。
+- ③ control（fresh userId）：user-fresh image 上传 → 0<10 通过 → aiSkipped=undefined；fetch 触达。与①形成对照（同构上传、不同 userId、aiSkipped true vs undefined、fetch not-called vs called），反向锁定限流是 aiSkipped:true 的唯一成因。
+
+**关键 trace 复核**（image 种子双 checkAiRateLimit）：image 上传 line 230 与 line 372 各调一次 checkAiRateLimit。第 10 次种子：line 230 通过（9<10）push 第 10 条 → line 372 此时 10≥10 返 false 设 aiSkipped=true。故第 10 次种子响应 aiSkipped=true（不断言），但 push 已完成（10 条）。第 11 次（用例①）：line 230 即 10≥10 false → AI 块不进入 → 不 push → 计数稳定 10。trace 与实测 stdout 日志吻合（"AI processing rate limit reached" + "AI summary rate limit reached" 均出现）。
+
+### 范式复用与新增
+
+- **vi.hoisted + MockNextResponse + makePostRequest（headers.get spy + auth）范式延续**（②a/②b/②c 范式）：本轮 makePostRequest 默认 url **不带 skipAi**（rate-limit 测试必须不传 skipAi——skipAi=true 会跳过 AI 块但不设 aiSkipped，使限流语义无法观测）。
+- **mockImplementation echo data 范式延续**（②c-image/②c-doc 范式）：tx.file.create echo args.data 使响应反映路由实际传入值。
+- **$queryRaw tagged template + $transaction executor + createTenantDb wrapper 范式延续**（②a/②c 范式）。
+- **settleIife flush microtask 范式延续**（②c-doc 范式）：doc 限流负向用例 flush 后断言 db.file.update 未触达（不可用 vi.waitFor 轮询 not-called）。
+- **模块级 Map seeding 范式（本轮核心提炼）**：非导出的模块级限流 Map 无法测试侧 reset，用 `beforeAll` 连做 N 次（N=阈值）成功调用填充 Map 至阈值，限流分支不 push 故计数稳定可复用同一种子；fresh-key 对照用例锁定 causation。可复用于任何"模块级计数器/限流 Map + 非导出"的 handler 级测试（如未来若引入其他模块级 Map 限流器）。
+- **双 checkAiRateLimit trace 范式（本轮提炼）**：image 上传触发 line 230 + line 372 两次 checkAiRateLimit，第 N 次种子在 line 230 通过 push 但 line 372 已限流设 aiSkipped——种子响应可能含 aiSkipped=true 但 push 已完成。seeding 时只校验 status===200 不断言响应字段，避免被双检查的边界效应误导。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；package-lock.json 为 npm 追踪文件但 pnpm 兼容安装；58.3s，build scripts 跳过 prisma/sharp/unrs）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，与本轮改动无关，非本轮引入）。本轮新增测试文件零类型错误
+- `npx vitest run src/__tests__/api/files-route-post-ratelimit.test.ts`：3/3 通过（含 image 限流 fetch not-called、doc 限流 IIFE 不启动 settleIife 后 db.file.update not-called、fresh 对照 fetch called；stdout 出现 "AI processing rate limit reached" + "AI summary rate limit reached" 预期日志）
+- `npx vitest run` 全量 1493/1493 通过（98 文件，85.12s），零回归（基线 1490/97 + 3/1 = 1493/98）
+
+### 改动量
+
+1 文件（新测试文件 +479），纯测试 commit，无生产代码变更。
+
+### Commit
+
+- `75ea9b3` test(files): 补 /api/files POST rate-limit 触发 aiSkipped:true handler 级集成测试
+
+### 推送
+
+- origin (Gitee)：fbb6cdf..75ea9b3 推送成功
+- github (GitHub)：fbb6cdf..75ea9b3 推送成功
+
+### 下一轮候选
+
+- **`/api/files` POST rate-limit 触发 aiSkipped:true 专轮已闭环**（3 例锁定 image/doc 限流 aiSkipped:true + fetch/IIFE 不触达 + fresh 对照 causation），自本轮起从候选清单移除该项
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **queue GET limit 非数字 NaN 透传**（第四十七轮发现，延续）：`parseInt('abc',10)` 返 NaN 透传给 getSyncQueue。立项时需先确认业务规则（NaN 兜底回 50 vs 返 400 拒绝非数字 limit），修复时同步补测试
+- **conflicts POST password 缺失透传 undefined**（第四十七轮发现，延续）：auto=true 与 fileId+resolution 两分支均不校验 password。立项时需先确认业务规则（是否应与 sync POST 的 `!password → 400` 一致），修复时同步补测试
+- **backups POST zod 不校验密码复杂度**（第四十八轮发现，延续）：password: z.string().min(6) 仅校验长度。若立项修复需先确认业务规则，修复时同步补对应测试
+- **backups/[id] DELETE 不区分 404/500**（第四十九轮发现，延续）：NoSuchKey 抛错统一返 500。若立项修复需先确认业务规则，修复时同步补对应测试
+- **backups/[id] POST 错误密码不区分 401/500**（第四十九轮发现，延续）：decrypt 抛错统一返 500。若立项修复需先确认业务规则，修复时同步补对应测试
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity。若立项修复需先确认业务规则，修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
