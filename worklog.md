@@ -9151,3 +9151,87 @@ Status: 完成
 - **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 17:00 自动迭代
+
+第五十二轮自动迭代。本轮承接第五十一轮 GET list 闭环后的"下一轮候选"，落地 `/api/files` 主路由 **POST** handler 级集成测试的**子轮 ①**（前置校验门 + 5GB 配额早检 $queryRaw 契约）。
+
+沙箱时钟：`TZ=Asia/Shanghai date` 报 2026-06-29 17:29 CST（UTC 09:29），commit 4648131 落于 17:11 CST。按"高于第五十一轮 16:00 保持单调"规则取整 17:00。轮次编号（第五十二轮）为排序权威键，时间戳仅供溯源。
+
+**优先级 1 复核（clean clone 第六轮复核）**：clean clone 后再次确认无活跃优先级 1 待修：
+- `src/lib/db/tenant-db.ts`：`transaction(fn)` 与 `raw` getter 均带 `console.warn` 调用方堆栈软审计，无暴露后门。
+- `src/lib/payment/alipay.ts` / `wechat.ts`：RSA2 验签已接入真实实现，无"非空即通过"占位。
+- `src/app/api/files/route.ts`：GET/POST 均经 createTenantDb（POST 仅 $queryRaw 配额查询保留 db 直连，因 TenantDb 不代理 raw SQL，与 files-import 同范式），无 raw userId 直滤绕过。
+- `src/lib/cloud-sync/sync-engine.ts`：keep_both 分支已实现双方保留，无"简化处理直接覆盖"bug。
+- `src/__tests__/lib/api-auth.test.ts`：已与 api-auth.ts 实现对齐，无返回字段/async/query param 不符。
+
+**范围决策（本轮关键）**：候选清单原将"文件类型判定 + 路径安全"并入子轮 ①，但实际审 route.ts POST 控制流发现：文件类型判定（magic bytes → fileType 落库）与路径安全（filePath 拼接）仅在 writeFile + createTenantDb.file.findFirst + $transaction 时才可观测，本质上与子轮 ② 的 dedup 版本化 / 新建 $transaction 纠缠。为保持 9 个测试用例纯校验门、不与 happy-path 耦合，**主动收窄子轮 ① 至"纯前置校验门 + 5GB 配额早检 $queryRaw 契约"**，文件类型判定 + 路径安全下沉至子轮 ② 与 dedup/$transaction 一并覆盖。
+
+### 本次做了什么
+
+新增 `/api/files` POST handler 级集成测试文件 `src/__tests__/api/files-route-post.test.ts`（+338 行，9 用例），锁定 POST 前置校验链 7 道门 + 5GB 配额早检 $queryRaw 契约 + catch-all 500 兜底。
+
+**7 道前置校验门（按 route.ts POST 控制流顺序短路）**：
+1. 未认证 → 401 透传 authenticateRequest 响应 `{ error: '未提供身份认证令牌' }`（负向断言：$queryRaw / mkdir / writeFile 恒不被调用）
+2. Content-Length > 100MB → 413 `{ error: '请求体过大，最大允许 100MB' }`（在 formData 解析之前）
+3. content-type 非 multipart/form-data → 415 `{ error: '请求必须是 multipart/form-data 格式' }`
+4. formData.get("file") 为 null / 非 File（string）→ 400 `{ error: 'Valid file is required' }`（2 用例）
+5. file.size > 50MB → 413 `{ error: 'File size exceeds 50MB limit' }`
+6. 5GB 配额早检：$queryRaw 查 SUM(fileSize) WHERE userId+tenantId+isDeleted=false，超额 → 413 `{ error: 'Storage quota exceeded (5120MB / 5120MB used)' }`（负向断言：不触达 mkdir / writeFile）
+7. magic bytes 校验：PNG 头声明为 image/jpeg → 400 `{ error: '文件内容与声明的类型不匹配' }`（负向断言：不触达 writeFile / createTenantDb / $transaction）
+
+**catch-all 500 兜底 + $queryRaw tagged template 契约（双用例合并）**：
+- $queryRaw 抛错 → 500 `{ error: 'Upload failed' }`
+- 同一用例复用断言 $queryRaw 收到的 tagged template 参数：calls[0][0] 为 SQL strings 数组（含 "userId" / "tenantId" / "isDeleted" = false 三键），calls[0][1]=userId、calls[0][2]=tenantId（按 SQL 模板插值顺序）。此设计避免 $queryRaw 成功后继续走 mkdir+ 逻辑导致与 happy-path 纠缠。
+
+**三道负向契约**：
+- 5 道前置校验门（401/413-body/415/400-file/413-size）恒不触达 $queryRaw（在配额门之前短路）
+- 配额门（413-quota）恒不触达 mkdir / writeFile（配额超额在写盘之前短路）
+- magic-bytes 门（400）恒不触达 writeFile / createTenantDb / $transaction（在落盘与入库之前短路）
+
+### 范式复用与新增
+
+- **raw db vs tenantDb mock 分离范式延续（第五十一轮 GET list 范式）**：本轮 raw db mock 含 $queryRaw（配额早检，正向断言）+ $transaction（catch-all 负向断言恒不调用）+ file.update（dedup 负向断言恒不调用，子轮 ② 覆盖）；createTenantDb 用 hand-written wrapper 注入 tenantId，mockTenantFileFindFirst 供 magic-bytes 门负向断言恒不调用。
+- **fs/promises ESM 互操作范式延续（第五十轮 files-id 范式）**：mock 同时导出 default（含 mkdir/writeFile/unlink）与 named（mkdir/writeFile/unlink），覆盖 route.ts 中 `import { mkdir, writeFile } from "fs/promises"` 与潜在 default import 两种形态。
+- **hand-crafted request + headers.get spy 范式延续（第四十一轮 files-import 范式）**：Content-Length 为 fetch forbidden header，无法经 Request 构造器显式设置，故用 `vi.spyOn(headers, "get")` 覆盖使 `request.headers.get("content-length")` 返回受控值。
+- **$queryRaw tagged template 契约范式延续（第四十一轮 files-import 范式）**：断言 calls[0][0] 为 SQL strings、calls[0][1]/[2] 为插值，SQL 含 userId/tenantId/isDeleted=false 三键。
+- **新增 File.size 访问器遮蔽范式**：50MB 配额门测试用 `Object.defineProperty(file, "size", { value: 52428800, configurable: true })` 遮蔽 File.prototype.size 访问器，避免真实分配 50MB 内存。configurable:true 便于 beforeEach 重置。该范式可复用于后续任何"大文件 size 校验"测试。
+- **新增 catch-all 双用例合并范式**：将"$queryRaw 抛错 → 500"与"$queryRaw tagged template 契约"合并为同一用例，利用 $queryRaw 抛错后控制流短路、不继续走 mkdir+ 逻辑的特性，既测兜底又测契约，避免与 happy-path 纠缠。该范式可复用于后续任何"既有 catch-all 兜底、又有 tagged template 契约"的路由。
+
+### 验证
+
+- `npx tsc --noEmit` 退出码 0（零类型错误）
+- `npx vitest run src/__tests__/api/files-route-post.test.ts` 9/9 通过
+- `npx vitest run` 全量 1463/1463 通过（92 文件，105.03s），零回归（基线 1454/91 + 9/1 = 1463/92）
+
+### 改动量
+
+1 文件（新测试文件 +338），纯测试 commit，无生产代码变更。
+
+### Commit
+
+- `4648131` test(files): 补 /api/files POST 前置校验门 + 配额早检 handler 级集成测试
+
+### 推送
+
+- origin (Gitee)：`f33bd70..4648131` 待推送（本节写毕即执行 `git push origin main`）
+- github (GitHub)：`f33bd70..4648131` 待推送（本节写毕即执行 `git push github main`）
+
+### 下一轮候选
+
+- **`/api/files` POST 子轮 ① 已闭环**（9 例锁定 7 道前置校验门 + 5GB 配额早检 $queryRaw 契约 + catch-all 500 + 三道负向契约），自本轮起从候选清单移除子轮 ①
+- 补 `/api/files` POST handler 级集成测试**子轮 ②**（dedup 版本化 + 新建 $transaction + AI fetch）。建议进一步拆分：
+  - **②a 新建分支**：writeFile 成功 + magic bytes 合法 + 无 dedup → $transaction（tx.$queryRaw 配额再检 TOCTOU + tx.file.create），断言 file.create data 含 tenantId（wrapper 注入）、filePath 路径安全前缀校验、$transaction 内 $queryRaw 与早检 $queryRaw 的 SQL 一致性
+  - **②b dedup 版本化分支**：createTenantDb.file.findFirst 返回 existingFile（同 hash）→ $transaction（fileVersion.create + file.update + unlink 旧文件），断言 unlink 旧 filePath、fileVersion.create data、file.update data、版本号递增
+  - **②c AI fetch**：process-image / summarize 端点 fetch（需 mock global.fetch），断言 fetch URL/method/body、textContent 提取、thumbnail 生成（图片类型）失败容错
+- 补 `/api/files` POST handler 级集成测试**子轮 ③**（文件类型判定 + 路径安全下沉覆盖，与 ② 合并或独立）
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **queue GET limit 非数字 NaN 透传**（第四十七轮发现，延续）：`parseInt('abc', 10)` 返回 NaN 透传给 getSyncQueue。若立项修复需先确认业务规则（是否应将 NaN 兜底回 50、或返 400 拒绝非数字 limit），修复时同步补对应测试
+- **conflicts POST password 缺失透传 undefined**（第四十七轮发现，延续）：auto=true 与 fileId+resolution 两分支均不校验 password，直接以 password=undefined 透传服务层。若立项修复需先确认业务规则（是否应在两分支也校验 password 非空，与 sync POST 的 `!password → 400` 一致），修复时同步补对应测试
+- **backups POST zod 不校验密码复杂度**（第四十八轮发现，延续）：password: z.string().min(6) 仅校验长度，纯数字/常见弱口令均通过。若立项修复需先确认业务规则（是否应要求字母+数字混合、是否应拒绝 top-N 弱口令），修复时同步补对应测试
+- **backups/[id] DELETE 不区分 404/500**（第四十九轮发现，延续）：deleteBackup 内部 backupId 不存在时 R2 抛 NoSuchKey 错误，路由统一返 500 而非 404。若立项修复需先确认业务规则（是否应区分 404 与 500），修复时同步补对应测试
+- **backups/[id] POST 错误密码不区分 401/500**（第四十九轮发现，延续）：错误密码在 decrypt 阶段抛错，路由统一返 500 而非 401。若立项修复需先确认业务规则（是否应区分 401 密码错误与 500 内部错误），修复时同步补对应测试
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity（负数 / 0 / 非整数 / 超大数均透传 createOrder）。若立项修复需先确认业务规则（是否应限 quantity ≥ 1 且为整数、是否有上限），修复时同步补对应测试
+- **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
