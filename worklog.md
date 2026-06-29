@@ -9320,3 +9320,80 @@ Status: 完成
 - **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 19:00 自动迭代
+
+第五十四轮自动迭代。本轮承接第五十三轮子轮 ②a 闭环后的"下一轮候选"，落地 `/api/files` 主路由 **POST** handler 级集成测试的**子轮 ②b**（dedup 版本化分支：dedup file.findFirst 命中 existingFile → `db.$transaction` 内 tx.fileVersion.count + tx.fileVersion.create（快照旧文件）+ tx.file.update（写入新文件字段）→ unlink 旧磁盘文件 → 200 `{ isVersionUpdate: true }`）。
+
+沙箱时钟：`TZ=Asia/Shanghai date` 报 2026-06-29 19:00 CST（UTC 11:00），commit 6ea82d0 落于本轮。按"高于第五十三轮 18:00 保持单调"规则取整 19:00。轮次编号（第五十四轮）为排序权威键，时间戳仅供溯源。
+
+**优先级 1 复核（clean clone 第八轮复核）**：clean clone 后再次确认无活跃优先级 1 待修。本轮审 route.ts POST dedup 分支控制流时，复核第五十三轮对 raw db vs createTenantDb 的分层表述——dedup 分支事务走 `db.$transaction`（raw db），事务内 `tx.fileVersion.count/create + tx.file.update` 均**不经 createTenantDb wrapper**；createTenantDb 仅用于事务前的 `dedupTenantDb.file.findFirst`（wrapper 注入 tenantId）。此与新建分支事务（`tx.$queryRaw + tx.file.create` 显式写 tenantId）的范式一致——事务内 mutation 因 createTenantDb 不接受 tx 参数而必须走 raw tx。安全结论不变：dedup 分支基于 tenantDb.findFirst 返回的 existingFile（已租户隔离），事务内 update where.id 锁定 existingFile.id，无 raw userId-only 直滤绕过。本轮新增一关键差异锁定：**dedup 分支事务内不调 tx.$queryRaw（无 TOCTOU 配额再检）**，配额早检已在分支选择之前完成（与新建分支事务内 tx.$queryRaw TOCTOU 再检形成对比）。
+
+**范围决策（本轮关键）**：候选清单 ②b 原计划"断言 tx.fileVersion.create data 含 fileId/fileName/.../version=versionCount+1 + tx.file.update where.id + unlink 旧 filePath + 响应 isVersionUpdate:true"。本轮在原计划基础上**新增三处契约锁定**以提升覆盖密度：
+1. **fileVersion.create 快照旧文件（非新上传）**：显式断言 create data 全部字段取自 existingFile（fileSize=100 旧值而非新 file.size=5、filePath=旧路径、textContent=旧内容），锁定"版本快照保留被覆盖前旧文件状态"契约——这是版本化语义的核心，避免后续误改为快照新文件。
+2. **tx.$queryRaw 负向断言**：dedup 分支事务内不调 tx.$queryRaw（无 TOCTOU 再检），与新建分支形成对比。在 tx mock 中保留 `$queryRaw` spy 并断言 `not.toHaveBeenCalled()`，显式锁定此差异。
+3. **aiSkipped 直传（非三元）差异**：dedup 分支响应 `aiSkipped` 直传（line 335），新建分支为 `aiSkipped ? true : undefined`（line 429）。本轮锁定 dedup 响应 `aiSkipped: false`（非 undefined），记录此响应形态差异。
+
+### 本次做了什么
+
+新增 `/api/files` POST handler 级集成测试文件 `src/__tests__/api/files-route-post-dedup.test.ts`（+471 行，4 用例），锁定 POST dedup 版本化分支（existingFile !== null → `db.$transaction` 内 fileVersion.count + fileVersion.create + file.update + unlink 旧文件）的契约。
+
+**4 个用例**：
+1. **happy path（txt + skipAi=true + dedup 命中 versionCount=2）**：通过全部前置门 + magic bytes 合法 + dedup findFirst 返回 existingFile → `$transaction`（tx.fileVersion.count=2 → tx.fileVersion.create(快照旧文件,version=3) + tx.file.update(新文件字段,tags 回退)）→ unlink 旧 filePath → 200。锁定：
+   - 早检 $queryRaw 触达（dedup 分支仍走配额早检）
+   - dedup findFirst where 含 tenantId（wrapper 注入）+ userId + fileName + isDeleted:false
+   - tx.fileVersion.count where.fileId = existingFile.id
+   - tx.fileVersion.create data 7 字段全部取自 existingFile（fileSize=100 旧值、filePath=旧路径、textContent=旧内容、thumbnailUrl=null），version=versionCount+1=3
+   - tx.file.update where.id=existingFile.id、data 写入新文件字段（fileName=file.name、fileType、fileSize=file.size、filePath=新落盘路径、textContent=新提取、thumbnailUrl=undefined）+ tags 回退（tags=[] → existingFile.tags）
+   - **tx.$queryRaw 不触达**（dedup 分支无 TOCTOU 再检）
+   - unlink 收到 existingFile.filePath（旧路径，非新 writtenPath）
+   - 响应 isVersionUpdate:true、tags=safeJsonParseArray(existingFile.tags)=["old-tag"]、previewUrl undefined、aiSkipped:false（直传，非 undefined）
+   - AI summarize fire-and-forget 不触达（dedup 提前 return）；generateThumbnail 不触达（非图片）
+2. **versionCount=0 → version=1（首次版本化）**：旧文件无历史版本时 version 算术边界 → create data.version=1，其余字段仍快照 existingFile；响应 isVersionUpdate:true
+3. **image dedup + skipAi=true**：jpeg magic bytes 合法 → generateThumbnail 生成新缩略图 → file.update data.thumbnailUrl=新值；fileVersion.create 快照旧 thumbnailUrl="/old-thumb"（非新值）；响应 previewUrl=`/api/files/${id}/preview`、thumbnailUrl=fileRecord.thumbnailUrl、tags 回退旧 tags=["image-tag"]、aiSkipped:false
+4. **unlink 抛错(ENOENT) 兜底**：`unlink(existingFile.filePath).catch(() => {})` 吞掉错误 → 响应仍 200 isVersionUpdate:true；事务正常完成（fileVersion.create + file.update 均触达）
+
+### 范式复用与新增
+
+- **raw db vs tenantDb mock 分离范式延续（子轮 ②a 范式）**：raw db mock 含 $queryRaw（早检，正向）+ $transaction（**executor**）+ file.update（AI summarize 负向）；createTenantDb 用 hand-written wrapper 注入 tenantId（dedup findFirst）。dedup 分支事务走 raw db（与新建分支同），createTenantDb 仅用于事务前 findFirst。
+- **fs/promises ESM 互操作范式延续（第五十轮 files-id 范式）**：mock 同时导出 default + named（mkdir/writeFile/unlink），覆盖 route.ts 顶部 named import 与 dedup 分支 `const { unlink } = await import('fs/promises')` dynamic named import 两种形态。本轮 dedup 分支**触达 unlink**（②a 新建分支不触达），范式在此得到正向验证。
+- **hand-crafted request + headers.get spy 范式延续（第四十一轮 files-import 范式）**：Content-Length forbidden header 用 spy 覆盖；url 携带 `?skipAi=true` 跳过 AI fire-and-forget，避免与 ②c 纠缠。
+- **$transaction executor 范式延续（子轮 ②a 新增范式）**：mock 的 $transaction 为 `async (fn) => { mockTransaction(fn); const tx = {...}; return fn(tx); }`——记录调用 + 构造 tx 客户端 + 回调 fn(tx)。本轮**扩展 tx 客户端**：②a 的 tx 仅含 `$queryRaw + file.create`（新建分支），②b 的 tx 扩展为 `$queryRaw（负向 spy）+ fileVersion.{count,create} + file.update`（dedup 三连）。该范式可复用于子轮 ②c（AI fetch，届时 tx 不变，但需 mock global.fetch）。
+- **新增 fileVersion 快照契约范式**：显式断言 create data 全部字段取自 existingFile（旧 fileSize/filePath/textContent/thumbnailUrl），与 file.update data 取自新上传文件形成对照，锁定"版本快照=旧文件状态、file.update=新文件状态"的版本化语义。该范式可复用于任何"快照 + 更新"双写事务。
+- **新增 jpeg magic bytes 构造范式**：用 `new Uint8Array([0xff, 0xd8, 0xff, 0x00, 0x00])` 构造合法 jpeg 头（[0xFF,0xD8,0xFF]），通过 validateMagicBytes 门并落 fileType="image"。该范式可复用于任何需 magic bytes 校验的图片上传用例。
+- **新增 unlink 兜底范式**：用 `mockUnlink.mockRejectedValue(new Error("ENOENT"))` 验证 `unlink(...).catch(() => {})` 吞错后控制流不阻断，响应仍 200。该范式可复用于任何"清理旧资源失败不阻断主流程"的容错契约。
+
+### 验证
+
+- `npx tsc --noEmit` 退出码 0（零类型错误）
+- `npx vitest run src/__tests__/api/files-route-post-dedup.test.ts` 4/4 通过
+- `npx vitest run` 全量 1471/1471 通过（94 文件，110.22s），零回归（基线 1467/93 + 4/1 = 1471/94）
+
+### 改动量
+
+1 文件（新测试文件 +471），纯测试 commit，无生产代码变更。
+
+### Commit
+
+- `6ea82d0` test(files): 补 /api/files POST dedup 版本化分支 handler 级集成测试
+
+### 推送
+
+- origin (Gitee)：`ed34cd1..6ea82d0` 待推送（本节写毕即执行 `git push origin main`）
+- github (GitHub)：`ed34cd1..6ea82d0` 待推送（本节写毕即执行 `git push github main`）
+
+### 下一轮候选
+
+- **`/api/files` POST 子轮 ②b 已闭环**（4 例锁定 dedup 版本化分支 $transaction + fileVersion 快照旧文件 + file.update 新文件字段 + unlink 旧文件 + tx.$queryRaw 不触达 + aiSkipped 直传差异 + image previewUrl/thumbnailUrl + unlink 兜底），自本轮起从候选清单移除 ②b
+- 补 `/api/files` POST handler 级集成测试**子轮 ②c**（AI fetch）：process-image / summarize 端点 fetch（需 mock global.fetch），断言 fetch URL/method/body、textContent 提取（OCR 覆盖）、tags 合并、thumbnail 生成（图片类型）失败容错、rate-limit 触发 aiSkipped:true。注意 dedup 分支 AI 不触达（提前 return），②c 仅覆盖新建分支的 AI fire-and-forget
+- 补 `/api/files` POST handler 级集成测试**子轮 ③**（文件类型判定矩阵）：②a 已覆盖 txt（"txt"）+ 穿越文件（"other"），②b 已覆盖 image/jpeg（"image"），③ 可补 .docx（fileType:"word" + parseWord）、.pdf（fileType:"pdf" + parsePdf）、.pptx（fileType:"pptx" + parsePptx）、.md（fileType:"markdown" + textContent=buffer.toString）。注意 docx/pdf/pptx 需 mock parser 模块（parseWord/parsePdf/parsePptx）
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **queue GET limit 非数字 NaN 透传**（第四十七轮发现，延续）：`parseInt('abc', 10)` 返回 NaN 透传给 getSyncQueue。若立项修复需先确认业务规则（是否应将 NaN 兜底回 50、或返 400 拒绝非数字 limit），修复时同步补对应测试
+- **conflicts POST password 缺失透传 undefined**（第四十七轮发现，延续）：auto=true 与 fileId+resolution 两分支均不校验 password，直接以 password=undefined 透传服务层。若立项修复需先确认业务规则（是否应在两分支也校验 password 非空，与 sync POST 的 `!password → 400` 一致），修复时同步补对应测试
+- **backups POST zod 不校验密码复杂度**（第四十八轮发现，延续）：password: z.string().min(6) 仅校验长度，纯数字/常见弱口令均通过。若立项修复需先确认业务规则（是否应要求字母+数字混合、是否应拒绝 top-N 弱口令），修复时同步补对应测试
+- **backups/[id] DELETE 不区分 404/500**（第四十九轮发现，延续）：deleteBackup 内部 backupId 不存在时 R2 抛 NoSuchKey 错误，路由统一返 500 而非 404。若立项修复需先确认业务规则（是否应区分 404 与 500），修复时同步补对应测试
+- **backups/[id] POST 错误密码不区分 401/500**（第四十九轮发现，延续）：错误密码在 decrypt 阶段抛错，路由统一返 500 而非 401。若立项修复需先确认业务规则（是否应区分 401 密码错误与 500 内部错误），修复时同步补对应测试
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity（负数 / 0 / 非整数 / 超大数均透传 createOrder）。若立项修复需先确认业务规则（是否应限 quantity ≥ 1 且为整数、是否有上限），修复时同步补对应测试
+- **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
