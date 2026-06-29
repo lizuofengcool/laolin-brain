@@ -8663,3 +8663,64 @@ Status: 完成
 - **PATCH target.role 检查逻辑空隙**（本轮发现）：PATCH 当前无"不能 demote 其他 owner"或"租户至少保留一个 owner"兜底，与 DELETE 的 target.role==='owner' 兜底不对称。若立项修复需先确认业务规则（是否允许多 owner / demote owner 是否需保留至少一个 owner），修复时同步补对应测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 10:00 自动迭代
+
+第四十五轮自动迭代。本轮沙箱工作目录为全新 clone（前轮目录不在本会话沙箱中），`git clone origin` 后 `git remote add github` 配齐双端，`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `e379b67`（第四十四轮 worklog commit），工作树干净、无未提交改动、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复核（逐文件实证，非仅靠 worklog 结论）**：任务清单所列 5 项"剩余"问题经本轮 Read 实证**全部已在前序轮次关闭**，清单已 stale：
+- `src/lib/cloud-sync/sync-engine.ts` keep_both 分支（675-716 行）：**已修复**——本地文件 rename 为 `[冲突副本]` 保留本地版本，云端版本经 `fetchCloudFileData` 取出后以 `db.file.create`（新 id 由 cuid 生成）落地并存，不再"直接覆盖丢本地版本"。`fetchCloudFileData`（470-480 行）已抽公共方法供 download/keep_both 复用
+- `src/__tests__/lib/api-auth.test.ts`：**已修复**——测试期望与 `api-auth.ts` 实现完全匹配（4 字段 userId/email/tenantId/role、async、mockVerifyToken 同步、不读 query param 的 147-157 行用例）。requirePlatformAdmin 9 例覆盖 fail-closed / allowlist 大小写不敏感 / 逗号分隔 trim
+- `src/lib/db/tenant-db.ts` raw 后门：**已加审计**——`raw` getter（56-62 行）与 `transaction`（41-47 行）均 `new Error().stack` 取调用方堆栈 + `console.warn` 审计日志；底部 988-992 行注释说明 rawDb 不再无审计导出
+- `src/lib/payment/alipay.ts` & `wechat.ts` RSA2 验签：**已实现真实验签**——alipay `verifyRSA2Sign`（191-207 行）用 `createVerify('RSA-SHA256')` + 公钥验签 + `normalizePublicKey` PEM 规整；wechat `verifyWechatSign`（221-242 行）用 APIv3 密钥 HMAC-SHA256 + `timingSafeEqual` 恒定时间比较，缺任一字段直接 false（不再"非空即通过"），`decryptResource`（255-291 行）真做 AES-256-GCM 解密。两 provider 的 createPayment/queryPayment/refund 在"已配置但未接 SDK"时返回明确错误（不再静默返 mock），mock 路径 gated behind `isPaymentConfigured` 返回 false
+- `src/app/api/files/route.ts` 绕过 TenantDb：**已迁移**——POST 去重检查走 `dedupTenantDb.file.findFirst`（271-278 行），GET 走 `tenantDb.file.findMany`（460-479 行）；剩余 `db.$queryRaw` 配额检查（142-144、342-344 行）已显式 `AND "tenantId" = ${tenantId}` 过滤，无跨租户泄漏
+
+**无新发现的活跃代码路径逻辑 bug**，优先级 1 无待修，转向优先级 3（补测试）。
+
+**优先级 3 立项（吃掉第四十四轮候选 #2 的 saas/subscription）**：第四十四轮 worklog"下一轮候选"明确建议"下一轮可优先补 saas/subscription 或 cloud-sync/config：saas 含订阅状态机查询/变更"。cloud-sync/config 已有 route 层测试（`cloud-sync-config-route.test.ts`），故本轮补 saas/subscription。
+
+**实现要点（1 个 test commit，14 例）**：新增 `src/__tests__/api/saas-subscription-route.test.ts`（GET 6 + DELETE 3 + POST 5），覆盖 /api/saas/subscription 路由族的安全与控制流契约：
+
+- **GET（6 例）**：①未认证 → 401 透传，不触达任一订阅服务；②成功 → getCurrentSubscription / checkTenantStatus / isSubscriptionExpiringSoon 三服务均以 auth.tenantId 调用（租户作用域），返回聚合对象 `{ subscription, tenantStatus, expiringSoon }` 全等断言；③无活跃订阅（subscription=null）→ 仍 200，三服务均触达（不做 short-circuit）；④getCurrentSubscription 抛错 → 500 `{error:'获取订阅信息失败'}`，后续两服务因顺序 await 不触达；⑤checkTenantStatus 抛错 → 500，isSubscriptionExpiringSoon 不触达；⑥isSubscriptionExpiringSoon 抛错 → 500。
+- **DELETE（3 例）**：①未认证 → 401 透传，不触达 cancelSubscription；②成功 → cancelSubscription 以 auth.tenantId 调用，返回 `{success:true, message:'订阅已取消，将在当前周期结束后失效', subscription:true}`；③cancelSubscription 抛错 → 500 `{error:'取消订阅失败'}`。
+- **POST（5 例）**：①未认证 → 401 透传，不触达 reactivateSubscription；②`?action=resume` → reactivateSubscription 以 auth.tenantId 调用，返回 `{success:true, message:'订阅已恢复', subscription:true}`；③无 action → 400 `{error:'未知操作'}`，不触达 reactivateSubscription；④未知 action（`?action=upgrade`）→ 400 `{error:'未知操作'}`，不触达；⑤`?action=resume` 且 reactivateSubscription 抛错 → 500 `{error:'操作订阅失败'}`。
+
+**租户作用域锁定（服务层 tenantId 注入契约）**：与 tenant/users 路由（raw db 手动 where 注入 tenantId）不同，saas/subscription 路由**不直接访问 db**，全部经 `tenant.service` / `billing.service` 服务层。服务层函数（`getCurrentSubscription(tenantId)` / `checkTenantStatus(tenantId)` / `cancelSubscription(tenantId)` / `reactivateSubscription(tenantId)` / `isSubscriptionExpiringSoon(tenantId)`）均以 tenantId 为首参。测试用 `toHaveBeenCalledWith("tenant-1")` 锁死路由传给服务的 tenantId 即 auth.tenantId——若后续误传 auth.userId 或硬编码他租户 id，断言立即失败。这是第六套租户作用域模型之外的"路由 → 服务层 → db"三层委托模型（路由不碰 db，tenantId 经服务层参数透传）。
+
+**GET 顺序 await 契约锁定**：GET handler 三服务为顺序 `await`（getCurrentSubscription → checkTenantStatus → isSubscriptionExpiringSoon），无 `Promise.all` 并发。测试用"前序服务抛错 → 后续服务 not.toHaveBeenCalled"锁定此顺序契约——若后续误改为 `Promise.all` 并发，前序抛错时后续仍会触达，④⑤用例的 not.toHaveBeenCalled 断言立即失败。顺序 await 的语义是"前序失败则整批失败"，与并发 `Promise.all`（前序失败仍 await 全部 settled）不同，测试锁定的是当前实现的选择。
+
+**POST action 分发契约锁定**：POST 以 `url.searchParams.get('action')` 取 action，仅 `=== 'resume'` 放行，其余（含 null）一律 400 `{error:'未知操作'}`。测试用"无 action → 400"与"action=upgrade → 400"两条用例锁定此分发：null 与任意非 resume 字符串均落 400 分支，不触达 reactivateSubscription。这是与 invitations POST（body JSON 取参数）不同的 query-param 分发范式——saas/subscription POST 不读 body，仅读 query。
+
+**未锁定的潜在逻辑空隙（记录备查，不立项）**：DELETE 与 POST(resume) 在服务层返回 false（无活跃订阅 / 未 cancelAtPeriodEnd）时，路由仍返回 `{success:true, subscription:false}`——"取消/恢复成功"消息与实际未变更的状态不一致。本轮测试**未**锁定此 false → success:true 行为（仅锁 result=true 的 happy path），避免锁定潜在 buggy 行为阻碍后续修复。与第四十四轮"PATCH target.role 空隙"同理：测试不锁 buggy 行为，列入下一轮候选待业务规则确认后修复。
+
+环境：node_modules 经 `npm ci`（项目用 package-lock.json，无 pnpm-lock.yaml；pnpm 可用但无对应 lockfile，fallback npm 与现有 lockfile 一致，无 lockfile 冲突）安装 963 包耗时 45s（与第四十四轮 963 包一致）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run src/__tests__/api/saas-subscription-route.test.ts` 单文件 14/14 通过（stderr 为路由 catch 块 `console.error` 预期日志，非失败）；`npx vitest run` 全量 **1343/1343 通过**（81 文件，95.05s，第四十四轮基线 1329/80 + 本轮新增 14 例/1 文件 = 1343/81，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/saas-subscription-route.test.ts`**（新文件，14 例，+286）— /api/saas/subscription GET/DELETE/POST 路由 handler 级集成测试，覆盖 401/400/500 全状态码 + GET 三服务顺序 await（前序抛错后续 not.toHaveBeenCalled）+ 服务层 tenantId 注入全等断言（三服务均 toHaveBeenCalledWith("tenant-1")）+ GET subscription=null 不 short-circuit + POST action 分发（resume 放行 / null 与非 resume 均 400 不触达服务）+ DELETE/POST(resume) happy path（result=true → success:true）+ 各 handler 抛错 500
+
+### Commit
+- `b8835af test(saas): 补 /api/saas/subscription GET/DELETE/POST 路由 handler 级集成测试`
+
+### 推送状态
+- Gitee：待推送 `e379b67..b8835af main -> main`
+- GitHub：待推送 `e379b67..b8835af main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1343/1343 通过（81 文件，95.05s），零回归
+- 改动量：1 文件（新测试文件 +286），纯测试 commit，无生产代码变更
+- **路由不碰 db（服务层委托模型）**：saas/subscription 路由仅 import `tenant.service` / `billing.service` + `api-auth`，无 `@/lib/db` 直接依赖。故测试无需 mock `@/lib/db`，仅 mock 两个服务模块 + api-auth + next/server。与 files 路由族（直接 import db + TenantDb）的 mock 策略不同——files 测试需 mock db，saas/subscription 测试只需 mock 服务层
+- **复用 cloud-sync-config-route.test.ts 的 vi.hoisted + MockNextResponse 范式**：MockNextResponse class 经 vi.hoisted 提升使路由的 `auth instanceof NextResponse` 与 mock 的 authenticateRequest 返回值共用同一构造器（instanceof 必须命中）。与第四十四轮 tenant-users 测试、cloud-sync-config 测试同范式
+- **DELETE/POST(resume) 的 result=false → success:true 空隙未锁定**（本轮发现）：服务层返回 false（无活跃订阅 / 未 cancelAtPeriodEnd）时路由仍返 success:true，消息与状态不一致。本轮仅锁 result=true happy path，避免锁定 buggy 行为。列为下一轮候选（若立项需先确认业务规则：是否应在 result=false 时返 404/409 而非 200 success:true）
+- **沙箱时钟说明**：本会话 `TZ=Asia/Shanghai date` 报 2026-06-29 09:20 CST，worklog 头取整为 10:00（高于第四十四轮 09:00 保持单调）。轮次编号（第四十五轮）为排序权威键，时间戳仅供溯源
+
+### 下一轮候选
+- **`/api/saas/subscription` GET/DELETE/POST handler 级集成测试已闭环**（14 例锁定 401/400/500 + 服务层 tenantId 注入 + GET 顺序 await + POST action 分发 + 各 handler 抛错），自本轮起从候选清单移除
+- 补 saas/orders、saas/tenant handler 级路由测试（saas/orders 含订单列表/创建，saas/tenant 含租户信息查询/变更，与 subscription 同属服务层委托模型，可复用本轮 mock 服务层范式）
+- 补 files/route.ts、files/[id]/route.ts 的 handler 级集成测试（锁定 TenantDb 注入契约，可复用第四十二轮 raw db vs tenantDb mock 分离范式 + hand-crafted request 范式）
+- 补 cloud-sync 的 status/sync/queue/conflicts/backups handler 级路由测试（lib 层已有 cloud-sync-tenant.test.ts，route 层仅 config 已补）
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **DELETE/POST(resume) result=false → success:true 空隙**（本轮发现）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
