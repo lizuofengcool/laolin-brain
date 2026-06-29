@@ -10097,3 +10097,57 @@ Status: 完成
 - 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-30 06:15 自动迭代
+
+第六十六轮自动迭代。本轮延续第六十二~六十五轮"分页路由 NaN-透传 系统性缺口 sweep"，**收尾闭合剩余全部 4 个路由**（automation/rules / faces/groups / files/[id]/versions / backups），sweep 至此完结（第六十二轮立项 16 路由，经五轮全部闭合）。复用既定 `isNaN||<1 → 400` 约定。
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-30 06:12 CST。本轮 2 个 dev commit（287c08b / 14b6524）+ 1 个 worklog commit。轮次编号（第六十六轮）为排序权威键，时间戳 06:15 高于第六十五轮 05:30 保持单调（同处 06-30）。
+
+**前置检查**：本轮为全新 clone 后首次开发（沙箱 /workspace 原为空，`git clone origin` + `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader）。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 c38aef4（第六十五轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：任务清单"剩余优先级 1"5 项已于第六十一轮实证全部闭环，本轮直接转向第六十二轮立项的"最高优先"分页 NaN sweep 收尾。
+
+**本轮闭合 4 路由**（逐文件读全文实证 NaN 触达点，四路由结构同型——page/pageSize 经 parseInt 解析后 `Math.min(100, parseInt(...))` 对 `?pageSize=abc` 返回 NaN（Math.min(100,NaN)=NaN），透传 `db.*.findMany` / `tenantDb.*.findMany` 的 `skip:(page-1)*pageSize / take:pageSize` → Prisma 未定义行为，崩溃被 try/catch 吞为 500）。四路由分属前五轮确立的三类门控范式，本轮一次性覆盖收尾：
+- `automation/rules/route.ts` GET：page/pageSize 透传 `db.automationRule.findMany` skip/take（个人级数据，userId+tenantId 双键作用域，无 role 门控）。改：解析拆为 `pageSizeRaw`，加 `isNaN(page)||page<1 → 400` / `isNaN(pageSizeRaw)||pageSizeRaw<1 → 400`，再 `Math.min(100, pageSizeRaw)` 封顶。**门控直接置于解析后**（同 notifications/trash 范式）。
+- `faces/groups/route.ts` GET：page/pageSize 透传 `db.faceGroup.findMany` skip/take（个人级数据，无 role 门控，默认 pageSize=50）。改：同上守卫，**门控直接置于解析后**。sortBy 默认 'photoCount' 时 orderBy 回退 `{ createdAt: 'desc' }`、结果在 JS 层按 photoCount/faceCount 重排的逻辑不变。
+- `files/[id]/versions/route.ts` GET：page/pageSize 透传 `tenantDb.fileVersion.findMany` skip/take（无 role 门控但有业务前置校验：`tenantDb.file.findFirst` 文件存在性 + `file.userId === userId` 归属 → 404）。改：同上守卫，**门控置于文件存在性校验之后**（404 优先于 400，避免 `?page=abc` 掩盖真实的文件缺失错误，同 comments 范式），补"文件不存在 + page=abc → 404 优先"优先级锁定测试。此路由走 `createTenantDb`（非 raw db），测试用 hand-written wrapper mock（同 files-route.test.ts 范式）。
+- `backups/route.ts` GET：page/pageSize 透传 `db.backup.findMany` skip/take（role 门控：owner/admin 否则 403；where 仅 tenantId 无 userId，租户级管理数据）。改：同上守卫，**门控置于权限检查之后**（403 优先于 400，不向无权用户泄漏校验细节，同 api-keys/system-logs/invitations 范式），补"member + page=abc → 403 优先"优先级锁定测试。
+
+**门控顺序决策**：本轮覆盖前五轮确立的全部三类范式收尾——(1) 无门控路由（automation/rules / faces/groups，同 notifications/trash）门控置于解析后；(2) 无 role 门控但有业务前置校验路由（files/[id]/versions 的文件存在性 404，同 comments 的 fileId 校验）门控置于业务校验后；(3) role 门控路由（backups，同 api-keys/system-logs/invitations/webhooks/tenant-users）门控置于权限检查后 + member→403 优先级锁定。
+
+**前端兼容性**：四路由均为 GET 查询接口，前端调用均传合法 page/pageSize 或不传（走默认值 page=1/pageSize=20 或 50），`?page=abc`/`?pageSize=0` 等非法值非正常 UI 路径，服务端 400 为纯 defense-in-depth，不破坏现有调用。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；54.8s，--ignore-scripts 跳过 sharp/unrs native build）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关，非本轮引入）。本轮改动零类型错误
+- `npx vitest run src/__tests__/api/{automation-rules-route,faces-groups-route,files-id-versions-route,backups-route}.test.ts`：45/45 通过（automation-rules 11 / faces-groups 10 / files-id-versions 12 / backups 12；全部为新建测试文件。新增用例含 4 路由各 4 条 NaN/非正数→400 + files-id-versions 1 条文件不存在→404 优先级锁定 + backups 1 条 member→403 优先级锁定）
+- `npx vitest run` 全量 1646/1646 通过（107 文件，92.38s），零回归（基线 1601/103 + 本轮 45 = 1646/107）
+
+### 改动量
+
+8 文件（4 路由 +46-4 / 4 测试 +1013-0，4 个全新测试文件），2 dev commit。
+
+### Commit
+
+- `287c08b` fix(api): automation/rules/faces/groups 分页参数 NaN/非正数返回 400 而非透传 Prisma skip/take
+- `14b6524` fix(api): files/[id]/versions/backups 分页参数 NaN/非正数返回 400 而非透传 Prisma skip/take
+
+### 推送
+
+- origin (Gitee)：c38aef4..14b6524 推送成功
+- github (GitHub)：c38aef4..14b6524 推送成功
+
+### 下一轮候选
+
+- **分页路由 NaN-透传 系统性缺口 sweep 已完结**（第六十二轮立项 16 路由，经第六十二~六十六轮五轮全部闭合，剩余 0）。本轮为收尾轮
+- **storage getLargeFiles `limit` dead code 清理**（第六十二轮发现，次要）：line 162 解析 `limit` 但全文未用（pageSize 承担分页），可删；属 refactor 非 bug，低优
+- **comments `maxDepth` dead code 清理**（第六十五轮发现，次要）：route.ts:30 解析 `maxDepth` 但全文未用，可删；属 refactor 非 bug，低优
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：第六十二轮实证确认属新业务规则（加密密码 vs 账户密码语义不同），非约定复用，维持 defer 待产品决策
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮，延续）
+- **queue GET limit 上界 cap 缺失**（第六十一轮新增）
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
