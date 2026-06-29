@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get('page') || '1', 10);
-    const pageSize = Math.min(100, parseInt(searchParams.get('pageSize') || '20', 10));
+    const pageSizeRaw = parseInt(searchParams.get('pageSize') || '20', 10);
     const status = searchParams.get('status');
 
     // 权限检查：只有owner和admin可以管理备份
@@ -28,6 +28,17 @@ export async function GET(request: NextRequest) {
         { status: 403 }
       );
     }
+
+    // 分页参数校验（defense-in-depth）：置于权限检查之后（403 优先于 400，不向无权
+    // 用户泄漏校验细节），避免 ?page=abc 透传 Prisma skip/take（Math.min(100,NaN)=NaN
+    // → 未定义行为，崩溃被 try/catch 吞为 500）。
+    if (isNaN(page) || page < 1) {
+      return NextResponse.json({ error: 'page 必须 >= 1' }, { status: 400 });
+    }
+    if (isNaN(pageSizeRaw) || pageSizeRaw < 1) {
+      return NextResponse.json({ error: 'pageSize 必须为正整数' }, { status: 400 });
+    }
+    const pageSize = Math.min(100, pageSizeRaw);
 
     // 构建查询条件
     const where: any = {

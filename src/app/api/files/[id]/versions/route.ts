@@ -19,7 +19,7 @@ export async function GET(
     // 解析查询参数
     const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get('page') || '1', 10);
-    const pageSize = Math.min(100, parseInt(searchParams.get('pageSize') || '20', 10));
+    const pageSizeRaw = parseInt(searchParams.get('pageSize') || '20', 10);
 
     // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser
     const tenantDb = createTenantDb(tenantId);
@@ -29,6 +29,17 @@ export async function GET(
     if (!file || file.userId !== userId) {
       return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
+
+    // 分页参数校验（defense-in-depth）：置于文件存在性校验之后（404 优先于 400），
+    // 避免 ?page=abc 掩盖真实的文件缺失错误。Math.min(100,NaN)=NaN 会透传 Prisma
+    // skip/take 造成未定义行为，此处先行拦截。
+    if (isNaN(page) || page < 1) {
+      return NextResponse.json({ error: 'page 必须 >= 1' }, { status: 400 });
+    }
+    if (isNaN(pageSizeRaw) || pageSizeRaw < 1) {
+      return NextResponse.json({ error: 'pageSize 必须为正整数' }, { status: 400 });
+    }
+    const pageSize = Math.min(100, pageSizeRaw);
 
     // 计算总数（按 file.tenantId 关联过滤）
     const total = await tenantDb.fileVersion.count({
