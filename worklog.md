@@ -10151,3 +10151,56 @@ Status: 完成
 - 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-30 07:17 自动迭代
+
+第六十七轮自动迭代。分页路由 NaN-透传 sweep 已于第六十六轮收尾完结，本轮转向"下一轮候选"中两项**值域校验缺失**的真实 bug + 两处**死代码**清理。两项值域校验属同一主题（输入值域 hardening，承接第六十二~六十六轮分页 sweep 的防御纵深思路），故合并为单个 fix commit；死代码清理为独立 refactor commit。
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-30 07:17 CST。本轮 2 个 dev commit（62efd21 / ba44144）+ 1 个 worklog commit。轮次编号（第六十七轮）为排序权威键，时间戳 07:17 高于第六十六轮 06:15 保持单调（同处 06-30）。
+
+**前置检查**：本轮为全新 clone 后首次开发（沙箱 /workspace 原为空，`git clone origin` + `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader）。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 9c8dd2d（第六十六轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：任务清单"剩余优先级 1"5 项（tenant-db raw 后门 / alipay+wechat RSA2 验签 / files 路由绕 TenantDb / sync-engine keep_both / api-auth 测试与实现不符）已于第六十一轮实证全部闭环。本轮再次实证复核其中 2 项（任务描述中仍列出但 worklog 标注已闭合）：
+- `sync-engine.ts` keep_both 分支（655-724）：当前代码 line 683-690 `db.file.update` 将本地文件重命名为 `[冲突副本] <name>` 保留本地版本，line 694-713 `db.file.create` 落地云端版本为新行（auto cuid），两版本并存。注释明确"之前直接覆盖会丢失本地版本"——旧 bug 已修。
+- `api-auth.test.ts` vs `api-auth.ts`：实现返回 4 字段（userId/email/tenantId/role）、async、仅读 Authorization 头不读 query；测试逐用例 `await` 调用、断言 4 字段、line 147 显式断言 query param token → 401。测试与实现完全一致，无 mismatch。
+结论：任务描述中的"剩余"信息已过期，worklog 第六十一轮记录准确，无需再动。
+
+**本轮闭合 2 项值域校验 bug**（逐文件读全文实证 bug 触达点）：
+- `saas/orders/route.ts` POST：body 中 `quantity` 仅 `= 1` 默认值，无整数/正数/上界校验，0/负数/小数/超大值透传 `billing.service.createOrder` → line 32 `amount = planConfig.price * 100 * quantity`（0→零金额订单、负数→负金额）+ line 143 `setMonth(getMonth() + months * order.quantity)`（负数→月份回退、超大→溢出 NaN）。改：interval 校验后加 `const qty = Number(quantity); if (!Number.isInteger(qty) || qty < 1 || qty > 100) → 400 'quantity 必须为 1-100 的正整数'`，再以 `qty` 透传 createOrder（上限 100 与分页 pageSize 约定一致）。Number() 规整使字符串 `'5'` 仍合法（向后兼容）。
+- `cloud-sync/queue/route.ts` GET：`limit` 已有 `isNaN||<1 → 400` 守卫（第六十一轮闭合 NaN 透传），但缺上界 cap，`?limit=1000000` 透传 `getSyncQueue` → sync-engine.ts:270 `take: limit` → Prisma `take:1000000` 拉全表。改：拆为 `limitRaw` 经守卫后 `Math.min(100, limitRaw)` 封顶（与 storage/comments/invitations 等分页路由 `Math.min(100, pageSizeRaw)` 约定一致）。
+
+**本轮清理 2 处死代码**（实证全文未引用）：
+- `storage/route.ts` getLargeFiles line 162：`const limit = Math.min(100, parseInt(searchParams.get('limit') || '20', 10))` 解析并封顶但全文未用（分页实际由 pageSize 决定 skip/take，line 197-198），属 dead code。删除该行；同步更新 storage-route.test.ts 误称"pageSize 与 limit 上限 100 截断"的用例（实为 pageSize 截断，limit 入参无效果，已从 query 移除 `&limit=500` 并更正标题）。前端无 `large-files...limit` 调用（grep 实证仅测试文件引用）。
+- `comments/route.ts` GET line 30：`const maxDepth = parseInt(searchParams.get('maxDepth') || '1', 10)` 解析但未传给 `commentManager.getStats`（line 43）/ `commentManager.exportComments`（line 62），主评论列表走 `db.comment.findMany` 一层查询（line 172-179）亦不依赖深度，属 dead code。删除该行。comments-route.test.ts 不引用 maxDepth（grep 实证），删除无测试影响。
+
+**前端兼容性**：saas/orders POST 前端调用均传合法 quantity 或不传（缺省 1）；cloud-sync/queue GET 前端调用均传合法 limit 或不传（缺省 50）；非法值非正常 UI 路径，服务端 400 为纯 defense-in-depth。死代码删除不改变任何可观测行为（参数本就被忽略）。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m 4.5s，--ignore-scripts 跳过 sharp/unrs native build）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关，非本轮引入）。本轮改动零类型错误
+- `npx vitest run src/__tests__/api/{saas-orders-route,cloud-sync-queue-route,storage-route,comments-route}.test.ts`：76/76 通过（saas-orders 23 = 原 16 +7 / cloud-sync-queue 16 = 原 13 +3 / storage 25 不变 / comments 12 不变；新增 10 用例含 saas-orders 7 条 quantity 值域 0/负数/小数/超 100/边界 100/字符串/NaN + cloud-sync-queue 3 条 limit=200/1000000 封顶 100 + limit=100 边界不削减）
+- `npx vitest run` 全量 1656/1656 通过（107 文件，128.45s），零回归（基线 1646/107 + 本轮 10 = 1656/107）
+
+### 改动量
+
+7 文件（saas-orders 路由 +10-2 / saas-orders 测试 +88-4 / cloud-sync-queue 路由 +6-3 / cloud-sync-queue 测试 +27-1 / storage 路由 -1 / comments 路由 -1 / storage 测试 +2-2），2 dev commit。
+
+### Commit
+
+- `62efd21` fix(api): saas/orders quantity 与 cloud-sync/queue limit 值域校验
+- `ba44144` refactor(api): 移除 storage getLargeFiles limit 与 comments maxDepth 死代码
+
+### 推送
+
+- origin (Gitee)：9c8dd2d..ba44144 推送成功
+- github (GitHub)：9c8dd2d..ba44144 推送成功
+
+### 下一轮候选
+
+- **值域校验 sweep 候选复核**（本轮闭合 saas/orders quantity + cloud-sync/queue limit，与第六十二~六十六轮分页 NaN sweep 同属"输入值域 hardening"主题）。可继续扫描其他 POST body 数值字段（如 quantity/count/amount 类）与 GET 数值 query（如 limit/depth/level 类）是否缺值域守卫，但需逐文件实证是否有真实下游风险（金额/月份/Prisma take），避免铺大摊子
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：第六十二轮实证确认属新业务规则（加密密码 vs 账户密码语义不同），非约定复用，维持 defer 待产品决策
+- 补 invitations DELETE/[token]/accept 端点（第六十六轮实证：路由 docblock line 10-11 广告 DELETE/accept 端点但实际不存在，前端无调用路径——属 stale docblock，可择机删 docblock 行或待 invitation-acceptance UI 落地时补端点）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
