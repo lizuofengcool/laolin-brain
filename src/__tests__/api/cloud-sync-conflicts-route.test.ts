@@ -15,7 +15,10 @@
  *   - fileId+resolution（无 auto）→ resolveConflict(tenantId, userId, fileId, resolution, password)，
  *     返回 { success: true, message: '冲突已解决' }
  *   - auto=false + fileId+resolution → 仍走单分支（auto=false 是 falsy，落 else if）
+ *   - auto=true 但 password 缺失 → 400 '请提供加密密码'（不触达 resolveConflictsAuto）
+ *   - fileId+resolution 但 password 缺失 → 400 '请提供加密密码'（不触达 resolveConflict）
  *   - 既无 auto 也无 fileId/resolution → 400 { error: '请提供fileId和resolution，或设置auto为true' }
+ *     （结构错误优先于 password 校验：password 检查在两个工作分支内，空 body 落 else 分支）
  *   - resolveConflictsAuto 抛错 → 500
  *   - resolveConflict 抛错 → 500
  *   - body.tenantId/userId 被忽略（可信身份只来自 auth），resolveConflict 仍以 auth.tenantId/userId 调用
@@ -24,12 +27,8 @@
  * 路由经服务层访问数据（无直接 db 依赖），故无需 mock @/lib/db。复用 cloud-sync-config-route
  * 与 saas-subscription-route 的 vi.hoisted + MockNextResponse 范式。
  *
- * 未锁定的潜在逻辑空隙（记录备查，不立项）：
- * - auto=true 但 password 缺失时，路由不校验 password，直接以 password=undefined 透传
- *   resolveConflictsAuto。本轮不锁此 password=undefined 透传行为（避免锁定潜在 buggy 行为
- *   阻碍后续修复）。若立项修复需先确认业务规则（是否应在 auto 分支也校验 password 非空）。
- * - fileId+resolution 但 password 缺失时，同理不校验直接透传 resolveConflict。
- *   本轮不锁此透传行为，原因同上。
+ * 历史 password=undefined 透传空隙（第四十七轮发现，延续至第六十一轮）已闭合：auto 分支与
+ * 单文件分支均在调用服务前校验 !password → 400 '请提供加密密码'，与 sync/route.ts 约定一致。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { NextRequest } from "next/server";
@@ -211,6 +210,33 @@ describe("cloud-sync/conflicts 路由", () => {
         "cloud_wins",
         "p@ssw0rd"
       );
+      expect(mockResolveConflictsAuto).not.toHaveBeenCalled();
+    });
+
+    it("auto=true 但 password 缺失 → 400 '请提供加密密码'（不触达 resolveConflictsAuto）", async () => {
+      const res = (await POST(
+        makeRequest("http://localhost/api/cloud-sync/conflicts", "POST", { auto: true })
+      )) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "请提供加密密码" });
+      // 关键：password=undefined 不应透传到 resolveConflictsAuto（否则 crypto 阶段抛 cryptic 错 → 500）
+      expect(mockResolveConflictsAuto).not.toHaveBeenCalled();
+      expect(mockResolveConflict).not.toHaveBeenCalled();
+    });
+
+    it("fileId+resolution 但 password 缺失 → 400 '请提供加密密码'（不触达 resolveConflict）", async () => {
+      const res = (await POST(
+        makeRequest("http://localhost/api/cloud-sync/conflicts", "POST", {
+          fileId: "file-1",
+          resolution: "local_wins",
+        })
+      )) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "请提供加密密码" });
+      // 关键：password=undefined 不应透传到 resolveConflict
+      expect(mockResolveConflict).not.toHaveBeenCalled();
       expect(mockResolveConflictsAuto).not.toHaveBeenCalled();
     });
 

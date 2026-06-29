@@ -46,7 +46,12 @@ export async function POST(request: NextRequest) {
     const { fileId, resolution, password, auto } = body;
 
     if (auto) {
-      // 批量自动解决
+      // 批量自动解决：resolveConflictsAuto 内部对所有冲突执行 upload/download（均需 password 加解密），
+      // password 缺失会以 undefined 透传并在 crypto 阶段抛 cryptic 错误 → 500。这里前置校验返回
+      // 400，与 sync/route.ts 的 !password → 400 约定一致（前端 CloudSync.tsx 已 client-side 强制）
+      if (!password) {
+        return NextResponse.json({ error: "请提供加密密码" }, { status: 400 });
+      }
       const resolved = await resolveConflictsAuto(
         tenantId,
         userId,
@@ -59,7 +64,10 @@ export async function POST(request: NextRequest) {
         data: { resolved },
       });
     } else if (fileId && resolution) {
-      // 单个解决
+      // 单个解决：local_wins/cloud_wins/keep_all 三分支均需 password 加解密，同理前置校验
+      if (!password) {
+        return NextResponse.json({ error: "请提供加密密码" }, { status: 400 });
+      }
       await resolveConflict(
         tenantId,
         userId,
