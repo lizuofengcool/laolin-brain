@@ -9397,3 +9397,73 @@ Status: 完成
 - **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 20:00 自动迭代
+
+第五十五轮自动迭代。本轮承接第五十四轮子轮 ②b 闭环后的"下一轮候选"，落地 `/api/files` 主路由 **POST** handler 级集成测试的**子轮 ②c-image**（图片 AI process-image fetch 分支：jpeg magic bytes 合法 + generateThumbnail + dedup findFirst 返 null（新建分支）+ 不传 skipAi → 进入图片 AI 块 BLOCKING `await fetch(process-image)` → OCR ocrText 覆盖 textContent、AI tags 覆盖 tags → 新建分支 $transaction(tx.$queryRaw TOCTOU + tx.file.create data 含 AI 产物) → 200）。
+
+沙箱时钟：沙箱 `date` 报 2026-06-29 12:03 UTC（= 20:03 CST），commit ad359a1 落于本轮。按"高于第五十四轮 19:00 保持单调"规则取整 20:00。轮次编号（第五十五轮）为排序权威键，时间戳仅供溯源。
+
+**前置检查**：`git fetch origin main && git fetch github main` 双端均无新提交（HEAD 仍 a791d07）。无未提交/未推送遗留（上轮 6ea82d0 已推送）。优先级 1 复核：第五十四轮已确认无活跃优先级 1 待修，本轮聚焦优先级 3（补测试）继续推进 ②c 候选。
+
+**关键发现：源码注释与实际行为不符**——route.ts line 239 注释写"fire and forget"，但 line 244 实际是 `const aiRes = await fetch(...)`（BLOCKING await），失败被 line 262 try/catch 吞掉不阻断主流程。本轮测试按**实际阻塞行为**锁定（非注释语义），并在测试文件头注释中显式标注此差异，避免后续误读。
+
+**4 个用例**：
+1. **happy path（jpeg + 无 skipAi + process-image 返回 {ocrText, tags}）**：通过全部前置门 + magic bytes 合法 + dedup findFirst 返 null → generateThumbnail 生成缩略图（在 fetch 之前）→ fetch(process-image) 阻塞 await 返 ok:true + {ocrText, tags} → textContent=ocrText 覆盖、tags=aiTags 覆盖 → 新建 $transaction(tx.$queryRaw TOCTOU + tx.file.create data 含 AI 产物) → 200。锁定：
+   - fetch URL=`${NEXT_PUBLIC_BASE_URL}/api/ai/process-image`、method=POST、headers 含 `Content-Type: application/json` + Authorization 透传（从请求头）
+   - body=`JSON.stringify({ imageBase64 })`，imageBase64 为 buffer 的 base64 编码（btoa over String.fromCharCode == Buffer.toString('base64')）
+   - tx.file.create data：textContent=ocrText（AI 覆盖）、thumbnailUrl=generateThumbnail 返回值、tags=JSON.stringify(aiTags)、fileType="image"、storageMode="cloud"、tenantId+userId+fileName+fileSize+filePath
+   - 响应：thumbnailUrl=fileRecord.thumbnailUrl、previewUrl=`/api/files/${id}/preview`（image 类型）、tags=aiTags（数组，来自路由局部变量）、aiSkipped=undefined（false → `aiSkipped ? true : undefined`）
+   - db.file.update 不触达（图片不在 docTypes ["word","pdf","pptx","markdown","txt"]，doc AI summarize fire-and-forget IIFE 不进入）
+2. **process-image fetch rejects（网络错误）**：mockFetch.mockRejectedValue → try/catch 吞错 → 响应仍 200；textContent=undefined（图片无文本提取，未被覆盖）、tags=[]（初始空数组未被覆盖）；generateThumbnail 仍触达（在 fetch 之前，不受 fetch 失败影响）；fetch 已触达（只是抛错被吞）；tx.file.create data.textContent=undefined、tags="[]"
+3. **process-image 返回 ok:false（500）**：aiRes.ok=false → 不读 json()、不覆盖 textContent/tags → 响应 200；textContent=undefined、tags=[]；tx.file.create data.textContent=undefined、tags="[]"
+4. **skipAi=true**：url 携带 `?skipAi=true` → 图片 AI fetch 不触达（`!skipAiParam` 短路）；generateThumbnail 仍触达（skipAi 不跳过缩略图生成）；aiSkipped=undefined（skipAi 只 console.log 不设 aiSkipped，仅 rate-limit 会设 aiSkipped=true）；tx.file.create data.fileType="image"、thumbnailUrl 仍生成、textContent=undefined、tags="[]"
+
+**关键 mock 修复（本轮核心）**：mockTxFileCreate 初版用 `mockResolvedValue` 硬编码 `textContent: "OCR text from image"`，导致测试 ②③④ 失败——路由响应 line 425 直接返回 `fileRecord.textContent`（mock 返回值），而非路由局部 `textContent` 变量。故 mock 硬编码值会泄露到测试 ②③④（fetch 失败/ok:false/skipAi 应为 undefined）。修复改用 `mockImplementation` **echo back args.data 字段**（id/fileName/fileType/fileSize/filePath/textContent/thumbnailUrl），使响应反映路由实际传入 file.create 的值：用例① data.textContent=ocrText → 响应 ocrText；用例 ②③④ data.textContent=undefined → 响应 undefined。tags 来自路由局部变量（line 428 `tags: tags`），不经 fileRecord，无需 echo。此为本轮最重要的范式提炼——**handler 级集成测试中，当路由直接透传 mock 返回字段时，mock 必须用 mockImplementation echo data，而非 mockResolvedValue 硬编码**，否则会掩盖"路由是否正确传递参数"的真实信号。
+
+### 范式复用与新增
+
+- **raw db vs tenantDb mock 分离范式延续（子轮 ②a/②b 范式）**：raw db mock 含 $queryRaw（早检）+ $transaction（**executor**：记录 fn + 构造 tx 客户端 + 回调 fn(tx)）+ file.update（doc AI summarize 负向）；createTenantDb wrapper 注入 tenantId（dedup findFirst 返 null）。本轮 tx 客户端与 ②a 新建分支一致（$queryRaw + file.create），无 fileVersion（dedup 才有）。
+- **fs/promises ESM 互操作范式延续（第五十轮 files-id 范式）**：mock 同时导出 default + named（mkdir/writeFile/unlink），覆盖 route.ts 顶部 named import 与 dedup 分支 dynamic import 两种形态。本轮新建分支**不触达 unlink**（②b dedup 分支才触达），范式在此得到负向验证。
+- **hand-crafted request + headers.get spy 范式延续（第四十一轮 files-import 范式）**：Content-Length forbidden header 用 spy 覆盖。本轮新增 auth 选项设置 Authorization 头（图片 AI fetch 会透传该头到 process-image 请求）。
+- **新增 generateThumbnail mock 范式**：`vi.mock("@/lib/parser/image", () => ({ generateThumbnail: (...args) => mockGenerateThumbnail(...) }))`，mockGenerateThumbnail.mockResolvedValue 返回固定 thumbnailUrl 字符串。可复用于任何需缩略图生成的图片上传用例。
+- **新增 global.fetch stub 范式（沿用 file-helpers.test.ts）**：`vi.stubGlobal('fetch', mockFetch)` 在 beforeEach，`vi.unstubAllGlobals()` 在 afterEach（避免污染其他测试文件）。mockFetch.mockReset 在 beforeEach 清掉上轮返回值，各用例自设 mockResolvedValue/mockRejectedValue。可复用于子轮 ②c-doc（summarize fetch）及任何路由内 fetch 调用的 handler 级测试。
+- **新增 NEXT_PUBLIC_BASE_URL env 注入/恢复范式**：beforeEach 设 `process.env.NEXT_PUBLIC_BASE_URL = "http://test-host"` 以便断言 fetch URL，afterEach 恢复 originalBaseUrl（undefined 时 delete 而非设 undefined，避免污染其他测试）。可复用于任何依赖该 env 的路由测试。
+- **新增 mockImplementation echo data 范式（本轮核心提炼，见上）**：当路由响应直接透传 mock 返回字段（如 `textContent: fileRecord.textContent`）时，mockTxFileCreate 必须用 mockImplementation echo args.data，而非 mockResolvedValue 硬编码，否则会掩盖"路由是否正确传递参数"的真实信号。该范式可复用于任何"路由透传 fileRecord 字段到响应"的 handler 级测试。
+- **新增 Authorization 头透传断言范式**：route.ts line 248 `...(request.headers.get("authorization") ? { Authorization: ... } : {})` 透传 auth 头到 process-image 请求。本轮用例①显式断言 fetchOpts.headers.Authorization === "Bearer test-token"，锁定此透传契约。可复用于子轮 ②c-doc（summarize fetch 同样透传 auth 头）。
+- **新增 jpeg magic bytes + base64 编码范式**：`new Uint8Array([0xff, 0xd8, 0xff, 0xe0, ...])` 构造合法 jpeg 头（[0xFF,0xD8,0xFF]），`Buffer.from(JPEG_BYTES).toString("base64")` 预计算期望 imageBase64，断言与路由 btoa over String.fromCharCode 产物一致。可复用于任何需 magic bytes 校验 + base64 编码的图片上传用例。
+
+### 验证
+
+- `npx tsc --noEmit` 退出码 0（零类型错误）
+- `npx vitest run src/__tests__/api/files-route-post-ai-image.test.ts` 4/4 通过
+- `npx vitest run` 全量 1475/1475 通过（95 文件，80.70s），零回归（基线 1471/94 + 4/1 = 1475/95）
+
+### 改动量
+
+1 文件（新测试文件 +414），纯测试 commit，无生产代码变更。
+
+### Commit
+
+- `ad359a1` test(files): 补 /api/files POST 图片 AI process-image fetch handler 级集成测试
+
+### 推送
+
+- origin (Gitee)：`a791d07..ad359a1` 推送成功
+- github (GitHub)：`a791d07..ad359a1` 推送成功
+
+### 下一轮候选
+
+- **`/api/files` POST 子轮 ②c-image 已闭环**（4 例锁定图片 AI process-image fetch 触达条件 + URL/method/body/Authorization 透传 + OCR ocrText 覆盖 textContent + AI tags 覆盖 tags + tx.file.create data 含 AI 产物 + fetch rejects/ok:false 容错 + skipAi 跳过门 + aiSkipped=undefined 差异 + db.file.update 不触达），自本轮起从候选清单移除 ②c-image
+- 补 `/api/files` POST handler 级集成测试**子轮 ②c-doc**（doc AI summarize fetch）：本轮已建立 global.fetch stub + Authorization 透传断言 + NEXT_PUBLIC_BASE_URL env 注入范式，②c-doc 可直接复用，仅需将 fetch URL 改 `/api/ai/summarize`、body 改 `{ content, fileName, fileType }`、覆盖 docTypes（word/pdf/pptx/markdown/txt）+ textContent 非空 + !skipAi 触发 IIFE。注意 summarize 是 fire-and-forget IIFE（真异步，非阻塞 await），测试需处理未 await 的 Promise（可能需 vi.waitFor 或 flush-promises 等待 db.file.update 触达）；rate-limit 触发 aiSkipped:true 可纳入此轮或独立专轮（checkAiRateLimit 用模块级 Map 跨用例累积，需独立专轮处理状态隔离）
+- 补 `/api/files` POST handler 级集成测试**子轮 ③**（文件类型判定矩阵）：②a 已覆盖 txt（"txt"）+ 穿越文件（"other"），②b 已覆盖 image/jpeg（"image"），③ 可补 .docx（fileType:"word" + parseWord）、.pdf（fileType:"pdf" + parsePdf）、.pptx（fileType:"pptx" + parsePptx）、.md（fileType:"markdown" + textContent=buffer.toString）。注意 docx/pdf/pptx 需 mock parser 模块（parseWord/parsePdf/parsePptx）
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **queue GET limit 非数字 NaN 透传**（第四十七轮发现，延续）：`parseInt('abc', 10)` 返回 NaN 透传给 getSyncQueue。若立项修复需先确认业务规则（是否应将 NaN 兜底回 50、或返 400 拒绝非数字 limit），修复时同步补对应测试
+- **conflicts POST password 缺失透传 undefined**（第四十七轮发现，延续）：auto=true 与 fileId+resolution 两分支均不校验 password，直接以 password=undefined 透传服务层。若立项修复需先确认业务规则（是否应在两分支也校验 password 非空，与 sync POST 的 `!password → 400` 一致），修复时同步补对应测试
+- **backups POST zod 不校验密码复杂度**（第四十八轮发现，延续）：password: z.string().min(6) 仅校验长度，纯数字/常见弱口令均通过。若立项修复需先确认业务规则（是否应要求字母+数字混合、是否应拒绝 top-N 弱口令），修复时同步补对应测试
+- **backups/[id] DELETE 不区分 404/500**（第四十九轮发现，延续）：deleteBackup 内部 backupId 不存在时 R2 抛 NoSuchKey 错误，路由统一返 500 而非 404。若立项修复需先确认业务规则（是否应区分 404 与 500），修复时同步补对应测试
+- **backups/[id] POST 错误密码不区分 401/500**（第四十九轮发现，延续）：错误密码在 decrypt 阶段抛错，路由统一返 500 而非 401。若立项修复需先确认业务规则（是否应区分 401 密码错误与 500 内部错误），修复时同步补对应测试
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity（负数 / 0 / 非整数 / 超大数均透传 createOrder）。若立项修复需先确认业务规则（是否应限 quantity ≥ 1 且为整数、是否有上限），修复时同步补对应测试
+- **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
