@@ -11,6 +11,7 @@
  *   - ?status=completed&limit=10 → getSyncQueue(tenantId, 'completed', 10)（二者皆透传）
  *   - ?limit=abc → 400 'limit 必须为正整数'（NaN 不透传给 getSyncQueue）
  *   - ?limit=-5 / ?limit=0 → 400（非正数不透传）
+ *   - ?limit=200 / ?limit=1000000 → 封顶 100（Math.min(100, limitRaw)，与分页 pageSize 上限约定一致）
  *   - getSyncQueue 抛错 → 500
  *   - 关键：所有调用均以 auth.tenantId（忽略 query 中的 tenantId/userId 注入）
  *
@@ -25,8 +26,9 @@
  * 与 saas-subscription-route 的 vi.hoisted + MockNextResponse 范式。
  *
  * 注意：route 用 `parseInt(searchParams.get('limit') || '50', 10)` 解析 limit，并校验
- * `isNaN(limit) || limit < 1 → 400`（与 faces/groups/[id]/photos/route.ts 约定一致）。
- * 历史 NaN 透传空隙（第四十七轮发现，延续至第六十一轮）已闭合。
+ * `isNaN(limit) || limit < 1 → 400`（与 faces/groups/[id]/photos/route.ts 约定一致），
+ * 再 `Math.min(100, limitRaw)` 上限封顶（与分页 pageSize 上限约定一致）。
+ * 历史 NaN 透传空隙（第四十七轮发现，延续至第六十一轮）已闭合；上限 cap 缺失于第六十七轮闭合。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { NextRequest } from "next/server";
@@ -173,6 +175,34 @@ describe("cloud-sync/queue 路由", () => {
 
       expect(res.status).toBe(400);
       expect(mockGetSyncQueue).not.toHaveBeenCalled();
+    });
+
+    // ─── 上限封顶 100（Math.min(100, limitRaw)，与分页 pageSize 上限约定一致）───
+    it("?limit=200 → 封顶 100，getSyncQueue(tenantId, undefined, 100)", async () => {
+      const res = (await GET(
+        makeRequest("http://localhost/api/cloud-sync/queue?limit=200")
+      )) as MockRes;
+
+      expect(res.status).toBe(200);
+      expect(mockGetSyncQueue).toHaveBeenCalledWith("tenant-1", undefined, 100);
+    });
+
+    it("?limit=1000000 → 封顶 100（避免 Prisma take:1000000 拉全表）", async () => {
+      const res = (await GET(
+        makeRequest("http://localhost/api/cloud-sync/queue?limit=1000000")
+      )) as MockRes;
+
+      expect(res.status).toBe(200);
+      expect(mockGetSyncQueue).toHaveBeenCalledWith("tenant-1", undefined, 100);
+    });
+
+    it("?limit=100 → 不被 cap 削减（边界值，min(100,100)=100）", async () => {
+      const res = (await GET(
+        makeRequest("http://localhost/api/cloud-sync/queue?limit=100")
+      )) as MockRes;
+
+      expect(res.status).toBe(200);
+      expect(mockGetSyncQueue).toHaveBeenCalledWith("tenant-1", undefined, 100);
     });
 
     it("query 带 tenantId/userId → 仍以 auth.tenantId 调用（忽略 query 注入）", async () => {

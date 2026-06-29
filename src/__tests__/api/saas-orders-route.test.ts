@@ -7,10 +7,12 @@
  *     属于他租户（order.tenantId !== auth.tenantId）→ 404（纵深防御，不泄漏跨租户订单存在性）；
  *     任一服务抛错 → 500
  *   - POST：未认证 401 透传；校验顺序为 !plan||!interval（400 缺少必要参数）→ plan 合法性
- *     （400 无效的套餐类型）→ interval 合法性（400 无效的订阅周期），三道校验任一失败均不触达
- *     createOrder；通过后 createOrder(auth.tenantId, plan, interval, quantity)（tenantId 取自
- *     可信 auth，忽略 body 中 tenantId；quantity 缺省=1）+ getPaymentParams(order.id, 'alipay')，
- *     返回 { order, paymentParams, message }；createOrder/getPaymentParams 抛错 → 500
+ *     （400 无效的套餐类型）→ interval 合法性（400 无效的订阅周期）→ quantity 值域（400 quantity
+ *     必须为 1-100 的正整数，挡 0/负数/小数/超 100，避免透传金额计算与 setMonth 月份推进），
+ *     四道校验任一失败均不触达 createOrder；通过后 createOrder(auth.tenantId, plan, interval, qty)
+ *     （tenantId 取自可信 auth，忽略 body 中 tenantId；quantity 缺省=1，经 Number() 规整后透传）+
+ *     getPaymentParams(order.id, 'alipay')，返回 { order, paymentParams, message }；
+ *     createOrder/getPaymentParams 抛错 → 500
  *
  * Mock 策略：authenticateRequest / billing.service / next/server 全部隔离，不触达真实数据库。
  * 路由经服务层访问数据（无直接 db 依赖），故无需 mock @/lib/db。复用 saas-subscription-route
@@ -246,6 +248,84 @@ describe("saas/orders 路由", () => {
 
       expect(res.status).toBe(400);
       expect(res.body).toEqual({ error: "无效的订阅周期" });
+      expect(mockCreateOrder).not.toHaveBeenCalled();
+    });
+
+    // ─── quantity 值域校验（挡 0/负数/小数/超 100，避免透传金额计算与 setMonth 月份推进）───
+    it("quantity=0 → 400 quantity 必须为 1-100 的正整数，不触达 createOrder", async () => {
+      const res = (await POST(
+        makeRequest("http://localhost/api/saas/orders", "POST", { plan: "pro", interval: "month", quantity: 0 })
+      )) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "quantity 必须为 1-100 的正整数" });
+      expect(mockCreateOrder).not.toHaveBeenCalled();
+      expect(mockGetPaymentParams).not.toHaveBeenCalled();
+    });
+
+    it("quantity=-5 → 400（负数）", async () => {
+      const res = (await POST(
+        makeRequest("http://localhost/api/saas/orders", "POST", { plan: "pro", interval: "month", quantity: -5 })
+      )) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "quantity 必须为 1-100 的正整数" });
+      expect(mockCreateOrder).not.toHaveBeenCalled();
+    });
+
+    it("quantity=1.5 → 400（非整数，防 setMonth 月份小数推进）", async () => {
+      const res = (await POST(
+        makeRequest("http://localhost/api/saas/orders", "POST", { plan: "pro", interval: "month", quantity: 1.5 })
+      )) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "quantity 必须为 1-100 的正整数" });
+      expect(mockCreateOrder).not.toHaveBeenCalled();
+    });
+
+    it("quantity=101 → 400（超上限 100）", async () => {
+      const res = (await POST(
+        makeRequest("http://localhost/api/saas/orders", "POST", { plan: "pro", interval: "month", quantity: 101 })
+      )) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "quantity 必须为 1-100 的正整数" });
+      expect(mockCreateOrder).not.toHaveBeenCalled();
+    });
+
+    it("quantity=100 → 成功（边界值，经 Number() 规整后透传 createOrder）", async () => {
+      const order = { id: "order-cap", tenantId: "tenant-1", plan: "pro", interval: "year", amount: 990000, status: "pending" };
+      mockCreateOrder.mockResolvedValue(order);
+      mockGetPaymentParams.mockResolvedValue({ outTradeNo: "order-cap" });
+
+      const res = (await POST(
+        makeRequest("http://localhost/api/saas/orders", "POST", { plan: "pro", interval: "year", quantity: 100 })
+      )) as MockRes;
+
+      expect(res.status).toBe(200);
+      expect(mockCreateOrder).toHaveBeenCalledWith("tenant-1", "pro", "year", 100);
+    });
+
+    it("quantity='5'（字符串）→ 成功（Number() 规整为 5 透传）", async () => {
+      const order = { id: "order-str", tenantId: "tenant-1", plan: "pro", interval: "month", amount: 49500, status: "pending" };
+      mockCreateOrder.mockResolvedValue(order);
+      mockGetPaymentParams.mockResolvedValue({ outTradeNo: "order-str" });
+
+      const res = (await POST(
+        makeRequest("http://localhost/api/saas/orders", "POST", { plan: "pro", interval: "month", quantity: "5" })
+      )) as MockRes;
+
+      expect(res.status).toBe(200);
+      expect(mockCreateOrder).toHaveBeenCalledWith("tenant-1", "pro", "month", 5);
+    });
+
+    it("quantity=NaN → 400（Number(NaN) 非整数）", async () => {
+      const res = (await POST(
+        makeRequest("http://localhost/api/saas/orders", "POST", { plan: "pro", interval: "month", quantity: NaN })
+      )) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "quantity 必须为 1-100 的正整数" });
       expect(mockCreateOrder).not.toHaveBeenCalled();
     });
 

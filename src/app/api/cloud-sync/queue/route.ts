@@ -15,17 +15,21 @@ export async function GET(request: NextRequest) {
     // 获取查询参数
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status') || undefined;
-    const limit = parseInt(searchParams.get('limit') || '50', 10);
+    const limitRaw = parseInt(searchParams.get('limit') || '50', 10);
 
     // 校验 limit：非数字（如 'abc' → NaN）或非正数拒绝，避免 NaN/负数透传给
     // getSyncQueue → Prisma take:NaN/take:-N 的未定义行为。与 faces/groups/[id]/photos/route.ts
     // 的 isNaN||<1 → 400 约定一致
-    if (isNaN(limit) || limit < 1) {
+    if (isNaN(limitRaw) || limitRaw < 1) {
       return NextResponse.json(
         { error: "limit 必须为正整数" },
         { status: 400 }
       );
     }
+
+    // 上限封顶 100：与分页路由 pageSize 上限约定一致（storage/comments/invitations 等
+    // Math.min(100, pageSizeRaw)），避免 ?limit=1000000 透传 Prisma take:1000000 拉全表
+    const limit = Math.min(100, limitRaw);
 
     // 获取队列
     const queue = await getSyncQueue(tenantId, status, limit);

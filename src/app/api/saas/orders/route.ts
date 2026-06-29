@@ -82,8 +82,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 验证数量：必须为 1-100 的正整数，避免 0/负数/小数/超大值透传到金额计算
+    // （billing.service: amount = price*100*quantity）与 setMonth 月份推进
+    // （setMonth(getMonth() + months*quantity)）。上限 100 与分页 pageSize 上限约定一致
+    const qty = Number(quantity);
+    if (!Number.isInteger(qty) || qty < 1 || qty > 100) {
+      return NextResponse.json(
+        { error: 'quantity 必须为 1-100 的正整数' },
+        { status: 400 }
+      );
+    }
+
     // 创建订单（tenantId 来自可信 auth，忽略请求体中的 tenantId）
-    const order = await createOrder(tenantId, plan, interval, quantity);
+    const order = await createOrder(tenantId, plan, interval, qty);
 
     // 获取支付参数（预留支付宝/微信对接）
     const paymentParams = await getPaymentParams(order.id, 'alipay');
