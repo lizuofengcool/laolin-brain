@@ -9467,3 +9467,79 @@ Status: 完成
 - **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 20:57 自动迭代
+
+第五十六轮自动迭代。本轮承接第五十五轮子轮 ②c-image 闭环后的"下一轮候选"，落地 `/api/files` 主路由 **POST** handler 级集成测试的**子轮 ②c-doc**（文档 AI summarize fire-and-forget IIFE 分支：txt 文档 ∈ docTypes + textContent 非空（buffer.toString）+ !skipAi + !skipDocAiDueToRateLimit → 新建分支 $transaction 返回 200 后，**后置**未 await 的 IIFE 异步触达 fetch(/api/ai/summarize) → summaryRes.ok && summaryData.summary → db.file.update(summary/keyPoints/tags)）。
+
+沙箱时钟：沙箱 `TZ=Asia/Shanghai date` 报 2026-06-29 20:57 CST（vitest 日志的 "Start at 12:53" 为 UTC）。commit 670b692 落于本轮。轮次编号（第五十六轮）为排序权威键，时间戳 20:57 高于第五十五轮 20:00 保持单调。
+
+**前置检查**：`git fetch origin main && git fetch github main` 双端均无新提交（HEAD 仍 2e4ebd7，origin/main == github/main == HEAD）。无未提交/未推送遗留（上轮 ad359a1 已推送）。优先级 1 复核：本轮重读任务清单列出的"剩余优先级 1"项，**逐项确认已在历史轮次闭环，清单已过时**——
+- `tenant-db.ts` raw 后门：已加 `raw` getter / `transaction` 软审计（console.warn 调用方堆栈），rawDb 无审计导出已移除（见文件尾部注释）
+- `alipay.ts` RSA2 验签：已实现 `verifyRSA2Sign`（createVerify RSA-SHA256 + normalizePublicKey PEM 规整），删 mock 默认（isPaymentConfigured 为真时 createPayment/queryPayment/refund 显式失败，不静默返 mock）
+- `wechat.ts` 验签占位：已实现 `verifyWechatSign`（HMAC-SHA256 + timingSafeEqual 恒定时间比较）+ `decryptResource`（AES-256-GCM 解密 V3 resource），缺字段 fail-closed
+- `sync-engine.ts` keep_both "直接覆盖" bug：已修——先 fetchCloudFileData（写库前取云端）、本地重命名 `[冲突副本]`、云端版本以新 id create（file.create 用本地 file.userId/folderId 保证外键有效）
+- `api-auth.test.ts` 与实现不符：已对齐——测试期望 4 字段（userId/email/tenantId/role）、async、不读 query param（用例显式断言 query param 被拒），并补全 requirePlatformAdmin fail-closed 用例集
+
+故本轮聚焦优先级 3（补测试）继续推进 ②c 候选。下一轮起从候选清单移除 ②c-doc。
+
+**关键差异（与 ②c-image 对比）**：②c-image 的图片 AI fetch 是**阻塞 await**（路由内 `await fetch(process-image)`，fetch 结果在响应前覆盖 textContent/tags，响应直接反映 AI 产物）；②c-doc 的文档 AI summarize 是**真 fire-and-forget IIFE**（`(async()=>{...})()` 未 await，路由先返回响应——textContent=解析文本、tags=[] 初始、无 summary 字段——IIFE 在响应后异步 `db.file.update` 写 summary/keyPoints/tags，**响应不反映 AI 产物**）。本轮测试按此实际 fire-and-forget 行为锁定。
+
+**6 个用例**：
+1. **happy path（txt + 无 skipAi + summarize 返回 {summary, keyPoints, suggestedTags}）**：通过全部前置门 + magic bytes（text/plain 跳过）+ dedup findFirst 返 null → 新建 $transaction(tx.$queryRaw TOCTOU + tx.file.create echo data) 返回 200 → 后置 IIFE fetch(/api/ai/summarize) → summaryRes.ok && summaryData.summary → db.file.update。锁定：
+   - fetch URL=`${NEXT_PUBLIC_BASE_URL}/api/ai/summarize`、method=POST、headers 含 `Content-Type: application/json` + Authorization 透传
+   - body=`JSON.stringify({ content: textContent, fileName, fileType })`
+   - db.file.update 参数：`where:{id:fileRecord.id}`、`summary` 覆盖、`keyPoints`=JSON.stringify(keyPoints||[])、`tags`=合并分支（suggestedTags?.length>0 → JSON.stringify([...tags,...suggestedTags])）
+   - 响应（fire-and-forget 不反映 AI 产物）：textContent=buffer.toString、tags=[]（初始，IIFE 合并不入响应）、无 summary 字段、thumbnailUrl=undefined（非 image）、previewUrl=undefined、aiSkipped=undefined
+2. **summarize 返回 summary + keyPoints（无 suggestedTags）**：锁 else 分支——`suggestedTags?.length>0` 为 false → `tags`=JSON.stringify(tags)=JSON.stringify([])='[]'；其余同①
+3. **summarize fetch rejects（网络错误）**：IIFE try/catch 吞错 → db.file.update 不触达；响应仍 200（fire-and-forget 不阻断主流程）；fetch 已触达（只是抛错被吞）
+4. **summarize 返回 ok:false（500）**：summaryRes.ok=false → 跳过 `if(summaryRes.ok)` 块 → 不读 json、不 update；响应 200
+5. **summarize 返回 ok:true 但 summary 假值（""）**：跳过 `if(summaryData.summary)` → 不 update；响应 200
+6. **skipAi=true**：IIFE 不启动（`!skipAiParam` 短路）→ fetch 不触达、db.file.update 不触达；aiSkipped=undefined（skipAi 仅 console.log 不设 aiSkipped，仅 rate-limit 设 aiSkipped=true）
+
+### 范式复用与新增
+
+- **raw db vs tenantDb mock 分离范式延续（子轮 ②a/②b/②c-image 范式）**：raw db mock 含 $queryRaw（早检）+ $transaction（executor）+ file.update（**本轮正向 —— IIFE 触达**）；createTenantDb wrapper 注入 tenantId（dedup findFirst 返 null → 新建分支）。本轮 db.file.update 从 ②c-image 的负向（图片不在 docTypes）转为正向（doc 在 docTypes → IIFE 触达）。
+- **global.fetch stub + Authorization 透传断言范式延续（②c-image 范式）**：`vi.stubGlobal('fetch', mockFetch)` + mockReset + NEXT_PUBLIC_BASE_URL env 注入/恢复。本轮断言 fetch URL=/api/ai/summarize、body={content,fileName,fileType}，与 ②c-image 的 process-image 契约形成姊妹对照。
+- **mockImplementation echo data 范式延续（②c-image 核心提炼）**：mockTxFileCreate 用 mockImplementation echo args.data（id/fileName/fileType/fileSize/filePath/textContent/thumbnailUrl），使响应反映路由实际传入 file.create 的值；fileRecord.id 经 echo 供 IIFE 的 db.file.update where 子句断言。
+- **新增 fire-and-forget IIFE 时序处理范式（本轮核心提炼）**：
+  - **正向用例**（db.file.update 应触达）：`await vi.waitFor(() => expect(mockRawFileUpdate).toHaveBeenCalledTimes(1))` 轮询等待 IIFE 的 microtask 链（fetch→json→update）排空后断言触达，再断言 update 调用参数。
+  - **负向用例**（db.file.update 不应触达）：先 `await new Promise(r=>setTimeout(r,20))` flush IIFE 的 microtask 链到完成，再断言未触达（**不可用 vi.waitFor 轮询 not-called，否则会一直 polling 到超时**）。
+  - 原理：mockResolvedValue 使 fetch→json→update 全部在 microtask 队列内 resolve，一个 macrotask（setTimeout）足以排空全部 pending microtasks。该范式可复用于任何"fire-and-forget IIFE + 后置 DB 写"的 handler 级测试（如未来告警/通知 IIFE、异步日志写入等）。
+- **sharp 原生模块隔离范式**：route.ts 顶部 `import { generateThumbnail } from "@/lib/parser/image"` 触发 `import sharp from "sharp"` eager 加载；沙箱 pnpm install 忽略了 sharp build script，未 mock 会导致 import-time 失败。本轮 mock @/lib/parser/image（与 ②c-image 一致），txt 路径虽不触达 generateThumbnail 但隔离了 sharp。**注**：②a/②b 未 mock 该模块，本轮全量跑通（1481/96 全绿）说明沙箱 sharp 可正常加载（pnpm 预编译二进制可用），但 mock 仍是最稳妥的隔离方式。
+
+### 验证
+
+- `npx prisma generate`（补 PrismaClient 类型，沙箱 install 跳过了 prisma build script）
+- `npx tsc --noEmit` 对 `files-route-post-ai-doc.test.ts` 与 `api/files/route.ts` 零错误（其余 pre-existing 报错为 radix-ui/react-collapsible 缺失等环境问题，非本轮引入）
+- `npx vitest run src/__tests__/api/files-route-post-ai-doc.test.ts` 6/6 通过（含 IIFE catch 的 console.error 与 skipAi 的 console.log，均路由侧预期日志非失败）
+- `npx vitest run` 全量 1481/1481 通过（96 文件，83.02s），零回归（基线 1475/95 + 6/1 = 1481/96）
+
+### 改动量
+
+1 文件（新测试文件 +476），纯测试 commit，无生产代码变更。
+
+### Commit
+
+- `670b692` test(files): 补 /api/files POST 文档 AI summarize fetch handler 级集成测试
+
+### 推送
+
+- origin (Gitee)：`2e4ebd7..670b692` 推送成功
+- github (GitHub)：`2e4ebd7..670b692` 推送成功
+
+### 下一轮候选
+
+- **`/api/files` POST 子轮 ②c-doc 已闭环**（6 例锁定文档 AI summarize fire-and-forget IIFE 触达条件 + fetch URL/method/body/Authorization 透传 + summary 覆盖 db.file.update + suggestedTags 合并/else 双分支 + 响应不反映 AI 产物 + fetch rejects/ok:false/summary 假值/skipAi 四条不触达负向），自本轮起从候选清单移除 ②c-doc
+- 补 `/api/files` POST handler 级集成测试**子轮 ③**（文件类型判定矩阵）：②a 已覆盖 txt、②b 覆盖 image/jpeg、②c-doc 覆盖 txt（IIFE 路径）。③ 可补 .docx（fileType:"word" + parseWord）、.pdf（fileType:"pdf" + parsePdf + magic bytes [25 50 44 46]）、.pptx（fileType:"pptx" + parsePptx + magic bytes ZIP [50 4B 03 04]）、.md（fileType:"markdown" + textContent=buffer.toString）。注意 docx/pptx 共用 ZIP magic bytes [50 4B 03 04]；docx/pdf/pptx 需 mock parser 模块（parseWord/parsePdf/parsePptx），可复用 ②c-image 的 parser mock 范式
+- 补 `/api/files` POST **rate-limit 触发 aiSkipped:true 专轮**：checkAiRateLimit 用模块级 Map 跨用例累积，需独立专轮处理状态隔离（每用例前重置 aiProcessingTimestamps 或用不同 userId 避免污染）。需覆盖：image 分支 rate-limit → aiSkipped=true + 图片 AI fetch 不触达；doc 分支 rate-limit → aiSkipped=true + doc IIFE 不启动。可复用本轮的 fire-and-forget IIFE 时序范式（rate-limit 下 IIFE 不启动，直接 settleIife 后断言 db.file.update 未触达）
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **queue GET limit 非数字 NaN 透传**（第四十七轮发现，延续）：`parseInt('abc', 10)` 返回 NaN 透传给 getSyncQueue。若立项修复需先确认业务规则（是否应将 NaN 兜底回 50、或返 400 拒绝非数字 limit），修复时同步补对应测试
+- **conflicts POST password 缺失透传 undefined**（第四十七轮发现，延续）：auto=true 与 fileId+resolution 两分支均不校验 password。若立项修复需先确认业务规则（是否应与 sync POST 的 `!password → 400` 一致），修复时同步补对应测试
+- **backups POST zod 不校验密码复杂度**（第四十八轮发现，延续）：password: z.string().min(6) 仅校验长度。若立项修复需先确认业务规则，修复时同步补对应测试
+- **backups/[id] DELETE 不区分 404/500**（第四十九轮发现，延续）：NoSuchKey 抛错统一返 500。若立项修复需先确认业务规则，修复时同步补对应测试
+- **backups/[id] POST 错误密码不区分 401/500**（第四十九轮发现，延续）：decrypt 抛错统一返 500。若立项修复需先确认业务规则，修复时同步补对应测试
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity。若立项修复需先确认业务规则，修复时同步补对应测试
+- **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true。若立项修复需先确认业务规则，修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
