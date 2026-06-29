@@ -9002,3 +9002,76 @@ Status: 完成
 - **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 15:00 自动迭代
+
+第五十轮自动迭代。本轮沙箱工作目录为全新 clone（前轮目录不在本会话沙箱中），`git clone origin` 后 `git remote add github` 配齐双端，`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `5e80d2e`（第四十九轮 worklog commit），工作树干净、无未提交改动、无未推送 commit、无远端更新需 rebase。
+
+**优先级 1 复核（clean clone 第四轮复核）**：clean clone 后再次确认无活跃优先级 1 待修：
+- `src/lib/db/tenant-db.ts:42-61`：`transaction(fn)` 与 `raw` getter 均已加 `console.warn` 调用方堆栈软审计，无暴露后门。
+- `src/lib/payment/alipay.ts:191-207`：`verifyRSA2Sign` 已实现真实 RSA-SHA256 验签，非空 publicKey 直接返 false，不再"非空即通过"。
+- `src/lib/payment/wechat.ts:219` "不再非空即通过"在位。
+- `src/app/api/files/route.ts` dedup 走 createTenantDb（本轮已实证 file.findFirst + file.update 均经 dedupTenantDb）。
+- `src/lib/cloud-sync/sync-engine.ts` keep_both 分支已修复。
+- `src/__tests__/lib/api-auth.test.ts` 与实现匹配。
+
+无新发现活跃 bug，优先级 1 无待修，转向优先级 3（补测试）。
+
+**优先级 3 立项（吃掉第四十九轮候选 #2 的 files/[id]）**：第四十九轮 worklog"下一轮候选"明示"补 files/route.ts、files/[id]/route.ts 的 handler 级集成测试（锁定 TenantDb 注入契约，可复用第四十二轮 raw db vs tenantDb mock 分离范式 + hand-crafted request 范式 + 本轮动态路由 params: Promise 范式）"。本轮即补 files/[id] 动态路由（GET/PUT/DELETE），files/route.ts 主路由（POST multipart + GET list）因 POST 涉及 multipart/form-data + magic bytes + AI fetch + $transaction 较复杂，留待下一轮单独处理。
+
+**实现要点（1 个 test commit，22 例，1 文件）**：新增 `files-id-route.test.ts`（GET 5 + PUT 10 + DELETE 7 = 22 例），覆盖动态路由 [id] 的查询/更新/删除三层契约：
+
+- **GET（5 例）**：①未认证 → 401 透传不触达 DB；②findFirst 返回 null → 404 "File not found"；③file 存在但 userId 不匹配 → **403** "无权访问此文件"（GET 独有 403，与 PUT/DELETE 的 404 不同）；④成功 → 200 body 含 tags 解析 + findFirst where 含 wrapper 注入 tenantId + raw db.file.findFirst 恒不被调用（负向断言）；⑤findFirst 抛错 → 500 "Failed to fetch file"。
+
+- **PUT（10 例）**：①未认证 → 401；②findFirst 返回 null → 404 "文件不存在"；③file.userId 不匹配 → **404** "文件不存在"（PUT 把不存在 vs 无权合并返 404，与 GET 的 403 形成对照——PUT 不区分防探测）；④tags 非数组 → 400 "tags 必须是数组"；⑤folderId 非本人（folder.findFirst 返回 null）→ 400 "目标文件夹不存在" + folder.findFirst where 含 tenantId；⑥folderId === "null" → folderId 设为 null 跳过 folder 校验 + update 成功（特殊字符串处理）；⑦fileHash 非 64 字符 hex → 400；⑧textContent > 1MB → 400 "textContent 不能超过1MB"；⑨成功（多字段 fileName+isFavorite+tags）→ update 收到 where:{id,tenantId} + data:{fileName,isFavorite,tags:JSON.stringify} + findFirst 再读 + 返回 {...file, tags: parsed}；⑩update 抛错 → 500 "Failed to update file"。
+
+- **DELETE（7 例）**：①未认证 → 401；②findFirst 返回 null → 404 "文件不存在"；③file.userId 不匹配 → 404（与 PUT 同范式）；④file.filePath 越界（/etc/passwd 不在 ./upload 下）→ **400** "Invalid file path" 短路不触达 $transaction（主文件路径安全 400）；⑤成功 → unlink(filePath) + fileVersion.findMany + $transaction([fileEmbedding/faceInstance/file deleteMany]) 三者 where 均含 fileId/id + tenantId + 返回 {success:true}；⑥version filePath 越界 → **静默 continue**（跳过 unlink，不阻断），$transaction 仍执行（版本路径安全静默 skip 与主文件 400 非对称锁定——本轮用"主文件合法 + 版本越界 + 版本合法 → unlink 2 次（主文件 + 合法版本，越界版本跳过）+ $transaction 仍执行"用例显式锁定此非对称）；⑦$transaction 抛错 → 500 "Failed to delete file"。
+
+**所有权校验三 method 差异锁定（核心契约）**：GET 用 403 显式区分"不存在 vs 无权"（泄露文件存在性给同租户他用户），PUT/DELETE 用统一 404 防探测。本轮用 GET ③（403）+ PUT ③（404）+ DELETE ③（404）三用例显式锁定此差异——若后续误把 GET 改成 404 或 PUT/DELETE 改成 403，断言立即失败。该差异是 files/[id] 路由族内最核心的安全语义契约。
+
+**DELETE 路径安全非对称锁定（核心契约）**：主文件 file.filePath 越界 → 400 短路；版本 v.filePath 越界 → 静默 continue（跳过 unlink，不阻断后续）。本轮用 DELETE ④（主文件越界 400）+ DELETE ⑥（版本越界静默 continue + $transaction 仍执行）两用例锁定此非对称——若后续误把版本路径校验改成 400，断言立即失败。该非对称的设计意图：主文件路径是用户提供的当前文件，越界属异常需阻断；版本路径是历史快照，越界可能因迁移/重命名导致，静默跳过更稳健。
+
+**raw db vs tenantDb mock 分离范式延续（第四十一轮 files-import 范式）**：本轮 raw db mock 含 file.findFirst（负向断言恒不调用）+ file/fileEmbedding/faceInstance deleteMany（DELETE 级联正向断言）+ $transaction；tenantDb mock 含 file.findFirst/update + folder.findFirst + fileVersion.findMany（wrapper 注入 tenantId / file:{tenantId}）。DELETE 级联 deleteMany 仍走 raw db 属预期（FileEmbedding/FaceInstance 无 TenantDb 代理，Prisma schema 已 onDelete:Cascade 兜底），本轮单独正向断言此三调用的 where 含 tenantId（防越权删他租户数据）。
+
+**params: Promise 范式延续（第四十九轮 cloud-sync-backups-id 范式）**：files/[id] 是 Next.js 16 动态路由，params 为 Promise。本轮用 `ctx(id) = { params: Promise.resolve({ id }) }` 辅助函数统一构造三个 method 的第二入参，可复用于后续任何动态路由 handler 测试。
+
+**未锁定的潜在逻辑空隙（记录备查，不立项）**：
+- PUT 字段校验顺序未锁（路由按 body 字段声明顺序校验 tags→isFavorite→isDeleted→deletedAt→fileHash→folderId→fileName→textContent，遇首个非法即 400 短路）。本轮每个 400 用例只传单个非法字段，未锁多字段并存时的短路顺序。若立项需补"多非法字段 → 返回首个错误"用例。
+- PUT update 后再 findFirst 返回 null → 404（防御性二次校验，本轮 ⑨ 成功用例用 mockResolvedValueOnce 链式返回覆盖，未单独锁此 404 分支）。若立项需补"update 成功但再读返回 null → 404"用例。
+- DELETE 不区分 file 不存在 vs filePath 越界的响应（前者 404 后者 400，但若 file 不存在且 filePath 也越界则返 404 因 findFirst 先短路）。本轮未锁此组合。
+- GET/PUT/DELETE role 解构但全文未引用（与 trash-route 一致），member 亦可操作自己的文件。本轮未锁 member 权限（默认 owner 身份测试）。
+
+环境：node_modules 经 `npm ci` 安装（项目用 package-lock.json，无 pnpm-lock.yaml；pnpm 可用但无对应 lockfile，fallback npm 与现有 lockfile 一致，无 lockfile 冲突）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run src/__tests__/api/files-id-route.test.ts` 单文件 22/22 通过（stderr 为路由 catch 块 `console.error` 预期日志，非失败）；`npx vitest run` 全量 **1444/1444 通过**（90 文件，75.97s，第四十九轮基线 1422/89 + 本轮新增 22 例/1 文件 = 1444/90，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/files-id-route.test.ts`**（新文件，22 例 = GET 5 + PUT 10 + DELETE 7，+566）— /api/files/[id] GET/PUT/DELETE 路由 handler 级集成测试，覆盖 401/403/404/400/500 全状态码 + 所有权校验三 method 差异（GET 403 vs PUT/DELETE 404）+ TenantDb 注入契约（raw db vs tenantDb mock 分离 + wrapper 注入 tenantId/file:{tenantId}）+ PUT 字段校验链（tags/isFavorite/isDeleted/deletedAt/fileHash/folderId/fileName/textContent）+ folderId "null" 特殊处理 + DELETE 路径安全非对称（主文件 400 vs 版本静默 continue）+ DELETE 级联 $transaction 三 deleteMany where 含 tenantId
+
+### Commit
+- `4387c73 test(files): 补 /api/files/[id] 路由 handler 级集成测试`
+
+### 推送状态
+- Gitee：待推送 `5e80d2e..4387c73 main -> main`
+- GitHub：待推送 `5e80d2e..4387c73 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1444/1444 通过（90 文件，75.97s），零回归
+- 改动量：1 文件（新测试文件 +566），纯测试 commit，无生产代码变更
+- **fs/promises mock ESM 互操作修复**：首轮 vitest run 报 "No 'default' export is defined on the 'fs/promises' mock"，因 vitest 4 ESM 互操作需同时提供 named export + default export。复用 parser-image.test.ts 的 `{ default: { unlink }, unlink }` 双导出范式修复。该范式可复用于后续任何 mock fs/promises 的测试。
+- **所有权校验三 method 差异锁定范式**：本轮用 GET 403 + PUT 404 + DELETE 404 三用例显式锁定同路由不同 method 的所有权校验响应码差异。该范式可复用于后续任何"同路由不同 method 所有权校验语义不同"的 handler 测试。
+- **沙箱时钟说明**：本会话 `TZ=Asia/Shanghai date` 报 2026-06-29 14:50 CST（UTC 06:50）。第四十九轮时间戳为 14:00，本轮实际开始 fetch 在 14:30+、commit 在 14:50。按"高于上一轮保持单调"规则取整 15:00（避免与第四十九轮 14:00 同小时混淆）。轮次编号（第五十轮，紧接第四十九轮）为排序权威键，时间戳仅供溯源。
+
+### 下一轮候选
+- **`/api/files/[id]` handler 级集成测试已闭环**（22 例锁定 401/403/404/400/500 + 所有权三 method 差异 + TenantDb 注入 + PUT 字段校验链 + folderId "null" 特殊处理 + DELETE 路径安全非对称 + 级联 $transaction），自本轮起从候选清单移除
+- 补 files/route.ts 主路由 handler 级集成测试（POST multipart/form-data + GET list）。POST 涉及 multipart 解析 + magic bytes 校验 + 50MB/5GB 配额 + 文件类型判定 + dedup 版本化 + AI fetch（process-image/summarize）+ $transaction，较复杂，建议拆为 POST 专轮 + GET 专轮两轮处理；可复用本轮 raw db vs tenantDb mock 分离 + hand-crafted request 范式 + 第四十一轮 files-import 的 $queryRaw 配额查询契约范式
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **queue GET limit 非数字 NaN 透传**（第四十七轮发现，延续）：`parseInt('abc', 10)` 返回 NaN 透传给 getSyncQueue。若立项修复需先确认业务规则（是否应将 NaN 兜底回 50、或返 400 拒绝非数字 limit），修复时同步补对应测试
+- **conflicts POST password 缺失透传 undefined**（第四十七轮发现，延续）：auto=true 与 fileId+resolution 两分支均不校验 password，直接以 password=undefined 透传服务层。若立项修复需先确认业务规则（是否应在两分支也校验 password 非空，与 sync POST 的 `!password → 400` 一致），修复时同步补对应测试
+- **backups POST zod 不校验密码复杂度**（第四十八轮发现，延续）：password: z.string().min(6) 仅校验长度，纯数字/常见弱口令均通过。若立项修复需先确认业务规则（是否应要求字母+数字混合、是否应拒绝 top-N 弱口令），修复时同步补对应测试
+- **backups/[id] DELETE 不区分 404/500**（第四十九轮发现，延续）：deleteBackup 内部 backupId 不存在时 R2 抛 NoSuchKey 错误，路由统一返 500 而非 404。若立项修复需先确认业务规则（是否应区分 404 与 500），修复时同步补对应测试
+- **backups/[id] POST 错误密码不区分 401/500**（第四十九轮发现，延续）：错误密码在 decrypt 阶段抛错，路由统一返 500 而非 401。若立项修复需先确认业务规则（是否应区分 401 密码错误与 500 内部错误），修复时同步补对应测试
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity（负数 / 0 / 非整数 / 超大数均透传 createOrder）。若立项修复需先确认业务规则（是否应限 quantity ≥ 1 且为整数、是否有上限），修复时同步补对应测试
+- **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
