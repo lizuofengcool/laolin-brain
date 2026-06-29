@@ -9990,3 +9990,56 @@ Status: 完成
 - 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-30 04:15 自动迭代
+
+第六十四轮自动迭代。本轮延续第六十二/六十三轮"分页路由 NaN-透传 系统性缺口 sweep"，从第六十三轮候选清单的 12 个剩余路由中闭合 4 个（tenant/users / trash / webhooks / invitations），复用既定 `isNaN||<1 → 400` 约定。本轮选路由时优先挑**已有 handler 级测试文件**的 4 个路由（tenant-users / trash / webhooks / invitations 均有），以"扩展既有测试"取代"新建测试文件脚手架"，控制单轮 diff 规模、降低风险（与第六十三轮"2 扩展 + 2 新建"对照，本轮 4 全扩展）。
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-30 04:15 CST。本轮 2 个 dev commit（0866522 / c8a767f）+ 1 个 worklog commit。轮次编号（第六十四轮）为排序权威键，时间戳 04:15 高于第六十三轮 03:00 保持单调（同处 06-30）。
+
+**前置检查**：本轮为全新 clone 后首次开发（沙箱 /workspace 原为空，`git clone origin` + `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader）。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 aa5b687（第六十三轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：任务清单"剩余优先级 1"5 项已于第六十一轮实证全部闭环，本轮直接转向第六十二轮立项的"最高优先"分页 NaN sweep 候选。
+
+**本轮闭合 4 路由**（逐文件读全文实证 NaN 触达点，四路由结构同型——page/pageSize 经 parseInt 解析后 `Math.min(100, parseInt(...))` 对 `?pageSize=abc` 返回 NaN（Math.min(100,NaN)=NaN），透传 `db.*.findMany` 的 `skip:(page-1)*pageSize / take:pageSize` → Prisma 未定义行为，崩溃被 try/catch 吞为 500）：
+- `tenant/users/route.ts` GET：page/pageSize 透传 `db.tenantUser.findMany` skip/take。改：解析拆为 `pageSizeRaw`，加 `isNaN(page)||page<1 → 400 'page 必须 >= 1'` / `isNaN(pageSizeRaw)||pageSizeRaw<1 → 400 'pageSize 必须为正整数'`，再 `Math.min(100, pageSizeRaw)` 封顶。**门控置于权限检查（owner/admin，否则 403）之后**：member/viewer 的 403 优先于分页 400（不向无权用户泄漏校验细节）。
+- `trash/route.ts` GET：page/pageSize 透传 `db.file.findMany` skip/take（回收站为个人级数据，无 role 门控，member 亦可列自己的回收站）。改：同上守卫，**门控置于解析后**（无权限检查可前置）。
+- `webhooks/route.ts` GET：page/pageSize 透传 `db.webhook.findMany` skip/take。改：同上守卫，**门控置于权限检查（owner/admin，否则 403）之后**，同 tenant/users 范式。
+- `invitations/route.ts` GET：page/pageSize 透传 `db.invitation.findMany` skip/take。改：同上守卫，**门控置于权限检查（owner/admin，否则 403）之后**，同 tenant/users 范式。
+
+**门控顺序决策**：四路由中 tenant/users / webhooks / invitations 在 page/pageSize 解析之后、DB 查询之前有 role 权限检查（member/viewer → 403）。若把分页 400 门控置于权限检查之前，则 `member + ?page=abc` 会返回 400（分页错误）而非 403（无权），向无权用户泄漏"page 参数校验逻辑存在"这一细节，且改变既有 403 契约（既有测试 member→403 用默认 page=1，未触达分页门控；但 defense-in-depth 角度权限应优先）。故三路由均把分页门控**置于权限检查之后**，并各补一条 `member + page=abc → 403` 优先级锁定测试。trash 无权限门控，分页门控直接置于解析后。
+
+**前端兼容性**：四路由均为 GET 查询接口，前端调用均传合法 page/pageSize 或不传（走默认值 page=1/pageSize=20），`?page=abc`/`?pageSize=0` 等非法值非正常 UI 路径，服务端 400 为纯 defense-in-depth，不破坏现有调用。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；63.7s，--ignore-scripts 跳过 sharp/unrs native build）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关，非本轮引入）。本轮改动零类型错误
+- `npx vitest run src/__tests__/api/{tenant-users-route,trash-route,webhooks-route,invitations-route}.test.ts`：130/130 通过（tenant-users 17 = 原 12 +5 / trash 19 = 原 15 +4 / webhooks 19 = 原 14 +5 / invitations 29 = 原 24 +5；新增 19 用例含 4 路由各 4 条 NaN/非正数→400 + 3 路由各 1 条 member→403 优先级锁定）
+- `npx vitest run` 全量 1568/1568 通过（101 文件，121.93s），零回归（基线 1549/101 + 本轮 19 = 1568/101）
+
+### 改动量
+
+8 文件（4 路由 +56-4 / 4 测试 +172-0），2 dev commit。
+
+### Commit
+
+- `0866522` fix(api): tenant/users/trash 分页参数 NaN/非正数返回 400 而非透传 Prisma skip/take
+- `c8a767f` fix(api): webhooks/invitations 分页参数 NaN/非正数返回 400 而非透传 Prisma skip/take
+
+### 推送
+
+- origin (Gitee)：aa5b687..c8a767f 推送成功
+- github (GitHub)：aa5b687..c8a767f 推送成功
+
+### 下一轮候选
+
+- **分页路由 NaN-透传 系统性缺口（第六十二轮立项，本轮闭合 4，剩余 8）**：剩余 8 路由 `parseInt(page/pageSize/limit)` 无 NaN 守卫 → `?page=abc` 透传 Prisma skip/take 崩溃或服务层静默空。列表：`comments`、`automation/rules`、`faces/groups`、`api-keys`、`files/[id]/versions`、`system-logs`、`notifications`、`backups`。建议每轮闭合 3-4 个（逐文件读全文实证 bug 触达点 + 补 handler 级测试），复用既定 `isNaN||<1 → 400` 约定，合法大值保留 Math.min 封顶。**注意门控顺序范式（本轮确立）**：有 role 权限检查的路由（system-logs 同 invitations 属"租户级管理数据 + role 门控"），分页门控应置于权限检查之后（403 优先于 400，不泄漏校验细节）并补 member→403 优先级锁定测试；无门控的路由（comments/faces/groups 等个人数据）门控置于解析后。其中 `api-keys`/`system-logs` 已有测试文件可扩展，其余 6 个需新建测试文件
+- **storage getLargeFiles `limit` dead code 清理**（第六十二轮发现，次要）：line 162 解析 `limit` 但全文未用（pageSize 承担分页），可删；属 refactor 非 bug，低优
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：第六十二轮实证确认属新业务规则（加密密码 vs 账户密码语义不同），非约定复用，维持 defer 待产品决策
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮，延续）
+- **queue GET limit 上界 cap 缺失**（第六十一轮新增）
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
