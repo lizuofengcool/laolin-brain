@@ -449,7 +449,19 @@ export async function GET(request: NextRequest) {
 
     // Pagination support
     const page = parseInt(searchParams.get('page') || '1', 10);
-    const limit = Math.min(parseInt(searchParams.get('limit') || '100', 10), 500);
+    const limitRaw = parseInt(searchParams.get('limit') || '100', 10);
+
+    // 校验分页参数：非数字（如 'abc' → NaN）或非正数拒绝，避免 NaN/负数透传给
+    // tenantDb.file.findMany → Prisma take/skip 的未定义行为。与 faces/groups/[id]/photos/route.ts
+    // 及 cloud-sync/queue/route.ts 的 isNaN||<1 → 400 约定一致
+    if (isNaN(page) || page < 1) {
+      return NextResponse.json({ error: "page 必须 >= 1" }, { status: 400 });
+    }
+    if (isNaN(limitRaw) || limitRaw < 1) {
+      return NextResponse.json({ error: "limit 必须为正整数" }, { status: 400 });
+    }
+
+    const limit = Math.min(limitRaw, 500);
     const skip = (page - 1) * limit;
 
     // Use authenticated userId

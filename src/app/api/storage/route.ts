@@ -161,7 +161,19 @@ async function getLargeFiles(
 ) {
   const limit = Math.min(100, parseInt(searchParams.get('limit') || '20', 10));
   const page = parseInt(searchParams.get('page') || '1', 10);
-  const pageSize = Math.min(100, parseInt(searchParams.get('pageSize') || '20', 10));
+  const pageSizeRaw = parseInt(searchParams.get('pageSize') || '20', 10);
+
+  // 校验分页参数：非数字（如 'abc' → NaN）或非正数拒绝，避免 NaN/负数透传给
+  // db.file.findMany → Prisma skip/take 的未定义行为。与 faces/groups/[id]/photos/route.ts
+  // 及 cloud-sync/queue/route.ts 的 isNaN||<1 → 400 约定一致
+  if (isNaN(page) || page < 1) {
+    return NextResponse.json({ error: "page 必须 >= 1" }, { status: 400 });
+  }
+  if (isNaN(pageSizeRaw) || pageSizeRaw < 1) {
+    return NextResponse.json({ error: "pageSize 必须为正整数" }, { status: 400 });
+  }
+
+  const pageSize = Math.min(100, pageSizeRaw);
 
   // 计算总数
   const total = await db.file.count({

@@ -450,5 +450,59 @@ describe("/api/storage 路由", () => {
       expect(res.status).toBe(500);
       expect(res.body).toEqual({ error: "存储分析失败" });
     });
+
+    // ─── 分页参数 NaN/非正数 → 400（与 faces/queue 约定一致，防 NaN/负数透传 Prisma skip/take）───
+    it("?page=abc → 400 { error: 'page 必须 >= 1' }，不触达 DB（count/findMany 均不调用）", async () => {
+      const res = (await GET(makeGetRequest("?type=large-files&page=abc"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "page 必须 >= 1" });
+      expect(mockFileCount).not.toHaveBeenCalled();
+      expect(mockFileFindMany).not.toHaveBeenCalled();
+    });
+
+    it("?page=0 → 400（page<1）", async () => {
+      const res = (await GET(makeGetRequest("?type=large-files&page=0"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "page 必须 >= 1" });
+      expect(mockFileCount).not.toHaveBeenCalled();
+    });
+
+    it("?pageSize=abc → 400 { error: 'pageSize 必须为正整数' }，不触达 DB", async () => {
+      const res = (await GET(makeGetRequest("?type=large-files&pageSize=abc"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "pageSize 必须为正整数" });
+      expect(mockFileCount).not.toHaveBeenCalled();
+      expect(mockFileFindMany).not.toHaveBeenCalled();
+    });
+
+    it("?pageSize=0 → 400（pageSize<1）", async () => {
+      const res = (await GET(makeGetRequest("?type=large-files&pageSize=0"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "pageSize 必须为正整数" });
+      expect(mockFileCount).not.toHaveBeenCalled();
+    });
+
+    it("?pageSize=-5 → 400（负数）", async () => {
+      const res = (await GET(makeGetRequest("?type=large-files&pageSize=-5"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "pageSize 必须为正整数" });
+      expect(mockFileCount).not.toHaveBeenCalled();
+    });
+
+    it("?pageSize=500 仍正常封顶 100（回归：合法大值不受 NaN 守卫影响）", async () => {
+      mockFileCount.mockResolvedValue(0);
+      mockFileFindMany.mockResolvedValue([]);
+
+      const res = (await GET(makeGetRequest("?type=large-files&pageSize=500"))) as MockRes;
+
+      expect(res.status).toBe(200);
+      const findArg = mockFileFindMany.mock.calls[0][0] as { take: number };
+      expect(findArg.take).toBe(100);
+    });
   });
 });

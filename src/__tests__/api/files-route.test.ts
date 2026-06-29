@@ -294,4 +294,59 @@ describe("/api/files 主路由 GET — 文件列表查询", () => {
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ error: "Failed to fetch files" });
   });
+
+  // ─── 分页参数 NaN/非正数 → 400（与 faces/queue 约定一致，防 NaN/负数透传 Prisma take/skip）───
+  describe("分页参数校验（NaN/非正数 → 400，不触达 DB）", () => {
+    it("?page=abc → 400 { error: 'page 必须 >= 1' }，不触达 tenantDb/raw db", async () => {
+      const res = (await GET(makeGetRequest("?page=abc"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "page 必须 >= 1" });
+      expect(mockCreateTenantDb).not.toHaveBeenCalled();
+      expect(mockTenantFileFindMany).not.toHaveBeenCalled();
+      expect(mockRawFileFindMany).not.toHaveBeenCalled();
+    });
+
+    it("?page=0 → 400（page<1）", async () => {
+      const res = (await GET(makeGetRequest("?page=0"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "page 必须 >= 1" });
+      expect(mockTenantFileFindMany).not.toHaveBeenCalled();
+    });
+
+    it("?limit=abc → 400 { error: 'limit 必须为正整数' }，不触达 DB", async () => {
+      const res = (await GET(makeGetRequest("?limit=abc"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "limit 必须为正整数" });
+      expect(mockCreateTenantDb).not.toHaveBeenCalled();
+      expect(mockTenantFileFindMany).not.toHaveBeenCalled();
+    });
+
+    it("?limit=0 → 400（limit<1）", async () => {
+      const res = (await GET(makeGetRequest("?limit=0"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "limit 必须为正整数" });
+      expect(mockTenantFileFindMany).not.toHaveBeenCalled();
+    });
+
+    it("?limit=-5 → 400（负数）", async () => {
+      const res = (await GET(makeGetRequest("?limit=-5"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "limit 必须为正整数" });
+      expect(mockTenantFileFindMany).not.toHaveBeenCalled();
+    });
+
+    it("?limit=600 仍正常封顶 500（回归：合法大值不受 NaN 守卫影响）", async () => {
+      const res = (await GET(makeGetRequest("?limit=600"))) as MockRes;
+
+      expect(res.status).toBe(200);
+      expect(mockTenantFileFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 500, skip: 0 })
+      );
+    });
+  });
 });
