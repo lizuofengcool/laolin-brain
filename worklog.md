@@ -9765,3 +9765,71 @@ Status: 完成
 - **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity。若立项修复需先确认业务规则，修复时同步补对应测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-30 00:25 自动迭代
+
+第六十轮自动迭代。本轮闭合候选清单中**两项被误判为"需先确认业务规则"实则为标准 HTTP 状态码语义**的 cloud-sync backups/[id] 错误码分流问题：`POST 错误密码不区分 401/500` 与 `DELETE 不区分 404/500`（均第四十九轮发现，延续 11 轮）。
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-30 00:25 CST。commit d87e5d0 落于本轮。轮次编号（第六十轮）为排序权威键，时间戳 00:25（跨日至 06-30）高于第五十九轮 22:51 保持单调。
+
+**前置检查**：本轮为全新 clone 后首次开发（沙箱 /workspace 原为空，`git clone origin` + `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader）。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 42b8109（第五十九轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核（逐文件实证，非沿用 worklog 自述）**：本轮逐一打开任务清单"剩余优先级 1"5 项对应的源文件核验，确认全部已在历史轮次真实闭环（非 worklog 自洽空述）：
+- `src/lib/db/tenant-db.ts`：`raw` getter 带 `console.warn` 调用堆栈软审计（line 56-62），`transaction` 同样审计（line 41-47），文件尾注释明确 rawDb 不再无审计导出（line 988-992）→ 闭环
+- `src/lib/payment/alipay.ts`：`verifyRSA2Sign` 用 `createVerify('RSA-SHA256')` + `RSA_PKCS1_PADDING` 真实验签（line 191-207），`normalizePublicKey` 自动补 PEM 头尾（line 213-221）；`createPayment`/`queryPayment`/`refund` 在 `isPaymentConfigured` 但未接 SDK 时返显式失败而非静默 mock（line 39-42/83-87/238-241）→ 闭环
+- `src/lib/payment/wechat.ts`：`verifyWechatSign` 用 `createHmac('sha256', apiKey)` + `timingSafeEqual` 恒定时间比较，缺字段 fail-closed（line 221-242）；`decryptResource` 用 `aes-256-gcm` 解密 V3 resource，密钥长度校验 + authTag（line 255-291）；mock 默认同 alipay 已删 → 闭环
+- `src/app/api/files/route.ts`：dedup（line 271 `createTenantDb`）与 GET（line 460 `createTenantDb`）走 TenantDb。注：line 397 doc-IIFE 内 `db.file.update({ where: { id: fileRecord.id } })` 仍直连 db，但 fileRecord.id 为本请求刚创建的本租户文件 id，无跨租户越权风险（理论洁癖项，非本轮立项）
+- `src/lib/cloud-sync/sync-engine.ts` `resolveConflict` keep_both 分支（line 675-716）：先 rename 本地为 `[冲突副本]` 并 set SYNCED，再 create 新 id 落地云端版本，不再直接覆盖 → 闭环
+- `src/__tests__/lib/api-auth.test.ts`：期望 4 字段（userId/email/tenantId/role）、`await` 异步、显式断言 query param 被拒（line 147-157），与 `api-auth.ts` 实现完全对齐 → 闭环
+
+故任务清单"剩余优先级 1"实际已全部闭环。剩余候选中"需先确认业务规则"6 项里，本轮识别出 2 项**实为标准 HTTP 状态码语义、非业务规则判断**，可安全闭合。
+
+**误判识别 —— HTTP 状态码语义 vs 业务规则**：worklog 自第四十九轮起将 backups/[id] DELETE 404/500 与 POST 401/500 两项标注"需先确认业务规则"，延续 11 轮未动。复核：①备份不存在 → 404 Not Found 是 REST 标准语义（资源不存在），且备份 dataKey/metaKey 均含 tenantId 前缀，用户已鉴权为本租户 owner/admin，无跨租户存在性泄露；②加密密码错误 → 401（凭证错误）是 HTTP 通用约定（worklog 自身亦以"错误密码不区分 401/500"措辞暗示 401 为目标码）。两者均非"是否上锁/重试次数/复杂度"等需产品拍板的业务规则，故本轮直接修复。
+
+**改动设计 —— catch 块错误类型分流（控制流变更，零生产控制流侵入 sync-engine）**：
+- 不改 `downloadAndRestoreBackup`/`deleteBackup` 抛错形态（避免连带影响其他调用方），仅在路由 catch 块按错误结构化字段分类。
+- `isStorageNotFoundError(error)`：识别 R2/S3（`name==='NoSuchKey'`|`'NotFound'`、`$metadata.httpStatusCode===404`）与 Aliyun OSS（`code==='NoSuchKey'`、`status===404`）的对象不存在错误 → 404 `{ error: "备份不存在" }`。字段集与 r2-storage-class.ts headObject（line 121）、aliyun-oss.ts headObject（line 102）既有判定一致。
+- `isDecryptionError(error)`：识别 AES-256-GCM 认证标签校验失败。Node 16+ `decipher.final()` 抛 `code==='ERR_CRYPTO_AUTHENTICATION_FAILED'`；旧版 Node 无 code、message 含 "Unsupported state or unable to authenticate data"。双重判定兼容 → 401 `{ error: "加密密码错误" }`。
+- 其余通用错误（`JSON.parse` 失败、checksum 不匹配"备份数据校验失败"等数据完整性问题）保持 500 拼字符串风格不变。
+- DELETE catch 同样加 `isStorageNotFoundError → 404` 分支。注：R2/S3/OSS 的 `deleteObject` 对不存在 key 通常幂等不抛错，此分支为防御个别 SDK/配置抛 NoSuchKey 的场景（注释已说明）。
+
+**判定顺序**：POST catch 内先判 NotFound（404）再判 decrypt（401）最后 500。NotFound 优先因 downloadObject 在 decrypt 之前（line 1125→1128），对象不存在时根本到不了 decrypt，先 404 符合调用栈时序。
+
+### 范式复用与新增
+
+- **vi.hoisted + MockNextResponse + makePostRequest/makeDeleteRequest 范式延续**（既有 cloud-sync 测试范式）：本轮新增用例完全复用，零测试基建改动。
+- **mockRejectedValue + 结构化错误对象范式（本轮核心提炼）**：handler 级测试模拟底层 SDK 抛错时，用 `new Error(msg)` + 赋值 `name`/`code`/`status`/`$metadata` 字段构造结构化错误对象（`notFound.name = 'NoSuchKey'`、`$metadata = { httpStatusCode: 404 }`、`code = 'ERR_CRYPTO_AUTHENTICATION_FAILED'`），避免引入真实 SDK 依赖即可覆盖路由 catch 的错误分类逻辑。可复用于任何"路由 catch 按错误字段分流状态码"的 handler 级测试。
+- **负向用例锁定分类边界范式（本轮提炼）**：新增"checksum 失败仍 500"负向用例（line 296-310），锁定 isDecryptionError 不误吞非密码错误——checksum 失败的 message 含"密码错误"字样但无 GCM code，不应归 401。causation 锁定：解密成功（密码对）但数据损坏 → 500，与密码错 → 401 形成对照。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，故 pnpm-lock.yaml 留为未跟踪本地产物不提交；67.9s，build scripts 跳过 prisma/sharp/unrs）
+- `npx prisma generate`（补 PrismaClient 类型，164ms）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，与本轮改动无关，非本轮引入）。本轮改动零类型错误
+- `npx vitest run src/__tests__/api/cloud-sync-backups-id-route.test.ts`：19/19 通过（原 12 + 本轮新增 7；含三种 NotFound 形态 → 404、GCM code/message 两条判定路径 → 401、checksum 失败仍 500 负向用例、既有通用错误 500 与成功 200 回归）
+- `npx vitest run` 全量 1500/1500 通过（98 文件，117.56s），零回归（基线 1493/98 + 本轮 7 = 1500/98）
+
+### 改动量
+
+2 文件（route +69 / test +123-6），1 commit，含生产代码控制流变更 + 对应测试。
+
+### Commit
+
+- `d87e5d0` fix(cloud-sync): backups/[id] 区分 404/401/500 错误码
+
+### 推送
+
+- origin (Gitee)：42b8109..d87e5d0 推送成功
+- github (GitHub)：42b8109..d87e5d0 推送成功
+
+### 下一轮候选
+
+- **backups/[id] DELETE 不区分 404/500**（第四十九轮发现，延续 11 轮）**本轮闭合**：catch 块加 isStorageNotFoundError → 404，自本轮起从候选清单移除
+- **backups/[id] POST 错误密码不区分 401/500**（第四十九轮发现，延续 11 轮）**本轮闭合**：catch 块加 isDecryptionError → 401，自本轮起从候选清单移除
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **queue GET limit 非数字 NaN 透传**（第四十七轮发现，延续）：`parseInt('abc',10)` 返 NaN 透传给 getSyncQueue。立项时需先确认业务规则（NaN 兜底回 50 vs 返 400 拒绝非数字 limit），修复时同步补测试
+- **conflicts POST password 缺失透传 undefined**（第四十七轮发现，延续）：auto=true 与 fileId+resolution 两分支均不校验 password。立项时需先确认业务规则（是否应与 sync POST 的 `!password → 400` 一致），修复时同步补测试
+- **backups POST zod 不校验密码复杂度**（第四十八轮发现，延续）：password: z.string().min(6) 仅校验长度。若立项修复需先确认业务规则，修复时同步补对应测试
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity。若立项修复需先确认业务规则，修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
