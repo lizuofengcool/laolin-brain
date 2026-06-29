@@ -9531,8 +9531,81 @@ Status: 完成
 ### 下一轮候选
 
 - **`/api/files` POST 子轮 ②c-doc 已闭环**（6 例锁定文档 AI summarize fire-and-forget IIFE 触达条件 + fetch URL/method/body/Authorization 透传 + summary 覆盖 db.file.update + suggestedTags 合并/else 双分支 + 响应不反映 AI 产物 + fetch rejects/ok:false/summary 假值/skipAi 四条不触达负向），自本轮起从候选清单移除 ②c-doc
-- 补 `/api/files` POST handler 级集成测试**子轮 ③**（文件类型判定矩阵）：②a 已覆盖 txt、②b 覆盖 image/jpeg、②c-doc 覆盖 txt（IIFE 路径）。③ 可补 .docx（fileType:"word" + parseWord）、.pdf（fileType:"pdf" + parsePdf + magic bytes [25 50 44 46]）、.pptx（fileType:"pptx" + parsePptx + magic bytes ZIP [50 4B 03 04]）、.md（fileType:"markdown" + textContent=buffer.toString）。注意 docx/pptx 共用 ZIP magic bytes [50 4B 03 04]；docx/pdf/pptx 需 mock parser 模块（parseWord/parsePdf/parsePptx），可复用 ②c-image 的 parser mock 范式
-- 补 `/api/files` POST **rate-limit 触发 aiSkipped:true 专轮**：checkAiRateLimit 用模块级 Map 跨用例累积，需独立专轮处理状态隔离（每用例前重置 aiProcessingTimestamps 或用不同 userId 避免污染）。需覆盖：image 分支 rate-limit → aiSkipped=true + 图片 AI fetch 不触达；doc 分支 rate-limit → aiSkipped=true + doc IIFE 不启动。可复用本轮的 fire-and-forget IIFE 时序范式（rate-limit 下 IIFE 不启动，直接 settleIife 后断言 db.file.update 未触达）
+- **`/api/files` POST 子轮 ③ 已闭环**（7 例锁定文件类型判定矩阵：fileType 判定 file.type + file.name 双路径优先级、parser 派发 parseWord/parsePdf/parsePptx 调用契约、magic bytes 门 PDF [25 50 44 46]/ZIP [50 4B 03 04]、markdown 无 parser 走 buffer.toString、file.name 兜底派发、parser 抛错容错、magic 门 gate order），自本轮起从候选清单移除 ③
+- 补 `/api/files` POST **rate-limit 触发 aiSkipped:true 专轮**：checkAiRateLimit 用模块级 Map 跨用例累积，需独立专轮处理状态隔离（每用例前重置 aiProcessingTimestamps 或用不同 userId 避免污染）。需覆盖：image 分支 rate-limit → aiSkipped=true + 图片 AI fetch 不触达；doc 分支 rate-limit → aiSkipped=true + doc IIFE 不启动。可复用 ②c-doc 的 fire-and-forget IIFE 时序范式（rate-limit 下 IIFE 不启动，直接 settleIife 后断言 db.file.update 未触达）
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **queue GET limit 非数字 NaN 透传**（第四十七轮发现，延续）：`parseInt('abc', 10)` 返回 NaN 透传给 getSyncQueue。若立项修复需先确认业务规则（是否应将 NaN 兜底回 50、或返 400 拒绝非数字 limit），修复时同步补对应测试
+- **conflicts POST password 缺失透传 undefined**（第四十七轮发现，延续）：auto=true 与 fileId+resolution 两分支均不校验 password。若立项修复需先确认业务规则（是否应与 sync POST 的 `!password → 400` 一致），修复时同步补对应测试
+- **backups POST zod 不校验密码复杂度**（第四十八轮发现，延续）：password: z.string().min(6) 仅校验长度。若立项修复需先确认业务规则，修复时同步补对应测试
+- **backups/[id] DELETE 不区分 404/500**（第四十九轮发现，延续）：NoSuchKey 抛错统一返 500。若立项修复需先确认业务规则，修复时同步补对应测试
+- **backups/[id] POST 错误密码不区分 401/500**（第四十九轮发现，延续）：decrypt 抛错统一返 500。若立项修复需先确认业务规则，修复时同步补对应测试
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity。若立项修复需先确认业务规则，修复时同步补对应测试
+- **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true。若立项修复需先确认业务规则，修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 21:10 自动迭代
+
+第五十七轮自动迭代。本轮承接第五十六轮子轮 ②c-doc 闭环后的"下一轮候选"，落地 `/api/files` 主路由 **POST** handler 级集成测试的**子轮 ③**（文件类型判定矩阵 + parser 派发 + magic bytes 校验）。②a 已覆盖 txt 前置门、②b 覆盖 image/jpeg dedup、②c-image 覆盖 image AI fetch、②c-doc 覆盖 txt doc AI summarize IIFE；③ 补齐剩余文档类型 .pdf / .docx / .pptx / .md 的 fileType 判定 + parser 派发 + magic bytes 门。
+
+沙箱时钟：沙箱 `TZ=Asia/Shanghai` 报 2026-06-29 21:10 CST（vitest 日志 "Start at 13:08" 为 UTC）。commit 32c09d5 落于本轮。轮次编号（第五十七轮）为排序权威键，时间戳 21:10 高于第五十六轮 20:57 保持单调。
+
+**遗留清理**：上轮（第五十六轮）的 worklog.md 追加段（round 56 节）在上一会话末尾写入但**未提交**（commit 670b692 仅含测试文件）。本轮开头先清理该遗留：`git add worklog.md && git commit -m "docs(worklog): 记录第五十六轮自动迭代(670b692)"` → commit 13f0965，双端推送成功（670b692..13f0965）。pnpm-lock.yaml 为上轮 pnpm install 生成的副产物（项目未追踪），本轮不纳入提交，保持工作树干净。
+
+**前置检查**：`git fetch origin main && git fetch github main` 双端均无新提交（HEAD 仍 670b692→13f0965，origin/main == github/main == HEAD）。优先级 1 复核：与第五十六轮一致，任务清单列出的"剩余优先级 1"项**逐项确认已在历史轮次闭环，清单已过时**（tenant-db raw 审计、alipay RSA2 验签、wechat HMAC/AES、sync-engine keep_both、api-auth.test 对齐均已完成）。故本轮聚焦优先级 3（补测试）继续推进 ③ 候选。
+
+**范围界定（关键决策）**：本轮一律传 `skipAi=true` URL query 隔离 doc AI summarize fire-and-forget IIFE。原因：③ 聚焦 fileType 判定 + parser 派发 + magic bytes 矩阵，**不**覆盖 IIFE（IIFE 触达条件 + db.file.update 契约已由 ②c-doc 6 例锁定）。skipAi=true 下路由 line 375 的 IIFE 条件 `!skipAiParam` 短路 → IIFE 不启动 → db.file.update 恒不触达（全轮负向断言）。这避免了 ②c-doc 的 fire-and-forget IIFE 时序处理（vi.waitFor / setTimeout flush），使本轮专注矩阵本身。
+
+**核心契约（文件类型判定矩阵锁定）**：
+1. **fileType 判定优先级**（route line 160-180）：file.type 先于 file.name。image/* → image；application/vnd.openxmlformats-officedocument.wordprocessingml.document 或 .docx → word；application/pdf 或 .pdf → pdf；application/vnd...presentationml.presentation 或 .pptx → pptx；.md/.markdown/text/markdown → markdown；.txt/text/plain → txt；其余 → other。
+2. **parser 派发契约**（route line 208-217）：word→parseWord(buffer)、pdf→parsePdf(buffer)、pptx→parsePptx(buffer)；markdown/txt→buffer.toString("utf-8")（无 parser）；other/image→无 textContent 提取。三 parser 均收 Buffer 入参，返 Promise<string>，textContent=返回值。
+3. **magic bytes 门**（route line 184，MAGIC_BYTES 表 line 13-26）：pdf 期望 [0x25,0x50,0x44,0x46]（"%PDF"）；docx/pptx 共用 ZIP [0x50,0x4B,0x03,0x04]（OOXML 容器）；markdown/txt 无 magic（空数组 → 跳过校验）。magic 门在 mkdir 之后（line 158）、writeFile 之前（line 202）、parser 之前（line 208）——不匹配返 400，不触达 writeFile/parser/createTenantDb/$transaction。
+4. **parser 异常容错**（route line 218-220）：parser reject/throw → try/catch 吞错（console.error）→ textContent 保持 undefined → 仍 200 创建文件（不阻断主流程）。
+5. **file.name 兜底派发**：file.type 为 application/octet-stream 等通用类型时，靠 file.name.endsWith(".pdf"/".docx"/".pptx") 兜底判定 fileType（防 content-type 丢失）。
+
+**7 个用例**：
+1. **① .pdf via file.type（application/pdf）+ PDF magic bytes [25 50 44 46]** → fileType=pdf → parsePdf(buffer) 返 "PDF extracted text" → textContent=返回值 → 新建 $transaction(tx.file.create data.fileType=pdf/textContent=解析文本/storageMode=cloud/tags=JSON.stringify([])) → 200。锁定：parsePdf 收 Buffer 入参且内容 equals(PDF_BYTES)；parseWord/parsePptx 互斥不触达；generateThumbnail 不触达（非 image）；db.file.update 不触达（skipAi=true）。
+2. **② .docx via file.type（wordprocessingml）+ ZIP magic bytes [50 4B 03 04]** → fileType=word → parseWord(buffer) → 200。parseWord 收 Buffer equals(ZIP_BYTES)；parsePdf/parsePptx 不触达。
+3. **③ .pptx via file.type（presentationml）+ ZIP magic bytes [50 4B 03 04]** → fileType=pptx → parsePptx(buffer) → 200。parsePptx 收 Buffer equals(ZIP_BYTES)；parseWord/parsePdf 不触达。**注意**：docx/pptx 共用 ZIP magic [50 4B 03 04]，靠 file.type/file.name 区分派发不同 parser。
+4. **④ .md via file.type（text/markdown）** → fileType=markdown → 无 parser 派发 → textContent=buffer.toString("utf-8")（反映原始 markdown 文本）→ 200。三 parser 均不触达；generateThumbnail 不触达。**无 magic 校验**（text/markdown magic=[] → validateMagicBytes 直接返 true）。
+5. **⑤ file.name 兜底派发**：file.type=application/octet-stream（通用类型）+ file.name=report.pdf + PDF magic bytes → fileType=pdf（via name.endsWith(".pdf")）→ parsePdf 触达 → 200。锁定 file.type 丢失时靠 file.name 兜底判定。
+6. **⑥ parser 抛错容错**：.pdf + parsePdf rejects → try/catch（line 218）吞错（stderr "Failed to extract text"）→ textContent=undefined → 仍 200 创建文件（不阻断主流程）。$transaction/file.create 仍触达；tx.file.create data.textContent=undefined（echo 反映路由实际赋值）。
+7. **⑦ magic bytes 门**：声明 application/pdf 但内容是 PNG [89 50 4E 47] → validateMagicBytes 期望 [25 50 44 46] 不匹配 → 400 { error: '文件内容与声明的类型不匹配' }。**gate order 锁定**：mkdir 已触达（magic 在 mkdir 之后）、parsePdf/writeFile/createTenantDb/$transaction 均不触达（magic 在其之前）。
+
+### 范式复用与新增
+
+- **vi.hoisted + MockNextResponse + makePostRequest（headers.get spy）范式延续**（②a/②b/②c-image/②c-doc 范式）：本轮 makePostRequest 默认 url 带 `?skipAi=true`，隔离 IIFE。
+- **mockImplementation echo data 范式延续**（②c-image/②c-doc 核心提炼）：mockTxFileCreate echo args.data（id/fileName/fileType/fileSize/filePath/textContent/thumbnailUrl），使响应反映路由实际传入 file.create 的值。本轮用例⑥ parser 抛错 → data.textContent=undefined → 响应 undefined，echo 模式正确反映。
+- **parser 模块隔离范式延续**（②c-image 的 generateThumbnail mock 范式扩展）：本轮 mock 全部 4 个 parser 模块（@/lib/parser/{word,pdf,ppt,image}），隔离 mammoth/pdf-parse/纯 JS ZIP 解析/sharp 原生模块。互斥断言（当前类型 parser 被调、其余两 parser 不触达）锁定 parser 派发的排他性。
+- **$queryRaw tagged template + $transaction executor 范式延续**（②a/②b/②c 范式）：raw db $queryRaw（早检，正向）+ $transaction（executor，新建分支 tx=$queryRaw TOCTOU + file.create echo）+ file.update（doc AI summarize；skipAi=true → 不触达，负向）。
+- **Buffer 入参断言范式（本轮提炼）**：parser 收 Buffer 入参，用 `expect(Buffer.isBuffer(arg)).toBe(true)` + `expect(arg.equals(expectedBuffer)).toBe(true)` 双重断言——前者锁类型、后者锁内容。可复用于任何"Buffer 入参函数"的调用契约测试。
+- **gate order 断言范式（本轮提炼）**：用例⑦ 显式断言 magic 门前后各副作用的触达/不触达（mkdir 触达、writeFile/parser/createTenantDb/$transaction 不触达），锁定 magic 门在管线中的精确位置。可复用于其他"前置校验门 gate order"测试。
+
+### 验证
+
+- `npx prisma generate`（补 PrismaClient 类型，沙箱 install 跳过了 prisma build script）
+- `npx tsc --noEmit` 对 `files-route-post-filetype-matrix.test.ts` 与 `api/files/route.ts` 零错误（grep 过滤无命中）
+- `npx vitest run src/__tests__/api/files-route-post-filetype-matrix.test.ts` 7/7 通过（含用例⑥ parser 抛错的 stderr "Failed to extract text" + 全轮 skipAi=true 的 stdout "AI summary skipped"，均路由侧预期日志非失败）
+- `npx vitest run` 全量 1488/1488 通过（97 文件，83.73s），零回归（基线 1481/96 + 7/1 = 1488/97）
+
+### 改动量
+
+1 文件（新测试文件 +467），纯测试 commit，无生产代码变更。
+
+### Commit
+
+- `13f0965` docs(worklog): 记录第五十六轮自动迭代(670b692)（遗留清理）
+- `32c09d5` test(files): 补 /api/files POST 文件类型判定矩阵 + parser 派发 handler 级集成测试
+
+### 推送
+
+- origin (Gitee)：`13f0965..32c09d5` 推送成功
+- github (GitHub)：`13f0965..32c09d5` 推送成功
+
+### 下一轮候选
+
+- **`/api/files` POST 子轮 ③ 已闭环**（7 例锁定文件类型判定矩阵：fileType 判定 file.type + file.name 双路径优先级、parser 派发 parseWord/parsePdf/parsePptx 调用契约、magic bytes 门 PDF [25 50 44 46]/ZIP [50 4B 03 04]、markdown 无 parser 走 buffer.toString、file.name 兜底派发、parser 抛错容错、magic 门 gate order），自本轮起从候选清单移除 ③
+- 补 `/api/files` POST **rate-limit 触发 aiSkipped:true 专轮**：checkAiRateLimit 用模块级 Map 跨用例累积，需独立专轮处理状态隔离（每用例前重置 aiProcessingTimestamps 或用不同 userId 避免污染）。需覆盖：image 分支 rate-limit → aiSkipped=true + 图片 AI fetch 不触达；doc 分支 rate-limit → aiSkipped=true + doc IIFE 不启动。可复用 ②c-doc 的 fire-and-forget IIFE 时序范式（rate-limit 下 IIFE 不启动，直接 settleIife 后断言 db.file.update 未触达）
 - 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
 - **queue GET limit 非数字 NaN 透传**（第四十七轮发现，延续）：`parseInt('abc', 10)` 返回 NaN 透传给 getSyncQueue。若立项修复需先确认业务规则（是否应将 NaN 兜底回 50、或返 400 拒绝非数字 limit），修复时同步补对应测试
 - **conflicts POST password 缺失透传 undefined**（第四十七轮发现，延续）：auto=true 与 fileId+resolution 两分支均不校验 password。若立项修复需先确认业务规则（是否应与 sync POST 的 `!password → 400` 一致），修复时同步补对应测试
