@@ -31,6 +31,24 @@ export async function GET(request: NextRequest) {
     const sortOrder = searchParams.get('sortOrder') as 'asc' | 'desc' || 'desc';
     const page = parseInt(searchParams.get('page') || '1', 10);
     const pageSize = parseInt(searchParams.get('pageSize') || '20', 10);
+
+    // 校验分页参数：非数字（'abc' → NaN）或非正数拒绝。shareManager.queryShares 无
+    // `|| 默认值` 兜底（解构默认值 page=1/pageSize=20 仅对 undefined 生效，不挡 NaN），
+    // NaN 透传会导致 slice(NaN,NaN) 静默返回空列表 + page/pageSize/totalPages 字段为 NaN。
+    // 与 files/storage/tags 及 cloud-sync/queue 的 isNaN||<1 → 400 约定一致
+    if (isNaN(page) || page < 1) {
+      return NextResponse.json(
+        { success: false, error: 'page 必须 >= 1' },
+        { status: 400 }
+      );
+    }
+    if (isNaN(pageSize) || pageSize < 1) {
+      return NextResponse.json(
+        { success: false, error: 'pageSize 必须为正整数' },
+        { status: 400 }
+      );
+    }
+
     const dateFrom = searchParams.get('dateFrom') ? new Date(searchParams.get('dateFrom')!) : undefined;
     const dateTo = searchParams.get('dateTo') ? new Date(searchParams.get('dateTo')!) : undefined;
 
