@@ -9075,3 +9075,79 @@ Status: 完成
 - **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 16:00 自动迭代
+
+第五十一轮自动迭代。本轮沙箱工作目录为全新 clone（前轮目录不在本会话沙箱中），`git clone origin` 后 `git remote add github` 配齐双端，`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `07e01eb`（第五十轮 worklog commit），工作树干净、无未提交改动、无未推送 commit、无远端更新需 rebase。
+
+**优先级 1 复核（clean clone 第五轮复核）**：clean clone 后再次确认无活跃优先级 1 待修：
+- `src/lib/db/tenant-db.ts:41-62`：`transaction(fn)` 与 `raw` getter 均已加 `console.warn` 调用方堆栈软审计，无暴露后门。
+- `src/lib/payment/alipay.ts:191-207`：`verifyRSA2Sign` 已实现真实 RSA-SHA256 验签，缺 sign/publicKey 直接返 false，不再"非空即通过"。
+- `src/lib/payment/wechat.ts:219` "不再非空即通过"在位。
+- `src/lib/cloud-sync/sync-engine.ts:675` keep_both 分支已修复（fetchCloudFileData + 重命名本地为冲突副本 + 云端版本作新文件落地，不再"简化处理直接覆盖"）。
+- `src/app/api/files/route.ts` GET 走 createTenantDb（本轮实证 file.findMany 经 tenantDb wrapper 注入 tenantId），POST dedup 走 createTenantDb。
+- `src/__tests__/lib/api-auth.test.ts` 与实现匹配。
+
+无新发现活跃 bug，优先级 1 无待修，转向优先级 3（补测试）。
+
+**优先级 3 立项（吃掉第五十轮候选 #1 的 files/route.ts GET list 专轮）**：第五十轮 worklog"下一轮候选"明示"补 files/route.ts 主路由 handler 级集成测试（POST multipart/form-data + GET list）。POST 涉及 multipart 解析 + magic bytes 校验 + 50MB/5GB 配额 + 文件类型判定 + dedup 版本化 + AI fetch（process-image/summarize）+ $transaction，较复杂，建议拆为 POST 专轮 + GET 专轮两轮处理"。本轮即补 GET list 专轮，POST 留待下一轮单独处理。
+
+**实现要点（1 个 test commit，10 例，1 文件）**：新增 `files-route.test.ts`（10 例），覆盖主路由 GET 的查询/分页/响应转换/错误契约：
+
+- **Auth（1 例）**：未认证 → 401 透传不触达 DB（createTenantDb / findMany 均不调用）。
+
+- **folderId 三态（3 例）**：①缺失 → where.folderId=null + tags/keyPoints 解析 + createTenantDb 以 tenantId 调用 + findMany where 含 wrapper 注入 tenantId + orderBy/take=100/skip=0 默认值 + raw db.file.findMany 恒不被调用（负向断言）；②"null" 字符串 → where.folderId=null（与缺失合并同处理，`folderId === "null" || !folderId`，两用例显式锁定此合并）；③具体值 "folder-1" → where.folderId=value。
+
+- **分页（3 例）**：①page=2&limit=10 → skip=10, take=10；②limit=600（>500）→ Math.min 封顶为 500；③limit 缺失（仅 page=1）→ 默认 100, skip=0。
+
+- **响应转换（2 例）**：①image fileType + thumbnailUrl → 保留 thumbnailUrl（if 分支触达，虽值为 no-op 但锁路径）；②findMany 返回空数组 → 200 + []。
+
+- **错误（1 例）**：findMany 抛错 → 500 "Failed to fetch files"。
+
+**核心安全契约双重锁定**：
+1. **路由不绕过 tenantDb**：mockRawFileFindMany 恒不被调用（负向断言），mockTenantFileFindMany 承接路由所有 file.findMany（正向断言）。GET 路由本身不触达 raw db（仅 import 未用），但保留负向断言锁定"若未来重构回 raw db 手动 where 立即失败"。
+2. **tenantId 经 wrapper 强制注入**：hand-written createTenantDb mock 模拟真实 TenantDb 注入行为（file where 末尾追加 tenantId）。真实 TenantDb 注入行为由 tenant-isolation.test.ts 覆盖；本测试只锁"路由层契约 + wrapper 注入路径"组合后 tenantId 必现。
+
+**folderId 三态合并锁定（核心契约）**：路由用 `folderId === "null" || !folderId` 把"缺失"与"'null' 字符串"合并为 folderId=null 处理。本轮用缺失（①）+ "null" 字符串（②）两用例显式锁定此合并——若后续误把 "null" 字符串改成走具体值分支，断言立即失败。该合并的设计意图：前端用 "null" 字符串显式表示"根目录"（与缺失等价），避免 folderId=null 在 query string 中被省略导致的歧义。
+
+**分页封顶锁定（核心契约）**：limit 经 `Math.min(parseInt(limit||'100',10), 500)` 封顶 500，防止客户端请求超大 limit 拖垮 DB。本轮用 limit=600 → take=500 用例显式锁定此封顶——若后续误删 Math.min，断言立即失败。
+
+**未锁定的潜在逻辑空隙（记录备查，不立项）**：
+- page/limit 非数字 NaN 透传未锁（`parseInt('abc',10)` 返回 NaN，take=NaN/skip=NaN 透传 findMany，与第四十七轮 queue GET limit 非数字同类问题）。本轮每个分页用例只传数字，未锁 NaN 透传。若立项需补"page=abc → NaN 透传"用例并先确认业务规则（是否应兜底回默认或返 400）。
+- orderBy 固定 createdAt desc 未单独锁（成功用例 ① 已含 orderBy 断言，但未锁"无客户端排序参数"契约——路由本就不接受排序参数，硬编码 desc）。
+- image thumbnailUrl if 分支值为 no-op（重新赋值同样值），未锁"非 image 或无 thumbnailUrl 时 thumbnailUrl 字段是否保留"——实际 parsed 经 `...f` 展开已含 thumbnailUrl，if 分支只对 image 重赋。本轮 image 用例锁了保留，未单独锁非 image 用例的 thumbnailUrl 字段存在性。
+
+环境：node_modules 经 `npm ci` 安装（项目用 package-lock.json，无 pnpm-lock.yaml；pnpm 可用但无对应 lockfile，fallback npm 与现有 lockfile 一致，无 lockfile 冲突）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run src/__tests__/api/files-route.test.ts` 单文件 10/10 通过；`npx vitest run` 全量 **1454/1454 通过**（91 文件，99.00s，第五十轮基线 1444/90 + 本轮新增 10 例/1 文件 = 1454/91，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/files-route.test.ts`**（新文件，10 例 = Auth 1 + folderId 3 + 分页 3 + 响应转换 2 + 错误 1，+297）— /api/files 主路由 GET list handler 级集成测试，覆盖 401/200/500 状态码 + TenantDb 注入契约（raw db vs tenantDb mock 分离 + wrapper 注入 tenantId）+ folderId 三态合并（缺失/"null"/具体值）+ 分页封顶（Math.min(limit,500)）+ tags/keyPoints safeJsonParseArray 解析（null/无效 JSON → []）+ image thumbnailUrl if 分支触达
+
+### Commit
+- `5f3be8e test(files): 补 /api/files 主路由 GET list handler 级集成测试`
+
+### 推送状态
+- Gitee：待推送 `07e01eb..5f3be8e main -> main`
+- GitHub：待推送 `07e01eb..5f3be8e main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1454/1454 通过（91 文件，99.00s），零回归
+- 改动量：1 文件（新测试文件 +297），纯测试 commit，无生产代码变更
+- **raw db vs tenantDb mock 分离范式延续（第五十轮 files-id 范式）**：本轮 raw db mock 仅含 file.findMany（负向断言恒不调用，GET 不触达 raw db），tenantDb mock 含 file.findMany（wrapper 注入 tenantId）。GET 较 files-id 更简（无 DELETE 级联 raw db 调用），mock 结构更轻。
+- **folderId 三态合并锁定范式**：本轮用缺失 + "null" 字符串两用例显式锁定"缺失与 'null' 字符串合并为 folderId=null"的合并处理。该范式可复用于后续任何"多输入合并同处理"的 handler 测试。
+- **沙箱时钟说明**：本会话 `TZ=Asia/Shanghai date` 报 2026-06-29 15:42 CST（UTC 07:42）。第五十轮时间戳为 15:00，本轮实际开始 fetch 在 15:18+、commit 在 15:38。按"高于上一轮保持单调"规则取整 16:00（避免与第五十轮 15:00 同小时混淆）。轮次编号（第五十一轮，紧接第五十轮）为排序权威键，时间戳仅供溯源。
+
+### 下一轮候选
+- **`/api/files` GET list handler 级集成测试已闭环**（10 例锁定 401/200/500 + TenantDb 注入 + folderId 三态合并 + 分页封顶 + tags/keyPoints 解析 + image thumbnailUrl），自本轮起从候选清单移除
+- 补 files/route.ts 主路由 **POST** handler 级集成测试（multipart/form-data 解析 + magic bytes 校验 + 50MB/5GB 配额 + 文件类型判定 + dedup 版本化 + AI fetch process-image/summarize + $transaction）。POST 涉及面广，建议拆为多个子轮：①415/413/magic bytes/file.size 50MB 校验 + 5GB 配额早检（$queryRaw）+ 文件类型判定 + 路径安全；②dedup 版本化（existingFile 分支 $transaction + fileVersion.create + file.update + unlink 旧文件）+ 新建分支 $transaction（配额再检 TOCTOU + file.create）+ AI fetch（process-image/summarize，需 mock fetch）。可复用本轮 raw db vs tenantDb mock 分离 + hand-crafted request 范式 + 第四十一轮 files-import 的 $queryRaw 配额查询契约范式 + 第五十轮 fs/promises mock ESM 互操作范式
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **queue GET limit 非数字 NaN 透传**（第四十七轮发现，延续）：`parseInt('abc', 10)` 返回 NaN 透传给 getSyncQueue。若立项修复需先确认业务规则（是否应将 NaN 兜底回 50、或返 400 拒绝非数字 limit），修复时同步补对应测试
+- **conflicts POST password 缺失透传 undefined**（第四十七轮发现，延续）：auto=true 与 fileId+resolution 两分支均不校验 password，直接以 password=undefined 透传服务层。若立项修复需先确认业务规则（是否应在两分支也校验 password 非空，与 sync POST 的 `!password → 400` 一致），修复时同步补对应测试
+- **backups POST zod 不校验密码复杂度**（第四十八轮发现，延续）：password: z.string().min(6) 仅校验长度，纯数字/常见弱口令均通过。若立项修复需先确认业务规则（是否应要求字母+数字混合、是否应拒绝 top-N 弱口令），修复时同步补对应测试
+- **backups/[id] DELETE 不区分 404/500**（第四十九轮发现，延续）：deleteBackup 内部 backupId 不存在时 R2 抛 NoSuchKey 错误，路由统一返 500 而非 404。若立项修复需先确认业务规则（是否应区分 404 与 500），修复时同步补对应测试
+- **backups/[id] POST 错误密码不区分 401/500**（第四十九轮发现，延续）：错误密码在 decrypt 阶段抛错，路由统一返 500 而非 401。若立项修复需先确认业务规则（是否应区分 401 密码错误与 500 内部错误），修复时同步补对应测试
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity（负数 / 0 / 非整数 / 超大数均透传 createOrder）。若立项修复需先确认业务规则（是否应限 quantity ≥ 1 且为整数、是否有上限），修复时同步补对应测试
+- **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
