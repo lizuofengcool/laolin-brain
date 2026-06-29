@@ -7,10 +7,13 @@
  *     返回聚合对象 { subscription, tenantStatus, expiringSoon }；任一服务抛错 → 500，
  *     且因顺序 await，前序服务抛错时后续服务不触达
  *   - DELETE：未认证 401 透传；成功时按 auth.tenantId 调用 cancelSubscription，
- *     返回 { success: true, message, subscription: result }；抛错 → 500
+ *     返回 { success: true, message }；cancelSubscription 返 false（无有效订阅）→
+ *     404 { success: false, error: '无有效订阅可取消' }；抛错 → 500
  *   - POST：未认证 401 透传；?action=resume 时按 auth.tenantId 调用 reactivateSubscription，
- *     返回 { success: true, message, subscription: result }；无 action 或非 resume 的 action →
- *     400 { error: '未知操作' } 且不触达 reactivateSubscription；resume 分支抛错 → 500
+ *     返回 { success: true, message }；reactivateSubscription 返 false（未处于待取消状态）→
+ *     409 { success: false, error: '订阅未处于待取消状态，无法恢复' }；
+ *     无 action 或非 resume 的 action → 400 { error: '未知操作' } 且不触达 reactivateSubscription；
+ *     resume 分支抛错 → 500
  *
  * Mock 策略：authenticateRequest / tenant.service / billing.service / next/server 全部隔离，
  * 不触达真实数据库。路由经服务层访问数据（无直接 db 依赖），故无需 mock @/lib/db。
@@ -194,7 +197,7 @@ describe("saas/subscription 路由", () => {
       expect(mockCancelSubscription).not.toHaveBeenCalled();
     });
 
-    it("成功 → cancelSubscription 以 auth.tenantId 调用，返回 success + subscription(result)", async () => {
+    it("成功 → cancelSubscription 以 auth.tenantId 调用，返回 success + message（无 subscription 字段）", async () => {
       mockCancelSubscription.mockResolvedValue(true);
 
       const res = (await DELETE(
@@ -205,7 +208,24 @@ describe("saas/subscription 路由", () => {
       expect(res.body).toEqual({
         success: true,
         message: "订阅已取消，将在当前周期结束后失效",
-        subscription: true,
+      });
+      // 修正前 bug：路由无条件返回 success:true 并把 boolean 塞进 subscription 字段。
+      // 现已移除该类型谎言字段，成功响应仅含 success + message。
+      expect(res.body).not.toHaveProperty("subscription");
+      expect(mockCancelSubscription).toHaveBeenCalledWith("tenant-1");
+    });
+
+    it("cancelSubscription 返 false（无有效订阅）→ 404，不再谎报 success:true", async () => {
+      mockCancelSubscription.mockResolvedValue(false);
+
+      const res = (await DELETE(
+        makeRequest("http://localhost/api/saas/subscription", "DELETE")
+      )) as MockRes;
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({
+        success: false,
+        error: "无有效订阅可取消",
       });
       expect(mockCancelSubscription).toHaveBeenCalledWith("tenant-1");
     });
@@ -236,7 +256,7 @@ describe("saas/subscription 路由", () => {
       expect(mockReactivateSubscription).not.toHaveBeenCalled();
     });
 
-    it("?action=resume → reactivateSubscription 以 auth.tenantId 调用，返回 success + subscription(result)", async () => {
+    it("?action=resume → reactivateSubscription 以 auth.tenantId 调用，返回 success + message（无 subscription 字段）", async () => {
       mockReactivateSubscription.mockResolvedValue(true);
 
       const res = (await POST(
@@ -247,7 +267,23 @@ describe("saas/subscription 路由", () => {
       expect(res.body).toEqual({
         success: true,
         message: "订阅已恢复",
-        subscription: true,
+      });
+      // 修正前 bug：路由无条件返回 success:true 并把 boolean 塞进 subscription 字段。
+      expect(res.body).not.toHaveProperty("subscription");
+      expect(mockReactivateSubscription).toHaveBeenCalledWith("tenant-1");
+    });
+
+    it("?action=resume 且 reactivateSubscription 返 false（未处于待取消状态）→ 409，不再谎报 success:true", async () => {
+      mockReactivateSubscription.mockResolvedValue(false);
+
+      const res = (await POST(
+        makeRequest("http://localhost/api/saas/subscription?action=resume", "POST")
+      )) as MockRes;
+
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({
+        success: false,
+        error: "订阅未处于待取消状态，无法恢复",
       });
       expect(mockReactivateSubscription).toHaveBeenCalledWith("tenant-1");
     });

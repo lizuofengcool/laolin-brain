@@ -46,10 +46,18 @@ export async function DELETE(request: NextRequest) {
 
     const result = await cancelSubscription(tenantId);
 
+    // cancelSubscription 返回 false 表示无有效订阅可取消（getCurrentSubscription 为 null）。
+    // 此时不能向客户端谎报 success:true，需明确返回失败状态，避免"取消成功"误导。
+    if (!result) {
+      return NextResponse.json(
+        { success: false, error: '无有效订阅可取消' },
+        { status: 404 }
+      );
+    }
+
     return NextResponse.json({
       success: true,
       message: '订阅已取消，将在当前周期结束后失效',
-      subscription: result,
     });
   } catch (error) {
     console.error('取消订阅失败:', error);
@@ -72,10 +80,20 @@ export async function POST(request: NextRequest) {
 
     if (action === 'resume') {
       const result = await reactivateSubscription(tenantId);
+
+      // reactivateSubscription 返回 false 表示无可恢复订阅（无订阅，或订阅未处于
+      // cancelAtPeriodEnd 待取消状态）。此时不能谎报 success:true，需返回 409 指明
+      // 当前订阅状态不允许恢复操作。
+      if (!result) {
+        return NextResponse.json(
+          { success: false, error: '订阅未处于待取消状态，无法恢复' },
+          { status: 409 }
+        );
+      }
+
       return NextResponse.json({
         success: true,
         message: '订阅已恢复',
-        subscription: result,
       });
     }
 
