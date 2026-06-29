@@ -8790,3 +8790,77 @@ Status: 完成
 - **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 13:00 自动迭代
+
+第四十七轮自动迭代。本轮沙箱工作目录为全新 clone（前轮目录不在本会话沙箱中），`git clone origin` 后 `git remote add github` 配齐双端，`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `7241b30`（第四十六轮 worklog commit），工作树干净、无未提交改动、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复核（实证，非仅靠 worklog 结论）**：本轮对 clean clone 再做轻量复核，确认任务清单所列 5 项"剩余"问题全部在前序轮次关闭（与第四十六轮实证一致，clean clone 同 commit 无变动）：
+- `src/lib/db/tenant-db.ts` raw getter 审计仍在位（`get raw()` 含 `new Error().stack` + `console.warn` 软审计；`rawDb` 无审计导出已移除，仅 `TenantDb.raw` 受审计 getter 与受控 `db` 导出两途径）
+- `src/lib/payment/alipay.ts` 真实 RSA2 验签（`createVerify('RSA-SHA256')` + `RSA_PKCS1_PADDING`，无 `alipay-sdk` 依赖、无"非空即通过"桩）；`wechat.ts` 真实 V3 HMAC-SHA256 + `timingSafeEqual` 常量时间比较，注释明示"不再非空即通过"
+- `src/app/api/files/route.ts` 与 `[id]/route.ts` 主 CRUD 全走 `createTenantDb(tenantId)`；raw `db` 用法限于 `$transaction`/`$queryRaw` 配额聚合且显式带 `tenantId` WHERE 子句
+- `src/lib/cloud-sync/sync-engine.ts` `keep_both` 分支已修复：先取云端数据 → 重命名本地为 `[冲突副本]` → `db.file.create` 落地云端版本为新文件（新 id），不再直接覆盖
+- `src/__tests__/lib/api-auth.test.ts` 与 `src/lib/api-auth.ts` 实现匹配（async、返回 4 字段 userId/email/tenantId/role、不读 query、Bearer 大小写不敏感、`requirePlatformAdmin` fail-closed）
+
+无新发现的活跃代码路径逻辑 bug，优先级 1 无待修，转向优先级 3（补测试）。
+
+**优先级 3 立项（吃掉第四十六轮候选 #2 的 cloud-sync 路由族）**：第二十八轮已闭环 cloud-sync/config 单点路由测试，第四十六轮 worklog"下一轮候选"明确建议"补 cloud-sync 的 status/sync/queue/conflicts/backups handler 级路由测试（lib 层已有 cloud-sync-tenant.test.ts，route 层仅 config 已补）"。本轮即补 status/sync/queue/conflicts 四路由（backups 与 backups/[id] 含 zod + isR2Configured 双重门控，复杂度更高，留待下一轮单独闭环），与第二十八轮 config 形成 cloud-sync 路由族五连测中的四项。
+
+**实现要点（1 个 test commit，32 例）**：新增 `cloud-sync-status-route.test.ts`（GET 4 例）、`cloud-sync-sync-route.test.ts`（POST 6 例）、`cloud-sync-queue-route.test.ts`（GET 7 + DELETE 3 = 10 例）、`cloud-sync-conflicts-route.test.ts`（GET 3 + POST 9 = 12 例），覆盖四路由的安全与控制流契约：
+
+- **status GET（4 例）**：①未认证 → 401 透传不触达任一服务；②成功 → getSyncStatus(auth.tenantId) + getRecentSyncLogs(auth.tenantId, 5)（limit 路由 hardcode 5，非 query 可配），返回 { success, data: { status, recentLogs } }，忽略 query 注入的 tenantId/userId；③getSyncStatus 抛错 → 500 { error: <message> }，getRecentSyncLogs 因顺序 await 不触达；④getRecentSyncLogs 抛错 → 500，getSyncStatus 已先行调用。
+- **sync POST（6 例）**：①未认证 → 401 透传不触达 triggerSync；②body 缺 password → 400 请提供加密密码；③body password='' → 400（`!password` 真值即拒，空字符串 falsy）；④成功 → triggerSync 以 (auth.tenantId, auth.userId, password) 调用，result 原样回传 { success, data: result }；⑤body 带 tenantId/userId → triggerSync 仍以 auth 值调用（忽略 body 注入）；⑥triggerSync 抛错 → 500。
+- **queue GET（7 例）**：①未认证 → 401；②无 query → getSyncQueue(tenantId, undefined, 50)（status 缺省 undefined、limit 缺省 50）；③?status=pending → getSyncQueue(tenantId, 'pending', 50)；④?limit=100 → getSyncQueue(tenantId, undefined, 100)（parseInt base 10）；⑤?status=completed&limit=10 → getSyncQueue(tenant-1, 'completed', 10)；⑥query 带 tenantId/userId 注入 → 仍以 auth.tenantId 调用；⑦getSyncQueue 抛错 → 500。
+- **queue DELETE（3 例）**：①未认证 → 401 不触达 cleanupCompletedQueue；②成功 → cleanupCompletedQueue(tenantId, 7)（olderThanDays 路由 hardcode 7），返回 { success, data: { cleaned } }；③cleanupCompletedQueue 抛错 → 500。
+- **conflicts GET（3 例）**：①未认证 → 401；②成功 → getConflictFiles(auth.tenantId)，返回 { success, data: conflicts }；③getConflictFiles 抛错 → 500。
+- **conflicts POST（9 例）**：①未认证 → 401 不触达任一冲突解决服务；②auto=true → resolveConflictsAuto(tenantId, userId, password, 'last_write_wins')（strategy 路由 hardcode 为 'last_write_wins'，非 body 可配），返回 { success, data: { resolved } }，单文件解决不触达；③fileId+resolution（无 auto）→ resolveConflict 全参透传（tenantId/userId 来自 auth，fileId/resolution/password 来自 body），返回 { success, message: '冲突已解决' }，自动批量不触达；④auto=false + fileId+resolution → 仍走单分支（auto=false 是 falsy，落 else if）；⑤既无 auto 也无 fileId/resolution → 400 请提供fileId和resolution，或设置auto为true；⑥仅 fileId 缺 resolution → 400（`fileId && resolution` 双条件）；⑦body 带 tenantId/userId → resolveConflict 仍以 auth 值调用；⑧resolveConflictsAuto 抛错 → 500；⑨resolveConflict 抛错 → 500。
+
+**GET query 透传契约（queue 独有）**：queue GET 用 `searchParams.get('status') || undefined` 与 `parseInt(searchParams.get('limit') || '50', 10)` 解析两参。status 空字符串 → undefined（`||` 短路），非空字符串透传；limit 缺省 → '50' → 50，存在 → parseInt base 10。测试用"无 query → (undefined, 50)"+"?status=pending → ('pending', 50)"+"?limit=100 → (undefined, 100)"+"?status=completed&limit=10 → ('completed', 10)" 四条用例锁此透传契约。这是与 saas/subscription POST（query action 分发，单一 action 参数）不同的多 query 参数透传范式。
+
+**POST 三分支分发契约（conflicts 独有）**：conflicts POST 校验链为 `if (auto)`（自动批量）→ `else if (fileId && resolution)`（单文件）→ `else` 400。测试用"auto=true → 自动批量不触达单文件"+"auto=false + fileId+resolution → 单文件不触达自动批量"+"既无 auto 也无 fileId/resolution → 400"+"仅 fileId 缺 resolution → 400（双条件）"四条用例锁此三分支优先级与条件。关键点：`auto=false` 是 falsy，落 else if 走单分支——测试用例④锁定此 falsy 透传行为。与 saas/orders POST（三道校验顺序：缺参 → plan 值域 → interval 值域）不同，conflicts POST 是分支分发而非校验链。
+
+**服务层 tenantId 注入契约（cloud-sync 路由族统一范式）**：cloud-sync 路由族四路由均不直接访问 db，全部经 `sync-engine` 服务层（getSyncStatus/getRecentSyncLogs/triggerSync/getSyncQueue/cleanupCompletedQueue/getConflictFiles/resolveConflict/resolveConflictsAuto），服务层函数以 tenantId 为首参。测试用 `toHaveBeenCalledWith("tenant-1")`（单参服务）或 `toHaveBeenCalledWith("tenant-1", ...)`（多参服务）锁死路由传给服务的 tenantId 即 auth.tenantId。这是与 saas 路由族（tenant.service/billing.service 委托）一致的"路由 → 服务层 → db"三层委托模型，与 files 路由族（直接 import db + TenantDb）的 mock 策略不同——cloud-sync 路由测试均无需 mock @/lib/db，仅 mock sync-engine + api-auth + next/server。
+
+**body.tenantId/userId 忽略契约（多路由统一范式）**：sync POST `const { password } = body` 仅取 password，triggerSync 第一/二参硬绑 `tenantId`/`userId`（来自 auth）；conflicts POST `const { fileId, resolution, password, auto } = body` 不取 body.tenantId/userId，resolveConflict/resolveConflictsAuto 第一/二参硬绑 tenantId/userId。测试用"body 带 tenantId: 'tenant-evil' → triggerSync 仍 toHaveBeenCalledWith('tenant-1', ...)"与"body 带 tenantId/userId → resolveConflict 仍 toHaveBeenCalledWith('tenant-1', 'user-1', ...)"锁定此契约——若后续误把 body.tenantId/userId 透传给服务层，将造成跨租户同步/冲突解决，断言立即失败。与 saas/orders POST"忽略 body.tenantId"同理：可信身份只来自 auth，请求体中的租户/用户标识一律忽略。
+
+**未锁定的潜在逻辑空隙（记录备查，不立项）**：
+- queue GET `parseInt('abc', 10)` 返回 NaN，NaN 透传给 getSyncQueue 的 limit 参。本轮不锁此 NaN 透传行为（避免锁定潜在 buggy 行为阻碍后续修复）。若立项需先确认业务规则（是否应将 NaN 兜底回 50、或返 400 拒绝非数字 limit）。
+- conflicts POST `auto=true` 但 password 缺失时，路由不校验 password，直接以 password=undefined 透传 resolveConflictsAuto。同理 `fileId+resolution` 但 password 缺失时也不校验。本轮不锁此 password=undefined 透传行为（避免锁定潜在 buggy 行为阻碍后续修复）。若立项需先确认业务规则（是否应在两分支也校验 password 非空，与 sync POST 的 `!password → 400` 一致）。
+- sync POST body 解析失败（malformed JSON）时 `await request.json()` 抛错落入 catch → 500。本轮未单独立测试用例（与 conflicts POST 同理，未锁此 500 行为）。如需可后续补 malformed JSON → 500 用例。
+
+环境：node_modules 经 `npm ci`（项目用 package-lock.json，无 pnpm-lock.yaml；pnpm 可用但无对应 lockfile，fallback npm 与现有 lockfile 一致，无 lockfile 冲突）安装 963 包耗时 56s（与第四十六轮 963 包一致）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run src/__tests__/api/cloud-sync-{status,sync,queue,conflicts}-route.test.ts` 单批 32/32 通过（stderr 为路由 catch 块 `console.error` 预期日志，非失败）；`npx vitest run` 全量 **1397/1397 通过**（87 文件，103.58s，第四十六轮基线 1365/83 + 本轮新增 32 例/4 文件 = 1397/87，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/cloud-sync-status-route.test.ts`**（新文件，4 例，+153）— /api/cloud-sync/status GET 路由 handler 级集成测试，覆盖 401/500 全状态码 + getSyncStatus/getRecentSyncLogs 双服务 tenantId 作用域全等断言 + 顺序 await（getSyncStatus 抛错后续不触达）+ limit 路由 hardcode 5 + query tenantId/userId 忽略
+2. **`src/__tests__/api/cloud-sync-sync-route.test.ts`**（新文件，6 例，+167）— /api/cloud-sync/sync POST 路由 handler 级集成测试，覆盖 401/400/500 全状态码 + password 缺省/空字符串 400 + triggerSync (tenantId, userId, password) 三参全等断言 + body.tenantId/userId 忽略 + result 原样回传
+3. **`src/__tests__/api/cloud-sync-queue-route.test.ts`**（新文件，10 例 = GET 7 + DELETE 3，+225）— /api/cloud-sync/queue GET/DELETE 路由 handler 级集成测试，覆盖 401/500 全状态码 + GET query 透传契约（status/limit 缺省与解析）+ cleanupCompletedQueue olderThanDays 路由 hardcode 7 + 服务层 tenantId 作用域全等断言 + query tenantId/userId 忽略
+4. **`src/__tests__/api/cloud-sync-conflicts-route.test.ts`**（新文件，12 例 = GET 3 + POST 9，+232）— /api/cloud-sync/conflicts GET/POST 路由 handler 级集成测试，覆盖 401/400/500 全状态码 + POST 三分支分发（auto 优先 → fileId+resolution → 400）+ auto=false falsy 透传单分支 + 仅 fileId 缺 resolution 400 + resolveConflict/resolveConflictsAuto 全参透传 + strategy 路由 hardcode 'last_write_wins' + body.tenantId/userId 忽略
+
+### Commit
+- `5bd5f86 test(cloud-sync): 补 status/sync/queue/conflicts 路由 handler 级集成测试`
+
+### 推送状态
+- Gitee：待推送 `7241b30..5bd5f86 main -> main`
+- GitHub：待推送 `7241b30..5bd5f86 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1397/1397 通过（87 文件，103.58s），零回归
+- 改动量：4 文件（新测试文件 +777），纯测试 commit，无生产代码变更
+- **cloud-sync 路由族五连测进度**：config（第二十八轮）+ status/sync/queue/conflicts（本轮）= 5 项闭环，剩 backups/backups-[id] 两项留待下一轮。两 backups 路由含 zod 校验（password min 6 / min 1）+ isR2Configured 双重门控（GET/POST/DELETE 均先查 R2 是否配置，未配置直接 400），与 config 路由的"zod + testR2Connection + $transaction"三件套范式有重叠但有差异（backups 无 testR2Connection、无 $transaction），可复用 config 路由的 isR2Configured mock 范式
+- **GET query 透传契约锁定范式可复用**：本轮用"无 query → 缺省值"+"单参 query → 透传"+"双参 query → 皆透传"+"非数字 limit 未锁 NaN 透传"四条用例锁定 queue GET 的 query 解析契约。该范式可复用于后续任何带 query 参数的 handler 测试（如未来若加 sort/order/offset 等）
+- **POST 三分支分发范式可复用**：本轮用"auto=true → 自动批量"+"fileId+resolution → 单文件"+"auto=false → falsy 透传单分支"+"既无 auto 也无 fileId/resolution → 400"+"仅 fileId 缺 resolution → 400（双条件）"五条用例锁定 conflicts POST 的三分支优先级与双条件。与第四十四轮 tenant/users PATCH 的"三道防线顺序契约"、第四十六轮 saas/orders POST 的"三道校验顺序"同为多分支/多字段顺序锁定范式，可复用于后续任何多分支 dispatcher handler 测试
+- **沙箱时钟说明**：本会话 `TZ=Asia/Shanghai date` 报 2026-06-29 13:02 CST（UTC 05:02），worklog 头取整为 13:00（高于第四十六轮 12:00 保持单调）。轮次编号（第四十七轮）为排序权威键，时间戳仅供溯源
+
+### 下一轮候选
+- **`/api/cloud-sync/status`、`/sync`、`/queue`、`/conflicts` handler 级集成测试已闭环**（32 例锁定 401/400/500 + 服务层 tenantId 注入 + GET query 透传 + POST 三分支分发 + body.tenantId/userId 忽略 + 顺序 await），自本轮起从候选清单移除。cloud-sync 路由族五连测已闭环 5/7
+- **补 cloud-sync/backups 与 backups/[id] handler 级路由测试**（最后一项 cloud-sync 路由族闭环）：backups GET（listBackups）+ POST（uploadBackup，zod password min 6）+ backups/[id] POST（downloadAndRestoreBackup，zod password min 1）+ DELETE（deleteBackup），均带 isR2Configured 双重门控，可复用本轮 sync-engine mock 范式 + 第二十八轮 isR2Configured mock 范式
+- 补 files/route.ts、files/[id]/route.ts 的 handler 级集成测试（锁定 TenantDb 注入契约，可复用第四十二轮 raw db vs tenantDb mock 分离范式 + hand-crafted request 范式）
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **queue GET limit 非数字 NaN 透传**（本轮发现）：`parseInt('abc', 10)` 返回 NaN 透传给 getSyncQueue。若立项修复需先确认业务规则（是否应将 NaN 兜底回 50、或返 400 拒绝非数字 limit），修复时同步补对应测试
+- **conflicts POST password 缺失透传 undefined**（本轮发现）：auto=true 与 fileId+resolution 两分支均不校验 password，直接以 password=undefined 透传服务层。若立项修复需先确认业务规则（是否应在两分支也校验 password 非空，与 sync POST 的 `!password → 400` 一致），修复时同步补对应测试
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity（负数 / 0 / 非整数 / 超大数均透传 createOrder）。若立项修复需先确认业务规则（是否应限 quantity ≥ 1 且为整数、是否有上限），修复时同步补对应测试
+- **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
