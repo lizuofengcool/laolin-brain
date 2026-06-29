@@ -9833,3 +9833,57 @@ Status: 完成
 - **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity。若立项修复需先确认业务规则，修复时同步补对应测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-30 01:00 自动迭代
+
+第六十一轮自动迭代。本轮闭合候选清单中**两项被标注"需先确认业务规则"实则为既有 codebase 约定可复用**的 cloud-sync 路由输入校验空隙：`queue GET limit 非数字 NaN 透传` 与 `conflicts POST password 缺失透传 undefined`（均第四十七轮发现，延续 14 轮）。延续第六十轮"误判识别"范式：二者均非需产品拍板的业务规则，而是已有路由约定的直接复用。
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-30 01:00 CST。本轮 2 个 dev commit（2b7093f / 1c948c1）+ 1 个 worklog commit 落于本轮。轮次编号（第六十一轮）为排序权威键，时间戳 01:00 高于第六十轮 00:25 保持单调（同处 06-30）。
+
+**前置检查**：本轮为全新 clone 后首次开发（沙箱 /workspace 原为空，`git clone origin` + `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader）。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 c025c1b（第六十轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核（实证，非沿用自述）**：逐一打开任务清单"剩余优先级 1"5 项对应源文件核验，确认全部已在历史轮次真实闭环：tenant-db.ts `raw`/`transaction` 带 console.warn 调用堆栈审计（line 41-47/56-62）；alipay.ts `verifyRSA2Sign` 用 createVerify('RSA-SHA256') 真实验签（line 191-207）；wechat.ts `verifyWechatSign` 用 createHmac+timingSafeEqual 恒定时间比较（line 221-242）；files/route.ts dedup/GET 走 createTenantDb（line 271/460）；sync-engine.ts keep_both 先 rename 本地为 `[冲突副本]` 再 create 新 id（line 675-716）；api-auth.test.ts 期望 4 字段/async/拒 query 与实现对齐。故任务清单"剩余优先级 1"确已全部闭环，本轮转向候选清单"需先确认业务规则"项的误判识别。
+
+**误判识别 —— 既有 codebase 约定 vs 业务规则**：worklog 自第四十七轮起将 queue GET NaN 透传与 conflicts POST password 透传两项标注"需先确认业务规则"，延续 14 轮未动。复核实证：
+- queue GET NaN：codebase 已有 `src/app/api/faces/groups/[id]/photos/route.ts` line 21-26 的 `isNaN(page)||page<1 → 400` / `isNaN(limit)||limit<1||limit>100 → 400` 既有约定，NaN/非正数 → 400 是既定路由约定，非新业务规则。
+- conflicts POST password：codebase 已有 `src/app/api/cloud-sync/sync/route.ts` line 18-20 的 `!password → 400 '请提供加密密码'` 既有约定；且 `resolveConflict`/`resolveConflictsAuto` 签名 `password: string` 非可选，三分支（local_wins/cloud_wins/keep_both）与 auto 批量均经 crypto 加解密必须 password；前端 `CloudSync.tsx` line 428/476 已 client-side `!encryptionPassword` 强制。故 password 缺失 → 400 是既有约定 + 前端已强制的复用，非新业务规则。两者均安全闭合。
+
+**改动设计 —— 输入校验前置 early-return（零生产控制流侵入服务层）**：
+- queue GET：`parseInt('abc',10)` 返 NaN、`?limit=-5`/`?limit=0` 返负数/零，原直接透传 `getSyncQueue` → Prisma `take:NaN`/`take:-N` 行为未定义。在解析后加 `if (isNaN(limit) || limit < 1) return 400 'limit 必须为正整数'`，复用 faces 路由 `isNaN||<1` 下界约定（不新增上界 cap——上界属新业务规则，超出本轮"修 NaN 透传"scope，留待后续）。校验在 `getSyncQueue` 调用前，不触达服务层。
+- conflicts POST：auto 与 fileId+resolution 两工作分支内、调用服务前各加 `if (!password) return 400 '请提供加密密码'`。**password 检查置于分支内而非顶部**：空 body `{}` 应落 else 分支返回结构错误 "请提供fileId和resolution，或设置auto为true"（更精确，且保持既有 `{}` → 结构错误测试不变），password 校验仅在确认是有效操作分支后触发。错误消息与 sync/route.ts 完全一致。
+
+**前端兼容性**：核验 CloudSync.tsx 两处 POST 调用（line 439 handleResolveConflict / line 490 handleAutoResolveConflicts）均在调用前 `!encryptionPassword` client-side 拦截并在 body 带 `password: encryptionPassword`，故服务端 `!password → 400` 为纯 defense-in-depth，不破坏 UI。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；64.2s，--ignore-scripts 跳过 sharp/unrs native build）
+- `npx prisma generate`（补 PrismaClient 类型，309ms）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关，非本轮引入）。本轮改动零类型错误
+- `npx vitest run src/__tests__/api/cloud-sync-queue-route.test.ts`：13/13 通过（原 10 + 本轮新增 3：abc→400、-5→400、0→400，均不触达 getSyncQueue）
+- `npx vitest run src/__tests__/api/cloud-sync-conflicts-route.test.ts`：14/14 通过（原 12 + 本轮新增 2：auto 无 password→400、单文件无 password→400，均不触达服务层；既有 `{}`→结构错误 400 回归通过）
+- `npx vitest run` 全量 1505/1505 通过（98 文件，120.20s），零回归（基线 1500/98 + 本轮 5 = 1505/98）
+
+### 改动量
+
+4 文件（2 路由 +11 / 2 测试 +53-11），2 dev commit，含生产代码输入校验 + 对应测试。
+
+### Commit
+
+- `2b7093f` fix(cloud-sync): queue GET limit 非数字/非正数返回 400 而非透传 NaN
+- `1c948c1` fix(cloud-sync): conflicts POST password 缺失返回 400 而非透传 undefined
+
+### 推送
+
+- origin (Gitee)：c025c1b..1c948c1 推送成功
+- github (GitHub)：c025c1b..1c948c1 推送成功
+
+### 下一轮候选
+
+- **queue GET limit 非数字 NaN 透传**（第四十七轮发现，延续 14 轮）**本轮闭合**：isNaN||<1 → 400，自本轮起从候选清单移除（注：上界 cap 未引入，留作单独业务规则决策）
+- **conflicts POST password 缺失透传 undefined**（第四十七轮发现，延续 14 轮）**本轮闭合**：两工作分支 !password → 400，自本轮起从候选清单移除
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **backups POST zod 不校验密码复杂度**（第四十八轮发现，延续）：password: z.string().min(6) 仅校验长度。若立项修复需先确认业务规则，修复时同步补对应测试
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity。若立项修复需先确认业务规则，修复时同步补对应测试
+- **queue GET limit 上界 cap 缺失**（本轮新增候选）：本轮仅修 NaN/非正数下界，未引入上界（如 >100 → 400）。faces 路由有 100 上界约定，queue 无。是否对齐 faces 加 cap 属新业务规则（防 DoS vs 灵活性），留待后续确认
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
