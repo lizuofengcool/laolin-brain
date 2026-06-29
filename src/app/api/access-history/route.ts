@@ -20,7 +20,20 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const type = searchParams.get('type') || 'recent'; // recent / frequent / history
     const page = parseInt(searchParams.get('page') || '1', 10);
-    const pageSize = Math.min(100, parseInt(searchParams.get('pageSize') || '20', 10));
+    const pageSizeRaw = parseInt(searchParams.get('pageSize') || '20', 10);
+
+    // 校验分页参数：非数字（'abc' → NaN）或非正数拒绝，避免 NaN/负数透传给
+    // db.accessHistory/db.file.findMany → Prisma skip/take 的未定义行为（四个 type 分支
+    // 共用 page/pageSize，Math.min(100, NaN) 仍为 NaN）。与 files/storage/tags 及
+    // cloud-sync/queue 的 isNaN||<1 → 400 约定一致
+    if (isNaN(page) || page < 1) {
+      return NextResponse.json({ error: 'page 必须 >= 1' }, { status: 400 });
+    }
+    if (isNaN(pageSizeRaw) || pageSizeRaw < 1) {
+      return NextResponse.json({ error: 'pageSize 必须为正整数' }, { status: 400 });
+    }
+    const pageSize = Math.min(100, pageSizeRaw);
+
     const accessType = searchParams.get('accessType') || 'view';
 
     // tenantId 由 authenticateRequest 已查证返回，直接复用，避免重复查 tenantUser

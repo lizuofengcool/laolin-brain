@@ -17,6 +17,10 @@
  *       tenantId+userId+isDeleted:false；uploaded 按 createdAt desc、modified 按 updatedAt desc。
  *     · accessType 过滤正确合并进 where；分页默认 page=1/pageSize=20、pageSize 上限 100；
  *       findMany 抛错 500 { error: '获取访问历史失败' }。
+ *     · **分页参数校验**：page/pageSize 非数字（'abc' → NaN）或非正数 → 400，不触达 DB
+ *       （四个 type 分支共用 page/pageSize，校验置于分支前）。原 Math.min(100, NaN)=NaN
+ *       透传 Prisma skip/take 会抛错（被 catch 吞为 500），本轮修复锁定为前置 400。
+ *       与 files/storage/tags 及 cloud-sync/queue 约定一致。
  *   - POST：
  *     · 未认证 401；缺 fileId 400 { error: 'fileId is required' }。
  *     · file.findFirst 以 { id:fileId, tenantId } 双键作用域（防跨租户文件登记），未命中 404。
@@ -361,6 +365,43 @@ describe("/api/access-history 路由", () => {
 
       expect(res.status).toBe(500);
       expect(res.body).toEqual({ error: "获取访问历史失败" });
+    });
+
+    // ─── 分页参数 NaN/非正数 → 400（本轮修复锁定，防 Math.min(100,NaN)=NaN 透传 Prisma skip/take）───
+    it("?page=abc → 400 { error: 'page 必须 >= 1' }，不触达 DB（校验置于 type 分支前）", async () => {
+      const res = (await GET(makeGetRequest("?type=recent&page=abc"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "page 必须 >= 1" });
+      expect(mockAccessHistoryFindMany).not.toHaveBeenCalled();
+      expect(mockAccessHistoryCount).not.toHaveBeenCalled();
+      expect(mockFileFindMany).not.toHaveBeenCalled();
+    });
+
+    it("?page=0 → 400（page<1，对 recent-uploaded 分支同样生效）", async () => {
+      const res = (await GET(makeGetRequest("?type=recent-uploaded&page=0"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "page 必须 >= 1" });
+      expect(mockFileFindMany).not.toHaveBeenCalled();
+      expect(mockFileCount).not.toHaveBeenCalled();
+    });
+
+    it("?pageSize=abc → 400 { error: 'pageSize 必须为正整数' }，不触达 DB（Math.min(100,NaN) 仍为 NaN）", async () => {
+      const res = (await GET(makeGetRequest("?type=recent&pageSize=abc"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "pageSize 必须为正整数" });
+      expect(mockAccessHistoryFindMany).not.toHaveBeenCalled();
+      expect(mockFileFindMany).not.toHaveBeenCalled();
+    });
+
+    it("?pageSize=-5 → 400（负数，防 take:-5 透传 Prisma）", async () => {
+      const res = (await GET(makeGetRequest("?type=frequent&pageSize=-5"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "pageSize 必须为正整数" });
+      expect(mockAccessHistoryFindMany).not.toHaveBeenCalled();
     });
   });
 

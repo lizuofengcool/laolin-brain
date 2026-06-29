@@ -11,6 +11,9 @@
  *     同时存在时 where.createdAt 含 gte+lte）。
  *   - 分页：默认 page=1/pageSize=20；page=2&pageSize=2&total=5 → skip=2/take=2/
  *     totalPages=3/hasMore=true；pageSize 超过上限被截断为 100。
+ *   - **分页参数校验**：page/pageSize 非数字（'abc' → NaN）或非正数 → 400，不触达 DB。
+ *     原 Math.min(100, NaN)=NaN 透传 Prisma skip/take 会抛错（被 catch 吞为 500），
+ *     本轮修复锁定为前置 400。与 files/storage/tags 及 cloud-sync/queue 约定一致。
  *   - count 抛错 → 500 { error: '获取活动日志失败' }。
  *
  * 仅隔离 next/server / @/lib/api-auth / @/lib/db，复用第三十轮 cloud-sync-config-route 的
@@ -279,6 +282,41 @@ describe("/api/activity-logs 路由", () => {
 
       expect(res.status).toBe(500);
       expect(res.body).toEqual({ error: "获取活动日志失败" });
+    });
+
+    // ─── 分页参数 NaN/非正数 → 400（本轮修复锁定，防 Math.min(100,NaN)=NaN 透传 Prisma skip/take）───
+    it("?page=abc → 400 { error: 'page 必须 >= 1' }，不触达 DB", async () => {
+      const res = (await GET(makeGetRequest("?page=abc"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "page 必须 >= 1" });
+      expect(mockActivityLogCount).not.toHaveBeenCalled();
+      expect(mockActivityLogFindMany).not.toHaveBeenCalled();
+    });
+
+    it("?page=0 → 400（page<1）", async () => {
+      const res = (await GET(makeGetRequest("?page=0"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "page 必须 >= 1" });
+      expect(mockActivityLogCount).not.toHaveBeenCalled();
+    });
+
+    it("?pageSize=abc → 400 { error: 'pageSize 必须为正整数' }，不触达 DB（Math.min(100,NaN) 仍为 NaN）", async () => {
+      const res = (await GET(makeGetRequest("?pageSize=abc"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "pageSize 必须为正整数" });
+      expect(mockActivityLogCount).not.toHaveBeenCalled();
+      expect(mockActivityLogFindMany).not.toHaveBeenCalled();
+    });
+
+    it("?pageSize=-5 → 400（负数，防 take:-5 透传 Prisma）", async () => {
+      const res = (await GET(makeGetRequest("?pageSize=-5"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "pageSize 必须为正整数" });
+      expect(mockActivityLogFindMany).not.toHaveBeenCalled();
     });
   });
 });
