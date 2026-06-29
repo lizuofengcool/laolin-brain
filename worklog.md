@@ -8596,3 +8596,70 @@ Status: 完成
 - 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）——若前端确需撤销/接受邀请，需补对应 route.ts + 测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 09:00 自动迭代
+
+第四十四轮自动迭代。本轮沙箱工作目录为全新 clone（前轮目录不在本会话沙箱中），`git clone origin` 后 `git remote add github` 配齐双端，`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `1234758`（第四十三轮 worklog commit），工作树干净、无未提交改动、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复核**：第四十三轮 worklog 已确认任务清单所列 5 项剩余问题全部关闭，本轮 `grep TODO|FIXME|桩` 复核 src/lib 命中文件与第四十三轮一致——均为"需真实外部服务集成条件具备才能落地"的桩（registry.ts / model-manager.ts / document-qna.ts / billing.service.ts:290 / monitoring/index.ts:408 / wecom.ts + 支付降级路径 wechat.ts gated behind isPaymentConfigured）。**无新发现的活跃代码路径逻辑 bug**，优先级 1 无待修，转向优先级 3（补测试）。
+
+**优先级 3 立项（吃掉第四十三轮候选 #1 的 tenant-users）**：第四十三轮 worklog"下一轮候选"明确建议"下一轮可优先补 tenant-users：含租户成员管理 CRUD + role 变更，状态机与 invitations 互补——invitations 是'邀请未注册用户'，tenant-users 是'管理已加入成员'"。本轮立项落地该候选。
+
+**路由现状澄清**：实际路由路径为 `src/app/api/tenant/users/route.ts`（GET 列成员）+ `src/app/api/tenant/users/[id]/route.ts`（PATCH 改角色 / DELETE 移除），非 worklog 候选中简写的 `tenant-users`。两个 route 文件均完整实现 GET/PATCH/DELETE 三个 handler（无 orphaned 注释，与 invitations 的 DELETE/[token]/accept orphaned 注释不同）。本轮测试范围覆盖全部三个 handler。
+
+**实现要点（1 个 test commit，34 例）**：新增 `src/__tests__/api/tenant-users-route.test.ts`（GET 12 + PATCH 12 + DELETE 10），覆盖 /api/tenant/users 路由族的完整安全与控制流契约：
+
+- **GET（12 例）**：①未认证 → 401 透传，不触达 db.tenantUser；②role=member → 403 {error:'没有权限查看用户列表'}，count/findMany 均不触达（门控在 DB 之前）；③role=viewer → 403，不触达 DB；④role=admin → 放行（admin 与 owner 均可查用户列表）；⑤默认 → count+findMany 同 where {tenantId}，orderBy {joinedAt:'desc'}，skip=0 take=20，include.user.select {id,name,email,createdAt}，返回扁平化 data（{id,name,email,role,joinedAt,createdAt}）+ 分页字段全等断言；⑥role 过滤 → where {tenantId, role}；⑦search 过滤 → where.user = {OR:[{name:{contains,mode:'insensitive'}},{email:{contains,mode:'insensitive'}}]}（user 表无 tenantId，经 where.user 嵌套）；⑧role+search 组合 → where {tenantId, role, user:{OR}}；⑨分页 page=2&pageSize=2 → skip=2 take=2，totalPages=ceil(5/2)=3，hasMore=true；⑩pageSize=500 → Math.min(100,500) 截断为 100（响应 pageSize + findMany take 双锁定）；⑪count 抛错 → 500 {error:'获取用户列表失败'}，findMany 不触达；⑫findMany 抛错 → 500。
+- **PATCH（12 例）**：①未认证 → 401 透传，不触达 findFirst/update；②role 缺失 → 400 {error:'无效的角色'}（!role 触发，先于 owner 门控）；③role='superadmin' → 400（白名单仅 owner/admin/member/viewer）；④**admin 身份 + 无效 role → 400 而非 403**（role 校验先于 owner 门控，顺序锁定）；⑤admin 身份 + 合法 role → 403 {error:'没有权限修改用户角色'}（**仅 owner 可改角色**，admin 不可——比 GET 更严）；⑥member 身份 + 合法 role → 403；⑦**owner + target=self + 合法 role → 400 {error:'不能修改自己的角色'}**（self-check 在 owner 门控之后、findFirst 之前）；⑧findFirst 未命中 → 404 {error:'用户不存在'}，findFirst 以 {userId: targetUserId, tenantId} 双键作用域调用；⑨成功 → update where {tenantId_userId:{tenantId, userId:targetUserId}} data {role} → 200 {success, data}；⑩**role='owner' 在白名单内 → 不触发 400**（PATCH 白名单含 owner，与 invitations POST 白名单排除 owner 形成对照）；⑪findFirst 抛错 → 500 {error:'修改用户角色失败'}，update 不触达；⑫update 抛错 → 500。
+- **DELETE（10 例）**：①未认证 → 401 透传；②role=member → 403 {error:'没有权限移除用户'}，不触达 DB；③role=viewer → 403；④**member + target=self → 403 而非 400 self**（owner/admin 门控先于 self-check，顺序锁定）；⑤**admin + target=self → 400 {error:'不能移除自己'}**（admin 通过门控后达 self-check）；⑥findFirst 未命中 → 404，findFirst 以 {userId: targetUserId, tenantId} 双键作用域调用；⑦target.role='owner' → 400 {error:'不能移除所有者'}（防移除租户所有者导致租户无主，在 findFirst 命中之后）；⑧成功 → delete where {tenantId_userId:{tenantId, userId:targetUserId}} → 200 {success, message:'用户已移除'}；⑨findFirst 抛错 → 500 {error:'移除用户失败'}，delete 不触达；⑩delete 抛错 → 500。
+
+**核心安全契约锁定（手动 tenantId 注入 + 复合唯一键）**：本路由族用 raw db 手动注入 tenantId（非 TenantDb），与 invitations 路由同属"21 处 $transaction 回调之外、手动 where/data 注入 tenantId 即可保证租户隔离"的自管约定。测试用全等断言锁死每一处 where/data 的 tenantId 形状——GET 的 count/findMany where {tenantId}（+role/+user.OR 可选）、PATCH/DELETE 的 findFirst where {userId: targetUserId, tenantId} 双键作用域、PATCH 的 update where.tenantId_userId 复合唯一键、DELETE 的 delete where.tenantId_userId 复合唯一键。若后续重构意外去掉 tenantId（跨租户泄漏成员列表/越权改/删他租户成员），全等断言立即失败。
+
+**复合唯一键 userId 语义锁定**：update/delete 的 where 用 Prisma 复合唯一键名 `tenantId_userId`（由 @@unique([tenantId, userId]) 生成），值 {tenantId, userId: targetUserId}——**userId 是 URL [id] 参数（目标用户），非 auth.userId（调用者）**。测试用 `Promise.resolve({ id: "user-3" })` 传 params 并断言 where.userId === "user-3"，防后续误把 auth.userId 当 targetUserId 写入 where（会导致改/删自己而非目标用户）。
+
+**三道防线顺序契约（各 handler 独有）**：
+- **PATCH**：400(无效 role) → 403(非 owner) → 400(self) → 404(未命中) → 200(update)。**顺序锁定**：admin + 无效 role → 400 而非 403（role 校验先于 owner 门控）；admin + 合法 role → 403（owner 门控在 self-check 之前，admin 不触达 self-check）。这是与 invitations POST（先 400 校验、后 403 门控）同形但更严的门控模型——invitations POST 允许 admin 邀请，PATCH 不允许 admin 改角色。
+- **DELETE**：403(非 owner/admin) → 400(self) → 404(未命中) → 400(target.role==='owner') → 200(delete)。**顺序锁定**：member + target=self → 403 而非 400 self（门控先于 self-check）；admin + target=self → 400 self（admin 通过门控后达 self-check）。DELETE 的 self-check 在门控**之后**（与 PATCH 相同），但 DELETE 多一道 target.role==='owner' 兜底（防 admin 移除租户所有者导致租户无主）。
+
+**角色门控模型第六对照（与 invitations 互补）**：invitations 是"邀请未注册用户加入"（创建 invitation 记录、token、expiresAt），tenant/users 是"管理已加入成员"（直接 CRUD TenantUser 关联记录，无 token、无 expiresAt、无 $transaction）。门控分层：
+- GET 列成员：owner/admin 放行（同 invitations GET）。
+- PATCH 改角色：**仅 owner 放行**（比 GET 更严，admin 不能改角色防互相提权/降权）——与 invitations POST（owner/admin 均可邀请）形成对照。
+- DELETE 移除成员：owner/admin 放行（同 GET，但加 target.role==='owner' 兜底）。
+至此累计六套租户作用域模型：access-history 双键无门控（个人数据）/ system-logs 单键+role 门控（租户级管理数据）/ storage 双键+isDeleted 无门控（个人存储）/ trash 三键(isDeleted:true) 无门控（个人回收站）/ invitations 单键+role 门控+include filtered relation（租户级管理数据，user 表无 tenantId）/ **tenant/users 单键+role 门控分层（GET/DELETE owner/admin、PATCH 仅 owner）+复合唯一键 tenantId_userId + self-check + target.role 兜底**（租户级成员管理）。六套各有其合理性，测试分别全等断言锁死 where/include 形状。
+
+**GET 列表的 include.user.select + 扁平化映射契约**：findMany 的 include.user.select 仅 {id,name,email,createdAt}（不含 password/avatar 等敏感字段），响应 data 经 `users.map(tu => ({id: tu.user.id, name: tu.user.name, email: tu.user.email, role: tu.role, joinedAt: tu.joinedAt, createdAt: tu.user.createdAt}))` 扁平化。测试用固定 Date fixture（joinedAt/createdAt 用 `new Date(FIXED_NOW ± N)`）使映射结果可全等断言，防字段错位（如误把 tu.user.role 当 role——user 表无 role 字段将导致 undefined；或误把 tu.joinedAt 漏映射）。**role 取 tu.role（tenantUser 关联表角色）、joinedAt 取 tu.joinedAt、createdAt 取 tu.user.createdAt** 的字段来源区分是核心映射契约。
+
+**search 过滤的 where.user 嵌套作用域**：`where.user = {OR:[{name:{contains,mode:'insensitive'}},{email:{contains,mode:'insensitive'}}]}`——user 表本身无 tenantId 字段（多租户关系经 TenantUser 关联表），search 经 where.user 嵌套作用域限定而非 where.tenantId。测试锁定此形状，防后续误改为 where.tenantId（user 表无此字段，将导致查询异常或跨租户误判）。这是与 invitations 的"duplicate user 检查走 include filtered relation"不同的另一种 user 表无 tenantId 的处理范式——invitations 是读 user.tenantMemberships（include filtered relation），tenant/users 是在 where 上嵌套 user.OR（where 嵌套过滤）。
+
+环境：node_modules 经 `npm ci`（项目用 package-lock.json，非 pnpm-lock.yaml；pnpm 不可用 frozen-lockfile 因无 pnpm lockfile，fallback npm 与现有 lockfile 一致，无 lockfile 冲突）安装 963 包耗时 34s。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run src/__tests__/api/tenant-users-route.test.ts` 单文件 34/34 通过；`npx vitest run` 全量 **1329/1329 通过**（80 文件，68.31s，第四十三轮基线 1295/79 + 本轮新增 34 例/1 文件 = 1329/80，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/tenant-users-route.test.ts`**（新文件，34 例，+646）— /api/tenant/users GET/PATCH/DELETE 路由 handler 级集成测试，覆盖 401/400/403/404/500 全状态码 + GET role 门控（owner/admin 放行、member/viewer 403 不触达 DB）+ PATCH 仅 owner 放行（admin 403）+ DELETE owner/admin 放行 + 手动 tenantId 注入全等断言（count/findMany/findFirst）+ 复合唯一键 tenantId_userId where 锁定（update/delete，userId 是 targetUserId 非 auth.userId）+ 三道防线顺序契约（PATCH: 400→403→400self→404→200；DELETE: 403→400self→404→400owner-target→200）+ GET include.user.select + 扁平化映射 + search where.user 嵌套 + 分页 pageSize 上限 100 截断 + target.role==='owner' 兜底 + PATCH 白名单含 owner（与 invitations 对照）
+
+### Commit
+- `169f869 test(tenant-users): 补 /api/tenant/users GET/PATCH/DELETE 路由 handler 级集成测试`
+
+### 推送状态
+- Gitee：待推送 `1234758..169f869 main -> main`
+- GitHub：待推送 `1234758..169f869 main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1329/1329 通过（80 文件，68.31s），零回归
+- 改动量：1 文件（新测试文件 +646），纯测试 commit，无生产代码变更
+- **tenant/users 路由用 raw db 手动 tenantId（非 TenantDb）**：与 files 路由族（已迁移 TenantDb）不同，tenant/users 的 db 调用全部在 $transaction 之外且手动 where/data 注入 tenantId 即可保证隔离，无迁移 TenantDb 的实质安全增益。维持第四十一轮"21 处自管约定"结论，不强行迁移
+- **PATCH 无 target.role 检查的潜在逻辑空隙（未立项，记录备查）**：PATCH 当前允许 owner 把另一个 owner 的角色改为 member（demote 另一个 owner）或把 member 提为 owner（创建第二个 owner），无"不能 demote 其他 owner"或"租户至少保留一个 owner"的兜底。这与 DELETE 的 target.role==='owner' 兜底形成不对称——DELETE 防 admin 移除 owner，PATCH 不防 owner demote owner。本轮测试**未**锁定此行为（不写"PATCH 允许 demote owner"用例），避免锁定潜在 buggy 行为阻碍后续修复。列为下一轮候选（若立项需先确认业务规则：是否允许多 owner / demote owner 是否需保留至少一个 owner）
+- **GET 的 where 构建在 role 门控之前但未触达 DB**：GET handler 先 `new URL(request.url)` 解析 searchParams、构建 where 对象，再 role 门控。where 构建是纯对象构造无 DB 副作用，门控返回 403 时 where 未被 count/findMany 消费。测试断言 403 时 count/findMany 不触达即可，无需断言 where 未构建
+- **PATCH/DELETE findFirst 的 where.userId 是 targetUserId 非 auth.userId**：URL [id] 参数解构为 `targetUserId`，findFirst/update/delete 的 where.userId 均用 targetUserId。auth.userId 仅用于 self-check（`targetUserId === userId`）。测试用 `Promise.resolve({ id: "user-3" })` 传 params + 断言 where.userId === "user-3" 锁定此语义，防后续误把 auth.userId 写入 where（会导致改/删自己而非目标用户）
+- **role 门控顺序锁定范式可复用**：本轮用"X 身份 + 无效输入 → 400 而非 403"与"X 身份 + 合法输入 → 403"两条对照用例锁定门控顺序契约，与第四十三轮 invitations POST 的"member + 缺 email → 400 而非 403 / member + 合法 email+role → 403"范式一致。该范式可复用于后续任何"输入校验 + role 门控"共存的 handler 测试
+- **沙箱时钟说明**：本会话 `TZ=Asia/Shanghai date` 报 2026-06-29 08:05 CST，worklog 头取整为 09:00（高于第四十三轮 08:00 保持单调）。轮次编号（第四十四轮）为排序权威键，时间戳仅供溯源
+
+### 下一轮候选
+- **`/api/tenant/users` GET/PATCH/DELETE handler 级集成测试已闭环**（34 例锁定 401/400/403/404/500 + role 门控分层 + 手动 tenantId 注入 + 复合唯一键 + 三道防线顺序 + include.user.select 映射 + search where.user 嵌套 + 分页 + target.role 兜底 + 白名单含 owner），自本轮起从候选清单移除
+- 补 saas/cloud-sync files(info)/export-import/faces/embeddings/cloud-sync/automation/backup/backups handler 级路由测试（下一轮可优先补 saas/subscription 或 cloud-sync/config：saas 含订阅状态机查询/变更，cloud-sync 已有 lib 层测试但 route 层未补）。可复用本轮 role 门控 + 手动 tenantId 注入断言范式
+- 补 files/route.ts、files/[id]/route.ts 的 handler 级集成测试（锁定 TenantDb 注入契约，可复用第四十二轮 raw db vs tenantDb mock 分离范式 + hand-crafted request 范式）
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）——若前端确需撤销/接受邀请，需补对应 route.ts + 测试
+- **PATCH target.role 检查逻辑空隙**（本轮发现）：PATCH 当前无"不能 demote 其他 owner"或"租户至少保留一个 owner"兜底，与 DELETE 的 target.role==='owner' 兜底不对称。若立项修复需先确认业务规则（是否允许多 owner / demote owner 是否需保留至少一个 owner），修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
