@@ -355,6 +355,50 @@ describe("GET /api/tenant/users", () => {
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ error: "获取用户列表失败" });
   });
+
+  // ── 分页参数校验：NaN/非正数 → 400（defense-in-depth，不透传 Prisma skip/take）──
+  it("page=abc（NaN）→ 400 {error:'page 必须 >= 1'}，不触达 count/findMany", async () => {
+    const res = (await GET(makeGetRequest("?page=abc"))) as MockRes;
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "page 必须 >= 1" });
+    expect(mockTenantUserCount).not.toHaveBeenCalled();
+    expect(mockTenantUserFindMany).not.toHaveBeenCalled();
+  });
+
+  it("page=0（非正数）→ 400 {error:'page 必须 >= 1'}", async () => {
+    const res = (await GET(makeGetRequest("?page=0"))) as MockRes;
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "page 必须 >= 1" });
+    expect(mockTenantUserCount).not.toHaveBeenCalled();
+  });
+
+  it("pageSize=abc（NaN）→ 400 {error:'pageSize 必须为正整数'}（Math.min(100,NaN)=NaN 也被挡）", async () => {
+    const res = (await GET(makeGetRequest("?pageSize=abc"))) as MockRes;
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "pageSize 必须为正整数" });
+    expect(mockTenantUserFindMany).not.toHaveBeenCalled();
+  });
+
+  it("pageSize=0（非正数）→ 400 {error:'pageSize 必须为正整数'}", async () => {
+    const res = (await GET(makeGetRequest("?pageSize=0"))) as MockRes;
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "pageSize 必须为正整数" });
+    expect(mockTenantUserFindMany).not.toHaveBeenCalled();
+  });
+
+  it("member + page=abc → 403 而非 400（权限门控优先于分页校验，不泄漏校验细节）", async () => {
+    mockAuthenticate.mockResolvedValue(memberAuth);
+
+    const res = (await GET(makeGetRequest("?page=abc"))) as MockRes;
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "没有权限查看用户列表" });
+    expect(mockTenantUserCount).not.toHaveBeenCalled();
+  });
 });
 
 // ─── PATCH /api/tenant/users/[id] — 修改用户角色 ─────────────

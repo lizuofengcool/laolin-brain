@@ -320,6 +320,41 @@ describe("/api/trash 路由", () => {
       expect(res.body).toEqual({ error: "获取回收站列表失败" });
       expect(mockFileFindMany).not.toHaveBeenCalled();
     });
+
+    // ── 分页参数校验：NaN/非正数 → 400（defense-in-depth，不透传 Prisma skip/take）──
+    it("page=abc（NaN）→ 400 { error: 'page 必须 >= 1' }，不触达 count/aggregate/findMany", async () => {
+      const res = (await GET(makeGetRequest("?page=abc"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "page 必须 >= 1" });
+      expect(mockFileCount).not.toHaveBeenCalled();
+      expect(mockFileAggregate).not.toHaveBeenCalled();
+      expect(mockFileFindMany).not.toHaveBeenCalled();
+    });
+
+    it("page=0（非正数）→ 400 { error: 'page 必须 >= 1' }", async () => {
+      const res = (await GET(makeGetRequest("?page=0"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "page 必须 >= 1" });
+      expect(mockFileCount).not.toHaveBeenCalled();
+    });
+
+    it("pageSize=abc（NaN）→ 400 { error: 'pageSize 必须为正整数' }（Math.min(100,NaN)=NaN 也被挡）", async () => {
+      const res = (await GET(makeGetRequest("?pageSize=abc"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "pageSize 必须为正整数" });
+      expect(mockFileFindMany).not.toHaveBeenCalled();
+    });
+
+    it("pageSize=0（非正数）→ 400 { error: 'pageSize 必须为正整数' }", async () => {
+      const res = (await GET(makeGetRequest("?pageSize=0"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "pageSize 必须为正整数" });
+      expect(mockFileFindMany).not.toHaveBeenCalled();
+    });
   });
 
   describe("POST /api/trash — URL pathname 分发", () => {

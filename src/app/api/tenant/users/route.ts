@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get('page') || '1', 10);
-    const pageSize = Math.min(100, parseInt(searchParams.get('pageSize') || '20', 10));
+    const pageSizeRaw = parseInt(searchParams.get('pageSize') || '20', 10);
     const search = searchParams.get('search');
     const role = searchParams.get('role');
 
@@ -30,6 +30,18 @@ export async function GET(request: NextRequest) {
         { status: 403 }
       );
     }
+
+    // 校验分页参数：非数字（'abc' → NaN）或非正数拒绝，避免 NaN/负数透传给
+    // db.tenantUser.findMany → Prisma skip/take 的未定义行为（Math.min(100, NaN) 仍为 NaN）。
+    // 门控置于权限检查之后：member/viewer 的 403 优先于分页 400（不泄漏校验细节）。
+    // 与 activity-logs/files/storage 等的 isNaN||<1 → 400 约定一致
+    if (isNaN(page) || page < 1) {
+      return NextResponse.json({ error: 'page 必须 >= 1' }, { status: 400 });
+    }
+    if (isNaN(pageSizeRaw) || pageSizeRaw < 1) {
+      return NextResponse.json({ error: 'pageSize 必须为正整数' }, { status: 400 });
+    }
+    const pageSize = Math.min(100, pageSizeRaw);
 
     // 构建查询条件
     const where: any = {
