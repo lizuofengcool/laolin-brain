@@ -27,7 +27,6 @@ export async function GET(request: NextRequest) {
     const page = parseInt(searchParams.get('page') || '1', 10);
     const pageSizeRaw = parseInt(searchParams.get('pageSize') || '20', 10);
     const includeReplies = searchParams.get('includeReplies') === 'true';
-    const maxDepth = parseInt(searchParams.get('maxDepth') || '1', 10);
     const action = searchParams.get('action');
 
     // 统计接口

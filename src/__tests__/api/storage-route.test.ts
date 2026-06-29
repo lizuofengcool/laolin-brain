@@ -28,7 +28,7 @@
  *     · file.count where {userId,tenantId,isDeleted:false}；file.findMany orderBy fileSize desc、
  *       skip=(page-1)*pageSize、take=pageSize、select 7 字段；totalPages=Math.ceil(total/pageSize)；
  *       hasMore=page*pageSize<total。
- *     · page/pageSize/limit 默认 20；pageSize 与 limit 上限 100 截断。
+ *     · page/pageSize 默认 20；pageSize 上限 100 截断（limit 历史为 dead code，已删除）。
  *
  * 仅隔离 next/server / @/lib/api-auth / @/lib/db，复用第三十轮 cloud-sync-config-route 的
  * vi.hoisted 共享 MockNextResponse 范式（使路由 `auth instanceof NextResponse` 命中）。
@@ -419,11 +419,11 @@ describe("/api/storage 路由", () => {
       expect(body.hasMore).toBe(true); // 2*2 < 5 → true
     });
 
-    it("pageSize 与 limit 上限 100 截断（pageSize=500→100, limit=500→100）", async () => {
+    it("pageSize 上限 100 截断（pageSize=500→100；limit 为 dead code 已删除，仅 pageSize 决定 take）", async () => {
       mockFileCount.mockResolvedValue(0);
       mockFileFindMany.mockResolvedValue([]);
 
-      await GET(makeGetRequest("?type=large-files&pageSize=500&limit=500"));
+      await GET(makeGetRequest("?type=large-files&pageSize=500"));
 
       const findArg = mockFileFindMany.mock.calls[0][0] as { take: number };
       expect(findArg.take).toBe(100);

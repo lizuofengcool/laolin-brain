@@ -159,7 +159,6 @@ async function getLargeFiles(
   tenantId: string,
   searchParams: URLSearchParams
 ) {
-  const limit = Math.min(100, parseInt(searchParams.get('limit') || '20', 10));
   const page = parseInt(searchParams.get('page') || '1', 10);
   const pageSizeRaw = parseInt(searchParams.get('pageSize') || '20', 10);
 
