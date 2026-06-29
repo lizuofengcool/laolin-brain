@@ -22,7 +22,19 @@ export async function GET(request: NextRequest) {
     const search = searchParams.get('search') || '';
     const sortBy = searchParams.get('sortBy') || 'count'; // name, count
     const sortOrder = searchParams.get('sortOrder') || 'desc'; // asc, desc
-    const limit = Math.min(100, parseInt(searchParams.get('limit') || '50', 10));
+    const limitRaw = parseInt(searchParams.get('limit') || '50', 10);
+
+    // 校验 limit：非数字（如 'abc' → NaN）或非正数拒绝。原 Math.min(100, NaN)=NaN
+    // 透传给 tags.slice(0, NaN) → 静默返回空列表（hasMore: tags.length > NaN = false），
+    // 误导调用方；负数 limit 经 slice(0, -N) 截断尾部亦非预期。与 faces/groups/[id]/photos/route.ts
+    // 及 cloud-sync/queue/route.ts 的 isNaN||<1 → 400 约定一致
+    if (isNaN(limitRaw) || limitRaw < 1) {
+      return NextResponse.json(
+        { error: 'limit 必须为正整数' },
+        { status: 400 }
+      );
+    }
+    const limit = Math.min(100, limitRaw);
 
     // 复用 authenticateRequest 已解析的 tenantId（auth 兜底建租户，无需再查 tenantUser）
     // 查询所有未删除的文件的标签
