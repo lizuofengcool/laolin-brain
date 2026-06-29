@@ -8724,3 +8724,69 @@ Status: 完成
 - **DELETE/POST(resume) result=false → success:true 空隙**（本轮发现）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 12:00 自动迭代
+
+第四十六轮自动迭代。本轮沙箱工作目录为全新 clone（前轮目录不在本会话沙箱中），`git clone origin` 后 `git remote add github` 配齐双端，`git fetch origin main` + `git fetch github main` 后本地 / origin/main / github/main 三者同处 `8ee8999`（第四十五轮 worklog commit），工作树干净、无未提交改动、无未推送 commit、无远端更新需 rebase。无上次任务遗留改动。
+
+**优先级 1 复核（实证，非仅靠 worklog 结论）**：第四十五轮已逐文件实证任务清单所列 5 项"剩余"问题全部在前序轮次关闭，清单 stale。本轮对 clean clone 再做轻量复核确认无回归：
+- `src/lib/db/tenant-db.ts` raw getter 审计仍在位（42-43、56-59 行 `new Error().stack` 取调用方 + `console.warn` 软审计，988-992 行注释说明 rawDb 不再无审计导出）
+- `src/app/api/saas/*` 路由 grep `TODO|FIXME|桩|非空即通过|mock` 零命中（无 stub 回归）
+- 其余 4 项（alipay/wechat 真实验签、files 路由 TenantDb 迁移、sync-engine keep_both、api-auth 测试匹配）维持第四十五轮实证结论，clean clone 同 commit 无变动
+
+**无新发现的活跃代码路径逻辑 bug**，优先级 1 无待修，转向优先级 3（补测试）。
+
+**优先级 3 立项（吃掉第四十五轮候选 #1 的 saas/orders + saas/tenant）**：第四十五轮 worklog"下一轮候选"明确建议"补 saas/orders、saas/tenant handler 级路由测试（saas/orders 含订单列表/创建，saas/tenant 含租户信息查询/变更，与 subscription 同属服务层委托模型，可复用本轮 mock 服务层范式）"。本轮即补这两条路由，与第四十五轮 saas/subscription 形成 saas 路由族三连测（subscription / orders / tenant）。
+
+**实现要点（1 个 test commit，22 例）**：新增 `src/__tests__/api/saas-orders-route.test.ts`（GET 7 + POST 9 = 16 例）与 `src/__tests__/api/saas-tenant-route.test.ts`（GET 6 例），覆盖两路由的安全与控制流契约：
+
+- **saas/orders GET（7 例）**：①未认证 → 401 透传不触达任一订单服务；②无 orderId → getTenantOrders(auth.tenantId) 列表返回 { orders }；③有 orderId 且订单存在且属本租户 → getOrder(orderId) 用 query 的 orderId（非 tenantId）调用返回 { order }；④有 orderId 但 getOrder 返回 null → 404 订单不存在；⑤有 orderId 订单存在但 order.tenantId !== auth.tenantId → 404（纵深防御，统一以"订单不存在"措辞拒绝，不泄漏跨租户订单存在性）；⑥getTenantOrders 抛错 → 500 获取订单失败；⑦getOrder 抛错 → 500 获取订单失败。
+- **saas/orders POST（9 例）**：①未认证 → 401 透传不触达 createOrder；②缺 plan → 400 缺少必要参数（plan 校验先于 interval）；③缺 interval（plan 存在）→ 400 缺少必要参数；④无效 plan（'gold'）→ 400 无效的套餐类型；⑤无效 interval（'weekly'，plan 合法）→ 400 无效的订阅周期；⑥成功（quantity 缺省）→ createOrder(auth.tenantId, plan, interval, 1) quantity 默认 1 + getPaymentParams(order.id, 'alipay')；⑦成功（quantity=5）→ createOrder 以 body 中 quantity 调用；⑧createOrder 抛错 → 500 创建订单失败且 getPaymentParams 不触达；⑨getPaymentParams 抛错 → 500 创建订单失败。
+- **saas/tenant GET（6 例）**：①未认证 → 401 透传不触达任一 tenant 服务；②成功 → getTenant / checkTenantStatus / getCurrentSubscription 三服务均以 auth.tenantId 调用（忽略 query 的 tenantId/userId）返回聚合 { tenant, status, subscription }；③getTenant 返回 null → 404 租户不存在且后续两服务因 short-circuit 不触达；④getTenant 抛错 → 500 后续不触达；⑤checkTenantStatus 抛错 → 500 getCurrentSubscription 不触达；⑥getCurrentSubscription 抛错 → 500。
+
+**GET orderId 纵深防御契约（saas/orders 独有）**：GET 单订单路径 `getOrder(orderId)` 的 orderId 取自 query（用户可控），单订单读取按订单号定位而非按 tenantId 作用域查询。安全靠取回后的 `order.tenantId !== tenantId → 404` 二次校验兜底。测试用"他租户订单（tenantId: 'tenant-other'）→ 404 而非返回订单数据"锁定此纵深防御——若后续误删该二次校验，跨租户订单将直接返回，断言立即失败。这是与 saas/tenant GET（getTenant 直接以 tenantId 查询、无二次校验）不同的另一种"按业务键定位 + 取回后租户校验"范式。同措辞"订单不存在"既覆盖真不存在也覆盖跨租户，避免存在性泄漏。
+
+**POST 三道校验顺序契约（saas/orders 独有）**：POST 校验链为 `!plan || !interval`（400 缺少必要参数）→ plan ∈ {free,pro,enterprise}（400 无效的套餐类型）→ interval ∈ {month,year}（400 无效的订阅周期）。测试用"缺 plan（即便 interval 也缺）→ 缺少必要参数"与"plan 合法但 interval='weekly' → 无效的订阅周期"两条用例锁定顺序：缺任一必填先于值域校验，plan 值域先于 interval 值域。三道校验任一失败均 `not.toHaveBeenCalled()` 锁定 createOrder 不触达。这是与 saas/subscription POST（query action 分发，单一校验）不同的多字段顺序校验范式。
+
+**POST body.tenantId 忽略契约**：POST destructuring `const { plan, interval, quantity = 1 } = body` 不取 body.tenantId，createOrder 第一参硬绑 `tenantId`（来自 auth）。测试用"body 带 tenantId: 'tenant-evil' → createOrder 仍 toHaveBeenCalledWith('tenant-1', ...)"锁定此契约——若后续误把 body.tenantId 透传给 createOrder，将造成跨租户下单，断言立即失败。与 saas/tenant GET"忽略 query tenantId"同理：可信身份只来自 auth，请求体/查询参数中的租户标识一律忽略。
+
+**GET 顺序 await + short-circuit 契约（saas/tenant 独有）**：saas/tenant GET 三服务为顺序 `await`（getTenant → checkTenantStatus → getCurrentSubscription），且 getTenant 返回 null 时 `return 404` 提前退出（short-circuit），不为不存在租户查状态/订阅。测试用"getTenant null → 404 且 checkTenantStatus/getCurrentSubscription not.toHaveBeenCalled"锁定 short-circuit；用"getTenant 抛错 → 后续不触达 / checkTenantStatus 抛错 → getCurrentSubscription 不触达"锁定顺序 await。与 saas/subscription GET（三服务顺序 await 但无 null short-circuit，subscription=null 仍调完三服务）形成对照——subscription 路由无 short-circuit 因 null 订阅是合法状态，tenant 路由 short-circuit 因 null 租户是错误状态。
+
+**服务层 tenantId 注入契约（三连测统一范式）**：saas 路由族三路由（subscription / orders / tenant）均不直接访问 db，全部经 `tenant.service` / `billing.service` 服务层，服务层函数以 tenantId 为首参。测试用 `toHaveBeenCalledWith("tenant-1")`（单参服务）或 `toHaveBeenCalledWith("tenant-1", plan, interval, quantity)`（多参服务）锁死路由传给服务的 tenantId 即 auth.tenantId。这是第六套租户作用域模型之外的"路由 → 服务层 → db"三层委托模型，与 files 路由族（直接 import db + TenantDb）、tenant/users 路由（raw db 手动 where 注入 tenantId）的 mock 策略不同——saas 三路由测试均无需 mock @/lib/db，仅 mock 服务层。
+
+**未锁定的潜在逻辑空隙（记录备查，不立项）**：
+- saas/orders POST 不校验 quantity 值域（负数 / 0 / 非整数 / 超大数均透传给 createOrder）。本轮测试仅锁 quantity 透传契约（缺省=1、body 传入=body 值），未锁 quantity 值域校验缺失。若立项需先确认业务规则（是否应限 quantity ≥ 1 且为整数、是否有上限）。
+- saas/orders GET 单订单路径 getOrder 抛错与 getOrder 返回 null 分属 500/404 分支，getOrder 抛错时不触达 `order.tenantId !== tenantId` 二次校验（因抛错在二次校验之前）。这是预期行为（抛错直接进 catch），本轮已分别用 404（null）与 500（抛错）两用例锁定，未发现空隙。
+
+环境：node_modules 经 `npm ci`（项目用 package-lock.json，无 pnpm-lock.yaml；pnpm 可用但无对应 lockfile，fallback npm 与现有 lockfile 一致，无 lockfile 冲突）安装 963 包耗时 48s（与第四十五轮 963 包一致）。验证：`npx tsc --noEmit` 退出码 0 零类型错误；`npx vitest run src/__tests__/api/saas-orders-route.test.ts src/__tests__/api/saas-tenant-route.test.ts` 单批 22/22 通过（stderr 为路由 catch 块 `console.error` 预期日志，非失败）；`npx vitest run` 全量 **1365/1365 通过**（83 文件，98.76s，第四十五轮基线 1343/81 + 本轮新增 22 例/2 文件 = 1365/83，零回归）。
+
+### 改动
+
+1. **`src/__tests__/api/saas-orders-route.test.ts`**（新文件，16 例，+341）— /api/saas/orders GET/POST 路由 handler 级集成测试，覆盖 401/400/404/500 全状态码 + GET orderId 纵深防御（跨租户订单 → 404 不泄漏存在性）+ getOrder 用 query orderId 非 tenantId + POST 三道校验顺序（缺参 → plan 值域 → interval 值域）+ quantity 缺省=1 与 body 传入 + createOrder/getPaymentParams tenantId+args 注入全等断言 + body.tenantId 忽略 + 两服务抛错 500
+2. **`src/__tests__/api/saas-tenant-route.test.ts`**（新文件，6 例，+175）— /api/saas/tenant GET 路由 handler 级集成测试，覆盖 401/404/500 全状态码 + 三服务（getTenant/checkTenantStatus/getCurrentSubscription）tenantId 作用域全等断言 + getTenant null → 404 short-circuit（后续不触达）+ 顺序 await（前序抛错后续 not.toHaveBeenCalled）+ query tenantId/userId 忽略
+
+### Commit
+- `d022ccc test(saas): 补 /api/saas/orders 与 /api/saas/tenant 路由 handler 级集成测试`
+
+### 推送状态
+- Gitee：待推送 `8ee8999..d022ccc main -> main`
+- GitHub：待推送 `8ee8999..d022ccc main -> main`
+- 本 worklog commit 随后一并推送双端
+
+### 备注
+- 验证：`npx tsc --noEmit` 退出码 0；`npx vitest run` 全量 1365/1365 通过（83 文件，98.76s），零回归
+- 改动量：2 文件（新测试文件 +516），纯测试 commit，无生产代码变更
+- **saas 路由族三连测闭环**：subscription（第四十五轮 14 例）+ orders（本轮 16 例）+ tenant（本轮 6 例）= 36 例，覆盖 saas 路由族全部已实现 handler。saas/orders 与 saas/tenant 均"路由 → 服务层 → db"三层委托模型，测试 mock 策略统一（仅 mock 服务层 + api-auth + next/server，无 @/lib/db mock）
+- **GET orderId 纵深防御范式可复用**：本轮用"他租户订单 → 404 而非返回数据 + 同措辞不泄漏存在性"锁定"按业务键定位 + 取回后租户校验"范式。该范式可复用于后续任何"按非租户键查询 + 取回后二次校验"的 handler 测试（如 shares by token、comments by id 等可能跨租户访问的路由）
+- **POST 三道校验顺序锁定范式可复用**：本轮用"缺任一必填先于值域校验"与"plan 值域先于 interval 值域"两条用例锁定多字段顺序校验，与第四十四轮 tenant/users PATCH 的"三道防线顺序契约"范式一致。该范式可复用于后续任何多字段校验链 handler 测试
+- **沙箱时钟说明**：本会话 `TZ=Asia/Shanghai date` 报 2026-06-29 11:50 CST，worklog 头取整为 12:00（高于第四十五轮 10:00 保持单调）。轮次编号（第四十六轮）为排序权威键，时间戳仅供溯源
+
+### 下一轮候选
+- **`/api/saas/orders` 与 `/api/saas/tenant` handler 级集成测试已闭环**（22 例锁定 401/400/404/500 + GET orderId 纵深防御 + POST 三道校验顺序 + quantity 透传 + body.tenantId 忽略 + GET short-circuit + 服务层 tenantId 注入），自本轮起从候选清单移除。saas 路由族三连测（subscription/orders/tenant）全部闭环
+- 补 files/route.ts、files/[id]/route.ts 的 handler 级集成测试（锁定 TenantDb 注入契约，可复用第四十二轮 raw db vs tenantDb mock 分离范式 + hand-crafted request 范式）
+- 补 cloud-sync 的 status/sync/queue/conflicts/backups handler 级路由测试（lib 层已有 cloud-sync-tenant.test.ts，route 层仅 config 已补）
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **saas/orders POST quantity 值域校验缺失**（本轮发现）：POST 不校验 quantity（负数 / 0 / 非整数 / 超大数均透传 createOrder）。若立项修复需先确认业务规则（是否应限 quantity ≥ 1 且为整数、是否有上限），修复时同步补对应测试
+- **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
