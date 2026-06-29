@@ -9235,3 +9235,88 @@ Status: 完成
 - **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-29 18:00 自动迭代
+
+第五十三轮自动迭代。本轮承接第五十二轮子轮 ① 闭环后的"下一轮候选"，落地 `/api/files` 主路由 **POST** handler 级集成测试的**子轮 ②a**（新建分支：writeFile 落盘成功 + magic bytes 合法 + 无 dedup → `db.$transaction` 内 tx.$queryRaw TOCTOU 配额再检 + tx.file.create）。
+
+沙箱时钟：`TZ=Asia/Shanghai date` 报 2026-06-29 18:10 CST（UTC 10:10），commit b4cbb44 落于 18:08 CST。按"高于第五十二轮 17:00 保持单调"规则取整 18:00。轮次编号（第五十三轮）为排序权威键，时间戳仅供溯源。
+
+**优先级 1 复核（clean clone 第七轮复核 + 范围澄清）**：clean clone 后再次确认无活跃优先级 1 待修。本轮审 route.ts POST 新建分支控制流时，对第五十二轮复核表述做一处**精确化**：
+- `src/app/api/files/route.ts`：第五十二轮复核记为"GET/POST 均经 createTenantDb（POST 仅 $queryRaw 配额查询保留 db 直连）"。本轮细查发现该表述需精确化——POST 实际为**分层**：
+  - dedup 查找（`dedupTenantDb.file.findFirst`，line 271-278）→ 走 createTenantDb（wrapper 注入 tenantId）✓
+  - 新建分支 `$transaction`（line 340-363）→ 走 `db.$transaction` + `tx.file.create`，**tenantId 显式写入 data**（line 351），不经 createTenantDb wrapper
+  - dedup 分支 `$transaction`（line 282-310）→ 走 `db.$transaction` + `tx.fileVersion.create` + `tx.file.update`
+  - 原因：createTenantDb 构造独立 client，不接受 tx 参数，无法在 $transaction 回调内复用事务上下文，故事务内 mutation 必须走 raw tx 并显式写 tenantId
+  - **安全结论不变**：tenantId 在新建分支 data 中显式存在（本轮测试 ① 锁定），dedup 分支基于 tenantDb.findFirst 返回的 existingFile（已租户隔离），无 raw userId-only 直滤绕过。此精确化仅为表述校准，非新发现的安全问题。
+
+**范围决策（本轮关键）**：候选清单 ②a 原计划"断言 file.create data 含 tenantId（wrapper 注入）"。实际审代码发现新建分支走 `db.$transaction` + `tx.file.create`，tenantId 为**显式写入**（非 wrapper 注入），与 files-import 路由的 `tenantDb.file.create` wrapper 注入范式不同。本轮测试**锁定实际行为**（显式 tenantId）并在测试文件头注释 + 用例断言中明确记录此差异，避免误导后续读者以为走了 wrapper。原"wrapper 注入"表述在此修正为"显式注入"。
+
+### 本次做了什么
+
+新增 `/api/files` POST handler 级集成测试文件 `src/__tests__/api/files-route-post-newfile.test.ts`（+383 行，4 用例），锁定 POST 新建分支（existingFile === null → `db.$transaction` 内 tx.$queryRaw TOCTOU + tx.file.create）的契约。
+
+**4 个用例**：
+1. **happy path（txt + skipAi=true）**：通过全部前置门 + magic bytes 合法 + dedup findFirst 返回 null → mkdir + writeFile + `$transaction`（tx.$queryRaw 返回 0 → tx.file.create）→ 200。锁定：
+   - mkdir 收到 `path.join(cwd, "upload", userId)`
+   - writeFile 收到 resolvedPath（`startsWith(resolvedUploadDir + path.sep)` + basename `${ts}_hello.txt`）
+   - createTenantDb(tenantId) + findFirst where `{userId, fileName, isDeleted:false, tenantId 注入}`
+   - tx.$queryRaw tagged template：values[0]=userId、values[1]=tenantId，SQL 含 userId/tenantId/isDeleted=false 三键
+   - **SQL 一致性**：早检 db.$queryRaw 与事务内 tx.$queryRaw 的 SQL 归一化（折叠空白 + trim）后完全一致（两者仅缩进深度不同，SQL 对空白不敏感）
+   - **tx.file.create data 10 字段**：tenantId（显式）/ userId / fileName / fileType:"txt" / fileSize / filePath / textContent:"hello" / thumbnailUrl:undefined / storageMode:"cloud" / tags:"[]"
+   - skipAi=true → AI summarize fire-and-forget 不触达 db.file.update（负向）
+2. **TOCTOU 再检超限**：tx.$queryRaw 返回 5GB（并发上传占满配额）→ throw → 外层 catch → 500 `{ error: 'Upload failed' }`；tx.file.create 未触达
+3. **tx.file.create 抛错**：unique constraint → 外层 catch → 500 `{ error: 'Upload failed' }`（catch-all 兜底）
+4. **路径穿越防御**：file.name=`../../etc/passwd` → path.basename 取 `passwd` → filePath 恒在 uploadDir 之内（startsWith 前缀校验通过），无 `..` / `/etc/`；fileName 落库为原始值（路由不清洗 fileName，仅清洗 filePath）；fileType 落为 "other"
+
+### 范式复用与新增
+
+- **raw db vs tenantDb mock 分离范式延续（第五十二轮子轮 ① 范式）**：raw db mock 含 $queryRaw（早检，正向）+ $transaction（**executor**）+ file.update（AI summarize 负向）；createTenantDb 用 hand-written wrapper 注入 tenantId（dedup findFirst）。
+- **fs/promises ESM 互操作范式延续（第五十轮 files-id 范式）**：mock 同时导出 default + named（mkdir/writeFile/unlink），覆盖 route.ts 顶部 named import 与 dedup 分支 dynamic import 两种形态。新建分支不触达 unlink（仅 dedup 分支清理旧文件）。
+- **hand-crafted request + headers.get spy 范式延续（第四十一轮 files-import 范式）**：Content-Length forbidden header 用 spy 覆盖。新增 url 参数携带 `?skipAi=true` 跳过 AI fire-and-forget，避免与 ②c 纠缠。
+- **$queryRaw tagged template 契约范式延续（第四十一轮 files-import 范式）**：断言 calls[0][0] 为 SQL strings、calls[0][1]/[2] 为插值，SQL 含三键。
+- **新增 $transaction executor 范式**：mock 的 $transaction 不是简单 forward，而是 `async (fn) => { mockTransaction(fn); const tx = {$queryRaw, file:{create}}; return fn(tx); }`——记录调用 + 构造 tx 客户端 + 回调 fn(tx)。fn 抛错时 $transaction reject（由路由外层 catch → 500）。该范式可复用于子轮 ②b 的 dedup $transaction（届时扩展 tx 携带 fileVersion.count/create + file.update）。
+- **新增 SQL 归一化比对范式**：早检与事务内 $queryRaw 的 SQL 模板因缩进深度不同（tx 模板嵌套于 $transaction 回调内，缩进更深）非字节相等，故用 `normalize = s => s.replace(/\s+/g, " ").trim()` 归一化后比对，锁定"两次查询口径一致（同 SELECT COALESCE(SUM("fileSize"),0) ... WHERE userId+tenantId+isDeleted=false）"的真实契约，避免被缩进差异误导。该范式可复用于任何"同语句不同缩进"的 SQL 比对。
+- **新增路径穿越防御断言范式**：用 file.name=`../../etc/passwd` 验证 `path.basename` 剥离目录 + `resolvedPath.startsWith(resolvedUploadDir + path.sep)` 前缀校验，断言 writtenPath 不含 `..` / `/etc/` 且 endsWith `_passwd`。同时断言 fileName 落库为原始值（路由仅清洗 filePath 不清洗 fileName，此为既定行为非 bug）。该范式可复用于任何"filePath 拼接 + 路径安全"的路由。
+
+### 验证
+
+- `npx tsc --noEmit` 退出码 0（零类型错误）
+- `npx vitest run src/__tests__/api/files-route-post-newfile.test.ts` 4/4 通过
+- `npx vitest run` 全量 1467/1467 通过（93 文件，78.28s），零回归（基线 1463/92 + 4/1 = 1467/93）
+
+### 改动量
+
+1 文件（新测试文件 +383），纯测试 commit，无生产代码变更。
+
+### Commit
+
+- `b4cbb44` test(files): 补 /api/files POST 新建分支 handler 级集成测试
+
+### 推送
+
+- origin (Gitee)：`ea2c596..b4cbb44` 待推送（本节写毕即执行 `git push origin main`）
+- github (GitHub)：`ea2c596..b4cbb44` 待推送（本节写毕即执行 `git push github main`）
+
+### 下一轮候选
+
+- **`/api/files` POST 子轮 ②a 已闭环**（4 例锁定新建分支 $transaction + TOCTOU + file.create data + 路径穿越防御 + SQL 一致性），自本轮起从候选清单移除 ②a
+- 补 `/api/files` POST handler 级集成测试**子轮 ②b**（dedup 版本化分支）：createTenantDb.file.findFirst 返回 existingFile（同 fileName）→ `db.$transaction`（tx.fileVersion.count + tx.fileVersion.create + tx.file.update）+ unlink 旧文件。建议断言：
+  - findFirst where 含 tenantId（wrapper 注入，已由 ②a happy path 间接锁定，②b 可显式再锁 existingFile 命中分支）
+  - tx.fileVersion.create data 含 fileId/fileName/fileSize/filePath/textContent/thumbnailUrl/version=versionCount+1
+  - tx.file.update where.id=existingFile.id、data 含 fileName/fileType/fileSize/filePath/textContent/thumbnailUrl/tags
+  - unlink 旧 filePath（existingFile.filePath）
+  - 响应 isVersionUpdate:true
+  - 扩展 $transaction executor mock 的 tx 携带 fileVersion.{count,create} + file.update（沿用本轮新增的 executor 范式）
+- 补 `/api/files` POST handler 级集成测试**子轮 ②c**（AI fetch）：process-image / summarize 端点 fetch（需 mock global.fetch），断言 fetch URL/method/body、textContent 提取（OCR 覆盖）、tags 合并、thumbnail 生成（图片类型）失败容错、rate-limit 触发 aiSkipped:true
+- 补 `/api/files` POST handler 级集成测试**子轮 ③**（文件类型判定矩阵）：本轮 ②a 已覆盖 txt（"txt"）+ 穿越文件（"other"），③ 可补 image/jpeg（magic bytes 合法 + fileType:"image" + thumbnail）、.docx（fileType:"word" + parseWord）、.pdf（fileType:"pdf" + parsePdf）、.md（fileType:"markdown" + textContent=buffer.toString）。注意 image/docx/pdf 需 mock parser 模块（parseWord/parsePdf/parsePptx/generateThumbnail）
+- 补 invitations DELETE/[token]/accept 端点（需先确认前端调用路径）
+- **queue GET limit 非数字 NaN 透传**（第四十七轮发现，延续）：`parseInt('abc', 10)` 返回 NaN 透传给 getSyncQueue。若立项修复需先确认业务规则（是否应将 NaN 兜底回 50、或返 400 拒绝非数字 limit），修复时同步补对应测试
+- **conflicts POST password 缺失透传 undefined**（第四十七轮发现，延续）：auto=true 与 fileId+resolution 两分支均不校验 password，直接以 password=undefined 透传服务层。若立项修复需先确认业务规则（是否应在两分支也校验 password 非空，与 sync POST 的 `!password → 400` 一致），修复时同步补对应测试
+- **backups POST zod 不校验密码复杂度**（第四十八轮发现，延续）：password: z.string().min(6) 仅校验长度，纯数字/常见弱口令均通过。若立项修复需先确认业务规则（是否应要求字母+数字混合、是否应拒绝 top-N 弱口令），修复时同步补对应测试
+- **backups/[id] DELETE 不区分 404/500**（第四十九轮发现，延续）：deleteBackup 内部 backupId 不存在时 R2 抛 NoSuchKey 错误，路由统一返 500 而非 404。若立项修复需先确认业务规则（是否应区分 404 与 500），修复时同步补对应测试
+- **backups/[id] POST 错误密码不区分 401/500**（第四十九轮发现，延续）：错误密码在 decrypt 阶段抛错，路由统一返 500 而非 401。若立项修复需先确认业务规则（是否应区分 401 密码错误与 500 内部错误），修复时同步补对应测试
+- **saas/orders POST quantity 值域校验缺失**（第四十六轮发现，延续）：POST 不校验 quantity（负数 / 0 / 非整数 / 超大数均透传 createOrder）。若立项修复需先确认业务规则（是否应限 quantity ≥ 1 且为整数、是否有上限），修复时同步补对应测试
+- **DELETE/POST(resume) result=false → success:true 空隙**（第四十五轮发现，延续）：服务层返 false 时路由仍返 success:true，消息与状态不一致。若立项修复需先确认业务规则（是否应 404/409），修复时同步补对应测试
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`（10+ "TODO: 实际实现"桩）、`src/lib/ai/document-qna.ts`（配额检查/使用记录桩）、`src/lib/ai/model-manager.ts`（4 处"实际调用模型API"桩）、`src/lib/saas/billing.service.ts:290`（支付对接桩）、`src/lib/monitoring/index.ts:408`（告警渠道发送桩）、`src/lib/integrations/wecom.ts`（企业微信 API 桩 + webhook 签名验证桩）等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
