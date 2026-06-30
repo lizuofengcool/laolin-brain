@@ -11398,3 +11398,72 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-01 20:00 自动迭代
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-07-01 20:08 CST，取整 20:00 记录。本轮 1 个 dev commit（a6ddd49）+ 本 worklog commit。轮次编号（第八十五轮）为排序权威键。
+
+**前置检查**：沙箱 `/workspace/laolin-brain` 此前不存在（新会话），`git clone origin`（Gitee）+ `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 f005da1（第八十四轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：用户清单 5 项前序轮次均已闭合，本轮逐项 spot-check 复核确认与前轮一致——`tenant-db.ts` raw getter 软审计（get raw() 带 caller 堆栈 + transaction 同审计）✓、`payment/alipay.ts` RSA2 真实验签（verifyRSA2Sign + normalizePublicKey，已配置真实密钥时 createPayment/queryPayment/refund 显式失败而非静默 mock）✓、`api/files/route.ts` 经 createTenantDb 走租户隔离层（GET findMany / POST dedup 均用 createTenantDb）✓、`sync-engine.ts` keep_both 分支重命名本地为冲突副本 + 前置归属校验（不再直接覆盖）✓、`api-auth.test.ts` 与实现匹配（async、4 字段、拒 query param）✓。本轮无新优先级 1 问题，进入下一轮候选。
+
+**本轮开发（lib/utils/tenant-permissions.ts 权限层级与中间件直接单测）**：
+
+按第八十四轮"下一轮候选"第 1 项切入（lib 域零覆盖纯模块延续，候选清单中 `src/lib/utils/tenant-permissions.ts` 97 行，最小且纯函数为主）。该模块为租户权限工具，含 hasRole 数值层级（owner4>admin3>member2>viewer1，>= 比较）、isAdminOrOwner/isOwner 布尔判定、isNextResponse 类型守卫（instanceof NextResponse）、getTenantUserInfo DB 查询（select 三字段）、requireAdmin/requireOwner 中间件（404/403 失败路径返回 NextResponse.json）。此前**零直接覆盖**。本轮补齐。模块 `import { db } from '@/lib/db'` 与 `import { NextResponse } from 'next/server'`，用 `vi.hoisted` 初始化 mockDb（tenantUser.findFirst）+ 真实 NextResponse class mock（使 instanceof 判定可工作，与 api-auth.test.ts 同模式）隔离。
+
+**Commit（a6ddd49）tenant-permissions 直接单测**：37 用例覆盖全部 6 个导出函数 + UserRole 类型，按行为分组：
+
+- **hasRole 数值层级（6 用例）**：owner >= 任意角色恒 true（4≥1/2/3/4）；admin >= admin/member/viewer true、>= owner false（3<4）；member >= member/viewer true、>= owner/admin false；viewer >= viewer true、>= 其余 false；**相等返回 true**（>= 等值成立，4 个角色自比）；**严格偏序双向锁定**（高→低 owner→admin/admin→member/member→viewer 全 true，低→高 viewer→member/member→admin/admin→owner 全 false）
+- **isAdminOrOwner（4 用例）**：owner/admin true、member/viewer false
+- **isOwner（4 用例）**：仅 owner true，其余 false
+- **isNextResponse（7 用例）**：requireAdmin 失败返回的 NextResponse 实例 true（真实用法）；requireAdmin 成功返回的普通对象 false（真实用法）；直接构造 NextResponse 实例 true；普通对象/null/undefined false；**类型守卫收窄**（成功路径经 isNextResponse(result)===false 后守卫内安全访问 tenantId/role）
+- **getTenantUserInfo（4 用例）**：命中返回 {tenantId, role, userId} 且 role cast 为 UserRole；命中 owner 透传；未命中（findFirst 返回 null）→ null 不抛错；**select 字段精确为 {tenantId, role, userId}**（不查额外字段）+ where 精确 {userId}
+- **requireAdmin（6 用例）**：命中 owner/admin → {tenantId, role} 透传且 isNextResponse false；命中 member/viewer → 403 "没有权限执行此操作"；未命中 → 404 "租户不存在"；**内部复用 getTenantUserInfo**（仅一次 findFirst，select 三字段精确）
+- **requireOwner（6 用例）**：命中 owner → {tenantId, role: owner}；命中 admin/member/viewer → 403；未命中 → 404；**与 requireAdmin 的 admin 放行差异**（requireOwner 比 requireAdmin 严格：admin 在 requireAdmin 放行、在 requireOwner 被拒 403）
+
+**关键控制流锁定**：
+- hasRole >= 比较：`roleHierarchy[userRole] >= roleHierarchy[requiredRole]` —— 用相等（admin require admin → true）与严格大于（admin require owner → false）双场景锁定，非 `>` 亦非 `===`
+- 数值层级：owner=4/admin=3/member=2/viewer=1 —— 用双向偏序（高满足低、低不满足高）锁定层级值，避免层级错位
+- isAdminOrOwner 短路或：`role === 'owner' || role === 'admin'` —— 用 4 角色四值矩阵锁定
+- isOwner 严格等：`role === 'owner'` —— 用 4 角色锁定（仅 owner true）
+- isNextResponse instanceof：`result instanceof NextResponse` —— 用真实 class mock + requireAdmin 真实返回值锁定，null/undefined/普通对象均 false
+- getTenantUserInfo select 精确：`select: { tenantId: true, role: true, userId: true }` —— 用 toEqual 锁定三字段，防止误 select 额外字段
+- requireAdmin/requireOwner 失败状态码区分：未命中 404 "租户不存在"、有租户但权限不足 403 "没有权限执行此操作" —— 用各角色分支锁定
+- requireAdmin vs requireOwner 严格度差异：admin 在 requireAdmin 放行（isAdminOrOwner true）、在 requireOwner 被拒（isOwner false）—— 用同一 admin 角色双调用锁定
+
+**mock 策略要点**：`vi.hoisted` 初始化 mockDb（仅 tenantUser.findFirst，因模块只用到这一方法）+ `vi.mock('@/lib/db', () => ({ db: mockDb }))`；`vi.hoisted` 定义真实 NextResponse class（constructor 带 body/status/_type 三字段 + static json），`vi.mock('next/server', ...)` 返回该 class，使被测代码 `import { NextResponse }` 拿到 mock class、`result instanceof NextResponse` 与 `NextResponse.json(...)` 均工作，测试侧 `new MockNextResponse(...)` 构造的实例与被测返回的实例同属一个 class（instanceof 一致）。`expectDenied` 辅助函数同时断言 instanceof / _type / status / body 四重，与 api-auth.test.ts 断言风格一致。每个 describe 块 beforeEach `vi.clearAllMocks()` 清调用记录，mockReturnValue 由各用例自设。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m4.2s）
+- `npx prisma generate`（补 PrismaClient 类型；与 tsc 串行执行避免误报 PrismaClient 无导出）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关）。本轮改动零类型错误（测试文件被 tsconfig `**/__tests__/**`/`**/*.test.ts` exclude 排除，且为纯新增无源码改动）
+- `npx vitest run src/__tests__/lib/tenant-permissions.test.ts`：37/37 通过（18ms tests）
+- `npx vitest run` 全量 2215/2215 通过（132 文件，161.84s），零回归（基线 2178/131 + 本轮 37/1 = 2215/132）
+
+### 改动量
+
+1 文件（src/__tests__/lib/tenant-permissions.test.ts +411），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `a6ddd49` test(lib): utils/tenant-permissions 权限层级与中间件直接单测
+
+### 推送
+
+- origin (Gitee)：f005da1..a6ddd49 推送（含 worklog commit）
+- github (GitHub)：f005da1..a6ddd49 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（第八十四轮候选第 1 项展开，tenant-permissions 已闭合）：下轮可切入：
+  - `src/lib/monitoring/monitoring.ts`（~645 行，MetricsCollector 请求统计 + AlertManager 规则匹配 gt/lt/gte/lte/eq/neq + 告警生命周期；仅依赖 Node os 内置，核心类无需 mock）
+  - `src/lib/plugins/registry.ts`（~488 行，PluginRegistry 纯内存插件生命周期 + hook/event 系统，createPluginAPI 权限网关；核心逻辑零外部依赖）
+  - `src/lib/integrations/integration-manager.ts`（~547 行，provider 注册模式，connectIntegration 抛错/组合键、testConnection 回退、createSyncTask 状态机 pending→running→completed/failed；注入 fake provider 即可，无真实网络）
+  - `src/lib/utils/file-types.ts`（~1184 行，纯文件类型检测大表 + formatFileSize 数学；零 import）
+  - `src/lib/utils/benchmark.ts`（~249 行，benchmark 百分位计算 + markdown 报表生成 + TestDataGenerator；仅依赖 perf_hooks）
+  - `src/lib/api-cache.ts`（~165 行，内存 GET 缓存 cachedFetch 命中/过期、invalidateCache 子串匹配、detectTTL URL 模式分类；仅 mock 全局 fetch）
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
