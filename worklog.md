@@ -10622,3 +10622,66 @@ Mock 要点：`vi.hoisted` 创建 `MockNextResponse`（实例带 body/status + s
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+
+## 2026-06-30 15:00 自动迭代
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-30 14:27 CST，取整 15:00 记录（14:00 已被第七十三轮占用，取下一整点保持单调）。本轮 1 个 dev commit（183dcce）+ 本 worklog commit。轮次编号（第七十四轮）为排序权威键。
+
+**前置检查**：沙箱 `/workspace` 原为空，`git clone origin`（Gitee）+ `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 3b01e0d（第七十三轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：用户清单 5 项前序轮次均已闭合，本轮逐项 spot-check 复核确认与第七十三轮一致（tenant-db raw 软审计、alipay/wechat 真实验签 + 真实模式显式失败、files 路由走 TenantDb、sync-engine keep_both 不覆盖、api-auth.test 匹配 4 字段 async 实现）。本轮无新优先级 1 问题，直接进入下一轮候选。
+
+**本轮开发（创建支付订单路由 handler 级集成测试）**：
+
+按第七十三轮"下一轮候选"第 1 项切入。前序轮次已覆盖 payment callback（alipay/wechat，第七十二轮）、payment status（第七十三轮）的 handler 级测试，但 `src/app/api/payment/create/route.ts`（POST 创建订单 + 调 createPayment）仍无 handler 级集成测试。本轮补齐，至此 payment 域四个业务路由（create / status / callback-alipay / callback-wechat）handler 级测试全覆盖。
+
+路由控制流分支（16 用例全覆盖）：
+- 未认证（authenticateRequest 返回 NextResponse）→ 透传 401，不创建订单/支付（负向断言 createOrder/createPayment 均未调用）
+- 参数校验（顺序敏感，6 条）：
+  · 缺 planId / 缺 interval / 缺 payMethod → 400 "缺少必要参数"
+  · payMethod ∉ {alipay, wechat}（如 "balance"）→ 400 "不支持的支付方式"
+  · interval ∉ {month, year}（如 "weekly"）→ 400 "不支持的计费周期"
+  · planId 不在 PLANS（如 "nonexistent"）→ 400 "无效的套餐"
+  · planId=free → 400 "免费套餐无需支付"（free 在 PLANS 中但跳过支付）
+  · 各校验失败均断言 createOrder 未被调用
+- 成功路径（2 条）：
+  · alipay + month + pro → 锁定 createOrder('tenant-1','pro','month','alipay') 调用契约 + createPayment('alipay', {orderNo, amount:3900, subject:'专业版 - 月付', description:'laolin-brain 专业版 订阅', notifyUrl, tenantId, userId}) 调用契约 + 200 data（amount 透传自 order.amount，payUrl/qrCode/tradeNo 来自 payResult）
+  · wechat + year + enterprise → subject "企业版 - 年付"、amount 199000 透传、走 wechat provider
+- createPayment 失败回退（2 条）：success:false + error → 500 透传 payResult.error；success:false 无 error → 500 "创建支付订单失败" 兜底
+- 异常兜底（3 条）：createOrder 抛错 → 500 error.message 且 createPayment 不调用；createPayment 抛 Error → 500 error.message；createPayment 抛非 Error（字符串）→ 500 "创建支付订单失败" 兜底（error.message 为 undefined）
+- 认证调用契约：authenticateRequest 被调用一次并传入原 request
+
+关键契约锁定：amount 来自 createOrder 返回的 order.amount（经 Number() 转换），**不在路由内按 plan.price 重算**（定价逻辑在 createOrder/subscription.ts）；subject/description 由 PLANS[planId].name + interval 拼装；notifyUrl 由 getNotifyUrl(payMethod) 提供。
+
+Mock 要点：`vi.hoisted` 创建 `MockNextResponse`（实例 body/status + static json）、`mockAuthenticate`/`mockCreateOrder`/`mockCreatePayment`/`mockGetNotifyUrl`；`vi.mock('next/server')`、`vi.mock('@/lib/api-auth')`、`vi.mock('@/lib/payment')`（createPayment + getNotifyUrl）、`vi.mock('@/lib/billing/subscription')`（createOrder + PLANS fixture）、`vi.mock('@/lib/db')`（路由 import db 但未直接使用，mock 掉避免 PrismaClient 实例化副作用）全隔离。PLANS fixture 提供 free/pro/enterprise 子集（与 src/lib/billing/subscription.ts 一致），使参数校验分支具真实语义而非自证。Request 构造用真实 `new Request(url, {method, headers:{'Content-Type':'application/json'}, body: JSON.stringify(...)})`，`request.json()` 在 Node 24 undici 下正确解析。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；66.4s）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关）。本轮改动零类型错误（测试文件被 tsconfig exclude 排除，且为纯新增无源码改动）
+- `npx vitest run src/__tests__/api/payment-create-route.test.ts`：16/16 通过（1.10s）
+- `npx vitest run` 全量 1791/1791 通过（119 文件，143.64s），零回归（基线 1775/118 + 本轮 16/1 = 1791/119）
+
+### 改动量
+
+1 文件（src/__tests__/api/payment-create-route.test.ts +355），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `183dcce` test(api): 创建支付订单路由 handler 级集成测试
+
+### 推送
+
+- origin (Gitee)：3b01e0d..183dcce 推送成功（含 worklog commit）
+- github (GitHub)：3b01e0d..183dcce 推送成功（含 worklog commit）
+
+### 下一轮候选
+
+- **billing/plans 路由 handler 级集成测试**：`src/app/api/billing/plans/route.ts`（GET 返回 PLANS 套餐清单）无对应测试（src/__tests__/api/ 缺 billing-plans-route.test.ts），可补 handler 级测试锁定套餐字段与免费/付费划分
+- **billing/subscription 路由 handler 级集成测试**：`src/app/api/billing/subscription/route.ts`（GET 当前订阅 / POST 变更套餐）无对应测试，可补 getCurrentSubscription/createSubscription 编排与权限校验
+- **payment/mock/{alipay,wechat} 路由**：dev mock 回调助手路由，优先级低，可择机补
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
