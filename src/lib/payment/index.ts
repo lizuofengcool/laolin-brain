@@ -15,7 +15,6 @@ import {
 import { alipayProvider } from './alipay';
 import { wechatPayProvider } from './wechat';
 import { db } from '@/lib/db';
-import { handlePaymentCallback } from '@/lib/billing/subscription';
 
 // 支付提供者映射
 const providers: Record<PayMethod, PaymentProvider> = {
@@ -99,7 +98,28 @@ export async function processPaymentCallback(
       };
     }
 
-    // 4. 使用事务处理订单和订阅更新
+    // 4. 金额一致性校验（仅 paid 路径发放权益前校验）
+    // 防御回调金额与订单金额不符（部分支付、订单金额变更、提供方异常、伪造回调等）：
+    //   - 签名验证已绑定回调内 amount，但未与本地订单 amount 比对，存在"对错订单/金额异常"
+    //     仍发放订阅与配额的风险。
+    //   - 不一致时不发放权益、不更新订单状态（保持 pending 供人工对账），返回失败让提供方
+    //     重试或人工介入。failed 路径不发放权益，无需校验。
+    if (verifyResult.status === 'paid') {
+      const expectedAmount = Math.round(Number(order.amount));
+      const actualAmount =
+        typeof verifyResult.amount === 'number' ? verifyResult.amount : NaN;
+      if (!Number.isFinite(actualAmount) || expectedAmount !== actualAmount) {
+        console.warn(
+          `[payment] 金额不一致：orderNo=${verifyResult.orderNo} 订单=${expectedAmount}分 回调=${actualAmount}分`
+        );
+        return {
+          success: false,
+          error: '回调金额与订单金额不一致',
+        };
+      }
+    }
+
+    // 5. 使用事务处理订单和订阅更新
     const result = await db.$transaction(async (tx) => {
       // 更新订单状态
       const updatedOrder = await tx.order.update({
