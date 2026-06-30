@@ -505,4 +505,73 @@ describe("POST /api/invitations", () => {
     expect(res.status).toBe(500);
     expect((res as { body: { error: string } }).body.error).toBe("创建邀请失败");
   });
+
+  // ── expiresInHours 值域校验：非数字 / 非正整数 / 超上限 → 400，不触达 DB ──
+  // 防止 'abc' → NaN、布尔、对象等透传到 Date 算术产生 Invalid Date，以及负数/0 导致
+  // expiresAt 落在过去或当前时刻（邀请立即过期）。与 files/[id]/share/route.ts 的
+  // expiresIn typeof+range 校验约定一致（同单位为小时，同上限 8760）。默认 72 小时合法。
+  // 校验置于 role 门控之后、db.user.findFirst 之前：owner/admin 才能触达校验，
+  // 与 GET 分页校验置于 role 门控之后的顺序约定一致（不向 member/viewer 泄漏校验细节）。
+  it("expiresInHours='abc'（字符串）→ 400，不触达 user/invitation DB", async () => {
+    const res = await POST(makePostRequest({ email: "a@b.com", expiresInHours: "abc" }));
+
+    expect(res.status).toBe(400);
+    expect((res as { body: { error: string } }).body.error).toBe("expiresInHours 必须为 1-8760 之间的正整数");
+    expect(mockUserFindFirst).not.toHaveBeenCalled();
+    expect(mockInvitationFindFirst).not.toHaveBeenCalled();
+    expect(mockInvitationCreate).not.toHaveBeenCalled();
+  });
+
+  it("expiresInHours=1.5（小数）→ 400，不触达 DB", async () => {
+    const res = await POST(makePostRequest({ email: "a@b.com", expiresInHours: 1.5 }));
+
+    expect(res.status).toBe(400);
+    expect((res as { body: { error: string } }).body.error).toBe("expiresInHours 必须为 1-8760 之间的正整数");
+    expect(mockUserFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("expiresInHours=0（非正数）→ 400，不触达 DB（防 expiresAt=now 立即过期）", async () => {
+    const res = await POST(makePostRequest({ email: "a@b.com", expiresInHours: 0 }));
+
+    expect(res.status).toBe(400);
+    expect((res as { body: { error: string } }).body.error).toBe("expiresInHours 必须为 1-8760 之间的正整数");
+    expect(mockUserFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("expiresInHours=-1（负数）→ 400，不触达 DB（防 expiresAt 落在过去）", async () => {
+    const res = await POST(makePostRequest({ email: "a@b.com", expiresInHours: -1 }));
+
+    expect(res.status).toBe(400);
+    expect((res as { body: { error: string } }).body.error).toBe("expiresInHours 必须为 1-8760 之间的正整数");
+    expect(mockUserFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("expiresInHours=8761（超上限）→ 400，不触达 DB", async () => {
+    const res = await POST(makePostRequest({ email: "a@b.com", expiresInHours: 8761 }));
+
+    expect(res.status).toBe(400);
+    expect((res as { body: { error: string } }).body.error).toBe("expiresInHours 必须为 1-8760 之间的正整数");
+    expect(mockUserFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("expiresInHours=null → 400（destructuring 默认仅 undefined 触发，null 透传为非法）", async () => {
+    // body.expiresInHours=null 时解构默认 72 不触发，expiresInHours=null，
+    // typeof null !== 'number' → 400。锁定此行为，防止 null 透传到算术产生 0/NaN。
+    const res = await POST(makePostRequest({ email: "a@b.com", expiresInHours: null }));
+
+    expect(res.status).toBe(400);
+    expect((res as { body: { error: string } }).body.error).toBe("expiresInHours 必须为 1-8760 之间的正整数");
+    expect(mockUserFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("member + expiresInHours='abc' → 403 而非 400（role 门控优先于 expiresInHours 校验，不泄漏校验细节）", async () => {
+    // 与 GET "member + page=abc → 403" 顺序约定一致：权限 403 优先于字段校验 400。
+    mockAuthenticate.mockResolvedValue(memberAuth);
+
+    const res = await POST(makePostRequest({ email: "a@b.com", expiresInHours: "abc" }));
+
+    expect(res.status).toBe(403);
+    expect((res as { body: { error: string } }).body.error).toBe("没有权限邀请用户");
+    expect(mockUserFindFirst).not.toHaveBeenCalled();
+  });
 });

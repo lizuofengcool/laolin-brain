@@ -397,5 +397,82 @@ describe("/api/api-keys 路由", () => {
       expect(res.status).toBe(500);
       expect(res.body).toEqual({ error: "创建API密钥失败" });
     });
+
+    // ── expiresInDays 值域校验：非数字 / 非正整数 / 超上限 → 400，不触达 create ──
+    // 防止 'abc' → NaN、布尔、对象等透传到 Date 算术产生 Invalid Date，以及负数/超大值
+    // 导致 expiresAt 落在过去或过于遥远的未来。与 files/[id]/share/route.ts 的 expiresIn
+    // typeof+range 校验约定一致。未提供（undefined）→ 无过期（保持既有 truthy-check 语义）。
+    it("expiresInDays='abc'（字符串）→ 400，不触达 create", async () => {
+      const res = (await POST(
+        makePostRequest({ name: "k", expiresInDays: "abc" })
+      )) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "expiresInDays 必须为 1-3650 之间的正整数" });
+      expect(mockApiKeyCreate).not.toHaveBeenCalled();
+    });
+
+    it("expiresInDays=1.5（小数）→ 400，不触达 create", async () => {
+      const res = (await POST(
+        makePostRequest({ name: "k", expiresInDays: 1.5 })
+      )) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "expiresInDays 必须为 1-3650 之间的正整数" });
+      expect(mockApiKeyCreate).not.toHaveBeenCalled();
+    });
+
+    it("expiresInDays=0（非正数）→ 400，不触达 create", async () => {
+      const res = (await POST(
+        makePostRequest({ name: "k", expiresInDays: 0 })
+      )) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "expiresInDays 必须为 1-3650 之间的正整数" });
+      expect(mockApiKeyCreate).not.toHaveBeenCalled();
+    });
+
+    it("expiresInDays=-7（负数）→ 400，不触达 create", async () => {
+      const res = (await POST(
+        makePostRequest({ name: "k", expiresInDays: -7 })
+      )) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "expiresInDays 必须为 1-3650 之间的正整数" });
+      expect(mockApiKeyCreate).not.toHaveBeenCalled();
+    });
+
+    it("expiresInDays=3651（超上限）→ 400，不触达 create", async () => {
+      const res = (await POST(
+        makePostRequest({ name: "k", expiresInDays: 3651 })
+      )) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "expiresInDays 必须为 1-3650 之间的正整数" });
+      expect(mockApiKeyCreate).not.toHaveBeenCalled();
+    });
+
+    it("expiresInDays=null → 视同未提供，无过期（expiresAt null），create 触达", async () => {
+      // 显式 null 与 undefined 行为一致：truthy-check 走 null 分支，无过期
+      mockApiKeyCreate.mockImplementation(async (args: { data: Record<string, unknown> }) => ({
+        id: "ak-new",
+        name: args.data.name,
+        key: args.data.key,
+        secret: args.data.secret,
+        scopes: args.data.scopes,
+        expiresAt: args.data.expiresAt,
+        enabled: true,
+        createdAt: "2026-06-28T00:00:00.000Z",
+      }));
+
+      const res = (await POST(
+        makePostRequest({ name: "k", expiresInDays: null })
+      )) as MockRes;
+
+      expect(res.status).toBe(200);
+      expect(mockApiKeyCreate).toHaveBeenCalledTimes(1);
+      const createData = mockApiKeyCreate.mock.calls[0][0].data as { expiresAt: Date | null };
+      expect(createData.expiresAt).toBeNull();
+    });
   });
 });
