@@ -10495,3 +10495,67 @@ Mock 要点：`vi.hoisted` 创建 `mockAlipay`/`mockWechat`/`mockDb`/`mockTx`，
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-30 13:00 自动迭代
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-30 12:31 CST，取整 13:00 记录（12:00 已被第七十一轮占用，取下一整点保持单调）。本轮 1 个 dev commit（14c8037）+ 本 worklog commit。轮次编号（第七十二轮）为排序权威键。
+
+**前置检查**：沙箱 `/workspace` 原为空，`git clone origin`（Gitee）+ `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 42c4c19（第七十一轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：用户清单 5 项前序轮次均已闭合（详见第七十一轮记录），本轮无新优先级 1 问题，直接进入下一轮候选。
+
+**本轮开发（payment callback 路由 handler 级集成测试）**：
+
+按第七十一轮"下一轮候选"第 1 项切入。第七十一轮已覆盖 `processPaymentCallback` 编排层（src/lib/payment/index.ts，金额校验/幂等/事务编排），但两个回调 route handler 仍无 handler 级集成测试：
+
+- `src/app/api/payment/callback/alipay/route.ts`：POST 表单解析（application/x-www-form-urlencoded，支付宝标准回调格式）+ GET query 解析（部分场景支付宝用 GET 回调），返回 "success"/"fail"（HTTP 200，符合支付宝"失败即重试"约定，不抛 5xx）
+- `src/app/api/payment/callback/wechat/route.ts`：读取原始 body 文本（微信支付 V3 验签需原始 body 参与 HMAC-SHA256 计算），JSON 解析优先 + urlencoded 兜底，透传 Wechatpay-Timestamp/Nonce/Signature 头，返回 JSON {code:'SUCCESS'/'FAIL'}（HTTP 200）
+
+**新增测试**（commit 14c8037，2 文件 13 用例）：
+
+alipay route（src/__tests__/api/payment-callback-alipay-route.test.ts，7 用例）：
+- POST 表单回调 + 处理成功 → "success"(200)，params 透传 processPaymentCallback('alipay', {out_trade_no, trade_status, total_amount})
+- POST 处理失败 → "fail"(200)
+- POST processPaymentCallback 抛错 → "fail"(200)（catch 兜底，不抛 5xx）
+- POST 方法参数恒为 'alipay'（防串成 wechat）
+- GET query 回调 + 成功 → "success"(200)，query 透传
+- GET 失败 → "fail"(200)
+- GET 抛错 → "fail"(200)
+
+wechat route（src/__tests__/api/payment-callback-wechat-route.test.ts，6 用例）：
+- POST JSON body + Wechatpay-* 头 → params 含 body(原文)/timestamp/nonce/signature + 解析字段，返回 {code:'SUCCESS', message:'成功'}(200)
+- POST 处理失败 → {code:'FAIL', message:error}(200)
+- POST processPaymentCallback 抛错 → {code:'FAIL', message:'系统异常'}(200)
+- POST 缺 Wechatpay 头 → params 不含 timestamp/nonce/signature（仅 body + 解析字段）
+- POST 非 JSON body → urlencoded 兜底解析，body 仍透传原文
+- POST 空 body → params 仅含 body:''（`if (rawBody)` 跳过解析）
+
+Mock 要点：`vi.hoisted` 创建 `MockNextResponse`（body/status 属性 + static json）与 `mockProcess`，`vi.mock('next/server', () => ({ NextResponse: MockNextResponse }))`（路由的 NextRequest 仅类型注解，运行时不存在，故 mock 仅需导出 NextResponse）+ `vi.mock('@/lib/payment', () => ({ processPaymentCallback: ...mockProcess }))`。Request 构造：alipay POST 用真实 `new Request(url, {headers:{'Content-Type':'application/x-www-form-urlencoded'}, body})`，`request.formData()` 在 Node 24 undici 下正确解析 urlencoded；alipay GET 注入 `nextUrl = new URL(url)`（标准 Request 无 nextUrl）；wechat POST 用真实 `request.text()` + `request.headers.get()`。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；67.3s）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关）。本轮改动零类型错误（测试文件被 tsconfig exclude 排除，且为纯新增无源码改动）
+- `npx vitest run src/__tests__/api/payment-callback-alipay-route.test.ts src/__tests__/api/payment-callback-wechat-route.test.ts`：13/13 通过（alipay 7 + wechat 6，2.33s）
+- `npx vitest run` 全量 1762/1762 通过（117 文件，136.56s），零回归（基线 1749/115 + 本轮 13/2 = 1762/117）
+
+### 改动量
+
+2 文件（src/__tests__/api/payment-callback-alipay-route.test.ts +144 / src/__tests__/api/payment-callback-wechat-route.test.ts +157，共 301 insertions），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `14c8037` test(api): 支付回调路由 handler 级集成测试（alipay + wechat）
+
+### 推送
+
+- origin (Gitee)：42c4c19..14c8037 推送成功（含 worklog commit）
+- github (GitHub)：42c4c19..14c8037 推送成功（含 worklog commit）
+
+### 下一轮候选
+
+- **payment queryPayment 状态回查与本地 order 状态同步**（第七十一轮候选延续）：`queryPayment` 在真实模式返回 failed（未接入 SDK），调用方（status 路由）回退本地 order 状态，可补这条回退路径的单测与文档
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
