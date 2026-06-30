@@ -11217,3 +11217,88 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-01 02:00 自动迭代
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-07-01 02:00 CST，取整 02:00 记录。本轮 1 个 dev commit（93ff6ff）+ 本 worklog commit。轮次编号（第八十三轮）为排序权威键。
+
+**前置检查**：沙箱 `/workspace/laolin-brain` 此前不存在（新会话），`git clone origin`（Gitee）+ `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 f7bfb4b（第八十二轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：用户清单 5 项前序轮次均已闭合，本轮逐项 spot-check 复核确认与前轮一致——`tenant-db.ts` raw getter 软审计 ✓、`payment/alipay.ts` RSA2 真实验签 ✓、`payment/wechat.ts` V3 签名验证 + AES-256-GCM resource 解密 ✓、`api/files/route.ts` 经 createTenantDb 走租户隔离层 ✓、`sync-engine.ts` keep_both 分支 ✓、`api-auth.test.ts` 与实现匹配 ✓。本轮无新优先级 1 问题，进入下一轮候选。
+
+**本轮开发（lib/ai/model-manager.ts AIModelManager 内存注册表直接单测）**：
+
+按第八十二轮"下一轮候选"第 1 项切入（lib 域零覆盖纯模块延续，候选清单首位即 `src/lib/ai/model-manager.ts`）。该模块为 AIModelManager 单例纯内存注册表（仅 import types，零运行时外部依赖），含模型注册/默认模型回退链/使用统计三维分桶/配额/桩式文本与嵌入生成/对话会话等丰富控制流，此前**零直接覆盖**。本轮补齐。注：第八十二轮候选末项将 model-manager 列入"需真实外部服务集成桩"，指其 `generateText/generateEmbedding` 内 `TODO: 实际调用模型API` 的真 LLM 调用部分；本轮覆盖的是其**纯内存注册表与桩式确定性数学**（tokens=ceil(len/4)、cost=(tokens/1000)*(costPer1kTokens||0)），不涉及真实 LLM 网络，可测。
+
+**Commit（93ff6ff）AIModelManager 直接单测**：62 用例覆盖全部 17 个方法 + 单例导出，按行为分组：
+
+- **单例导出（1 用例）**：`aiModelManager instanceof AIModelManager`
+- **registerModel/getModel/getAllModels（8 用例）**：register+getModel 同引用；未命中 undefined；isDefault=true 同步设 defaultModelId；isDefault 缺省回退首个 active；**锁 registerModel 不校验 status 行为**（isDefault=true 且 status=inactive 仍设 defaultModelId，getDefaultModel 无参直接命中 inactive 模型）；同 id 覆盖；getAllModels 按插入顺序；空注册表空数组
+- **getModelsByType（2 用例）**：仅返回 type+active 匹配（inactive 同 type 排除）；无匹配空数组
+- **getDefaultModel 回退链（8 用例）**：无 type 三路径（defaultModelId 命中 / 无 defaultModelId 回退首个 active / 空 + 仅 inactive 均 undefined）；有 type 四路径（类型首个 isDefault / 无 isDefault 回退类型首个 active / 类型仅 inactive undefined / 无该类型 undefined）
+- **updateModel（2 用例）**：未命中 false 不新增；命中浅合并+刷新 updatedAt+保留未传字段（createdAt）
+- **deleteModel（3 用例）**：命中 true 移除；未命中 false；**锁删除默认模型后 defaultModelId 不被清理**（models.get 命中失败直接返回 undefined，未回退 active 查找）
+- **setDefaultModel（4 用例）**：未命中 false；inactive 命中 false 不置默认；active 命中清空其他 isDefault+置目标+更新 defaultModelId；对已默认模型再设仍成功
+- **testModel（2 用例，fake timers）**：未命中 `{success:false,error:'模型不存在'}` 无 latency；命中 `await setTimeout(100)` 后 `{success:true,latency:100}`（vi.advanceTimersByTimeAsync(100) 推进，latency=Date.now()-startTime=100）
+- **recordUsage/getUsageStatistics（4 用例）**：首次 record 三桶（byModel/byFeature/byDay）初始化+total/quota；同 model+feature+day 二次 record 三桶累加非新增（byDay 同日合并）；不同 model/feature 独立分桶；getUsageStatistics 只读不改内部统计
+- **recordUsage byDay 跨日（2 用例，fake timers）**：同日多次 byDay 仅一条累加；跨日 record byDay 新增一条（find 同日命中累加 vs push 新条目两分支）
+- **checkQuota（4 用例）**：初始 available=true/used=0/limit=1000/remaining=1000；record N 次后 used=N/remaining=1000-N；到达 limit available=false（quotaUsed<quotaLimit 为 false）/remaining=0；remaining 永不为负（Math.max(0,...)）超额仍 0
+- **resetDailyQuota（2 用例）**：清零 quotaUsed+设 quotaResetAt+available 恢复；不影响 total*/byModel/byFeature/byDay
+- **generateText（6 用例）**：无模型抛"没有可用的文本生成模型"；modelId 未命中抛错；默认模型 tokens=ceil(len/4)/cost=(tokens/1000)*costPer1kTokens（"hello"→tokens=2/cost=0.00006）；costPer1kTokens 缺省（||0）→cost=0；modelId 优先解析（即便目标类型非 text_generation）；副作用 recordUsage 计入 byModel/byFeature("text_generation")/quotaUsed
+- **generateEmbedding（4 用例）**：无模型抛"没有可用的文本嵌入模型"；默认模型 embedding 长 1536/tokens=2/cost 数学；modelId 优先解析；副作用 byFeature("embedding")
+- **createChatSession（3 用例，fake timers）**：默认标题"新对话"+默认 text_generation 模型解析+id=`chat-${Date.now()}`+messages空/status active/totalTokens 0；自定义 title/modelId/systemPrompt 透传；无可用模型 modelId=""
+- **sendChatMessage（3 用例，fake timers）**：session.modelId 未命中抛"模型不存在"；命中返回 assistant 消息 id=`msg-${Date.now()}`/content 固定串/tokens=ceil(len/4)；副作用 byFeature("chat")/byModel
+- **getSupportedFeatures/isFeatureAvailable（4 用例）**：空注册表 []+恒 false；单 active 模型返回其 capabilities；多 active 模型 Set 去重并集；inactive 模型 capabilities 不计入并集
+
+**关键控制流锁定**：
+- registerModel 不校验 status：`if (model.isDefault) this.defaultModelId = model.id` —— 用 isDefault=true+status=inactive 验证 defaultModelId 仍被设置，getDefaultModel 无参直接 models.get(defaultModelId) 返回 inactive 模型（未走 active 过滤）
+- getDefaultModel 三级回退：有 type → `getModelsByType(type).find(isDefault) || [0]`；无 type → `defaultModelId ? models.get(defaultModelId) : values().find(active)` —— 8 用例覆盖全部分支
+- setDefaultModel 清旧默认：`for ([id,m] of models) if (m.isDefault) models.set(id,{...m,isDefault:false})` 后 `models.set(target,{...model,isDefault:true})` —— 用两模型均 isDefault 验证仅目标保留
+- testModel 延迟：`startTime=Date.now(); await setTimeout(100); latency=Date.now()-startTime` —— fake timers 推进 100ms，latency 精确 100
+- recordUsage byDay 同日合并 vs 跨日新增：`const today=new Date().toISOString().split('T')[0]; const day=byDay.find(d=>d.date===today); if(day){累加} else {push 新条目}` —— fake timers 固定 2026-07-01 与推进 2026-07-02 两路径
+- checkQuota 边界：`available: quotaUsed < quotaLimit; remaining: Math.max(0, quotaLimit-quotaUsed)` —— 1000 次到达 limit available=false、1001 次仍 remaining=0 不为负
+- generateText/generateEmbedding 模型解析：`options?.modelId ? getModel(modelId) : getDefaultModel(type)` —— modelId 优先即便类型不符；无模型 throw
+- tokens/cost 桩数学：`tokens=Math.ceil(prompt.length/4); cost=(tokens/1000)*(model.costPer1kTokens||0)` —— "hello"(5)→tokens=2；costPer1kTokens 缺省 cost=0
+- createChatSession/sendChatMessage id：`chat-/msg-${Date.now()}` —— fake timers 固定 NOW_TS 使 id 可断言
+- getSupportedFeatures 并集去重：`new Set<string>(); for (m of models.values()) if (m.status==='active') m.capabilities.forEach(c=>set.add(c))` —— inactive 模型 capabilities 不计入
+
+**状态/时间策略要点**：每个用例 `new AIModelManager()` 取全新实例避免状态串扰（不依赖 resetModules，因类实例化即得全新 models Map 与 usageStatistics）。testModel/createChatSession/sendChatMessage/byDay 跨日依赖 Date.now()/new Date()，分别在其 describe 内 `vi.useFakeTimers()+vi.setSystemTime(NOW)`（NOW=2026-07-01T10:00:00Z），afterEach `vi.useRealTimers()` 还原。testModel 用 `vi.advanceTimersByTimeAsync(100)` 推进内部 setTimeout(100) 并 flush microtask。recordUsage 非 fake-timer 用例的 byDay date 用 `new Date().toISOString().split('T')[0]` 动态求值断言（避免依赖真实系统日期）。成本累加用 toBeCloseTo(...,10) 规避 0.05+0.02 浮点尾差。
+
+**初次解析报错修复**：首版 JSDoc 头注释第 17 行 `不影响 total*/分桶` 中 `*/` 序列被 oxc 解析器识别为块注释提前结束，致后续注释行被当代码解析报 "Invalid Character `：`" PARSE_ERROR。改为 `不影响 total 与各分桶` 消除 `*/` 序列后通过。教训：JSDoc/块注释正文避免出现 `*/` 字符序列。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m6.5s）
+- `npx prisma generate`（补 PrismaClient 类型；与 tsc 串行执行避免误报 PrismaClient 无导出）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关）。本轮改动零类型错误（测试文件被 tsconfig `**/__tests__/**` exclude 排除，且为纯新增无源码改动）
+- `npx vitest run src/__tests__/lib/ai-model-manager.test.ts`：62/62 通过（26ms tests）
+- `npx vitest run` 全量 2097/2097 通过（130 文件，149.93s），零回归（基线 2035/129 + 本轮 62/1 = 2097/130）
+
+### 改动量
+
+1 文件（src/__tests__/lib/ai-model-manager.test.ts +691），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `93ff6ff` test(lib): ai/model-manager AIModelManager 内存注册表直接单测
+
+### 推送
+
+- origin (Gitee)：f7bfb4b..93ff6ff 推送（含 worklog commit）
+- github (GitHub)：f7bfb4b..93ff6ff 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（第八十二轮候选第 1 项展开，model-manager 已闭合）：下轮可切入：
+  - `src/lib/bi/bi-manager.ts`（~699 行，BiManager 单例纯内存 KPI/看板/告警 CRUD，租户隔离返回 null/false 分支；calculateKpiValue 的 change/changePercent/trend/status 双方向模式；runAnalysis switch 分发；纯函数，仅 import types）
+  - `src/lib/monitoring/monitoring.ts`（~645 行，MetricsCollector 请求统计 + AlertManager 规则匹配 gt/lt/gte/lte/eq/neq + 告警生命周期；仅依赖 Node os 内置，核心类无需 mock）
+  - `src/lib/plugins/registry.ts`（~488 行，PluginRegistry 纯内存插件生命周期 + hook/event 系统，createPluginAPI 权限网关；核心逻辑零外部依赖）
+  - `src/lib/integrations/integration-manager.ts`（~547 行，provider 注册模式，connectIntegration 抛错/组合键、testConnection 回退、createSyncTask 状态机 pending→running→completed/failed；注入 fake provider 即可，无真实网络）
+  - `src/lib/utils/file-types.ts`（~1184 行，纯文件类型检测大表 + formatFileSize 数学；零 import）
+  - `src/lib/utils/benchmark.ts`（~249 行，benchmark 百分位计算 + markdown 报表生成 + TestDataGenerator；仅依赖 perf_hooks）
+  - `src/lib/utils/tenant-permissions.ts`（~97 行，hasRole 数值层级 owner4>admin3>member2>viewer1；纯函数部分零依赖）
+  - `src/lib/api-cache.ts`（~165 行，内存 GET 缓存 cachedFetch 命中/过期、invalidateCache 子串匹配、detectTTL URL 模式分类；仅 mock 全局 fetch）
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
