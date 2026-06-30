@@ -10816,3 +10816,71 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
 - **lib 层测试覆盖扫描**：payment 域 lib（alipay.ts/wechat.ts/index.ts）的 generateMockSign/verifyCallback/createPayment 等纯函数已有部分单测，可复核覆盖率补边界用例；或转向 cloud-sync / saas billing.service 等纯函数层的单测补强（避开需外部集成的桩函数）
+
+## 2026-06-30 18:00 自动迭代
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-30 18:10 CST，取整 18:00 记录（17:00 已被第七十六轮占用，取下一整点保持单调）。本轮 1 个 dev commit（2881b21）+ 本 worklog commit。轮次编号（第七十七轮）为排序权威键。
+
+**前置检查**：沙箱 `/workspace/laolin-brain` 此前不存在（新会话），`git clone origin`（Gitee）+ `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 f2615df（第七十六轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：用户清单 5 项前序轮次均已闭合，本轮逐项 spot-check 复核确认与第七十六轮一致：
+- `src/lib/db/tenant-db.ts`：`raw` getter 与 `transaction` 均带调用堆栈软审计（`console.warn('[TenantDb.raw] tenantId=... 越过租户隔离层访问原始 PrismaClient，调用方: ${caller}')`），rawDb 不再无审计导出（文件末尾注释说明三档使用规范）✓
+- `src/lib/payment/alipay.ts` & `wechat.ts`：真实密钥配置下显式抛错、verifyCallback 走 RSA2/V3 真实验签（前序轮次已闭合，本轮未改）✓
+- `src/app/api/files/route.ts`：dedup 与 list 均走 `createTenantDb(tenantId).file.*` 租户隔离层（前序轮次已闭合）✓
+- `src/lib/cloud-sync/sync-engine.ts`：keep_both 分支已修复——`resolveConflict` 前置 `db.file.findUnique({ where: { id: fileId, tenantId } })` 归属校验，keep_both 先 `fetchCloudFileData` 取云端数据再 rename 本地为冲突副本（裸 id 操作带注释说明 cloud_wins 复用路径）✓
+- `src/__tests__/lib/api-auth.test.ts`：返回 4 字段、async、不读 query，与 api-auth.ts 实现匹配（前序轮次已闭合）✓
+
+本轮无新优先级 1 问题，进入下一轮候选。
+
+**本轮开发（cloud-sync/crypto 端到端加密模块纯函数单测）**：
+
+按第七十六轮"下一轮候选"末项切入（lib 层测试覆盖扫描 → cloud-sync 纯函数层补强）。`src/lib/cloud-sync/crypto.ts` 是云端同步端到端加密核心（AES-256-GCM + PBKDF2），9 个导出函数均为纯函数（仅依赖 Node `crypto`，无 DB/无外部服务），但此前**仅被 `cloud-sync-engine-tenant.test.ts` 以 `vi.mock("@/lib/cloud-sync/crypto", ...)` 整体替换**，真实实现零单测覆盖。同目录 `config-crypto.test.ts` 覆盖的是 `config-crypto.ts`（另一套 "v1:" 前缀 + STORAGE_CONFIG_ENCRYPTION_KEY 方案），不覆盖本模块。本轮补齐。
+
+**Commit（2881b21）cloud-sync/crypto 单测**：38 用例覆盖全部 9 个导出函数，按函数分组 + 跨函数契约组：
+
+- **deriveKey（4 用例）**：返回 32 字节 Buffer；同密码+同盐确定性一致；盐不同→派生密钥不同；密码不同→派生密钥不同
+- **generateSalt / generateIV（4 用例）**：长度固定 16/12；两次调用产生不同值（随机性契约）
+- **encrypt（5 用例）**：输出长度 = salt(16)+iv(12)+tag(16)+明文 = 44+明文长度；密文主体不含明文字节片段（`ciphertext.includes(data)` 为 false）；同输入每次产生不同密文（随机盐+IV）但均可解回原明文；输出结构分段长度锁定（salt/iv/tag/ciphertext 各段长度 + salt/iv 非全零）；空 Buffer 明文加密长度恰为 44 且可往返
+- **encryptString / decryptString（6 用例）**：返回 base64 字符集校验；ASCII/Unicode+emoji/空字符串三类往返一致；同输入每次产生不同密文；错误密码解密抛错（GCM 认证失败）
+- **decrypt（7 用例）**：往返一致；错误密码抛错；篡改 tag（翻转 tag 首字节）/篡改密文主体（翻转 OVERHEAD 后首字节）/篡改 salt（翻转首字节）均 GCM 认证失败抛错；数据过短（43 字节 < 44）抛 `/加密数据格式无效：数据太短/`；恰好 44 字节空明文产物可解回空 Buffer
+- **hashFileContent（5 用例）**：返回 64 位 hex（`/^[0-9a-f]{64}$/`）；同内容确定性；不同内容不同哈希；与 `nodeCrypto.createHash('sha256')` 结果一致（契约锁定）；空 Buffer 哈希为已知空 sha256 常量
+- **createPasswordVerifier / verifyPassword（5 用例）**：verifier 为 base64 串；正确密码 verifyPassword 返回 true；错误密码返回 false（不抛错）；不同密码生成不同 verifier；verifier 被篡改（翻转 base64 首字符）返回 false
+- **跨函数契约（2 用例）**：encryptString 产物是 encrypt 产物的 base64（decrypt 可解 encryptString 的 base64）；同一密码加密的多条独立密文互不影响解密
+
+**关键控制流锁定**：
+- `decrypt` 数据过短分支：`if (encryptedData.length < SALT_LENGTH + IV_LENGTH + TAG_LENGTH) throw new Error("加密数据格式无效：数据太短")` —— 用 43 字节 buffer 触发，正则匹配错误信息
+- `verifyPassword` try/catch 吞错返回 false：错误密码/篡改 verifier 均经 `decryptString` 抛错后被 catch 返回 false（不抛错）—— 双用例锁定
+- GCM 认证标签：错误密码（派生密钥不同）、篡改 tag、篡改密文、篡改 salt（派生密钥改变）四路径均触发 `decipher.final()` 抛错 —— 四用例分别锁定
+- 输出格式契约：salt(16)+iv(12)+tag(16)+ciphertext 的分段 subarray 长度锁定，是 decrypt 正确解析的前提
+
+**Mock 要点**：无 mock。模块为纯 Node `crypto` 函数，测试直接 import 真实实现。jsdom 环境下 Node `crypto` 可正常 import（与 config-crypto.test.ts 同范式）。常量 SALT_LENGTH/IV_LENGTH/TAG_LENGTH/OVERHEAD/KEY_LENGTH 在测试内重新声明，作为长度契约的断言依据（与源码常量保持一致）。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；67.4s）
+- `npx prisma generate`（补 PrismaClient 类型；注：tsc 若与 prisma generate 并发会误报 `PrismaClient` 无导出，需串行执行）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关）。本轮改动零类型错误（测试文件被 tsconfig `**/__tests__/**` exclude 排除，且为纯新增无源码改动）
+- `npx vitest run src/__tests__/lib/cloud-sync-crypto.test.ts`：38/38 通过（1.13s tests）
+- `npx vitest run` 全量 1884/1884 通过（124 文件，153.91s），零回归（基线 1846/123 + 本轮 38/1 = 1884/124）
+
+### 改动量
+
+1 文件（src/__tests__/lib/cloud-sync-crypto.test.ts +339），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `2881b21` test(lib): cloud-sync/crypto 端到端加密模块单测
+
+### 推送
+
+- origin (Gitee)：f2615df..2881b21 推送成功（含 worklog commit）
+- github (GitHub)：f2615df..2881b21 推送成功（含 worklog commit）
+
+### 下一轮候选
+
+- **cloud-sync 域 lib 覆盖延续**：`cloud-sync/r2-storage-class.ts` / `cloud-sync/aliyun-oss.ts` 可评估纯函数层（如 R2 presigned URL 构造、OSS 签名生成）是否有可单测的纯函数；多数方法依赖 S3/OSS 客户端实例，需判断是否走 mock 客户端集成测试
+- **saas/billing.service.ts 纯函数补强**：`generateOrderNo`（未导出）、`createOrder` 金额计算逻辑（`planConfig.price * 100 * quantity`、年付 ×10）可考虑导出或经 prisma mock 覆盖；`isSubscriptionExpiringSoon` 的 daysLeft 计算（`Math.ceil((endDate - now) / 86400000)`、`expiring = daysLeft <= 7 && daysLeft > 0` 边界）可经 getCurrentSubscription mock 覆盖
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
