@@ -11013,3 +11013,68 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-30 21:00 自动迭代
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-30 20:22 CST，取整 21:00 记录（20:00 已被第七十九轮占用，取下一整点保持单调）。本轮 1 个 dev commit（b7d293e）+ 本 worklog commit。轮次编号（第八十轮）为排序权威键。
+
+**前置检查**：沙箱 `/workspace/laolin-brain` 此前不存在（新会话），`git clone origin`（Gitee）+ `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 131398f（第七十九轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：用户清单 5 项前序轮次均已闭合，本轮逐项 spot-check 复核确认与第七十九轮一致——`tenant-db.ts` raw getter 软审计（console.warn + caller 堆栈）✓、`payment/alipay.ts` RSA2 真实验签（createVerify RSA-SHA256 + PKCS1_PADDING）✓、`payment/wechat.ts` V3 签名验证 + AES-256-GCM resource 解密 ✓、`api/files/route.ts` 经 createTenantDb 走租户隔离层 ✓、`sync-engine.ts` keep_both 分支 ✓、`api-auth.test.ts` 与实现匹配 ✓。本轮无新优先级 1 问题，进入下一轮候选。
+
+**本轮开发（cloud-sync/aliyun-oss.ts AliyunOSSStorage 直接单测）**：
+
+按第七十九轮"下一轮候选"第 2 项切入（cloud-sync 域 lib 覆盖延续）。`src/lib/cloud-sync/aliyun-oss.ts` 的 `AliyunOSSStorage` 类是阿里云 OSS 适配器，封装 ali-oss 客户端，含端到端加解密集成、404→null 归一、空 keys 短路、list 结果映射、预签名 URL 默认值、连接测试吞错等关键控制流，但此前**零直接覆盖**——`r2-storage.test.ts` 仅覆盖 R2 配置态（`isR2Configured`/`testR2Connection`）且把 `R2Storage` 类整体桩化，未触达 OSS 类。本轮补齐。评估两候选后选 OSS 类：分支逻辑更丰富（encrypt/decrypt 串联、NoSuchKey/404 双归一路径、空数组短路、list name→key 映射、`||` falsy 回退），R2Storage 类直接测试留作下一轮。
+
+**Commit（b7d293e）AliyunOSSStorage 直接单测**：25 用例覆盖全部 8 个实例方法 + createAliyunOSSStorage 工厂，按方法分组：
+
+- **constructor（2 用例）**：`new OSS({accessKeyId, accessKeySecret, bucket, region, endpoint: undefined, secure: true})` 透传；endpoint 可选字段透传（secure 恒为 true 锁定）
+- **uploadObject（5 用例）**：基础透传 Buffer + 返回 `{etag, size: result.res.size}`；contentType → `headers['Content-Type']`；metadata → `meta`；encryptionPassword + Buffer data → `encrypt(data, pw)` 后上传 `Buffer.from(encrypted)`；encryptionPassword + string data → `Buffer.from(string)` 再 encrypt（两条数据形态路径分别锁定）
+- **downloadObject（2 用例）**：基础返回 `result.content`；encryptionPassword → `decrypt(content, pw)` 返回明文
+- **headObject（4 用例）**：成功映射 `type→contentType`、`meta→metadata`、etag/size/lastModified 透传；`error.code === 'NoSuchKey'` → null；`error.status === 404` → null；其他错误 rethrow（双归一路径 + rethrow 锁定）
+- **deleteObject（1 用例）**：`client.delete(key)`
+- **deleteObjects（2 用例）**：空 keys 短路（`if (keys.length === 0) return`，deleteMulti 不调用）；非空 → `deleteMulti(keys)`
+- **listObjects（3 用例）**：objects 映射（`name→key`，size/lastModified/etag 透传）+ isTruncated/nextMarker 透传；`result.objects` undefined → 空数组；maxKeys/marker 选项透传（`'max-keys'`/`marker` 键名锁定）
+- **generatePresignedUrl（3 用例）**：默认 `expires=3600`/`method='GET'`；自定义 expires/method 透传；`expires=0` 触发 `||` falsy 回退至 3600（文档化当前 `options?.expires || 3600` 行为，与 method 同理 `|| 'GET'`）
+- **testConnection（2 用例）**：`list({'max-keys': 1})` 成功 → true；抛错 → catch + console.error → false（不向上抛）
+- **createAliyunOSSStorage（1 用例）**：工厂返回 `AliyunOSSStorage` 实例（`instanceof`）并触发 OSS 构造
+
+**关键控制流锁定**：
+- 端到端加解密：upload 路径 `if (options?.encryptionPassword)` → string 先 `Buffer.from` 再 `encrypt(buffer, pw)` → `uploadData = Buffer.from(encrypted)`；download 路径 `if (options?.encryptionPassword)` → `decrypt(content, pw)`。两条路径分别用 Buffer/string 数据形态 + encrypt/decrypt mock 串联验证，切断真实 PBKDF2/AES-256-GCM 计算（交由 cloud-sync-crypto.test.ts 专测）
+- 404 双归一：`if (error.code === 'NoSuchKey' || error.status === 404) return null` —— 两路径分别用 `Object.assign(new Error(), {code:'NoSuchKey'})` 与 `{status:404}` 构造错误验证；其他错误 `throw error` rethrow
+- 空 keys 短路：`if (keys.length === 0) return` —— deleteMulti 断言 not-called
+- list 映射：`(result.objects || []).map(obj => ({key: obj.name, ...}))` —— undefined objects → [] 路径锁定；键名 `'max-keys'`/`marker` 透传锁定
+- 预签名默认值：`options?.expires || 3600` / `options?.method || 'GET'` —— falsy 回退（0 → 3600）文档化
+- 连接测试吞错：`try { await list({'max-keys':1}); return true } catch { console.error; return false }` —— 抛错路径不向上抛锁定
+
+**Mock 要点**：`ali-oss` 默认导出桩化为**普通 function**（`function OSS(config){ mockOSSConstructor(config); return {...} }`，vi.fn 在 vitest 4 下不可作构造器 `new` 调用，与 saas-tenant-service/billing-tenant 同范式）；`./crypto` 仅桩化 encrypt/decrypt（mock 工厂用 `(...args) => mockX(...args)` 转发以保留 vi.mock 工厂的 hoist 安全）；`vi.hoisted` 提升 10 个 mock fn 避免 TDZ。各客户端方法经 `(...args: unknown[]) => mockX(...args)` 转发以兼容 `unknown[]` 与 vitest mock 类型。AliyunOSSConfig/AliyunOSSStorage 类型 import 在 mock 下运行时不访问（仅类型位置）。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m9.5s）
+- `npx prisma generate`（补 PrismaClient 类型；注：tsc 若与 prisma generate 并发会误报 `PrismaClient` 无导出，需串行执行）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关）。本轮改动零类型错误（测试文件被 tsconfig `**/__tests__/**` exclude 排除，且为纯新增无源码改动）
+- `npx vitest run src/__tests__/lib/aliyun-oss.test.ts`：25/25 通过（19ms tests；testConnection 抛错用例的 `console.error` 为预期输出，非失败）
+- `npx vitest run` 全量 1987/1987 通过（127 文件，154.89s），零回归（基线 1962/126 + 本轮 25/1 = 1987/127）
+
+### 改动量
+
+1 文件（src/__tests__/lib/aliyun-oss.test.ts +401），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `b7d293e` test(lib): cloud-sync/aliyun-oss AliyunOSSStorage 直接单测
+
+### 推送
+
+- origin (Gitee)：131398f..b7d293e 推送（含 worklog commit）
+- github (GitHub)：131398f..b7d293e 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **cloud-sync 域 R2Storage 类直接单测**（第七十九轮候选延续，本轮选 OSS 后剩余项）：`src/lib/cloud-sync/r2-storage-class.ts` 的 `R2Storage` 类直接覆盖此前为零（`r2-storage.test.ts` 把类整体桩化）。可 mock `@aws-sdk/client-s3`（S3Client 构造器 + send）与 `@aws-sdk/s3-request-presigner`（getSignedUrl），覆盖：headObject 的 NotFound/404→null 双路径、downloadObject 的 ReadableStream/arrayBuffer/throw 三分支、listObjects 分页循环（continuationToken）、generatePresignedUrl get/put + 默认 expiresIn=3600、testConnection 吞错。与本轮 OSS 同范式
+- **cloud-sync 域 lib 覆盖延续**：`cloud-sync/r2-storage-class.ts` 之外，`cloud-sync/` 目录其余文件（sync-engine.ts 已有 tenant 测试、crypto.ts 已有专测、storage-factory 已有测试）覆盖较全，本轮后 OSS 适配器闭合
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
