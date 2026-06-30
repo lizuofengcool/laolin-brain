@@ -7,8 +7,6 @@ import { randomUUID } from "crypto";
  * 邀请API
  * GET /api/invitations - 获取邀请列表
  * POST /api/invitations - 创建邀请
- * DELETE /api/invitations/[id] - 撤销邀请
- * POST /api/invitations/[token]/accept - 接受邀请
  */
 
 // ─── GET /api/invitations — 获取邀请列表 ─────────────
@@ -112,6 +110,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: '没有权限邀请用户' },
         { status: 403 }
+      );
+    }
+
+    // 校验 expiresInHours：必须为 1-8760 的正整数（1 小时 ~ 1 年）。
+    // 默认 72 小时（3 天）。防止非数字（'abc' → NaN）、布尔、对象等透传到 Date
+    // 算术产生 Invalid Date，以及负数导致 expiresAt 落在过去（邀请立即过期）。
+    // 与 files/[id]/share/route.ts 的 expiresIn typeof+range 校验约定一致
+    //（同单位为小时，同上限 8760）。
+    if (
+      typeof expiresInHours !== 'number' ||
+      !Number.isInteger(expiresInHours) ||
+      expiresInHours < 1 ||
+      expiresInHours > 8760
+    ) {
+      return NextResponse.json(
+        { error: 'expiresInHours 必须为 1-8760 之间的正整数' },
+        { status: 400 }
       );
     }
 

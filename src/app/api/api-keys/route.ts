@@ -132,6 +132,25 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 校验 expiresInDays：提供时必须为 1-3650 的正整数（1 天 ~ 10 年）。
+    // 防止非数字（'abc' → NaN）、布尔、对象等透传到 Date 算术产生 Invalid Date，
+    // 以及负数/超大值导致 expiresAt 落在过去或过于遥远的未来。
+    // 与 files/[id]/share/route.ts 的 expiresIn typeof+range 校验约定一致。
+    // 未提供（undefined）→ 无过期（保持既有 truthy-check 语义）。
+    if (expiresInDays !== undefined && expiresInDays !== null) {
+      if (
+        typeof expiresInDays !== 'number' ||
+        !Number.isInteger(expiresInDays) ||
+        expiresInDays < 1 ||
+        expiresInDays > 3650
+      ) {
+        return NextResponse.json(
+          { error: 'expiresInDays 必须为 1-3650 之间的正整数' },
+          { status: 400 }
+        );
+      }
+    }
+
     // 生成密钥
     const apiKey = generateApiKey();
     const apiSecret = generateApiSecret();
