@@ -11611,3 +11611,80 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-01 07:00 自动迭代
+
+### 背景与优先级判断
+
+- 沙箱为空工作目录，先 `git clone origin` + 补 `github` remote，`git config user.email/name` 就位。
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 均为 `edd49f5`（第八十七轮 worklog commit），`origin..github` 与 `github..origin` 双向 0，双端完全一致，无 rebase 必要。
+- 工作树干净，无遗留未提交改动或未推送 commit，直接进入新一轮开发。
+- 优先级 1 复核（任务清单"剩余如下"项，逐项 grep 验证当前实现）：
+  · `tenant-db.ts` raw 后门 → `get raw()` getter 已加调用堆栈软审计（line 56-61，输出 `越过租户隔离层访问原始 PrismaClient，调用方: ${caller}`）。✅ 闭合
+  · `alipay.ts`/`wechat.ts` RSA2 验签 → `verifyRSA2Sign`/`verifyWechatSign` 真实验签（非"非空即通过"）。✅ 闭合
+  · `files/route.ts` 走 TenantDb、`sync-engine.ts` keep_both、`api-auth.test.ts` 匹配实现 → 前几轮已记录全部闭合。✅ 闭合
+- 结论：优先级 1 全部闭合，优先级 2 可落地功能均被"需外部服务/待产品决策"阻塞，延续优先级 3（lib 域零覆盖纯模块直接单测），切入第八十七轮候选清单首项 `src/lib/monitoring/monitoring.ts`（645 行，仅依赖 node `os` 内置 + `process` 全局，零 @/lib/db / next/server 依赖；`MetricsCollector`/`AlertManager` 类未导出仅导出单例）。
+
+### 本轮开发（lib/monitoring/monitoring.ts 监控告警系统直接单测）
+
+`src/lib/monitoring/monitoring.ts` 此前零直接覆盖。模块含：`MetricsCollector`（recordRequest 计数+错误+端点统计 / getApplicationMetrics 派生指标 / reset）、`getSystemMetrics`（CPU 公式 + 内存 + 磁盘网络零占位 + 进程）、`performHealthCheck`（database/memory/cpu/api_errors 四检查 + 整体状态优先级）、`AlertManager`（addRule / checkAlerts metric switch + 6 条件运算符 + 告警生命周期）、`metricsMiddleware`。本轮用 `vi.spyOn(os,'cpus'|'totalmem'|'freemem'|'loadavg')` 控制 os 返回值（源码 `import os from "os"` default 拿 require('os') 单例，测试同 default import 共享同一对象，spy 直接生效，同 benchmark 测试 `vi.spyOn(performance,'now')` 模式）；AlertManager 因类未导出且无 reset()、模块导入即注册 3 条默认规则，用 `vi.resetModules()` + 动态 `import()` 每 test 取全新模块（恰 3 默认规则）隔离。
+
+**Commit（df37b31）monitoring 直接单测**：67 用例覆盖 5 个导出（metricsCollector/getSystemMetrics/performHealthCheck/metricsMiddleware + alertManager 单例），按行为分组：
+
+- **MetricsCollector.recordRequest 计数/错误/端点统计（7 用例）**：单次 200 → total=1/success=1/failed=0/errorRate=0；单次 500 → failed=1/errorRate=100；**边界 399 不计错误、400 计错误**（`>=400`，用 399+400 → errorRate=50 锁定）；errorRate=`errors/total*100`（3/10=30）；端点统计 `requests=count`/`avgResponseTime=totalTime/count`/`errorRate=errors/count*100`（3 次 [100,200,50]+1 错 → 350/3 与 (1/3)*100）；多端点分别统计；同端点累计
+- **getApplicationMetrics 派生字段与未实现占位（7 用例）**：**perSecond=`totalRequests/uptime`**（uptime=`(now-startTime)/1000`，用 Date.now spy 锁定 5 请求/1 秒=5）；**perSecond 守卫 uptime=0 返回 0**（`uptime>0?total/uptime:0`，不除零）；success=`total-errors`；**responseTime 统计恒 0**（average/p50/p95/p99/max 未实现，锁定占位）；**顶层 statusCodes 恒 `{}`**（返回值未填充，锁定当前行为）；timestamp 为 Date；空收集器全零
+- **reset（2 用例）**：清空 total/endpoints/errorRate；**刷新 startTime**（reset 后 perSecond 基于新 startTime，1 请求/2 秒=0.5）
+- **getSystemMetrics（9 用例）**：**CPU 公式 `100 - ~~((totalIdle/totalTick)*100)`**（单核 idle=50/user=50→50；idle=0/user=100→100；idle=100/user=0→0；**双核聚合** 2×{50,50}→totalIdle=100/totalTick=200→50,cores=2）；**`~~` 截断非 round**（idle=67/user=133→33.5%→~~33=33→usage=67，round 会得 66，锁定双按位取非截断）；cores=`cpus.length`/loadAverage=`os.loadavg()`；内存 total/free/used=total-free/usage=`(used/total)*100`（1000/200→800→80）；**磁盘与网络恒 0**（未实现）；进程 uptime=`process.uptime()`/memoryUsage=`process.memoryUsage().rss`/cpuUsage=0
+- **performHealthCheck 检查项分支与整体状态优先级（13 用例）**：4 检查项名 `[api_errors,cpu,database,memory]`；**memory 阈值** >90 critical / >70 degraded / else healthy（75→degraded 含 `75.0%`、95→critical）；**cpu 阈值** 同（75→degraded、99→critical）；**api_errors 阈值** >10 critical / >5 degraded / else healthy（10%→degraded 含 `10.0%`、20%→critical）；database 恒 healthy+responseTime>=0；**整体状态优先级 critical>unhealthy>degraded>healthy**（memory critical + cpu degraded → critical）；version=`process.env.npm_package_version||"1.0.0"`（设值/缺省双场景）；uptime=`process.uptime()`；timestamp 为 Date
+- **metricsMiddleware（2 用例）**：从 `request.url` 取 `new URL().pathname` 作 endpoint、`response.status` 作 statusCode 调 recordRequest（200→avgResponseTime=42/failed=0；500→errorRate=100）
+- **AlertManager 规则管理/checkAlerts 条件匹配/告警生命周期（28 用例）**：
+  - 模块导入即注册 **3 条默认规则**（cpu.usage/memory.usage/requests.errorRate）
+  - addRule 生成 id `rule_<ts>_<rand>`（正则锁定）+ createdAt/updatedAt + 加入 getRules()
+  - **checkAlerts metric switch**（cpu.usage/memory.usage/disk.usage/requests.errorRate/requests.perSecond 各读对应值；未知 metric → default continue 跳过；enabled=false → 跳过）
+  - **6 条件运算符**（gt/lt/gte/lte/eq/neq，disk.usage 固定 50，各 operator 触发+不触发对偶锁定 `>`/`<`/`>=`/`<=`/`===`/`!==`）
+  - 告警记录字段：id=`alert_<ruleId>_<ts>`（正则）、status=active、level/threshold/ruleName 透传、triggeredAt 为 Date
+  - **message 模板** `${name}: ${metric} = ${value.toFixed(2)} (阈值: ${threshold})`（95→`95.00`）；**value.toFixed(2) 四舍五入非截断**（50.556→`50.56`，区别于 ~~ 截断）
+  - 生命周期：触发后进 activeAlerts+history；acknowledgeAlert（存在→置 acknowledged+acknowledgedBy+acknowledgedAt 返回 true；userId 缺省 undefined；不存在→false）；resolveAlert（存在→置 resolved+resolvedAt+从 activeAlerts 移除返回 true，history 仍保留；不存在→false）；**getAlertHistory(limit)=`slice(-limit)`**（limit=1 返回最近 1 条=末尾；默认 100；**limit=0 边界** `slice(-0)===slice(0)` 返回全部，锁定 -0 不小于 0 的 JS 语义）
+
+**关键控制流锁定**：
+- CPU `100 - ~~((totalIdle/totalTick)*100)`：用 idle=67/user=133→33.5%→67（round 会 66）锁定 `~~` 截断；双核 2×{50,50}→100/200→50 锁定聚合求和
+- perSecond `totalRequests/uptime` + 守卫 `uptime>0`：用 5/1=5 与 uptime=0→0 双场景锁定，不除零
+- errorRate `errors/total*100`：用 399/400 边界（400 计错 399 不计）锁定 `>=400`，用 3/10=30 锁定公式
+- performHealthCheck 阈值三段：memory/cpu `>90/>70/else`，api_errors `>10/>5/else`，用 75/95、10/20 锁定分支
+- 整体状态优先级 `critical>unhealthy>degraded`：用 memory critical+cpu degraded→critical 锁定 critical 优先
+- checkAlerts metric switch `default continue`：用未知 metric 不触发锁定；6 条件运算符用触发+不触发对偶锁定
+- message `value.toFixed(2)`：用 50.556→`50.56` 锁定 toFixed 四舍五入（区别于 ~~ 截断）；用 95→`95.00` 锁定 2 位+补零
+- getAlertHistory `slice(-limit)`：用 limit=1=末尾、limit=0=`slice(0)`=全部 锁定 slice 语义与 -0 边界
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m5s）
+- `npx prisma generate`（补 PrismaClient 类型，与 tsc 串行避免误报）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮无关）。本轮改动零类型错误（纯新增测试，源码无改动）
+- `npx vitest run src/__tests__/lib/monitoring.test.ts`：67/67 通过（53ms tests）
+- `npx vitest run` 全量 2351/2351 通过（135 文件，165.09s），零回归（基线 2284/133 + 本轮 67/1 = 2351/134... 实际 135 文件，因 monitoring.test.ts 新增 1 文件 → 134+1=135；2284+67=2351）
+
+### 改动量
+
+1 文件（src/__tests__/lib/monitoring.test.ts +692），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `df37b31` test(lib): monitoring MetricsCollector/AlertManager/getSystemMetrics/performHealthCheck 直接单测
+
+### 推送
+
+- origin (Gitee)：edd49f5..df37b31 推送（含 worklog commit）
+- github (GitHub)：edd49f5..df37b31 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（monitoring.ts 已闭合；`monitoring/index.ts` 是独立模块，MetricsCollector register/record/getStats 百分位 + AlertEngine evaluateRules 条件字符串 `>`/`<`/`>=`/`<=`/`==`/`!=` + triggerAlert/silenceRule，零覆盖且纯，可单列一轮）：
+  - `src/lib/monitoring/index.ts`（~550 行，MetricsCollector 指标注册/记录/getValue/getStats 百分位 + AlertEngine 规则评估 pending→firing→resolved 状态机 + 通知渠道；注入 fake channel 即可，无真实网络）
+  - `src/lib/plugins/registry.ts`（~488 行，PluginRegistry 纯内存插件生命周期 + hook/event 系统，createPluginAPI 权限网关；核心逻辑零外部依赖）
+  - `src/lib/integrations/integration-manager.ts`（~547 行，provider 注册模式，connectIntegration 抛错/组合键、testConnection 回退、createSyncTask 状态机 pending→running→completed/failed；注入 fake provider 即可，无真实网络）
+  - `src/lib/utils/file-types.ts`（~1184 行，纯文件类型检测大表 + formatFileSize 数学；零 import）
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
