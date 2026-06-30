@@ -11302,3 +11302,99 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-01 03:00 自动迭代
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-07-01 03:15 CST，取整 03:00 记录。本轮 1 个 dev commit（abaa293）+ 本 worklog commit。轮次编号（第八十四轮）为排序权威键。
+
+**前置检查**：沙箱 `/workspace/laolin-brain` 此前不存在（新会话），`git clone origin`（Gitee）+ `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 c7e27fb（第八十三轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：用户清单 5 项前序轮次均已闭合，本轮逐项 spot-check 复核确认与前轮一致——`tenant-db.ts` raw getter 软审计（get raw() 带 caller 堆栈）✓、`payment/alipay.ts` RSA2 真实验签（verifyRSA2Sign + normalizePublicKey，无"非空即通过"）✓、`payment/wechat.ts` V3 签名验证（verifyWechatSign timestamp\nnonce\nbody\n）+ AES-256-GCM resource 解密（decryptResource）✓、`api/files/route.ts` 经 createTenantDb 走租户隔离层（GET/POST dedup 均用 createTenantDb）✓、`sync-engine.ts` keep_both 分支重命名本地为冲突副本（不再直接覆盖）✓、`api-auth.test.ts` 与实现匹配（async、4 字段、mock tenantUser/tenant）✓。本轮无新优先级 1 问题，进入下一轮候选。
+
+**本轮开发（lib/bi/bi-manager.ts BiManager 内存注册表直接单测）**：
+
+按第八十三轮"下一轮候选"第 1 项切入（lib 域零覆盖纯模块延续，候选清单首位即 `src/lib/bi/bi-manager.ts`）。该模块为 BiManager 单例纯内存 BI 管理器（KPI / 仪表盘 / 业务分析 / 数据预警 / 数据推荐 / 增长分析），含 KPI CRUD + calculateKpiValue 双方向状态机、仪表盘 CRUD + viewCount 副作用、runAnalysis switch 分发、预警 CRUD、固定推荐生成等丰富控制流，此前**零直接覆盖**。本轮补齐。模块顶部 `import { analyticsManager } from '../analytics'` 为**死导入**（全模块从未引用 analyticsManager），用 `vi.mock('@/lib/analytics', () => ({ analyticsManager: {} }))` 隔离，避免拉入 analytics→visualization 传递依赖，使被测对象退化为纯内存模块。
+
+**Commit（abaa293）BiManager 直接单测**：81 用例覆盖全部 24 个公开方法 + 单例导出，按行为分组：
+
+- **单例导出（3 用例）**：biManager instanceof BiManager；getInstance 多次同引用；resetModules 后 biManager 为全新实例（状态隔离，旧 createKpi 不影响新实例）
+- **initializeDefaultKpis（3 用例）**：8 个默认 KPI 名称/分类/sortOrder 与 DEFAULT_KPIS 一致；id 互异以 kpi_ 开头且 tenantId 注入；写入后 getKpis 读回 8 条
+- **getKpis（3 用例）**：tenantId 跨租户隔离；sortOrder 升序（缺省 sortOrder 按 0 排最前，`(a.sortOrder||0)-(b.sortOrder||0)`）；category 过滤
+- **getKpi（2 用例）**：命中同引用、未命中 null；跨租户 null
+- **createKpi（3 用例）**：精确 id `kpi_${Date.now()}_${random}`（fake timers + Math.random spy，期望后缀用同一表达式计算）+ 默认值兜底（name='未命名KPI'/category='general'/direction='higher_is_better'/displayFormat='number'/isActive=true）；data 透传覆盖；**|| vs ?? 差异**（name='' 走 || 兜底为未命名KPI，isActive=false 走 ?? 保留 false）
+- **updateKpi（3 用例）**：浅合并 + updatedAt 刷新 + 未传字段保留；**data 带 id/tenantId 被强制保留原值**（`id: kpi.id, tenantId: kpi.tenantId` 后置覆盖）；未命中/跨租户 null
+- **deleteKpi（2 用例）**：命中 true 后 getKpi null；未命中/跨租户 false 且不删他人
+- **calculateKpiValue change/changePercent（7 用例）**：previousValue 未传 → change=0/changePercent=0/stable；current>previous → up；current<previous → down；**previousValue=0 走 falsy 守卫 → changePercent=0 即使 change≠0**；**previousValue 为负 → Math.abs 防 changePercent 正负翻转**（-90 vs -100 → 0.1 up）；**trend 阈值边界 0.01 恰好 stable**（Math.abs(0.01)>0.01 为 false）；0.011 → up
+- **calculateKpiValue status 与 trend 覆盖（12 用例，核心）**：higher_is_better 无阈值 up→improving/down→declining/stable→normal；**trend 无条件覆盖 critical**（current<critical 但 trend up → improving 非 critical，锁 `if(trend!==stable) status=...` 无条件赋值）；stable 时阈值 status 保留（critical/warning 不被覆盖）；higher_is_better current 介于 critical/warning 之间 stable → warning；**warningThreshold=0 走 falsy 跳过 warning**；**criticalThreshold=0（defined）进入阈值块**（`!== undefined` 守卫）；lower_is_better current>critical trend up → declining、current<critical trend down → improving、current>warning stable → warning、current>critical stable → critical
+- **calculateKpiValue 结果字段（1 用例）**：kpiId/currentValue/previousValue/targetValue/period='current'/asOfDate 为 Date
+- **createDashboard（2 用例）**：默认值兜底（name/type/status/tags/widgets/layout/defaultTimeRange/isFavorite/viewCount/lastViewed/version）+ id 形如 dashboard_；data 透传覆盖
+- **getDashboards（2 用例）**：tenantId 过滤 + **updatedAt 降序**（fake timers 推进 1s 间隔创建三条验证 [c,b,a]）；type 过滤
+- **getDashboard（2 用例）**：**副作用同引用突变**（viewCount++、lastViewedAt 设置、created 与 Map 内同引用被突变、两次 get viewCount=2、got1===got2===created）；未命中/跨租户 null
+- **updateDashboard（4 用例）**：浅合并 + version+1 + updatedBy + 未传字段保留（createdBy）；连续 update version 持续 +1；data 带 id/tenantId 强制保留原值；未命中/跨租户 null
+- **deleteDashboard（2 用例）**：命中 true 后 get null；未命中/跨租户 false 不删他人
+- **toggleFavorite（3 用例）**：false→true 返回 true、true→false 返回 false；切换刷新 updatedAt；未命中/跨租户 false
+- **getDashboardTemplates（1 用例）**：返回 DASHBOARD_TEMPLATES（overview/user-analytics/storage-analytics）
+- **createFromTemplate（3 用例）**：未命中 null；命中 overview → 6 widgets 映射（精确 widget_0_${NOW_TS}、type/title/width=6/config={}）+ createDashboard 默认值；widget id 按索引 i 递增（`widget_${i}_${Date.now()}`）
+- **runAnalysis（8 用例）**：user/revenue/retention/conversion 四分支 results 字段 + insights 固定串；**growth/behavior 落 default 分支**（results={data}、insights=['分析完成...']，用合法 AnalysisCategory 验证 switch 未覆盖项）；分析存入 analyses Map（两次 runAnalysis id 不同）；空 data 确定性数学（0 长度）
+- **createAlert（2 用例）**：精确 id `alert_${Date.now()}_${random}` + 默认值兜底（name/metric/condition/threshold/frequency/channels/isEnabled/lastTriggeredAt/triggerCount）；data 透传
+- **getAlerts（1 用例）**：tenantId 过滤 + **createdAt 降序**
+- **updateAlert（3 用例）**：浅合并 + updatedAt + 未传字段保留；data 带 id/tenantId 强制保留原值；未命中/跨租户 null
+- **deleteAlert（2 用例）**：命中 true；未命中/跨租户 false
+- **generateRecommendations（4 用例）**：3 条推荐精确 id `rec_${NOW_TS}_${1|2|3}` 互异 + tenantId/createdAt/relatedMetrics[2]/suggestedActions[3]；三条分别锁定 insight/optimization/action 的 type/title/priority/confidence/category/impact
+- **calculateGrowth（2 用例）**：N=100 确定性数学全字段（newUsers/activeUsers/revenue/arpu/ltv/growthRate）；N=0 时 floor(0)=0 但 arpu/ltv/retentionRate 固定常量
+
+**关键控制流锁定**：
+- calculateKpiValue changePercent 守卫：`previousValue && previousValue !== 0 ? change / Math.abs(previousValue) : 0` —— 用 previousValue=0（change=50 但 changePercent=0）、previousValue=-100（Math.abs 防 10/-100=-0.1 翻转为 +0.1）双场景锁定
+- trend 阈值严格大于：`if (Math.abs(changePercent) > 0.01)` —— 100→101（changePercent=0.01）stable、100→101.1（0.011）up 边界锁定
+- **trend 无条件覆盖 status**：阈值块先算 critical/warning，后 `if (trend !== 'stable') { status = ... }` 无条件赋值（非 else-if）—— 用 current<critical + trend up 验证 status=improving 非 critical，stable 时验证 critical 保留
+- warningThreshold falsy 跳过：`else if (kpi.warningThreshold && currentValue < kpi.warningThreshold)` —— warningThreshold=0 假值跳过 warning 分支
+- criticalThreshold 守卫：`if (kpi.criticalThreshold !== undefined)` —— criticalThreshold=0 进入块（defined），current<0 → critical
+- higher_is_better vs lower_is_better 阈值方向：higher current<critical→critical、current<warning→warning；lower current>critical→critical、current>warning→warning
+- trend 覆盖方向：higher_is_better up→improving/down→declining；lower_is_better down→improving/up→declining
+- createKpi || vs ??：name 用 `||`（空串兜底）、isActive 用 `??`（false 保留）—— 用 name='' + isActive=false 双断言锁定
+- updateKpi/updateDashboard/updateAlert 强制保留 id/tenantId：`{...obj, ...data, id: obj.id, tenantId: obj.tenantId, ...}` 后置覆盖 —— 用 data 带 forged id/tenantId 验证原值保留
+- getDashboard 同引用副作用：createDashboard 返回的对象即 Map 内引用（`set(id, dashboard); return dashboard`），getDashboard get 后突变 viewCount/lastViewedAt —— 用 created.viewCount===1 after get、got1===got2===created 锁定
+- updateDashboard version+1：`version: dashboard.version + 1` —— 连续两次 update 验证 version 1→2→3
+- getDashboards/getAlerts 降序：分别按 updatedAt/createdAt `b.x.getTime() - a.x.getTime()` —— fake timers 1s 间隔创建验证 [c,b,a]
+- createFromTemplate widget id：`widget_${i}_${Date.now()}` —— fake timers 固定 Date.now，验证 6 widget id 按索引递增
+- generateRecommendations id：`rec_${Date.now()}_${1|2|3}` 后缀固定序号 —— fake timers 验证三条精确 id
+- runAnalysis switch：user/revenue/retention/conversion 四 case + default —— 用合法 AnalysisCategory 'growth'/'behavior'（union 成员但 switch 未覆盖）验证 default 分支
+- analyzeUserBehavior/Revenue/Retention/Conversion 确定性数学：基于 data.length（floor(N*0.7)、N*99、floor(N*0.1) 等）—— N=100/10/0 多场景锁定
+
+**状态/时间策略要点**：BiManager 构造器私有无法 `new`，故每个用例前 `vi.resetModules()` + `await import('@/lib/bi/bi-manager')` 取全新单例（fresh class → fresh instance → fresh dashboards/kpis/alerts/analyses 四个 Map）。`vi.mock('@/lib/analytics', ...)` 隔离死导入 analyticsManager，mock 注册跨 resetModules 持久（resetModules 清缓存不清 mock 注册）。依赖 Date.now() 的精确 id 断言用例（createKpi/createAlert/createFromTemplate widget id/generateRecommendations/rec id）在其 describe/it 内 `vi.useFakeTimers()` + `vi.setSystemTime(NOW)`（NOW=2026-07-01T10:00:00Z）；Math.random 在精确 id 用例 spy 固定返回值，期望后缀 `r.toString(36).substr(2,9)` 用同一表达式计算保证匹配。getDashboards/getAlerts 降序用例用 fake timers 推进 1s 间隔创建多条验证排序。`afterEach` 调 `vi.useRealTimers()` + `vi.restoreAllMocks()` 还原。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m6.2s）
+- `npx prisma generate`（补 PrismaClient 类型；与 tsc 串行执行避免误报 PrismaClient 无导出）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关）。本轮改动零类型错误（测试文件被 tsconfig `**/__tests__/**`/`**/*.test.ts` exclude 排除，且为纯新增无源码改动）
+- `npx vitest run src/__tests__/lib/bi-manager.test.ts`：81/81 通过（92ms tests）
+- `npx vitest run` 全量 2178/2178 通过（131 文件，153.98s），零回归（基线 2097/130 + 本轮 81/1 = 2178/131）
+
+### 改动量
+
+1 文件（src/__tests__/lib/bi-manager.test.ts +933），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `abaa293` test(lib): bi/bi-manager BiManager 内存注册表直接单测
+
+### 推送
+
+- origin (Gitee)：c7e27fb..abaa293 推送（含 worklog commit）
+- github (GitHub)：c7e27fb..abaa293 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（第八十三轮候选第 1 项展开，bi-manager 已闭合）：下轮可切入：
+  - `src/lib/monitoring/monitoring.ts`（~645 行，MetricsCollector 请求统计 + AlertManager 规则匹配 gt/lt/gte/lte/eq/neq + 告警生命周期；仅依赖 Node os 内置，核心类无需 mock）
+  - `src/lib/plugins/registry.ts`（~488 行，PluginRegistry 纯内存插件生命周期 + hook/event 系统，createPluginAPI 权限网关；核心逻辑零外部依赖）
+  - `src/lib/integrations/integration-manager.ts`（~547 行，provider 注册模式，connectIntegration 抛错/组合键、testConnection 回退、createSyncTask 状态机 pending→running→completed/failed；注入 fake provider 即可，无真实网络）
+  - `src/lib/utils/file-types.ts`（~1184 行，纯文件类型检测大表 + formatFileSize 数学；零 import）
+  - `src/lib/utils/benchmark.ts`（~249 行，benchmark 百分位计算 + markdown 报表生成 + TestDataGenerator；仅依赖 perf_hooks）
+  - `src/lib/utils/tenant-permissions.ts`（~97 行，hasRole 数值层级 owner4>admin3>member2>viewer1；纯函数部分零依赖）
+  - `src/lib/api-cache.ts`（~165 行，内存 GET 缓存 cachedFetch 命中/过期、invalidateCache 子串匹配、detectTTL URL 模式分类；仅 mock 全局 fetch）
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
