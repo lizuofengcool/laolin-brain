@@ -10260,3 +10260,68 @@ Commit 2（682891d，limit → 下游 service NaN 透传，2 路由）：
 - 补 invitations DELETE/[token]/accept 端点（第六十六轮实证：路由 docblock 广告端点但实际不存在，前端无调用路径——属 stale docblock，可择机删 docblock 行或待 invitation-acceptance UI 落地时补端点）
 - payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-30 09:26 自动迭代
+
+第六十九轮自动迭代。本轮转向优先级 1 安全复核：在通读 `src/lib/cloud-sync/sync-engine.ts` 时实证发现一处**真实跨租户漏洞**（任务"剩余优先级 1"清单外的新发现），随即闭合并补回归测试。
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-30 09:26 CST。本轮 2 个 dev commit（e3d3583 / 9442187）+ 本 worklog commit。轮次编号（第六十九轮）为排序权威键，时间戳 09:26 高于第六十八轮 08:18 保持单调（同处 06-30）。
+
+**前置检查**：本轮为全新 clone 后首次开发（沙箱 /workspace 原为空，`git clone origin` + `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader）。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 b64eedd（第六十八轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：任务"剩余优先级 1"5 项逐文件复核——
+- `tenant-db.ts`：`raw` getter 与 `transaction` 均已带调用堆栈软审计（line 56-62 / 41-47），闭环
+- `alipay.ts`：`verifyRSA2Sign` 已实现 RSA-SHA256 真实验签 + `normalizePublicKey` PEM 规整（line 191-221），非"非空即通过"，闭环
+- `wechat.ts`：`verifyWechatSign` 已实现 APIv3 HMAC-SHA256 恒定时间比较 + `decryptResource` AES-256-GCM 解密（line 221-291），闭环
+- `files/route.ts`：GET 与 POST dedup 均走 `createTenantDb`；POST 配额 `$queryRaw` 手动注入 tenantId（line 142-144 / 342-344），虽绕过 TenantDb 抽象但 tenantId 已在 SQL where 内，无跨租户风险，维持现状
+- `sync-engine.ts` keep_both：本轮复核中发现**新漏洞**（见下），已闭合
+- `api-auth.test.ts`：4 字段 / async / 不读 query param 三项与实现一致（line 67-172），闭环
+
+**本轮发现并闭合的漏洞**（sync-engine.ts 跨租户 fileId 操作）：
+
+`POST /api/cloud-sync/conflicts` 路由透传 `body.fileId` 至 `resolveConflict(tenantId, userId, fileId, ...)`（conflicts/route.ts:71-77），fileId 完全不可信。`resolveConflict` 内：
+- `local_wins` → `uploadFileToCloud`：line 423 `findUnique({ where: { id: fileId, tenantId } })` 已自带守卫，跨租户抛 "File not found"，**安全**
+- `cloud_wins` → `downloadFileFromCloud`：line 494 `findUnique({ where: { id: fileId } })` **无 tenantId**，跨租户 fileId 命中他租户同 id 文件后被 `update` 覆盖内容
+- `keep_both`：line 677 `findUnique({ where: { id: fileId } })` **无 tenantId**，跨租户 fileId 会将他租户文件 rename 为 "[冲突副本]"；函数末尾 line 720 `update({ where: { id: fileId } })` 亦按裸 id 覆盖他租户 syncStatus
+
+**修复**（commit e3d3583）：
+- `resolveConflict` 入口前置 `findUnique({ where: { id: fileId, tenantId } })` 归属校验，fileId 不属当前租户时立即 `throw new Error('File not found in tenant: ...')`，不触达 `getStorageProvider` 与任何写操作。三分支与末尾 syncStatus 更新统一受此守卫保护。
+- `downloadFileFromCloud` line 494 `findUnique` 补 `tenantId`，与 `uploadFileToCloud`（line 423）对齐，纵深防御（即便上层守卫漏判，此层仍按租户隔离 findUnique）。
+
+**回归测试**（commit 9442187）：新增 `src/__tests__/lib/cloud-sync-engine-tenant.test.ts`（3 用例），隔离 `@/lib/db` 与 cloud-sync 子模块（crypto / config-crypto / r2-storage-class / aliyun-oss）：
+- 跨租户 fileId（findUnique 带 tenantId 返回 null）→ 抛 'File not found in tenant'，不触达 file.update/create，不进入 getStorageProvider（tenant.findUnique / decryptConfig 均未调用）
+- 同租户 local_wins → 通过守卫，进入 uploadFileToCloud（uploadObject x2 + file.update + encrypt 全验证）
+- 同租户 keep_both → findUnique 调 2 次（守卫 + keep_both 内），重命名本地为 '[冲突副本] doc.pdf' + 为云端版本 create 新文件（带 tenantId/userId）
+
+Mock 要点：`AliyunOSSStorage` 以 `new` 调用，须为可 new 构造器（用 class + `Object.assign(this, mockInstance)`，箭函数 vi.fn 不可 new）；`db.file.update/create` 单参对象，断言取 `mock.calls[i][0].data`。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；66.1s）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关，非本轮引入）。本轮改动零类型错误
+- `npx vitest run src/__tests__/lib/cloud-sync-engine-tenant.test.ts`：3/3 通过
+- `npx vitest run` 全量 1720/1720 通过（114 文件，133.02s），零回归（基线 1717/113 + 本轮 3/1 = 1720/114）
+
+### 改动量
+
+2 文件（sync-engine.ts +13-1 / 全新测试 +191），2 dev commit。
+
+### Commit
+
+- `e3d3583` fix(cloud-sync): resolveConflict 前置 tenantId 归属校验防跨租户 fileId 操作
+- `9442187` test(cloud-sync): resolveConflict 跨租户隔离回归测试
+
+### 推送
+
+- origin (Gitee)：b64eedd..9442187 推送成功（含 worklog commit）
+- github (GitHub)：b64eedd..9442187 推送成功（含 worklog commit）
+
+### 下一轮候选
+
+- **sync-engine.ts 其余裸 id 写操作复核**：本轮闭合 resolveConflict + downloadFileFromCloud，但 sync-engine.ts 全文仍有 19 处 `db.file.*` 直接调用（line 244/372/422/457/494/499/514/600/639/677/683/694/720/800/838/863/877/1017/1329）。其中 fullSync/incrementalSync 等以 `db.file.findMany({ where: { tenantId } })`（line 600/800/1017/1329）取文件列表后透传 fileId 至 upload/download，fileId 来源已租户隔离，无风险；但 line 244/372/422/457/494/499/514/639/683/694/720/838/863/877 等单点 update/create 是否均经前置 findMany 保证 fileId 归属，可逐处实证后择机收口（避免铺大摊子，需确认每条路径的 fileId 来源）
+- **POST body 数值字段值域 sweep**（第六十八轮延续）：可继续扫 POST body 数值字段（quantity/count/amount 类），但需逐文件实证是否有真实下游风险（金额/月份/Prisma take）
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：第六十二轮实证确认属新业务规则（加密密码 vs 账户密码语义不同），非约定复用，维持 defer 待产品决策
+- 补 invitations DELETE/[token]/accept 端点（第六十六轮实证：路由 docblock 广告端点但实际不存在，前端无调用路径——属 stale docblock，可择机删 docblock 行或待 invitation-acceptance UI 落地时补端点）
+- payment 模块后续可补：callback 路由 handler 级集成测试（mock provider + 校验订单状态流转/幂等）、payment/index.ts 工厂选择逻辑单测、billing.service.ts 订阅账单查询（需真实支付凭证，沙箱不宜）
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
