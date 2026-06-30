@@ -491,8 +491,10 @@ async function downloadFileFromCloud(
   const fileData = await fetchCloudFileData(storage, tenantId, fileId, password);
 
   // 更新或创建本地文件
+  // 含 tenantId 守卫：与 uploadFileToCloud（line 423）一致，防止跨租户 fileId
+  // 命中他租户同 id 文件后被 update 覆盖。fileId 不属当前租户时返回 null → 走 create 分支。
   const existingFile = await db.file.findUnique({
-    where: { id: fileId },
+    where: { id: fileId, tenantId },
   });
 
   if (existingFile) {
@@ -659,6 +661,16 @@ export async function resolveConflict(
   resolution: 'local_wins' | 'cloud_wins' | 'keep_both',
   password: string
 ): Promise<void> {
+  // 前置归属校验：conflicts 路由透传 body.fileId 不可信，需防止跨租户操作。
+  // uploadFileToCloud 已自带 tenantId 守卫（findUnique where 含 tenantId），
+  // 但 keep_both 分支与函数末尾的 syncStatus 更新均按裸 id 操作，cloud_wins 经
+  // downloadFileFromCloud 亦按裸 id findUnique → 跨租户 fileId 会 rename/overwrite
+  // 他租户文件。此处统一拦截，fileId 不属当前租户时立即失败，不触达任何写操作。
+  const owned = await db.file.findUnique({ where: { id: fileId, tenantId } });
+  if (!owned) {
+    throw new Error(`File not found in tenant: ${fileId}`);
+  }
+
   const storage = await getStorageProvider(tenantId);
 
   switch (resolution) {
