@@ -10559,3 +10559,66 @@ Mock 要点：`vi.hoisted` 创建 `MockNextResponse`（body/status 属性 + stat
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+
+## 2026-06-30 14:00 自动迭代
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-30 13:25 CST，取整 14:00 记录（13:00 已被第七十二轮占用，取下一整点保持单调）。本轮 1 个 dev commit（e113f90）+ 本 worklog commit。轮次编号（第七十三轮）为排序权威键。
+
+**前置检查**：沙箱 `/workspace` 原为空，`git clone origin`（Gitee）+ `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 828f488（第七十二轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：用户清单 5 项前序轮次均已闭合，本轮逐项 spot-check 复核确认：
+- `src/lib/db/tenant-db.ts`：`raw` getter 与 `transaction` 均带调用堆栈软审计（console.warn + `new Error().stack`），rawDb 不再无审计导出 ✓
+- `src/lib/payment/alipay.ts` & `wechat.ts`：alipay `verifyRSA2Sign` 用 `createVerify('RSA-SHA256')` + RSA_PKCS1_PADDING + `normalizePublicKey` 真实验签；wechat `verifyWechatSign` 用 HMAC-SHA256 + `timingSafeEqual`，`decryptResource` 用 AES-256-GCM 解密 V3 resource；真实配置模式下 createPayment/queryPayment/refund 均显式失败而非静默返回 mock ✓
+- `src/app/api/files/route.ts`：POST 走 `createTenantDb`（line 271 去重、line 472 列表），access-history/storage/trash 等其余 db.file.* 调用均显式带 `tenantId` where 或 fetch 后做 tenantId 归属校验 ✓
+- `src/lib/cloud-sync/sync-engine.ts`：`keep_both` 分支先 rename 本地为冲突副本、再以新 id create 云端版本（注入 tenantId），不再直接覆盖丢失本地版本；并前置 `findUnique {id, tenantId}` 跨租户守卫 ✓
+- `src/__tests__/lib/api-auth.test.ts`：期望 4 字段（userId/email/tenantId/role）、async、query param 拒绝（仅读 Authorization 头），与当前 api-auth.ts 实现一致 ✓
+
+本轮无新优先级 1 问题，直接进入下一轮候选。
+
+**本轮开发（payment 状态查询路由 handler 级集成测试）**：
+
+按第七十二轮"下一轮候选"第 1 项切入。第七十一轮已覆盖 `processPaymentCallback` 编排层、第七十二轮覆盖两个回调 route handler，但 `src/app/api/payment/status/[orderId]/route.ts`（GET 查询订单状态 + pending 时回查第三方 + 回退本地）仍无 handler 级集成测试。该路由是 worklog 标注的"queryPayment 状态回查与本地 order 状态同步"回退路径的关键调用方，本轮补齐。
+
+路由控制流分支（13 用例全覆盖）：
+- 未认证（authenticateRequest 返回 NextResponse）→ 透传 401，不查订单
+- 订单不存在 → 404 "订单不存在"
+- 调用方非订单所属租户成员（order.tenant.users 不含 userId）→ 403 "无权查看该订单"
+- 终态 paid/failed/refunded → 直接返回本地订单状态，**queryPayment 不被调用**（负向断言）
+- pending + alipay + queryPayment success & paid → 返回第三方结果（status/payTime/tradeNo 来自 payResult，金额仍取本地 order.amount）
+- pending + wechat + queryPayment success & failed → 返回第三方 failed 状态 + tradeNo
+- 回退分支三条：
+  · queryPayment 返回 pending → 回退本地 order.status（pending）
+  · queryPayment 失败（success:false，真实模式未接入 SDK 返回的形态）→ 回退本地 order.status，**不取 payResult 的 failed**（核心回归点：避免伪造状态掩盖查询未实现）
+  · payMethod 为 null 或非 alipay|wechat（如 "balance"）→ 回退本地状态，queryPayment 不被调用
+- findUnique 查询契约：`where: { id: orderId }` + `include: { tenant: { include: { users: true } } }`
+
+Mock 要点：`vi.hoisted` 创建 `MockNextResponse`（实例带 body/status + static json）、`mockAuthenticate`/`mockQueryPayment`/`mockOrderFindUnique`；`vi.mock('next/server')`、`vi.mock('@/lib/api-auth')`、`vi.mock('@/lib/payment')`、`vi.mock('@/lib/db')` 全隔离。params 以 `Promise.resolve({ orderId })` 提供，对齐 Next.js 16 动态路由签名（参考 files-id-route / cloud-sync-backups-id 范式）。订单 amount 取 number（路由 `Number(order.amount)` 直通）；tenant.users 数组用于权限校验分支。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；66.6s）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关）。本轮改动零类型错误（测试文件被 tsconfig exclude 排除，且为纯新增无源码改动）
+- `npx vitest run src/__tests__/api/payment-status-route.test.ts`：13/13 通过（1.28s）
+- `npx vitest run` 全量 1775/1775 通过（118 文件，138.22s），零回归（基线 1762/117 + 本轮 13/1 = 1775/118）
+
+### 改动量
+
+1 文件（src/__tests__/api/payment-status-route.test.ts +327），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `e113f90` test(api): 支付状态查询路由 handler 级集成测试
+
+### 推送
+
+- origin (Gitee)：828f488..e113f90 推送成功（含 worklog commit）
+- github (GitHub)：828f488..e113f90 推送成功（含 worklog commit）
+
+### 下一轮候选
+
+- **payment create 路由 handler 级集成测试**：`src/app/api/payment/create/route.ts`（创建订单 + 调 createPayment）仍无 handler 级集成测试，可补 mock provider + 校验订单创建/金额/plan 落库与 createPayment 失败回退
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
