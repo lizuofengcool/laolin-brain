@@ -11467,3 +11467,76 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+
+## 2026-07-01 05:00 自动迭代
+
+第八十六轮自动迭代。
+
+### 前置检查
+
+- clone 仓库（沙箱无 /workspace/laolin-brain，从 origin 克隆），补齐 github remote；`git config user.email/name` 已设。
+- `git fetch origin/main` & `git fetch github/main`：两端 HEAD 均为 `8b6995e`，工作树 clean，无未提交/未推送遗留。两端零差异（`rev-list` 双向计数 0/0），无需 rebase。
+- 评估优先级 1 已知问题清单，逐项核验当前源码状态：
+  - `tenant-db.ts` raw 后门 → 已加调用堆栈软审计（`get raw()` 带 caller 日志，line 56-59）。✅ 已闭合
+  - `alipay.ts` / `wechat.ts` RSA2 验签占位 → 已接入真实 `createVerify('RSA-SHA256')` / `verifyWechatSign`，注释明示"不再'非空即通过'"。✅ 已闭合
+  - `src/app/api/files/route.ts` 绕过 TenantDb → 已改走 `createTenantDb(tenantId)`（line 271/472，自动注入 tenantId 过滤）。✅ 已闭合
+  - `sync-engine.ts` keep_both "直接覆盖" bug → 已改为重命名本地为冲突副本 + 云端版本落地为新文件（新 id），并加跨租户归属前置校验（line 669 `owned` 守卫）。✅ 已闭合
+  - `api-auth.test.ts` 与实现不符 → 已重写匹配当前实现（commits `7f9a404`/`f296c5e`，4 字段/async/拒绝 query param/`requirePlatformAdmin` 全覆盖）。✅ 已闭合
+- 结论：优先级 1 全部闭合，优先级 2 可落地功能均被"需外部服务/待产品决策"阻塞，转入优先级 3（补测试），延续 lib 域零覆盖纯模块路线，切入第八十五轮候选清单中最小且最纯的 `src/lib/api-cache.ts`（165 行，仅依赖全局 fetch，零 @/lib/db / next/server 依赖）。
+
+### 本轮开发（lib/api-cache.ts 内存 GET 缓存直接单测）
+
+`src/lib/api-cache.ts` 此前零直接覆盖。模块为轻量内存缓存：`cachedFetch<T>`（fetch 包装 + 命中/过期/仅缓存 GET）、`invalidateCache`（子串匹配清除/全量清空）、`getCacheStats`（诊断 size/entries），内部含 `cacheEvictFifo`（先主动清过期项，再 FIFO 淘汰至容量上限 1000）、`generateCacheKey`（`${method}:${url}:${auth}${body}`，auth 三形态、string body 截断 256）、`detectTTL`（URL 模式分类 search30s/fileList300s/dashboard120s/generic60s）。本轮用 `vi.stubGlobal('fetch', mockFetch)` 隔离网络（模块无其他依赖），过期/FIFO 用例用 `vi.useFakeTimers({now})` 控时，每个 beforeEach `invalidateCache()` 清模块级 cache Map。
+
+**Commit（96cf3aa）api-cache 直接单测**：32 用例覆盖 3 个导出函数 + 4 个内部行为，按行为分组：
+
+- **cachedFetch 命中/未命中/非 ok/非 GET（7 用例）**：未命中调 fetch 返回 JSON；命中不二次触网；同 url 不同 method 视为不同键（GET 命中不污染 POST）；非 2xx 抛 `cachedFetch error: ${status} ${statusText} for ${url}` 且不写缓存；非 GET（POST）不缓存（两次 POST → 两次 fetch + 缓存空）；method 缺省按 GET 缓存；泛型类型透传
+- **detectTTL URL 模式分类（6 用例，经 getCacheStats.ttl 秒数锁定）**：/search、/semantic → 30s；/files、/folders → 300s；/dashboard、/analytics、/stats → 120s；无匹配 → 60s；显式 ttl 覆盖自动检测（/files 默认 300s，显式 5000ms → 5s）；**模式优先级**（/files/search 同时命中 /files 与 /search → 取 30s，因 detectTTL 先判 /search）
+- **generateCacheKey method/auth/body（9 用例，经 getCacheStats.key 锁定）**：method 大小写归一（get 与 GET 同键命中）；Headers 实例/数组/对象三形态 Authorization 均计入键；无 headers 键尾为空；不同 auth 不同键；string body 计入键；**string body 截断 256**（前 256 字符相同则同键命中）；非 string body 不计入键（两份不同对象 body 同键命中）
+- **invalidateCache（3 用例）**：pattern 子串匹配仅删匹配项保留其余；无 pattern 清空全部；pattern 无匹配不动
+- **getCacheStats（3 用例）**：空缓存 size 0/entries []；键超 80 截断为 80+…（共 81 字符）；刚写入 age=0、ttl 为秒数
+- **TTL 过期与 FIFO 淘汰（4 用例，fake timers）**：**ttl-1 命中、ttl 边界过期**（`<` 严格小于，非 `<=`，999 命中/1000 过期）；过期后重新 fetch 并以新时间戳刷新缓存（新有效期起点为本次写入）；**cacheEvictFifo 主动清理过期项**（插新项前先清掉已过期项，否则 size 会是 2）；**FIFO 容量上限 1000**（写入 1001 项后最旧第 0 项被淘汰、size=1000，第 1 项仍命中、第 0 项 miss 重 fetch）
+
+**关键控制流锁定**：
+- 过期判定 `now - cached.timestamp < cached.ttl`：用 999(<1000 命中) 与 1000(<1000 false 过期) 双场景锁定严格小于，非 `<=` 亦非 `===`
+- 仅缓存 GET：`if (method === "GET")` —— 用 POST 两次均触网且缓存空锁定，GET 缺省/显式均缓存
+- detectTTL 优先级序：/search||/semantic → /files||/folders → /dashboard||/analytics||/stats → generic —— 用 /files/search 走 30s 锁定先判 search
+- generateCacheKey auth 三形态分支：Headers instanceof / Array.isArray / 对象字面量 —— 用三种 headers 各自产出含 auth 的键锁定，无 headers 键尾空锁定
+- string body 截断：`options.body.slice(0, 256)` —— 用前 256 字符相同、第 257 字符不同的两段 body 同键命中锁定 256 切片，非 string body 不计入键锁定 `typeof === 'string'` 守卫
+- cacheEvictFifo 两阶段：先主动删过期（`now - ts >= ttl`）再 FIFO（`size >= 1000` 删 `keys().next().value`）—— 用插新项前过期项被清（size=1 非 2）锁定主动清理，用 1001 项淘汰第 0 项锁定 FIFO Map 插入序
+- getCacheStats key 截断：`key.slice(0, 80) + (key.length > 80 ? "…" : "")` —— 用长 url 产出 81 字符键 + 末尾 … 锁定
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m7s）
+- `npx prisma generate`（补 PrismaClient 类型，与 tsc 串行避免误报）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮无关）。本轮改动零类型错误（纯新增测试，源码无改动）
+- `npx vitest run src/__tests__/lib/api-cache.test.ts`：32/32 通过（39ms tests）
+- `npx vitest run` 全量 2247/2247 通过（133 文件，161.31s），零回归（基线 2215/132 + 本轮 32/1 = 2247/133）
+
+### 改动量
+
+1 文件（src/__tests__/lib/api-cache.test.ts +393），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `96cf3aa` test(lib): api-cache 内存缓存命中/过期/FIFO淘汰直接单测
+
+### 推送
+
+- origin (Gitee)：8b6995e..96cf3aa 推送（含 worklog commit）
+- github (GitHub)：8b6995e..96cf3aa 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（api-cache 已闭合）：下轮可切入：
+  - `src/lib/monitoring/monitoring.ts`（~645 行，MetricsCollector 请求统计 + AlertManager 规则匹配 gt/lt/gte/lte/eq/neq + 告警生命周期；仅依赖 Node os 内置，核心类无需 mock）
+  - `src/lib/plugins/registry.ts`（~488 行，PluginRegistry 纯内存插件生命周期 + hook/event 系统，createPluginAPI 权限网关；核心逻辑零外部依赖）
+  - `src/lib/integrations/integration-manager.ts`（~547 行，provider 注册模式，connectIntegration 抛错/组合键、testConnection 回退、createSyncTask 状态机 pending→running→completed/failed；注入 fake provider 即可，无真实网络）
+  - `src/lib/utils/file-types.ts`（~1184 行，纯文件类型检测大表 + formatFileSize 数学；零 import）
+  - `src/lib/utils/benchmark.ts`（~249 行，benchmark 百分位计算 + markdown 报表生成 + TestDataGenerator；仅依赖 perf_hooks）
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
