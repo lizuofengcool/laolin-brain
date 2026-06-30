@@ -11078,3 +11078,66 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-01 00:00 自动迭代
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-07-01 00:20 CST，取整 00:00 记录（21:00 已被第八十轮占用，取下一可用整点保持单调）。本轮 1 个 dev commit（f10693d）+ 本 worklog commit。轮次编号（第八十一轮）为排序权威键。
+
+**前置检查**：沙箱 `/workspace/laolin-brain` 此前不存在（新会话），`git clone origin`（Gitee）+ `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 f68c0ca（第八十轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：用户清单 5 项前序轮次均已闭合，本轮逐项 spot-check 复核确认与前轮一致——`tenant-db.ts` raw getter 软审计 ✓、`payment/alipay.ts` RSA2 真实验签 ✓、`payment/wechat.ts` V3 签名验证 + AES-256-GCM resource 解密 ✓、`api/files/route.ts` 经 createTenantDb 走租户隔离层 ✓、`sync-engine.ts` keep_both 分支 ✓、`api-auth.test.ts` 与实现匹配 ✓。本轮无新优先级 1 问题，进入下一轮候选。
+
+**本轮开发（cloud-sync/r2-storage-class.ts R2Storage 直接单测）**：
+
+按第八十轮"下一轮候选"第 1 项切入（cloud-sync 域 R2Storage 类直接单测，前轮选 OSS 后剩余项）。`src/lib/cloud-sync/r2-storage-class.ts` 的 `R2Storage` 类是 Cloudflare R2 适配器，封装 `@aws-sdk/client-s3` 的 S3Client，含 404→null 归一、downloadObject 的 ReadableStream/arrayBuffer/空体/未知体四分支、listObjects 的 NextContinuationToken 分页循环、预签名 URL get/put 分支、连接测试吞错等关键控制流，但此前**零直接覆盖**——`r2-storage.test.ts` 仅覆盖 R2 配置态（`isR2Configured`/`testR2Connection`）且把 `R2Storage` 类整体桩化，未触达类方法。本轮补齐。至此 cloud-sync 域两大适配器（OSS + R2）直接单测均闭合。
+
+**Commit（f10693d）R2Storage 直接单测**：25 用例覆盖全部 7 个实例方法，按方法分组：
+
+- **constructor（2 用例）**：`S3Client({region:'auto', endpoint:'https://{accountId}.r2.cloudflarestorage.com', credentials:{accessKeyId, secretAccessKey}})` 透传；endpoint URL 随 accountId 变化（acc-1→acc-2 锁定）
+- **uploadObject（3 用例）**：基础 PutObjectCommand 透传 Bucket/Key/Body（ContentType/Metadata undefined）；contentType+metadata 透传；返回 void（不透传 send 结果）
+- **downloadObject（4 用例）**：`Body: null` → throw "响应体为空"；ReadableStream → `reader.read()` 循环 `Buffer.concat` 拼接（两 chunk [1,2,3]+[4,5] → [1,2,3,4,5]）；`body.arrayBuffer()` 方法体 → `Buffer.from(arrayBuffer)`；未知体（string）→ throw "无法读取响应体"。四分支全覆盖
+- **headObject（5 用例）**：成功映射 ContentLength→size / LastModified→lastModified / ETag→etag / key 透传；ContentLength/LastModified 缺失 → 回退 0/new Date()；`error.name==='NotFound'` → null；`error.$metadata.httpStatusCode===404` → null（双归一路径）；其他错误 rethrow
+- **deleteObject（1 用例）**：DeleteObjectCommand 透传 Bucket/Key
+- **listObjects（5 用例）**：单页 Contents 映射（Key/Size/LastModified/ETag 透传）+ Prefix/ContinuationToken:undefined 透传；Contents 缺失 → 空数组（Prefix:undefined）；Contents 中 Key 缺失对象跳过（无 Key + Key:undefined 两形态）；Size/LastModified 缺失回退 0/new Date()；多页 `NextContinuationToken` 循环（tok-1 → 第二次请求 ContinuationToken:tok-1，无 token 终止，send 调用 2 次）
+- **generatePresignedUrl（3 用例）**：operation=get → GetObjectCommand + `getSignedUrl(client, cmd, {expiresIn:3600})` 默认值；operation=put → PutObjectCommand（GetObjectCommand 不调用）；自定义 expiresIn=7200 透传
+- **testConnection（2 用例）**：`ListObjectsV2Command({Bucket, MaxKeys:1})` 成功 → true；抛错 → catch + `console.error('R2 连接测试失败:', err)` → false（不向上抛，console.error spy 断言）
+
+**关键控制流锁定**：
+- 404 双归一：`if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) return null` —— 两路径分别用 `Object.assign(new Error(), {name:'NotFound'})` 与 `{$metadata:{httpStatusCode:404}}` 构造错误验证；其他错误 `throw error` rethrow
+- downloadObject 四分支：`if (!body) throw` / `if (body instanceof ReadableStream)` reader 循环 / `if (typeof body.arrayBuffer === 'function')` / fallback throw —— 四路径分别锁定，ReadableStream 用真实 `new ReadableStream({start(controller){...}})` 构造（Node 24 全局可用，jsdom 环境下 vitest 注入 Node global）
+- listObjects 分页：`do { ... continuationToken = response.NextContinuationToken } while (continuationToken)` —— 第一次响应带 `NextContinuationToken:'tok-1'` 触发第二次请求，第二次无 token 终止；第二次请求的 `ContinuationToken` 字段断言为 'tok-1'
+- Key 缺失跳过：`if (obj.Key)` 守卫 —— 无 Key 字段 + `Key:undefined` 两形态均跳过
+- 预签名默认值：`expiresIn: number = 3600` —— 未传第三参数时 `getSignedUrl` 第三参数 `{expiresIn:3600}` 锁定
+- 连接测试吞错：`try { await send(ListObjectsV2Command({MaxKeys:1})); return true } catch(e) { console.error; return false }` —— 抛错路径不向上抛 + console.error 调用断言
+
+**Mock 要点**：`@aws-sdk/client-s3` 的 `S3Client` 与 5 个 Command 类均桩为**普通 function**（`function X(input){ mockX(input); return {input} }`，vi.fn 在 vitest 4 下不可作构造器 `new` 调用，与 aliyun-oss/saas-tenant-service 同范式）；S3Client 构造器返回 `{send: (...args) => mockSend(...args)}`；各 Command 构造器返回 `{input}` 以便 send 接收带 input 的对象。`@aws-sdk/s3-request-presigner` 的 `getSignedUrl` 桩为转发 fn。`vi.hoisted` 提升 8 个 mock fn 避免 TDZ。R2Config/R2Storage/StorageObject 类型 import 在 mock 下运行时不访问（仅类型位置）。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m0.1s）
+- `npx prisma generate`（补 PrismaClient 类型；注：tsc 若与 prisma generate 并发会误报 `PrismaClient` 无导出，需串行执行）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关）。本轮改动零类型错误（测试文件被 tsconfig `**/__tests__/**` exclude 排除，且为纯新增无源码改动）
+- `npx vitest run src/__tests__/lib/r2-storage-class.test.ts`：25/25 通过（21ms tests）
+- `npx vitest run` 全量 2012/2012 通过（128 文件，113.14s），零回归（基线 1987/127 + 本轮 25/1 = 2012/128）
+
+### 改动量
+
+1 文件（src/__tests__/lib/r2-storage-class.test.ts +447），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `f10693d` test(lib): cloud-sync/r2-storage-class R2Storage 直接单测
+
+### 推送
+
+- origin (Gitee)：f68c0ca..f10693d 推送（含 worklog commit）
+- github (GitHub)：f68c0ca..f10693d 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **cloud-sync 域两大适配器直接单测已闭合**：OSS（第七十九/八十轮）+ R2（本轮）类直接覆盖均补齐，`cloud-sync/` 目录（sync-engine.ts tenant 测试、crypto.ts 专测、storage-factory 测试、aliyun-oss.ts、r2-storage-class.ts）覆盖较全，无后续 cloud-sync 域纯函数补强项
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- **lib 域其余零覆盖文件扫描**：可择机 grep `src/lib/**/*.ts` 与 `src/__tests__/lib/**` 的覆盖缺口，挑选纯函数/控制流丰富的模块补直接单测（如 `src/lib/ai/`、`src/lib/monitoring/`、`src/lib/integrations/` 下部分文件，但需区分纯函数与依赖外部服务的桩）
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
