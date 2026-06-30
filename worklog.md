@@ -10685,3 +10685,67 @@ Mock 要点：`vi.hoisted` 创建 `MockNextResponse`（实例 body/status + stat
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+
+## 2026-06-30 16:00 自动迭代
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-30 15:30 CST，取整 16:00 记录（15:00 已被第七十四轮占用，取下一整点保持单调）。本轮 2 个 dev commit（4015aba + 90e6738）+ 本 worklog commit。轮次编号（第七十五轮）为排序权威键。
+
+**前置检查**：沙箱 `/workspace` 原为空，`git clone origin`（Gitee）+ `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 bc90858（第七十四轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：用户清单 5 项前序轮次均已闭合，本轮逐项 spot-check 复核确认与第七十四轮一致（tenant-db raw 软审计、alipay/wechat 真实验签 + 真实模式显式失败、files 路由走 TenantDb、sync-engine keep_both 不覆盖、api-auth.test 匹配 4 字段 async 实现）。本轮无新优先级 1 问题，直接进入下一轮候选。
+
+**本轮开发（billing 域 plans + subscription 路由 handler 级集成测试）**：
+
+按第七十四轮"下一轮候选"第 1、2 项切入。前序轮次已覆盖 payment 域四路由（create/status/callback-alipay/callback-wechat，第七十二~七十四轮），但 billing 域 `src/app/api/billing/plans/route.ts` 与 `src/app/api/billing/subscription/route.ts` 仍无 handler 级集成测试（src/__tests__/api/ 缺对应文件）。本轮补齐，billing 域核心 GET 路由测试覆盖完成（billing-orders-route.test.ts 前序已存在）。
+
+**Commit 1（4015aba）billing/plans 路由测试**：路由无认证、无 DB，纯函数式转换 PLANS 为数组并计算 yearlyDiscount。6 用例全覆盖：
+- 成功路径：Object.entries(PLANS).map → { id, name, description, price{monthly,yearly,yearlyDiscount}, features }，返回 { plans }，字段映射正确
+- yearlyDiscount 三条分支（核心被测逻辑）：免费套餐 monthly=0 → 0（走 `monthly>0 ? ... : 0` false 分支，不除零）；付费有折扣 pro(3900/39000) → round((1-39000/46800)*100)=17；付费无折扣 fullprice(1000/12000) → round((1-1)*100)=0
+- price 字段键集锁定（monthly/yearly/yearlyDiscount 三字段）
+- 异常路径：PLANS 迭代取值抛错（注入 enumerable getter throw）→ catch → 500 { error:"获取套餐列表失败" }
+
+Mock 要点：`vi.hoisted` 创建 `MockNextResponse` + 受控 `PLANS_FIXTURE`（free/pro/fullprice 三档，覆盖三条 yearlyDiscount 分支）+ 共享可变 `sharedPlans` 对象；`vi.mock('next/server')`、`vi.mock('@/lib/billing/subscription', () => ({ PLANS: sharedPlans }))`。路由持有 sharedPlans 引用，Object.entries 每请求实时读取；异常用例注入抛错 getter 触发，beforeEach resetPlans() 重置保证用例隔离。
+
+**Commit 2（90e6738）billing/subscription 路由测试**：路由聚合 getCurrentSubscription / db.tenant.findUnique / checkTrialStatus 三源数据，计算 storage/ai 用量百分比。10 用例全覆盖：
+- 未认证（authenticateRequest 返回 NextResponse）→ 透传 401，不触达服务/DB（负向断言三 mock 均未调用）
+- 成功路径：依次 await getCurrentSubscription(tenantId) → db.tenant.findUnique → checkTrialStatus(tenantId)，锁定调用契约（findUnique 的 where+select 形态）+ 完整响应聚合对象（subscription 含 planName/planDescription、usage.storage/ai、trial、plan 块）
+- 关键运算锁定：storage.percentage BigInt 运算 Number((storageUsed*100n/storageQuota).toString())（500*100n/2000n=25）；ai.percentage Math.round 四舍五入（round(1/3*100)=33）
+- tenant null（findUnique 未命中）→ usage 回退默认值（storage.used="0"、quota=plan.features.storageQuota.toString()、percentage=0；ai.used=0、quota=plan.features.aiQuota、percentage=0）
+- storageQuota=0 → percentage=0（避免 BigInt 除零），used/quota 仍取 tenant 值（"0" 非空字符串属 truthy，不触发 || 回退）
+- aiQuota=0 → percentage=0；ai.quota 因 `0 || plan.features.aiQuota` 的 falsy 回退为 plan 值（**锁定真实控制流，非理想语义**，handler 测试应锁实际行为）
+- subscription.plan 不在 PLANS（如 'ghost'）→ plan 回退 PLANS.free（planName/plan 块取 free，subscription.plan 透传 mock 值 'ghost'）
+- 异常顺序锁定（顺序 await，前序抛错后续不触达）：getCurrentSubscription 抛错 → 500 且 findUnique/checkTrialStatus 不调用；findUnique 抛错 → 500 且 checkTrialStatus 不调用；checkTrialStatus 抛错 → 500
+- 认证调用契约：authenticateRequest 接收原 request
+
+Mock 要点：`vi.hoisted` 创建 `MockNextResponse` + `mockAuthenticate`/`mockGetCurrentSubscription`/`mockCheckTrialStatus`/`mockTenantFindUnique` + `PLANS_FIXTURE`（free/pro，storageQuota 为 BigInt）；`vi.mock` 四模块全隔离（next/server / @/lib/api-auth / @/lib/billing/subscription[getCurrentSubscription+checkTrialStatus+PLANS] / @/lib/db[tenant.findUnique]）；makeSubscription/makeTenant 工厂提供可覆写基线（storageUsed/storageQuota 为 BigInt，aiUsed/aiQuota 为 number）。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；71.3s）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关）。本轮改动零类型错误（测试文件被 tsconfig exclude 排除，且为纯新增无源码改动）
+- `npx vitest run src/__tests__/api/billing-plans-route.test.ts src/__tests__/api/billing-subscription-route.test.ts`：16/16 通过（2.55s，stderr 仅为错误路径用例触发的路由 console.error，属预期）
+- `npx vitest run` 全量 1807/1807 通过（121 文件，146.76s），零回归（基线 1791/119 + 本轮 16/2 = 1807/121）
+
+### 改动量
+
+2 文件（src/__tests__/api/billing-plans-route.test.ts +209、src/__tests__/api/billing-subscription-route.test.ts +373），2 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `4015aba` test(api): billing/plans 路由 handler 级集成测试
+- `90e6738` test(api): billing/subscription 路由 handler 级集成测试
+
+### 推送
+
+- origin (Gitee)：bc90858..90e6738 推送成功（含 worklog commit）
+- github (GitHub)：bc90858..90e6738 推送成功（含 worklog commit）
+
+### 下一轮候选
+
+- **payment/mock/{alipay,wechat} 路由 handler 级测试**：dev mock 回调助手路由，优先级低，可择机补
+- **billing 域 POST 变更套餐路径**：`src/app/api/billing/subscription/route.ts` 仅 GET，本轮覆盖；若后续补 POST 变更套餐 handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
