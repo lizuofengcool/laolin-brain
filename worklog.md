@@ -11141,3 +11141,79 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - **lib 域其余零覆盖文件扫描**：可择机 grep `src/lib/**/*.ts` 与 `src/__tests__/lib/**` 的覆盖缺口，挑选纯函数/控制流丰富的模块补直接单测（如 `src/lib/ai/`、`src/lib/monitoring/`、`src/lib/integrations/` 下部分文件，但需区分纯函数与依赖外部服务的桩）
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-01 01:00 自动迭代
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-07-01 01:20 CST，取整 01:00 记录。本轮 1 个 dev commit（4197bbb）+ 本 worklog commit。轮次编号（第八十二轮）为排序权威键。
+
+**前置检查**：沙箱 `/workspace/laolin-brain` 此前不存在（新会话），`git clone origin`（Gitee）+ `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 a34c908（第八十一轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：用户清单 5 项前序轮次均已闭合，本轮逐项 spot-check 复核确认与前轮一致——`tenant-db.ts` raw getter 软审计 ✓、`payment/alipay.ts` RSA2 真实验签 ✓、`payment/wechat.ts` V3 签名验证 + AES-256-GCM resource 解密 ✓、`api/files/route.ts` 经 createTenantDb 走租户隔离层 ✓、`sync-engine.ts` keep_both 分支 ✓、`api-auth.test.ts` 与实现匹配 ✓。本轮无新优先级 1 问题，进入下一轮候选。
+
+**本轮开发（lib/ai-usage.ts 内存版用量追踪直接单测）**：
+
+按第八十一轮"下一轮候选"第 5 项切入（lib 域零覆盖文件扫描，挑选纯函数/控制流丰富的模块补直接单测）。本轮对 `src/lib/**/*.ts` 与 `src/__tests__/lib/**` 做覆盖缺口交叉比对，筛出多个零直接覆盖的纯内存态/纯函数候选，择其中**最纯（零 import、纯内存态、控制流丰富）**的 `src/lib/ai-usage.ts` 落地。该模块按用户维度统计每日 AI 调用次数（内存版），含 checkAiUsage 原子递增、限额边界、自定义 dailyLimit、resetTime 的 UTC 日边界计算、getAiUsageStatus 只读、跨天重置、跨用户隔离、cleanupIfNeeded 每小时清理等关键控制流，此前**零直接覆盖**。本轮补齐。
+
+**Commit（4197bbb）ai-usage 直接单测**：23 用例覆盖全部 3 个导出（AI_DAILY_LIMIT 常量、checkAiUsage、getAiUsageStatus），按行为分组：
+
+- **AI_DAILY_LIMIT 常量（1 用例）**：导出默认每日限额 200
+- **checkAiUsage 基础递增与限额（6 用例）**：首次调用 allowed=true/remaining=limit-1/resetTime=次日 UTC 零点；连续调用递增 count 递减 remaining；限额边界（limit=3，第 3 次 allowed=true 触达 remaining=0，第 4 次 allowed=false 不递增）；超限不递增；remaining 永不为负（limit=1 时恒 0，Math.max(0,...)）；自定义 dailyLimit 覆盖默认 200
+- **checkAiUsage 原子性（1 用例）**：allowed=false 时 count 不递增，getAiUsageStatus 反映真实 used
+- **checkAiUsage resetTime 计算（2 用例）**：同一 UTC 日内任意时刻（10:00 vs 23:59:59）resetTime 相同（次日 00:00 UTC）；跨 UTC 日 00:01 的 resetTime 为后日 UTC 零点
+- **getAiUsageStatus 只读（4 用例）**：无条目 used=0/limit/remaining=limit；有条目 used=count/remaining=limit-count；只读不递增（连续 getAiUsageStatus 不改变后续 checkAiUsage 的 count）；自定义 dailyLimit
+- **getAiUsageStatus 过期条目（1 用例）**：day1 累计后 day2 读取 → used=0（entry.dayStart !== todayStart）
+- **checkAiUsage 跨天重置（2 用例）**：day1 累计后 day2 调用 count 重置为 1、resetTime=day2+24h；day1 耗尽配额不影响 day2 全新配额
+- **跨用户隔离（2 用例）**：user-a/user-b 独立计数；一用户耗尽不影响另一用户
+- **cleanupIfNeeded 清理节奏（4 用例）**：1 小时间隔内调用不抛错、结果正确（gate 早返回路径）；超过 1 小时调用不抛错、结果正确（gate 通过路径，无过期条目）；超过 1 小时且有跨天过期条目（cleanup 后跨天重置仍生效，间接锁定删除路径）；cleanup 不删除当天条目（同日跨小时仍保留计数）
+
+**关键控制流锁定**：
+- 原子递增：`const allowed = entry.count < dailyLimit; if (allowed) entry.count++;` —— allowed=false 时 count 不变，用 limit=3 边界（第 3 次 count 2<3 allowed→count3；第 4 次 count 3<3 false→不递增）锁定
+- 限额边界 `count < limit`：到达 limit 的那次调用 allowed=true（因比较的是递增前的 count），用 limit=3/limit=1 双场景验证
+- remaining 永不为负：`Math.max(0, dailyLimit - entry.count)` —— limit=1 时第 2 次调用 remaining=0 而非 -1
+- 自定义 dailyLimit 默认值：`dailyLimit: number = AI_DAILY_LIMIT` —— 传 5 时按 5 限额、不传时按 200
+- resetTime 计算：`todayStart + 24*60*60*1000`，`todayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())` —— 用 setSystemTime 固定 2026-07-01T10:00:00Z 与 23:59:59Z 验证同日 resetTime 一致（2026-07-02T00:00:00Z），2026-07-02T00:01:00Z 验证跨日 resetTime 为 2026-07-03T00:00:00Z
+- getAiUsageStatus 只读：不调用 entry.count++，用 "checkAiUsage 1 次 → 连续 getAiUsageStatus 2 次 → 再 checkAiUsage，count 应为 2（非 3/4）" 序列锁定
+- 过期条目归零：`entry?.dayStart === todayStart ? entry.count : 0` —— 跨天后读旧条目 used=0
+- 跨天重置：`if (!entry || entry.dayStart !== todayStart) { entry = {count:0, dayStart:todayStart}; usageStore.set(userId, entry); }` —— day1 累计 5 次后 day2 首次调用 count 重置为 1
+- 跨用户隔离：usageStore 按 userId 键独立 —— user-a 累计不影响 user-b
+- cleanup gate：`if (now - lastCleanup < CLEANUP_INTERVAL_MS) return;` —— 用 setSystemTime 推进 30 分钟（gate 早返回）与 61 分钟（gate 通过）两路径，均不抛错、结果正确
+
+**状态/时间策略要点**：模块持有 module-level 的 `usageStore`（Map）与 `lastCleanup`（=Date.now() 模块加载时求值）。每个用例前 `vi.resetModules()` + `await import('@/lib/ai-usage')` 重新求值模块，得到全新 usageStore/lastCleanup；配合 `vi.useFakeTimers()` + `vi.setSystemTime(NOW)`（NOW=2026-07-01T10:00:00Z）固定 now，使 lastCleanup 初始化（模块加载时 Date.now()）与 getTodayStart() 的 UTC 日期计算完全可断言。`afterEach` 调 `vi.useRealTimers()` 还原。cleanupIfNeeded 的删除效果对外不可观察（过期条目无论是否被删，getAiUsageStatus 均 used=0、checkAiUsage 均重新初始化 count），故 cleanup 删除行为通过"跨天重置"用例间接锁定，cleanup 用例 exercise 两条 gate 路径确保不抛错与结果正确。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m7.8s）
+- `npx prisma generate`（补 PrismaClient 类型；与 tsc 串行执行避免误报 PrismaClient 无导出）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关）。本轮改动零类型错误（测试文件被 tsconfig `**/__tests__/**` exclude 排除，且为纯新增无源码改动）
+- `npx vitest run src/__tests__/lib/ai-usage.test.ts`：23/23 通过（38ms tests）
+- `npx vitest run` 全量 2035/2035 通过（129 文件，157.09s），零回归（基线 2012/128 + 本轮 23/1 = 2035/129）
+
+### 改动量
+
+1 文件（src/__tests__/lib/ai-usage.test.ts +341），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `4197bbb` test(lib): ai-usage 内存版用量追踪直接单测
+
+### 推送
+
+- origin (Gitee)：a34c908..4197bbb 推送（含 worklog commit）
+- github (GitHub)：a34c908..4197bbb 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（第八十一轮候选第 5 项展开）：本轮筛选已识别多个零直接覆盖的纯内存态/纯函数候选，按纯度与控制流丰富度排序，下轮可切入：
+  - `src/lib/ai/model-manager.ts`（~428 行，AIModelManager 单例纯内存注册表：setDefaultModel 清旧默认、recordUsage 按 model/feature/day 聚合、checkQuota/resetDailyQuota、getDefaultModel 按类型回退首个 active、getSupportedFeatures 能力集合并集；generateText/generateEmbedding 为 stub 返回确定性 token/cost 数学可测；零外部依赖，仅 import types）
+  - `src/lib/bi/bi-manager.ts`（~699 行，BiManager 单例纯内存 KPI/看板/告警 CRUD，租户隔离返回 null/false 分支；calculateKpiValue 的 change/changePercent/trend/status 双方向模式；runAnalysis switch 分发；纯函数，仅 import types）
+  - `src/lib/monitoring/monitoring.ts`（~645 行，MetricsCollector 请求统计 + AlertManager 规则匹配 gt/lt/gte/lte/eq/neq + 告警生命周期；仅依赖 Node os 内置，核心类无需 mock）
+  - `src/lib/plugins/registry.ts`（~488 行，PluginRegistry 纯内存插件生命周期 + hook/event 系统，createPluginAPI 权限网关；核心逻辑零外部依赖）
+  - `src/lib/integrations/integration-manager.ts`（~547 行，provider 注册模式，connectIntegration 抛错/组合键、testConnection 回退、createSyncTask 状态机 pending→running→completed/failed；注入 fake provider 即可，无真实网络）
+  - `src/lib/utils/file-types.ts`（~1184 行，纯文件类型检测大表 + formatFileSize 数学；零 import）
+  - `src/lib/utils/benchmark.ts`（~249 行，benchmark 百分位计算 + markdown 报表生成 + TestDataGenerator；仅依赖 perf_hooks）
+  - `src/lib/utils/tenant-permissions.ts`（~97 行，hasRole 数值层级 owner4>admin3>member2>viewer1；纯函数部分零依赖）
+  - `src/lib/api-cache.ts`（~165 行，内存 GET 缓存 cachedFetch 命中/过期、invalidateCache 子串匹配、detectTTL URL 模式分类；仅 mock 全局 fetch）
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
