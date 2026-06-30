@@ -26,9 +26,21 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const type = searchParams.get("type") || "home"; // home, related, search, daily
-    const limit = parseInt(searchParams.get("limit") || "10", 10);
+    const limitRaw = parseInt(searchParams.get("limit") || "10", 10);
     const fileId = searchParams.get("fileId") || "";
     const query = searchParams.get("q") || "";
+
+    // 校验 limit：非数字（'abc' → NaN）或非正数拒绝，避免 NaN/负数透传给
+    // getHomeRecommendations 等 → db.file.findMany → Prisma take:NaN（getRelatedRecommendations
+    // 更有 take: limit*3 → NaN*3=NaN）的未定义行为。与 cloud-sync/queue/tags 等的
+    // isNaN||<1 → 400 约定一致；上限封顶 100 与分页 pageSize 上限约定一致
+    if (isNaN(limitRaw) || limitRaw < 1) {
+      return NextResponse.json(
+        { error: "limit 必须为正整数" },
+        { status: 400 }
+      );
+    }
+    const limit = Math.min(100, limitRaw);
 
     let recommendations;
 

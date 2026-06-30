@@ -23,7 +23,19 @@ export async function GET(request: NextRequest) {
 
   try {
     const { searchParams } = new URL(request.url);
-    const limit = parseInt(searchParams.get("limit") || "20", 10);
+    const limitRaw = parseInt(searchParams.get("limit") || "20", 10);
+
+    // 校验 limit：非数字（'abc' → NaN）或非正数拒绝，避免 NaN/负数透传给 getChatSessions
+    // → Array.slice(0, limit)（NaN → slice(0,0) 静默返回空、负数 → 从尾部截取产生非预期子集）。
+    // 与 recommendations/cloud-sync/queue 等的 isNaN||<1 → 400 约定一致；
+    // 上限封顶 100 与分页 pageSize 上限约定一致
+    if (isNaN(limitRaw) || limitRaw < 1) {
+      return NextResponse.json(
+        { error: "limit 必须为正整数" },
+        { status: 400 }
+      );
+    }
+    const limit = Math.min(100, limitRaw);
 
     const sessions = await getChatSessions(userId, tenantId, limit);
 
