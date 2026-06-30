@@ -11540,3 +11540,74 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-01 06:00 自动迭代
+
+### 背景与优先级判断
+
+- 沙箱为空工作目录，先 `git clone origin` + 补 `github` remote，`git config user.email/name` 就位。
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 均为 `af74c75`（第八十六轮 worklog commit），`origin..github` 与 `github..origin` 双向 0，双端完全一致，无 rebase 必要。
+- 工作树干净，无遗留未提交改动或未推送 commit，直接进入新一轮开发。
+- 优先级 1 复核（任务清单"剩余如下"项，逐项 grep 验证当前实现）：
+  · `tenant-db.ts` raw 后门 → `get raw()` getter 已加调用堆栈软审计（line 56-59，输出 `越过租户隔离层访问原始 PrismaClient，调用方: ${caller}`）。✅ 闭合
+  · `alipay.ts`/`wechat.ts` RSA2 验签 → `verifyRSA2Sign` 用 `createVerify('RSA-SHA256')` + base64 解码 + `RSA_PKCS1_PADDING` 真实验签（alipay.ts:191-207），非"非空即通过"；`verifyWechatSign` 同理（wechat.ts:221）；真实密钥场景返回明确错误而非静默 mock。✅ 闭合
+  · `files/route.ts` 走 TenantDb、`sync-engine.ts` keep_both、`api-auth.test.ts` 匹配实现 → 第八十六轮 worklog 已记录全部闭合。✅ 闭合
+- 结论：优先级 1 全部闭合，优先级 2 可落地功能均被"需外部服务/待产品决策"阻塞，延续优先级 3（lib 域零覆盖纯模块直接单测），切入第八十六轮候选清单中最小且最纯的 `src/lib/utils/benchmark.ts`（249 行，仅依赖 perf_hooks 的 `performance.now()`，其余为 process/console/Math/Date 全局，零 @/lib/db / next/server 依赖）。
+
+### 本轮开发（lib/utils/benchmark.ts 性能基准工具直接单测）
+
+`src/lib/utils/benchmark.ts` 此前零直接覆盖。模块为轻量性能基准工具：`benchmark`（warmup 预热 + 计时迭代 + 统计/百分位）、`formatBenchmarkResult`（toFixed 精度格式化）、`runBenchmarks`（批量执行 + console.log）、`generateBenchmarkReport`（markdown 报表）、`measureMemoryUsage`（process.memoryUsage 除 1024/1024 转 MB）、`TestDataGenerator`（randomString/generateFileName/generateFileContent/generateUser/generateBatch + 共享 counter）。本轮用 `vi.spyOn(performance, 'now')` 拦截计时（Node 模块单例，测试 import 与模块内绑定指向同一对象，spy 直接生效），从预定 `ticks` 序列取值，精确控制每轮迭代记录的 `end - start` 耗时，锁定百分位索引与排序方向。
+
+**Commit（845b253）benchmark 直接单测**：37 用例覆盖 7 个导出（含默认实例），按行为分组：
+
+- **benchmark 默认配置/调用计数（4 用例）**：默认 `iterations=100/warmup=10` → fn 调用 110 次；自定义 `iterations=5/warmup=2` → 7 次；`warmup=0` → 仅 iterations 次；**异步 fn 走 `await fn()`**（async fn 内 `await Promise.resolve()` 后 push，未 await 则 resolved 为空，本轮断言 `resolved.length===1` 锁定 await）
+- **benchmark 统计计算与排序（3 用例）**：deltas 升序 [2,4,6,8] → totalTime=20/averageTime=5/opsPerSecond=200(1000/avg)/min=2/max=8；**times.sort((a,b)=>a-b) 升序**（降序输入 [8,6,4,2] 经排序后 min=2/max=8，反向则互换，锁定升序非降序）；单次迭代 min=max=average=p50=p95=p99
+- **benchmark 百分位索引 Math.floor(iterations*p)（3 用例）**：**iterations=100** deltas[1..100] → p50=times[50]=51/p95=times[95]=96/p99=times[99]=100（三值全异，锁定 50/95/99 三个不同索引）；**iterations=10** deltas[1..10] → p95=p99=times[9]=10（`floor(9.5)=9`/`floor(9.9)=9`，非 round/ceil→10 越界，锁定 floor）；iterations=20 → p50=times[10]=11/p95=p99=times[19]=20（floor(19.0)/floor(19.8) 均 19）
+- **formatBenchmarkResult toFixed 精度（2 用例）**：`totalTime`/`opsPerSecond` 用 `toFixed(2)`，`averageTime`/`minTime`/`maxTime`/`p50`/`p95`/`p99` 用 `toFixed(3)`（用 123.456→123.46 / 1.23456→1.235 / 810.0→810.00 锁定精度分支）；**首行 `\n=== name ===` 带前导 \n**（split('\n') 产生 11 段，lines[0]=''/lines[1]='=== n ==='，锁定模板前导 \n）
+- **runBenchmarks（3 用例）**：逐项运行每项 console.log 一次格式化结果、返回等长数组（spy 断言调用次数 + calls[0] 含 `=== a ===`）；options 透传（iterations 反映在结果）；空数组返回 [] 且不 console.log
+- **generateBenchmarkReport markdown 结构（4 用例）**：空结果仅标题+表头+空详细段（无 `### `）；含结果表格行 `| name | avg.toFixed(3) | p95.toFixed(3) | p99.toFixed(3) | ops.toFixed(2) |` + 详细小节 `### name` + 9 条 bullet（toFixed 精度）；**生成时间为合法 ISO**（`new Date(ts)` 非 Invalid Date）；多结果每项一行表格+一个小节
+- **measureMemoryUsage（2 用例）**：`process.memoryUsage` 各字段 `/1024/1024` 转 MB（rss=1048576→1/heapTotal=2097152→2/heapUsed=3145728→3/external=4194304→4/arrayBuffers=524288→0.5，锁定除数 1024*1024）；返回字段集合恰为 5 项
+- **TestDataGenerator（12 用例）**：randomString 默认长度 10/自定义/字符均取自 62 字符集；generateFileName 默认 `test-file-{counter}-{rand8}.txt`/counter 自增/自定义扩展名；generateFileContent 默认 1024/自定义；generateUser email/name/password 格式 + counter 自增；**counter 跨方法共享**（generateFileName→generateUser→generateFileName 序列中第三步 counter=3）；generateBatch 按 index 0..count-1 调用/count=0 空/对象批量；默认实例 `testDataGenerator instanceof TestDataGenerator`
+
+**关键控制流锁定**：
+- `await fn()`：用 async fn 内 `await Promise.resolve()` 后 push、断言 `resolved.length===1` 锁定 await，非 `fn()` 直接调用
+- `times.sort((a,b)=>a-b)` 升序：用降序输入 [8,6,4,2] 排序后 min=2/max=8 锁定升序（反向则 min=8/max=2）
+- 百分位 `Math.floor(iterations*p)`：用 iterations=100 三值全异（51/96/100）+ iterations=10 边界（floor(9.5)=9 非 round/ceil=10 越界）双场景锁定 floor
+- opsPerSecond = `1000/averageTime`：用 averageTime=5 → 200 锁定
+- toFixed 精度分支：totalTime/opsPerSecond→2 位，其余→3 位，用 123.456→123.46 / 1.23456→1.235 锁定
+- formatBenchmarkResult 首行前导 \n：模板 `\n=== ${name} ===`，用 split 产生 11 段 + lines[0]='' 锁定
+- measureMemoryUsage 除数：`mem.x / 1024 / 1024`，用 1048576→1 / 524288→0.5 锁定 1024*1024
+- TestDataGenerator counter 共享：`this.counter` 在 generateFileName/generateUser 间共用，用跨方法序列 counter=1→2→3 锁定同一实例字段
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；56.5s）
+- `npx prisma generate`（补 PrismaClient 类型，与 tsc 串行避免误报）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮无关）。本轮改动零类型错误（纯新增测试，源码无改动）
+- `npx vitest run src/__tests__/lib/benchmark.test.ts`：37/37 通过（37ms tests）
+- `npx vitest run` 全量 2284/2284 通过（134 文件，116.46s），零回归（基线 2247/133 + 本轮 37/1 = 2284/134）
+
+### 改动量
+
+1 文件（src/__tests__/lib/benchmark.test.ts +529），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `845b253` test(lib): benchmark 百分位计算/排序/markdown报表/TestDataGenerator 直接单测
+
+### 推送
+
+- origin (Gitee)：af74c75..845b253 推送（含 worklog commit）
+- github (GitHub)：af74c75..845b253 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（benchmark 已闭合）：下轮可切入：
+  - `src/lib/monitoring/monitoring.ts`（~645 行，MetricsCollector 请求统计 + AlertManager 规则匹配 gt/lt/gte/lte/eq/neq + 告警生命周期；仅依赖 Node os 内置，核心类无需 mock）
+  - `src/lib/plugins/registry.ts`（~488 行，PluginRegistry 纯内存插件生命周期 + hook/event 系统，createPluginAPI 权限网关；核心逻辑零外部依赖）
+  - `src/lib/integrations/integration-manager.ts`（~547 行，provider 注册模式，connectIntegration 抛错/组合键、testConnection 回退、createSyncTask 状态机 pending→running→completed/failed；注入 fake provider 即可，无真实网络）
+  - `src/lib/utils/file-types.ts`（~1184 行，纯文件类型检测大表 + formatFileSize 数学；零 import）
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
