@@ -10948,3 +10948,68 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-06-30 20:00 自动迭代
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-30 19:17 CST，取整 20:00 记录（19:00 已被第七十八轮占用，取下一整点保持单调）。本轮 1 个 dev commit（ca841bd）+ 本 worklog commit。轮次编号（第七十九轮）为排序权威键。
+
+**前置检查**：沙箱 `/workspace/laolin-brain` 此前不存在（新会话），`git clone origin`（Gitee）+ `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 d389974（第七十八轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：用户清单 5 项前序轮次均已闭合，本轮逐项 spot-check 复核确认与第七十八轮一致（tenant-db.ts raw/transaction 软审计 ✓、alipay/wechat RSA2/V3 验签 ✓、files/route.ts 走 TenantDb ✓、sync-engine.ts keep_both 修复 ✓、api-auth.test.ts 与实现匹配 ✓；另 `src/lib/saas` 目录 grep TODO/FIXME 仅 billing.service.ts:290 一处"实际对接支付宝/微信支付"桩，属沙箱无凭证的外部服务集成 defer 项）。本轮无新优先级 1 问题，进入下一轮候选。
+
+**本轮开发（saas/tenant.service.ts 配额检查与状态分支单测）**：
+
+按第七十八轮"下一轮候选"第 2 项切入（saas/tenant.service.ts 纯函数补强）。`src/lib/saas/tenant.service.ts` 是租户/配额/订阅服务核心，含存储配额 BigInt 算术、AI 配额跨天重置、租户状态分支、套餐切换配额写入等关键业务逻辑，但此前**零直接单测覆盖**——同域 `billing-tenant.test.ts` 仅覆盖 `TenantDb` 的 subscription/order/tenant 模型访问器（tenantId 注入），不覆盖本服务文件的业务函数。本轮补齐。至此 `src/lib/saas/` 目录下两个服务文件（billing.service / tenant.service）均已有专属单测，saas 域 lib 覆盖闭合。
+
+该模块在文件顶部 `const prisma = new PrismaClient()` 直接实例化（非经 `@/lib/db` 注入），且 `import { hashPassword, verifyPassword } from '../auth'` 为遗留 import（本文件任何函数均未使用），故采用 `vi.mock('@prisma/client')` 替换构造器（普通 function 而非 vi.fn，使 `new PrismaClient()` 可作构造器调用并返回 mock 单例）、`vi.mock('@/lib/auth')` 提供桩以切断 bcryptjs 加载链，`vi.useFakeTimers + setSystemTime` 固定 now=2026-06-30T00:00:00Z 使 trialEndsAt / currentPeriodEnd / aiResetDate 跨天判断可精确断言。
+
+**Commit（ca841bd）saas/tenant.service 单测**：36 用例覆盖全部 12 个导出函数 + PLAN_CONFIGS，按函数分组：
+
+- **createTenant（4 用例）**：默认 free/14d→trialEndsAt=now+14d、currentPeriodEnd=now+30d、subscription price=0/interval=month/currentPeriodStart=startedAt=now；trialDays=0→trialEndsAt=null；pro 套餐 storageQuota/aiQuota 取自 PLAN_CONFIGS.pro、subscription price=39；subscription.currentPeriodEnd 取自 tenant.create 返回值（非 now+30d 字面量）
+- **checkStorageQuota（5 用例）**：租户不存在→{allowed:false,used:0n,quota:0n}（bigint 零值）；used(500MB)+size(100MB)<=quota(1GB)→true；used(900MB)+size(200MB)>1GB→false；恰好等于(924+100=1024MB==1GB)→true（<= 临界）；used/quota 为 bigint 原值透传；findUnique select={storageQuota,storageUsed} 锁定
+- **checkAiQuota（6 用例）**：不存在→{allowed:false,used:0,quota:0,remaining:0}；新天重置(aiResetDate null)→tenant.update(aiUsed:0,aiResetDate:now)+返回{allowed:true,used:0,quota,remaining:quota}；新天重置(不同日 5 天前)→同样触发 update；同日 aiUsed<aiQuota→allowed:true/remaining=quota-used/不 update；同日 aiUsed>=aiQuota→allowed:false/remaining=0(Math.max)/不 update；脏数据 aiUsed>aiQuota→remaining 仍 0 非负数
+- **consumeAiQuota（3 用例）**：checkAiQuota not allowed（同日 aiUsed>=aiQuota）→false 不调 update；allowed 同日→tenant.update(increment:1 默认 amount) 返 true；自定义 amount=5→increment:5
+- **checkTenantStatus（5 用例）**：不存在→{active:false,reason:'租户不存在',plan:'free'}；status=suspended→{active:false,reason:'账户已暂停',plan:透传}；status=cancelled→{active:false,reason:'账户已取消'}；正常活跃→{active:true,plan,trialEndsAt,currentPeriodEnd} 无 reason；free+trialEndsAt 已过期仍 active:true（试用期分支为 no-op，锁定当前行为）
+- **changePlan（2 用例）**：切换 pro→写入 plan/storageQuota/aiQuota 取自 PLAN_CONFIGS.pro；切换 enterprise→enterprise 配额
+- **getCurrentSubscription（2 用例）**：findFirst(where:{tenantId,status:'active'},orderBy:{createdAt:'desc'}) 透传；无活跃订阅→null
+- **getTenant/checkTenantAccess/getUserTenants/addUserToTenant/updateStorageUsed（9 用例）**：getTenant findUnique 透传/不存在 null；checkTenantAccess 存在→true/不存在→false（tenantId_userId 复合 where）；getUserTenants findMany include tenant + 映射 {...tenant,role,joinedAt}/空数组；addUserToTenant 默认 role=member upsert/自定义 admin；updateStorageUsed tenant.update(increment:delta bigint)
+
+**关键控制流锁定**：
+- 存储配额：`allowed = tenant.storageUsed + BigInt(fileSize) <= tenant.storageQuota` —— BigInt 算术 + <= 临界（恰等 true）三用例锁定
+- AI 跨天重置：`resetDate = tenant.aiResetDate?.toDateString()`；`if (resetDate !== today)` → update(aiUsed:0, aiResetDate:new Date()) + 返回 allowed:true —— null/不同日两路径 + 同日不 update 锁定（注：toDateString 走本地时区，同日用同一时刻 now、不同日用 5 天前确保跨时区确定）
+- remaining 兜底：`Math.max(0, aiQuota - aiUsed)` —— aiUsed>=aiQuota 与脏数据超限均 remaining=0 非负 锁定
+- consumeAiQuota 前置 checkAiQuota：`if (!allowed) return false` 不进 update —— not allowed 路径锁定；allowed 路径 increment amount（默认 1）锁定
+- 状态分支：suspended/cancelled 提前 return active:false —— 两用例分别锁定；free 试用期 no-op 分支锁定（trialEndsAt 过期仍 active:true，文档化当前实现）
+- createTenant 订阅周期：subscription.currentPeriodEnd = `tenant.currentPeriodEnd!`（取自 tenant.create 返回值）—— 锁定
+
+**Mock 要点**：`@prisma/client` 的 `PrismaClient` 用普通 `function PrismaClient() { return mockPrisma }`（vi.fn 在 vitest 4 下不可作构造器 `new` 调用）；`@/lib/auth` 整体桩化提供 hashPassword/verifyPassword（tenant.service 遗留 import 未使用，桩化切断 bcryptjs 加载链）；`vi.useFakeTimers + setSystemTime` 固定 now，`afterEach` 还原 real timers。Tenant/Subscription 类型 import 在 mock 下仅类型位置使用、运行时不访问，与 billing.service 同范式。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；65.8s）
+- `npx prisma generate`（补 PrismaClient 类型；注：tsc 若与 prisma generate 并发会误报 `PrismaClient` 无导出，需串行执行）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关）。本轮改动零类型错误（测试文件被 tsconfig `**/__tests__/**` exclude 排除，且为纯新增无源码改动）
+- `npx vitest run src/__tests__/lib/saas-tenant-service.test.ts`：36/36 通过（21ms tests）
+- `npx vitest run` 全量 1962/1962 通过（126 文件，151.68s），零回归（基线 1926/125 + 本轮 36/1 = 1962/126）
+
+### 改动量
+
+1 文件（src/__tests__/lib/saas-tenant-service.test.ts +611），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `ca841bd` test(lib): saas/tenant.service 配额检查与状态分支单测
+
+### 推送
+
+- origin (Gitee)：d389974..ca841bd 推送（含 worklog commit）
+- github (GitHub)：d389974..ca841bd 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **saas 域 lib 覆盖已闭合**：billing.service.ts + tenant.service.ts 均已有专属单测，`src/lib/saas/` 目录仅此两文件，无后续 saas 域纯函数补强项
+- **cloud-sync 域 lib 覆盖延续**（第七十八轮候选延续）：`cloud-sync/r2-storage-class.ts` / `cloud-sync/aliyun-oss.ts` 可评估纯函数层（R2 presigned URL 构造、OSS 签名生成）是否有可单测的纯函数；多数方法依赖 S3/OSS 客户端实例，需判断是否走 mock 客户端集成测试
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
