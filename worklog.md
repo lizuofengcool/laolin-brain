@@ -10749,3 +10749,70 @@ Mock 要点：`vi.hoisted` 创建 `MockNextResponse` + `mockAuthenticate`/`mockG
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+
+## 2026-06-30 17:00 自动迭代
+
+沙箱时钟：`TZ=Asia/Shanghai` 报 2026-06-30 17:08 CST，取整 17:00 记录（16:00 已被第七十五轮占用，取下一整点保持单调）。本轮 2 个 dev commit（6955744 + c13c958）+ 本 worklog commit。轮次编号（第七十六轮）为排序权威键。
+
+**前置检查**：沙箱 `/workspace/laolin-brain` 此前不存在，`git clone origin`（Gitee）+ `git remote add github`，remote URL 含 token 保持不变，未改 .git/config；user.email/name 已设为 uploader@local/uploader。`git fetch origin main && git fetch github main`，origin/main、github/main、本地 main 三方均处于 6c6f831（第七十五轮成果），无远端更新需 rebase，工作树干净，无遗留未提交改动或未推送 commit。
+
+**优先级 1 复核**：用户清单 5 项前序轮次均已闭合，本轮逐项 spot-check 复核确认与第七十五轮一致：
+- `src/lib/db/tenant-db.ts`：`raw` getter 与 `transaction` 均带调用堆栈软审计（log `[TenantDb.raw] tenantId=... 越过租户隔离层... 调用方: ${caller}`），rawDb 不再无审计导出
+- `src/lib/payment/alipay.ts` & `wechat.ts`：真实密钥配置下显式抛错（不静默返回 mock），verifyCallback 走 RSA2/V3 真实验签，mock_sign 仅 dev 模式 HMAC 校验
+- `src/app/api/files/route.ts`：dedup 与 list 均走 `createTenantDb(tenantId).file.*` 租户隔离层
+- `src/lib/cloud-sync/sync-engine.ts`：keep_both 分支已修复（裸 id 操作 + 注释说明 cloud_wins 复用路径）
+- `src/__tests__/lib/api-auth.test.ts`：返回 4 字段（userId/email/tenantId/role）、async、不读 query，与 api-auth.ts 实现匹配
+
+本轮无新优先级 1 问题，直接进入下一轮候选。
+
+**本轮开发（payment mock 支付页路由 handler 级集成测试）**：
+
+按第七十五轮"下一轮候选"第 1 项切入（payment/mock/{alipay,wechat} 路由）。前序轮次已覆盖 payment 域四路由（create/status/callback-alipay/callback-wechat，第七十二~七十四轮）与 billing 域两路由（plans/subscription，第七十五轮），但 payment 域 dev mock 助手路由 `src/app/api/payment/mock/alipay/route.ts` 与 `src/app/api/payment/mock/wechat/route.ts` 仍无 handler 级集成测试（src/__tests__/api/ 缺 payment-mock-*-route.test.ts）。本轮补齐，payment 域路由测试覆盖完成（6 路由全覆盖）。
+
+**Commit 1（6955744）支付宝 mock 支付页路由测试**：GET 路由读 query（orderNo/amount/tradeNo），缺 orderNo 或 amount → 400 '参数错误'；否则 `alipayProvider.generateMockSign(orderNo)` 生成签名，返回 HTML（confirmPay/cancelPay 以表单 POST 跳 /api/payment/callback/alipay）。18 用例全覆盖：
+- 参数校验：orderNo 缺/amount 缺/均缺 → 400 且 generateMockSign 不调用（负向断言）
+- 成功路径（含 tradeNo）：状态 200、Content-Type text/html; charset=utf-8、generateMockSign 以 orderNo 调用一次、金额换算 parseInt(amount)/100.toFixed(2)（9900→¥99.00）、orderNo/tradeNo 嵌入订单信息区、mock_sign 嵌入 confirmPay+cancelPay 两处表单、confirmPay 表单 POST /api/payment/callback/alipay + trade_status TRADE_SUCCESS（位置在 confirmPay 定义之后）、cancelPay 表单 trade_status TRADE_CLOSED（位置在 cancelPay 定义之后）、total_amount='99.00'、trade_no='ALIPAY123'
+- tradeNo 缺失分支：订单信息区 order-value 回退 '-'（正则锁定单元格）、表单 trade_no 回退 'MOCK'+数字时间戳（正则 `trade_no: 'MOCK\d+'`）、generateMockSign 仍以 orderNo 调用
+- 金额换算边界：amount=1→¥0.01、amount=abc→¥NaN（**锁定真实控制流**：parseInt("abc")=NaN，NaN/100.toFixed(2)="NaN"，mock 路由无 zod 校验，测试锁定而非掩盖）、amount=0→¥0.00
+
+Mock 要点：`vi.hoisted` 创建 `MockNextResponse`（支持 `new NextResponse(body, { status, headers })` 与 headers Map）+ `mockGenerateMockSign`；`vi.mock('next/server')`、`vi.mock('@/lib/payment/alipay', () => ({ alipayProvider: { generateMockSign: ... } }))`；`makeGetRequest` 注入 `nextUrl`（路由用 `request.nextUrl.searchParams`，标准 Request 无 nextUrl）。
+
+**Commit 2（c13c958）微信 mock 支付页路由测试**：与 alipay mock 路由结构对称但差异点明确。GET 路由读 query，校验同 alipay；否则 `wechatPayProvider.generateMockSign(orderNo)` 生成签名，返回 HTML（confirmPay 以 fetch POST /api/payment/callback/wechat 携 JSON body，cancelPay 仅 alert+window.close）。21 用例全覆盖，重点锁定与 alipay 的差异：
+- 参数校验三例（同 alipay）
+- 成功路径：状态 200、Content-Type、generateMockSign 以 orderNo 调用、金额换算（分→元展示，9900→¥99.00）、orderNo/tradeNo 嵌入、mock_sign 嵌入 JSON body（正则 `mock_sign:\s*'WX-MOCK-SIGN'`）、confirmPay 以 fetch POST /api/payment/callback/wechat（位置在 confirmPay 定义之后）、**trade_state 'SUCCESS'（微信状态，区别于支付宝 TRADE_SUCCESS）**、**amount.total=parseInt(amount) 原始分（9900，未除100，区别于支付宝 total_amount 元）**、currency 'CNY'、**transaction_id 嵌入外层+resource 两处**（正则计数=2）、resource 嵌套结构（含 out_trade_no/transaction_id/trade_state/amount，位置锁定）、**cancelPay 仅 alert+window.close 不发回调**（区别于 alipay cancelPay 也 POST 回调，cancelPay 函数体内断言不含 /api/payment/callback/wechat）
+- tradeNo 缺失分支：订单信息区回退 '-'、JSON body transaction_id 回退 'MOCK'+数字时间戳**两处**（外层+resource，正则计数=2）、generateMockSign 仍以 orderNo 调用
+- 金额换算边界三例（同 alipay）
+
+Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wechatPayProvider: { generateMockSign: ... } }))`。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；67.4s）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮改动无关）。本轮改动零类型错误（测试文件被 tsconfig exclude 排除，且为纯新增无源码改动）
+- `npx vitest run src/__tests__/api/payment-mock-alipay-route.test.ts src/__tests__/api/payment-mock-wechat-route.test.ts`：39/39 通过（18+21，2.32s）
+- `npx vitest run` 全量 1846/1846 通过（123 文件，144.07s），零回归（基线 1807/121 + 本轮 39/2 = 1846/123）
+
+### 改动量
+
+2 文件（src/__tests__/api/payment-mock-alipay-route.test.ts +197、src/__tests__/api/payment-mock-wechat-route.test.ts +215），2 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `6955744` test(api): 支付宝 mock 支付页路由 handler 级集成测试
+- `c13c958` test(api): 微信 mock 支付页路由 handler 级集成测试
+
+### 推送
+
+- origin (Gitee)：6c6f831..c13c958 推送成功（含 worklog commit）
+- github (GitHub)：6c6f831..c13c958 推送成功（含 worklog commit）
+
+### 下一轮候选
+
+- **payment 域路由测试已全覆盖**（create/status/callback-alipay/callback-wechat/mock-alipay/mock-wechat 共 6 路由），billing 域已全覆盖（plans/subscription/orders），不再有路由级测试缺口
+- **billing 域 POST 变更套餐路径**：`src/app/api/billing/subscription/route.ts` 仅 GET，第七十五轮覆盖；若后续补 POST 变更套餐 handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/ai/model-manager.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts:408`、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+- **lib 层测试覆盖扫描**：payment 域 lib（alipay.ts/wechat.ts/index.ts）的 generateMockSign/verifyCallback/createPayment 等纯函数已有部分单测，可复核覆盖率补边界用例；或转向 cloud-sync / saas billing.service 等纯函数层的单测补强（避开需外部集成的桩函数）
