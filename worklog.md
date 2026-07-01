@@ -12139,3 +12139,69 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-01 17:00 自动迭代
+
+### 背景与优先级判断
+
+- 沙箱工作目录为空，先 `git clone origin`（origin=Gitee）+ 补 `github` remote，`git config user.email=uploader@local / user.name=uploader` 就位。
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 均为 `5bd039c`（第九十四轮 worklog commit），`HEAD..origin/main` 与 `HEAD..github/main` 双向 0，双端完全一致，无 rebase 必要。
+- 工作树干净，无遗留未提交改动或未推送 commit，直接进入新一轮开发。
+- **优先级 1 复核（逐文件实证，未轻信 worklog 闭合结论）**：
+  - `src/lib/db/tenant-db.ts`：`raw` getter 与 `transaction` 均已加 `console.warn` 调用方堆栈软审计（`new Error().stack` 取第 3 帧），文件尾注释说明 rawDb 不再无审计导出。✅ 闭合
+  - `src/lib/payment/alipay.ts`：`verifyRSA2Sign` 用 `createVerify('RSA-SHA256')` + base64 解码 + `RSA_PKCS1_PADDING` 真实验签，`normalizePublicKey` 自动补 PEM 头尾；已配置真实密钥时 createPayment/queryPayment/refund 均**显式失败**而非静默返回 mock。✅ 闭合
+  - `src/lib/payment/wechat.ts`：`verifyWechatSign` 用 APIv3 密钥 HMAC-SHA256 + `timingSafeEqual` 恒定时间比较，缺字段/未配置直接拒绝；`decryptResource` 用 `aes-256-gcm`（32 字节密钥校验 + auth tag）真解密，解密失败拒绝回调。✅ 闭合
+  - `src/app/api/files/route.ts`：GET 走 `createTenantDb(tenantId).file.findMany`，POST 去重走 `createTenantDb(tenantId).file.findFirst`；剩余 `db.$queryRaw` 配额检查 where 含 `userId AND tenantId`、`db.$transaction` 内 create 显式写 tenantId/update 操作的 id 经 TenantDb 取得已租户作用域，均安全。✅ 闭合
+  - `src/lib/cloud-sync/sync-engine.ts`：`keep_both` 分支先 `fetchCloudFileData` 取云端数据，再把本地文件 `update` 重命名为 `[冲突副本] ${fileName}`（保留本地版本），最后把云端版本 `create` 为新 id 文件（与本地并存），不再"直接覆盖"。函数头还有 `findUnique({ where: { id: fileId, tenantId } })` 跨租户守卫。✅ 闭合
+  - `src/__tests__/lib/api-auth.test.ts`：已重写匹配实现——期望 4 字段（userId/email/tenantId/role）、`async` await、query param token 不被接受（期望 401）。✅ 闭合
+- 结论：优先级 1 全部实证闭合。优先级 2 可落地功能均被「需外部服务/待产品决策」阻塞（grep TODO/FIXME 命中处均在 ai/model-manager、ai/document-qna、plugins/registry、monitoring 等需真实外部 API/邮件/通知集成的桩，沙箱无凭证不宜臆造）。延续优先级 3（lib 域零覆盖纯模块直接单测）。
+- 候选筛选：交叉比对 `src/lib/**/*.ts` 与 `src/__tests__/**/*.test.ts`。`checksum.ts` 虽无同名测试，但已被 `backup-checksum.test.ts` 直接覆盖 15 用例（import 自 `@/lib/checksum`），排除。`offline-queue.ts` 依赖 IndexedDB/localStorage/fetch（jsdom 需重 mock）。`theme.ts` 依赖 matchMedia（jsdom 默认未实现，setup.ts 未 polyfill）。**`src/lib/view-routes.ts` 最干净**：仅 `import type { ViewType }`（类型导入运行时擦除，不触发 app-store/zustand 加载），3 个导出（viewToPath/pathToView/getViewFromPath），含非直觉映射与三级路径解析控制流，且此前仅被 `use-keyboard-shortcuts.test.ts` 用**错误实现** mock 过（mock 的 viewToPath 是函数 `v => /${v}`，与真实 Record 实现不符），零直接覆盖。切入此项。
+
+### 本轮开发（lib/view-routes 3 导出直接单测 · 14 映射 + 三级路径解析）
+
+`src/lib/view-routes.ts` 将 14 个 ViewType 成员与路由路径双向映射，并把任意 pathname 解析回 ViewType。模块仅类型导入，纯字符串/控制流。本轮新增 `src/__tests__/lib/view-routes.test.ts`（21 用例，按 3 导出分组）：
+
+- **viewToPath（5 用例）**：14 个 ViewType 全员有路径且为以 "/" 开头字符串、键数=14；锁定**非直觉映射** `login→"/"`、`recycleBin→"/trash"`（非 /recycleBin）、`faceGroups→"/faces"`（非 /faceGroups）、`knowledgeGraph→"/graph"`（非 /knowledgeGraph）；锁定直觉映射（dashboard/files/search/settings/profile/timeline/favorites/albums/tags/analytics 各为 `/${view}`）；路径值唯一（一对一，无两 view 共享路径）。
+- **pathToView（3 用例）**：是 viewToPath 的精确反向映射（round-trip 不变量，14 条全验）；锁定关键反向 `/→login`、`/trash→recycleBin`、`/faces→faceGroups`、`/graph→knowledgeGraph`、`/dashboard→dashboard`；键数 14。
+- **getViewFromPath 三级解析（13 用例）**：
+  - **第一级 精确命中**：14 条已注册路径精确解析为对应 ViewType（含 `/→login`、`/trash→recycleBin`、`/faces→faceGroups`、`/graph→knowledgeGraph`）。
+  - **第二级 去单前导 "/" 后命中**：pathToView 键均形如 "/xxx"，故去单斜杠能命中的唯一现实场景是双斜杠输入——`//dashboard→dashboard`、`//trash→recycleBin`、`//→login`（去一个 "/" 后命中 "/"）。
+  - **第三级 回退 "dashboard"**：未注册顶层路径（/unknown、/nonexistent）；已注册路径的子路径（/files/123、/dashboard/extra、/settings/profile，精确匹配不前缀匹配）；无前导斜杠裸段（dashboard/files/trash，去 "/" 后仍非键）；任意无关节符串（abc、some/random/path）；空字符串；**大小写敏感**（/Dashboard、/FILES 不命中）；带尾斜杠已注册路径（/dashboard/、/files/ 不命中）。
+
+**关键控制流锁定**：
+- getViewFromPath 三级优先级：`pathname in pathToView` → `pathname.replace(/^\//,"") in pathToView` → `"dashboard"`。`replace(/^\//, "")` 仅去**单个**前导斜杠（非全局），故双斜杠走第二级、三斜杠及以上走第三级。
+- 精确匹配：pathToView 键含尾斜杠变体不注册，故 `/dashboard/` 不命中走回退。
+- 大小写敏感：JS `in` 操作符与对象键查找均大小写敏感，`/Dashboard` 不命中。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m3s）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮无关）。本轮改动零类型错误（纯新增测试，源码无改动）。
+- `npx vitest run src/__tests__/lib/view-routes.test.ts`：21/21 通过（12ms tests）
+- `npx vitest run` 全量 2751/2751 通过（142 文件，175s），零回归（基线 2730/141 + 本轮 21/1 = 2751/142）
+
+### 改动量
+
+1 文件（src/__tests__/lib/view-routes.test.ts +184），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `f17633a` test(lib): view-routes 3 导出直接单测（14 映射 + 三级路径解析）
+
+### 推送
+
+- origin (Gitee)：5bd039c..f17633a 推送（含 worklog commit）
+- github (GitHub)：5bd039c..f17633a 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（view-routes.ts 已闭合）：
+  - `src/lib/theme.ts`（flat，14 导出：ThemeMode/DEFAULT_THEME/getThemeMode/setThemeMode/applyTheme/prefersDarkMode/getResolvedTheme/onThemeChange/onSystemThemeChange/initTheme/toggleTheme/getThemeModeName；依赖 localStorage/document/matchMedia，jsdom 默认无 matchMedia，需在测试内 `window.matchMedia = vi.fn(...)` polyfill，可落地）
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb 或全量 IDB mock，成本较高，择机）
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，沙箱无凭证，仅可测纯函数片段，待条件具备）
+  - `src/lib/utils/security.ts` / `tenant-permissions.ts` / `tenant-security.ts`（已有测试，复核覆盖率）
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
