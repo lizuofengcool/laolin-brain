@@ -11855,3 +11855,79 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-01 04:00 自动迭代
+
+### 背景与优先级判断
+
+- 沙箱工作目录为空，先 `git clone origin`（origin=Gitee）+ 补 `github` remote，`git config user.email=uploader@local / user.name=uploader` 就位。
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 均为 `cfb5e1f`（第九十轮 worklog commit），`origin..github` 与 `github..origin` 双向 0，双端完全一致，无 rebase 必要。
+- 工作树干净，无遗留未提交改动或未推送 commit，直接进入新一轮开发。
+- 优先级 1 复核（grep 验证当前实现）：
+  · `tenant-db.ts` raw 后门 → `get raw()` getter 调用堆栈软审计已就位（line 56-61，输出 `[TenantDb.raw] tenantId=... 越过租户隔离层访问原始 PrismaClient，调用方: ${caller}`）。✅ 闭合
+  · `alipay.ts`/`wechat.ts` RSA2 验签 → `verifyRSA2Sign`/`verifyWechatSign` 真实验签已就位（注释 `不再"非空即通过"`，wechat.ts:219 / alipay.ts:191）。✅ 闭合
+  · 其余（files/route 走 TenantDb、sync-engine keep_both、api-auth.test 匹配实现）前几轮已记录全部闭合。✅ 闭合
+- 结论：优先级 1 全部闭合，优先级 2 可落地功能均被「需外部服务/待产品决策」阻塞，延续优先级 3（lib 域零覆盖纯模块直接单测），切入第九十轮候选清单首项 `src/lib/integrations/integration-manager.ts`（547 行，纯内存模块：仅依赖 Map / Date.now / Math.random；`IntegrationManager` 类直接导出可 `new` 隔离，单例 `integrationManager` + 常量 `BUILTIN_INTEGRATIONS`；注入 fake `IntegrationProvider` 即可覆盖 connect/disconnect/checkStatus/sync/handleWebhook/testConnection 全路径，无真实网络）。
+
+### 本轮开发（lib/integrations/integration-manager IntegrationManager 直接单测）
+
+`src/lib/integrations/integration-manager.ts` 此前零直接覆盖。模块含：`IntegrationManager` 类（4 张 Map：providers/integrations/syncTasks/webhookEvents；方法 registerProvider/getAvailableIntegrations/getProvider/connectIntegration/disconnectIntegration/getConnectedIntegrations/getConnectedIntegration/checkIntegrationStatus/updateIntegrationConfig/testConnection/createSyncTask/executeSyncTask(private)/getSyncTask/getSyncTasks/handleWebhook/getWebhookEvent）、单例 `integrationManager = new IntegrationManager()`、`BUILTIN_INTEGRATIONS` 8 项常量表（wechat-work/dingtalk/feishu/wechat-official/github/gitlab/aliyun-storage/tencent-storage）。
+
+**Commit（e3b59ae）integration-manager 直接单测**：45 用例覆盖 IntegrationManager 类全公开方法 + 单例 + BUILTIN_INTEGRATIONS 常量，按行为分组：
+
+- **registerProvider / getAvailableIntegrations / getProvider（4 用例）**：按 meta.id 注册；getProvider 返回同实例；未注册 undefined；getAvailableIntegrations 返 meta 数组（空时 []）；**重复注册同 id 覆盖**（Map.set 语义，二次注册取后者，getAvailableIntegrations 长度仍 1）
+- **connectIntegration（5 用例）**：provider 不存在抛 `Integration ${id} not found`；调用 provider.connect(config) 并以返回值构建 ConnectedIntegration（name 取自 provider.meta.name、status="connected"、connectedAt/updatedAt=Date）；**id 与存储 key 均为 `${tenantId}-${integrationId}`**（getConnectedIntegration 复核）；同 tenant 不同 integration 互不覆盖；不同 tenant 连接同 integration 各自独立（getConnectedIntegrations 分租隔离）；**provider.connect 抛错则 connectIntegration 抛错且不入库**（getConnectedIntegrations 长 0）
+- **disconnectIntegration（3 用例）**：未连接抛 `Integration ${id} not connected`；调用 `provider.disconnect(integration.id)`（传复合 id）后删记录；断开后同 tenant 其它 integration 保留
+- **getConnectedIntegrations / getConnectedIntegration（2 用例）**：按 tenantId 过滤；未连接 undefined
+- **checkIntegrationStatus（3 用例）**：未连接返 "disconnected"；provider 存在委托 `provider.checkStatus(integration.id)`；checkStatus 返回 connected/error/expired 均透传
+- **updateIntegrationConfig（2 用例）**：未连接抛错；**浅合并 `{ ...integration.config, ...config }`**（保留旧 key）、更新 updatedAt、返回同一引用（用 fake timers 推进时间锁定 updatedAt 变化）
+- **testConnection（3 用例）**：provider 不存在抛 `Integration ${id} not found`；有 testConnection 委托调用；**无 testConnection 回退 `{ success: Object.keys(config).length > 0 }`**（空 config→false / 非空→true）
+- **createSyncTask / executeSyncTask（8 用例）**：未连接抛错；返回任务 id 形如 `sync-${ts}-${rand}`、默认 type="full"、progress=0、createdAt=Date；**provider 无 sync → executeSyncTask 同步跑完 pending→running→completed（progress=100、startedAt/completedAt 均 Date）**（createSyncTask 返回时已完成）；无 sync 时 lastSyncAt 更新；**provider.sync 存在用 deferred promise 观测 running 中间态**（sync promise 未 resolve 前 task 停留 running、progress=0、startedAt=Date；resolve + flush 后 completed/progress=100/completedAt；锁定 `sync(integrationId, { taskId })` 调用签名）；**provider.sync reject → running 可观测，reject 后 status=failed/errorMessage/failedAt，失败也更新 lastSyncAt**；自定义 type 透传；getSyncTask 未存在 undefined；**getSyncTasks 按 integrationId + tenantId 双重过滤**
+- **handleWebhook / getWebhookEvent（4 用例）**：provider 无 handleWebhook → 直接置 processed + processedAt（id 形如 `webhook-${ts}-${rand}`）；有 handleWebhook 且成功 → processed；**handleWebhook 抛错 → failed + errorMessage（processedAt undefined）**；getWebhookEvent 返已存储事件 / 未存在 undefined
+- **单例 integrationManager（2 用例）**：是 IntegrationManager 实例；多次 import 同一引用
+- **BUILTIN_INTEGRATIONS（5 用例）**：**8 个内置集成**；id 集合 = [wechat-work,dingtalk,feishu,wechat-official,github,gitlab,aliyun-storage,tencent-storage]；每项 meta 字段完整且 isOfficial=true（含 documentationUrl）；communication 类含企业微信/钉钉/飞书/公众号；development 类含 github/gitlab；storage 类含 aliyun/tencent
+
+**关键控制流锁定**：
+- connectIntegration：provider 不存在抛错；复合 key `${tenantId}-${integrationId}`；name=provider.meta.name；status="connected"
+- disconnectIntegration：未连接抛错；`provider.disconnect(integration.id)` 传复合 id；delete key
+- checkIntegrationStatus：无 integration→"disconnected"；provider 在→委托 checkStatus(integration.id)；provider 缺失回退 integration.status（该分支经 public API 不可达，未单测）
+- updateIntegrationConfig：浅合并 `{ ...old, ...new }` + updatedAt=new Date() + 返同引用
+- testConnection：provider 缺失抛错；有 testConnection 委托；无则 `{ success: keys.length>0 }`
+- **executeSyncTask 时序（本轮关键发现）**：executeSyncTask 在 createSyncTask 内 fire-and-forget（不 await），其函数体同步执行至首个 `await provider.sync(...)`：
+  · provider 无 sync → 无 await，**同步跑完 running→completed**，createSyncTask 返回时 task.status 已是 completed、progress=100
+  · provider.sync 返已 resolve 的 promise → executeSyncTask 的 await 续作（M1 微任务）先于 createSyncTask 的 await 续作（M2）执行 → `await createSyncTask` 后已 completed/failed（running 不可观测）
+  · **观测 running 须用未 resolve 的 deferred promise**（executeSyncTask 挂起在 await，task 停留 running；resolve/reject + flush 后才推进 completed/failed）
+  · 状态机：pending→running（同步置）→ completed（progress=100/completedAt）或 failed（errorMessage/failedAt）；成败均更新 integration.lastSyncAt
+- handleWebhook：无 provider.handleWebhook → processed；有则 await 成功→processed / 抛错→failed（processedAt 留 undefined）
+- getSyncTasks：`filter(t => t.integrationId===id && t.tenantId===tenantId)` 双重过滤；getConnectedIntegrations 仅按 tenantId 单过滤
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m7s）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮无关）。本轮改动零类型错误（纯新增测试，源码无改动）
+- `npx vitest run src/__tests__/lib/integration-manager.test.ts`：45/45 通过（24ms tests）
+- `npx vitest run` 全量 2561/2561 通过（138 文件，167s），零回归（基线 2516/137 + 本轮 45/1 = 2561/138）
+
+### 改动量
+
+1 文件（src/__tests__/lib/integration-manager.test.ts +621），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `e3b59ae` test(lib): integrations/integration-manager IntegrationManager 直接单测
+
+### 推送
+
+- origin (Gitee)：cfb5e1f..e3b59ae 推送（含 worklog commit）
+- github (GitHub)：cfb5e1f..e3b59ae 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（integrations/integration-manager.ts 已闭合）：
+  - `src/lib/utils/file-types.ts`（~1184 行，纯文件类型检测大表 + formatFileSize 数学；零 import）
+  - `src/lib/integrations/integration-manager.ts` 配套的 `src/lib/integrations/feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，沙箱无凭证，仅可测纯函数片段，待条件具备）
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
