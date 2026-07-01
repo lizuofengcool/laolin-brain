@@ -11765,3 +11765,93 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-01 09:00 自动迭代
+
+### 背景与优先级判断
+
+- 沙箱为空工作目录，先 `git clone origin` + 补 `github` remote，`git config user.email/name` 就位。
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 均为 `be702e6`（第八十九轮 worklog commit），`origin..github` 与 `github..origin` 双向 0，双端完全一致，无 rebase 必要。
+- 工作树干净，无遗留未提交改动或未推送 commit，直接进入新一轮开发。
+- 优先级 1 复核（grep 验证当前实现）：
+  · `tenant-db.ts` raw 后门 → `get raw()` getter 调用堆栈软审计已就位（line 56-59，输出 `越过租户隔离层访问原始 PrismaClient，调用方: ${caller}`）。✅ 闭合
+  · `alipay.ts`/`wechat.ts` RSA2 验签 → `verifyRSA2Sign`/`verifyWechatSign` 真实验签已就位（注释 `不再"非空即通过"`）。✅ 闭合
+  · 其余（files/route 走 TenantDb、sync-engine keep_both、api-auth.test 匹配实现）前几轮已记录全部闭合。✅ 闭合
+- 结论：优先级 1 全部闭合，优先级 2 可落地功能均被「需外部服务/待产品决策」阻塞，延续优先级 3（lib 域零覆盖纯模块直接单测），切入第八十九轮候选清单首项 `src/lib/plugins/registry.ts`（488 行，纯模块：仅依赖 localStorage（jsdom 提供）/ Map / console / global.fetch；`PluginRegistry` 类未导出，仅导出单例 `pluginRegistry`，用 `vi.resetModules()` + 动态 import 取全新单例隔离；`createPluginAPI` 经 `apiFactory` 闭包捕获后断言其行为）。
+
+### 本轮开发（lib/plugins/registry PluginRegistry 直接单测）
+
+`src/lib/plugins/registry.ts` 此前零直接覆盖。模块含：`PluginRegistry` 类（registerPlugin/validateManifest/createPluginAPI/enablePlugin/disablePlugin/uninstallPlugin/registerHook/triggerHook/on/off/emit/getAllPlugins/getEnabledPlugins/getPluginInfo/isInstalled/isEnabled + 构造函数 initializeBuiltinHooks 预注册 10 个内置 hook）、单例 `pluginRegistry`（默认导出 = 命名导出）。`createPluginAPI` 返回 14 个方法的 PluginAPI：权限网关 checkPermission（settings:read/write、files:read/write/delete、search:read、ui:inject、storage:local、network:request）、settings 副本/合并/事件、文件/搜索/UI 注入桩、storage 经 localStorage、fetch 透传 global.fetch、事件 on/emit/off（emit 附加 pluginId）、log（console[level] 路由）、showNotification 桩、getPluginInfo 返 manifest 引用。
+
+**Commit（c849e40）plugins/registry 直接单测**：95 用例覆盖 PluginRegistry 单例全路径，按行为分组：
+
+- **registerPlugin（5 用例）**：注册成功返 true/状态 installed/调用 apiFactory；**重复 id warn + no-op 不覆盖原实例**（`has(id)` 判定后 return）；**apiFactory 抛错 → status=error + 返 false**；**从 manifest.settings 初始化默认设置**（含 `default: undefined` 透传）；无 settings 字段默认 `{}`
+- **validateManifest 经 registerPlugin（8 用例）**：5 个 string 必填字段（name/version/description/author/type）缺失 → 校验失败 + error 日志 `Plugin ${id} manifest validation failed`；**permissions 非数组 → 失败**；**id 空字符串 → 失败**（`!manifest.id`）；完整清单 + `permissions=[]` 通过
+  · 注：id 字段单独用「空字符串」用例覆盖（删除 id 会使 manifest.id=undefined，错误日志变为 `Plugin undefined...`，forEach 保留其余 5 字段）
+- **createPluginAPI 权限网关（15 用例）**：14 个权限点缺权限均抛 `Plugin ${id} does not have permission: ${perm}`（getSettings/setSettings/getFiles/getFile/createFile/updateFile/deleteFile/search/registerMenuItem/registerSidebarPanel/registerFileAction/getStorage/setStorage/removeStorage/fetch）；**具权限不抛错**
+- **settings（4 用例）**：**getSettings 返回副本**（mutate 不影响内部，`{ ...pluginSettings }`）；**setSettings 浅合并**（`{ ...current, ...settings }`）；**setSettings 触发 settings:changed 事件**（`{ pluginId, settings }`）；**onSettingsChange 按 pluginId 过滤**（`data.pluginId === pluginId`，其它插件变更不触发）
+- **文件/搜索桩返回值（6 用例）**：getFiles→[]、getFile→null、createFile→null、updateFile→null、deleteFile→undefined、search→[]
+- **UI 注入桩（3 用例）**：registerMenuItem/registerSidebarPanel/registerFileAction 具权限时 no-op（undefined 返回，不抛错）
+- **storage localStorage（5 用例）**：**setStorage/getStorage 往返 JSON** + key 格式 `plugin:${pluginId}:${key}`；未知 key → null；**非法 JSON → catch → null**；removeStorage 删除；原始字符串值经 JSON.parse 还原（num 42 / str "hello"）
+- **fetch（1 用例）**：具 network:request 时调用 global.fetch 并透传 url/options（vi.stubGlobal mock）
+- **事件（4 用例）**：plugin api.on/emit 触发；**plugin api.emit 在 data 上附加 pluginId**（`{ pluginId, ...data }`）；无 data 时仅附加 pluginId；plugin api.off 移除监听
+- **log/showNotification/getPluginInfo（5 用例）**：**log 调 console[level]**（level=info 走 `console.info`，jsdom 中 `console.info !== console.log`，须 spy console.info；level=warn/error 路由到 console.warn/error）；前缀 `[${timestamp}] [Plugin ${id}] ${message}`；**无 data 时 `data || ""` 追加空字符串**；showNotification 输出 `[Plugin ${id}] Notification:` + 通知对象；getPluginInfo 返 manifest 引用
+- **enablePlugin/disablePlugin（6 用例）**：未知 id 返 false + error；enable 置 enabled/status=enabled/触发 plugin:enabled/返 true；**已启用再 enable 返 true 但不重复触发事件**（`if (plugin.enabled) return true`）；disable 同理；已禁用再 disable 不重复触发
+- **uninstallPlugin（3 用例）**：未知 id 返 false + error；**卸载先 disable + 清 localStorage 前缀 key `plugin:${id}:` + 移除三张 Map + 触发 plugin:uninstalled**；**无关 key（`plugin:other:x`）保留**；已禁用插件卸载时 disablePlugin 不重复触发 plugin:disabled
+- **registerHook（4 用例）**：**插件未启用 warn 且不注册**（`!plugin || !plugin.enabled`）；已启用注册回调；**未知 hookName 自动建 Map**（`if (!globalHooks.has) set new Map`）；同 hook 多次注册追加到数组
+- **triggerHook（8 用例）**：未知 hook → []；**已注册但插件禁用 → 跳过返 []**；**回调返 undefined → 不入 results**（`result !== undefined`）；**回调返 null → 入 results**（null !== undefined）；**回调抛错被捕获 + error 日志 + 继续后续回调**；多插件同 hook 全收集；**async 回调被 await**
+- **事件系统 on/off/emit（6 用例）**：on+emit 收 data；off 移除指定监听其它保留；**emit 无监听不抛错**；**off 未注册事件不抛错**（`?.delete`）；**监听器抛错被捕获 + error 日志 + 其它监听继续**；同事件多次 on 均触发
+- **查询方法（8 用例）**：getAllPlugins 返数组（manifest/status/installedAt=""/settings）；多插件全返；**getEnabledPlugins 仅 status==="enabled"**；getPluginInfo 未知→null / 已知返 PluginInfo；**getPluginInfo 反映 enable/disable 状态变更**；isInstalled/isEnabled true/false；isEnabled 未知 id→false
+- **内置钩子预注册（1 用例）**：构造函数预注册 10 个内置 hook（file:uploaded 等），registerHook+triggerHook 验证 builtin hook 名可正常使用
+- **单例导出（2 用例）**：**默认导出 === 命名导出**（`mod.default === mod.pluginRegistry`）；**resetModules 后获全新单例**（状态隔离，原插件不存在）
+
+**关键控制流锁定**：
+- registerPlugin 重复 id：`has(id)` → warn + return false，不覆盖（二次注册不改变原 manifest.name）
+- validateManifest：6 字段 `!field || typeof !== 'string'` + `Array.isArray(permissions)`；id 空字符串走 `!manifest.id`
+- apiFactory 抛错：catch → status=error + return false
+- 默认设置：`manifest.settings?.forEach(s => defaultSettings[s.key] = s.default)`，含 undefined 透传
+- 权限网关：`checkPermission` 抛 `Plugin ${id} does not have permission: ${perm}`，无权限即抛（文件/搜索/UI/storage/fetch 均 async rejects，settings 同步 throws）
+- getSettings：`{ ...(pluginSettings.get || {}) }` 副本；setSettings：`{ ...current, ...settings }` 浅合并 + emit `settings:changed` `{pluginId, settings}`
+- onSettingsChange：`data.pluginId === pluginId` 过滤
+- storage key：`plugin:${pluginId}:${key}`；getStorage `JSON.parse` catch → null
+- plugin api.emit：`self.emit(event, { pluginId, ...data })` 附加 pluginId
+- log：`console[level](`[${timestamp}] [Plugin ${id}] ${message}`, data || "")`；level=info→console.info（≠console.log）
+- enablePlugin：`if (plugin.enabled) return true` 幂等；else 置 enabled/status=enabled/emit
+- disablePlugin：`if (!plugin.enabled) return true` 幂等；else 置/emit
+- uninstallPlugin：先 disablePlugin → 清 `plugin:${id}:` 前缀 key → delete 三张 Map → emit plugin:uninstalled
+- registerHook：`!plugin || !plugin.enabled` → warn+return；`!globalHooks.has(hookName)` → 建 Map；`!hookMap.has(pluginId)` → 建 []
+- triggerHook：`!hookMap` → []；`!plugin || !plugin.enabled` continue；`result !== undefined` push `{pluginId, result}`；catch error 日志继续
+- on：`!listeners.has` → 建 Set；add。off：`?.delete`（不建）。emit：`?.forEach` + try/catch
+- getAllPlugins：installedAt="" 硬编码；getEnabledPlugins：`filter(p => p.status === "enabled")`
+- isEnabled：`plugin?.enabled || false`
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m5s）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮无关）。本轮改动零类型错误（纯新增测试，源码无改动）
+- `npx vitest run src/__tests__/lib/plugins-registry.test.ts`：95/95 通过（120ms tests）
+- `npx vitest run` 全量 2516/2516 通过（137 文件，178s），零回归（基线 2421/136 + 本轮 95/1 = 2516/137）
+
+### 改动量
+
+1 文件（src/__tests__/lib/plugins-registry.test.ts +1031），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `c849e40` test(lib): plugins/registry PluginRegistry 直接单测
+
+### 推送
+
+- origin (Gitee)：be702e6..c849e40 推送（含 worklog commit）
+- github (GitHub)：be702e6..c849e40 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（plugins/registry.ts 已闭合）：
+  - `src/lib/integrations/integration-manager.ts`（~547 行，provider 注册模式，connectIntegration 抛错/组合键、testConnection 回退、createSyncTask 状态机 pending→running→completed/failed；注入 fake provider 即可，无真实网络）
+  - `src/lib/utils/file-types.ts`（~1184 行，纯文件类型检测大表 + formatFileSize 数学；零 import）
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
