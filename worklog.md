@@ -11688,3 +11688,80 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-01 08:00 自动迭代
+
+### 背景与优先级判断
+
+- 沙箱为空工作目录，先 `git clone origin` + 补 `github` remote，`git config user.email/name` 就位。
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 均为 `49df379`（第八十八轮 worklog commit），`origin..github` 与 `github..origin` 双向 0，双端完全一致，无 rebase 必要。
+- 工作树干净，无遗留未提交改动或未推送 commit，直接进入新一轮开发。
+- 优先级 1 复核（grep 验证当前实现）：
+  · `tenant-db.ts` raw 后门 → `get raw()` getter 调用堆栈软审计已就位（line 56-59，输出 `越过租户隔离层访问原始 PrismaClient，调用方: ${caller}`）。✅ 闭合
+  · `alipay.ts`/`wechat.ts` RSA2 验签 → `verifyRSA2Sign`/`verifyWechatSign` 真实验签已就位（注释 `不再"非空即通过"`）。✅ 闭合
+  · 其余（files/route 走 TenantDb、sync-engine keep_both、api-auth.test 匹配实现）前几轮已记录全部闭合。✅ 闭合
+- 结论：优先级 1 全部闭合，优先级 2 可落地功能均被"需外部服务/待产品决策"阻塞，延续优先级 3（lib 域零覆盖纯模块直接单测），切入第八十八轮候选清单首项 `src/lib/monitoring/index.ts`（550 行，纯模块：仅依赖 Date.now/Map/setInterval/console，零 @/lib/db / next/server；`MetricsCollector`/`AlertEngine` 均为导出 class 可 new，类测试无单例污染，单例 `registerDefaultMetrics`/`registerDefaultAlertRules` 用 `vi.resetModules()` 隔离）。
+
+### 本轮开发（lib/monitoring/index.ts 指标收集器与告警引擎直接单测）
+
+`src/lib/monitoring/index.ts` 此前零直接覆盖（区别于已覆盖的 `monitoring/monitoring.ts`）。模块含：`MetricsCollector`（registerMetric 幂等/record 计数+maxDataPoints 截断/increment/getMetric/getAllMetrics/getValue 标签过滤末值/getStats 百分位+duration 过滤/cleanup/reset）、`AlertEngine`（registerRule/registerChannel/evaluateRules pending→firing→resolved 状态机/evaluateCondition 6 条件运算符/triggerAlert/sendNotification 渠道筛选/sendToChannel 桩/start/stop setInterval/getActiveAlerts/getAlertHistory/silenceRule）、单例 `metricsCollector`/`alertEngine` + `registerDefaultMetrics`(12 指标)/`registerDefaultAlertRules`(4 规则)。
+
+**Commit（fe5419f）monitoring/index 直接单测**：70 用例覆盖 2 个导出 class + 2 个单例注册函数，按行为分组：
+
+- **MetricsCollector.registerMetric（3 用例）**：注册填充 name/type/description/unit/labels/data；默认 unit=undefined labels=[]；**重复注册 no-op**（`has(name)` 判定后 return 不覆盖，二次注册不改变原 type/desc/labels/unit）
+- **record（4 用例）**：记录点 value/timestamp=Date.now()/labels；默认 labels={}；未知指标 `console.warn('Metric not found: X')` 不抛错；**maxDataPoints=1000 截断**（1001 点 → slice(-1000) 保留末尾 1000，丢弃 value=1，data[0].value===2）
+- **increment（2 用例）**：默认 value=1 调 record；自定义 value+labels 透传
+- **getMetric/getAllMetrics（2 用例）**：未注册 undefined；getAllMetrics 返回全部数组
+- **getValue（5 用例）**：未注册 null / 已注册无数据 null / 无 labels 返末值 / 带 labels 返最后匹配点值（用 /a+/b+/a 三点锁定 `filtered[filtered.length-1]`）/ 标签无匹配 null
+- **getStats 百分位与过滤（8 用例）**：未注册/无数据 null；min/max/avg/sum/count；**百分位 `values[Math.floor(count*p)]`**（count=4：p50=sorted[2]=30/p95=sorted[3]=40/p99=40；count=10：p50=sorted[5]=6/p95=sorted[9]=10/p99=10，锁定 floor 索引非 round）；标签过滤后统计；标签过滤无数据 null；**duration 过滤 `timestamp >= now-duration*1000`**（用直接 push 显式 timestamp 数据点 + Date.now spy，3 点 [1000/2000/3000] + now=3500/duration=1 → since=2500 → 仅留 [3000]）；duration 过滤无数据 null
+- **cleanup（2 用例）**：`cutoff=now-olderThan*1000` 删早于 cutoff 的点（olderThan=1.5/now=3000 → cutoff=1500 → 留 [2000,3000]）；跨多指标清理
+- **reset（3 用例）**：reset(name) 仅清空指定数据保留注册 / reset() 无参清全部 / reset(unknown) 不抛错
+
+- **AlertEngine.evaluateCondition 6 条件运算符 + default（10 用例）**：`>`/`>=`/`<`/`<=`/`==`(/`=` 别名 → `===`)/`!=` 各用触发+不触发对偶锁定运算符语义；**未知条件 default `console.warn('Unknown condition: X')` 返 false**；**`condition.trim()` 去空白**（`"  >  "` → `>` 触发）
+- **evaluateRules 状态机（7 用例）**：**duration=0 立即 firing**（alert 推入 newAlerts 且 triggerAlert 同步置 status=firing，含 level/ruleId/threshold/value/startedAt 字段断言）；**duration>0 首次 pending**（pending 也算 active）；**pending 达 duration 转 firing**（用 Date.now spy 驱动 startedAt=1000，now=1000 时 duration=0<10 仍 pending，now=11000 时 (11000-1000)/1000=10>=10 → triggerAlert firing）；**pending 未达 duration 即恢复 → alerts.delete**；**firing 恢复 → resolved**（status/resolvedAt/duration=(2000-1000)/1000=1 + sendNotification("resolved") console.log）；**已 firing 仍触发无新告警**（newAlerts 空）；**metric 不存在 getValue=null 跳过**；**enabled=false 跳过**
+- **message 模板与 alert id（2 用例）**：`${name}: 当前值 ${value}，阈值 ${condition} ${threshold}`（用 includes 锁定 value→60/condition→">"/threshold→50 插值，规避全角逗号 glyph）；id=`${ruleId}-${Date.now()}`
+- **sendNotification 渠道筛选（3 用例）**：enabled 渠道触发 `sendToChannel` console.log（`[Alert] Sending firing alert to ${channel.type}: ${alert.name}`，sendToChannel 桩 body 无 await 故 evaluateRules 同步阶段即触发）；**渠道 enabled=false 跳过**；**notificationChannels 引用不存在渠道跳过**；sendToChannel 桩不抛错（console.error 未调用）
+- **getActiveAlerts/getAlertHistory（3 用例）**：active 返 firing+pending（排除 resolved）；**getAlertHistory 按 startedAt 降序**（用先后注册两规则 + Date.now spy 造不同 startedAt 1000/2000 → desc [2000,1000]）；**getAlertHistory(limit) slice(0,limit)**（limit=1 返末值 2000；默认 100）
+- **silenceRule（3 用例）**：`silencedUntil = now + duration*1000`（registerRule 存引用，外部观测 rule.silencedUntil 变更=35000）；未知规则不抛错；**silencedUntil 不影响 evaluateRules**（当前实现未检查该字段，锁定行为，重构安全网）
+- **start/stop setInterval（5 用例）**：start(intervalMs) 周期调 evaluateRules（vi.useFakeTimers + advanceTimersByTime）；**默认 intervalMs=60000**（59999 不触发+1 触发）；**start 重复 no-op**（已有 interval return）；stop 清 interval 不再触发；stop 无 interval no-op
+- **单例 registerDefaultMetrics/registerDefaultAlertRules（5 用例）**：registerDefaultMetrics 注册 **12 个指标**（system_* 3 + http_* 3 + 业务 4 + db_* 2）幂等；spot check system_cpu_usage(gauge,%)/http_requests_total(counter,labels[method,route,status])；registerDefaultAlertRules 经触发验证 high_disk_usage（disk>90/duration=60/critical，pending→60s→firing）；**单例 alertEngine 与 metricsCollector 共享**（record 后 evaluateRules 读到值）
+
+**关键控制流锁定**：
+- maxDataPoints `slice(-1000)`：1001 点 → 末尾 1000，data[0].value===2 锁定
+- getStats 百分位 `values[Math.floor(count*p)]`：count=4 p50=floor(2)=2→30 / count=10 p95=floor(9.5)=9→10，锁定 floor 索引
+- evaluateCondition switch：`==`/`=` 均 → `===`；default → warn+false；`condition.trim()` 应用
+- evaluateRules 状态机：duration=0 同步 firing；duration>0 pending→(duration>=rule.duration)→firing；pending 恢复 delete / firing 恢复 resolved+sendNotification("resolved")
+- silenceRule：仅置 silencedUntil，evaluateRules 不检查（行为锁定）
+- getAlertHistory `sort(b.startedAt-a.startedAt).slice(0,limit)`：desc + slice
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m2s）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮无关）。本轮改动零类型错误（纯新增测试，源码无改动）
+- `npx vitest run src/__tests__/lib/monitoring-index.test.ts`：70/70 通过（45ms tests）
+- `npx vitest run` 全量 2421/2421 通过（136 文件，168s），零回归（基线 2351/135 + 本轮 70/1 = 2421/136）
+
+### 改动量
+
+1 文件（src/__tests__/lib/monitoring-index.test.ts +745），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `fe5419f` test(lib): monitoring/index MetricsCollector/AlertEngine 直接单测
+
+### 推送
+
+- origin (Gitee)：49df379..fe5419f 推送（含 worklog commit）
+- github (GitHub)：49df379..fe5419f 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（monitoring.ts 与 monitoring/index.ts 均已闭合）：
+  - `src/lib/plugins/registry.ts`（~488 行，PluginRegistry 纯内存插件生命周期 + hook/event 系统，createPluginAPI 权限网关；核心逻辑零外部依赖）
+  - `src/lib/integrations/integration-manager.ts`（~547 行，provider 注册模式，connectIntegration 抛错/组合键、testConnection 回退、createSyncTask 状态机 pending→running→completed/failed；注入 fake provider 即可，无真实网络）
+  - `src/lib/utils/file-types.ts`（~1184 行，纯文件类型检测大表 + formatFileSize 数学；零 import）
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/plugins/registry.ts`、`src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
