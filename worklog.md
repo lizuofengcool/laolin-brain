@@ -12004,3 +12004,67 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-01 15:00 自动迭代
+
+### 背景与优先级判断
+
+- 沙箱工作目录为空，先 `git clone origin`（origin=Gitee）+ 补 `github` remote，`git config user.email=uploader@local / user.name=uploader` 就位。
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 均为 `79e19fb`（第九十二轮 worklog commit），`origin..github` 与 `github..origin` 双向 0，双端完全一致，无 rebase 必要。
+- 工作树干净，无遗留未提交改动或未推送 commit，直接进入新一轮开发。
+- 优先级 1 复核（grep 验证当前实现）：
+  · `tenant-db.ts` raw 后门 → `get raw()` getter 软审计已就位（输出调用方堆栈）。✅ 闭合
+  · `alipay.ts`/`wechat.ts` RSA2 验签 → 真实验签已就位（注释明确"不再'非空即通过'"，配套测试覆盖缺字段拒绝路径）。✅ 闭合
+  · files/route 走 TenantDb、sync-engine keep_both、api-auth.test 匹配实现 → 前几轮全部闭合。✅ 闭合
+- 结论：优先级 1 全部闭合，优先级 2 可落地功能均被「需外部服务/待产品决策」阻塞，延续优先级 3（lib 域零覆盖纯模块直接单测），切入第九十二轮候选清单首项 `src/lib/utils/api-response.ts`（90 行，API 响应工具模块：仅依赖 next/server 的 NextResponse.json，9 个导出函数，无 @/lib/db / 无网络 / 无外部状态，适合直接单测锁定行为）。
+
+### 本轮开发（lib/utils/api-response 9 函数直接单测 · 真实 NextResponse）
+
+`src/lib/utils/api-response.ts` 此前零直接覆盖。模块导出 9 个函数：响应构建器 7 个（successResponse / errorResponse / paginatedResponse / unauthorizedResponse / forbiddenResponse / notFoundResponse / serverErrorResponse）+ 分页工具 2 个（parsePaginationParams / calculatePagination）。仅依赖 `next/server` 的 `NextResponse.json`，产出标准 `Response` 对象，可通过 `.status` / `.json()` 断言真实输出，**无需 mock next/server**（与 tenant-permissions.test.ts 的 MockNextResponse 路径不同，本轮走真实路径更贴近生产行为）。
+
+**Commit（dc0e008）utils/api-response 9 函数直接单测**：37 用例覆盖全部 9 函数，按行为分组：
+
+- **successResponse（4 用例）**：默认 status=200；body 形如 `{ success:true, data, message }`；message 省略时为 `undefined`（仍占位 key）；自定义 statusCode（201）反映到 `Response.status`；data 可为任意类型（数组 / 字符串 / 嵌套对象 / null）
+- **errorResponse（2 用例）**：默认 status=400；body 形如 `{ success:false, error }`；自定义 statusCode（409）反映到 status
+- **paginatedResponse（6 用例）**：body 含 `data/total/page/pageSize/totalPages/hasMore` 六字段；`totalPages = Math.ceil(total/pageSize)`（非整除向上取整：100/3→34、10/3→4）；`hasMore = page*pageSize < total` 三边界（`<` true / `===` false / `>` false）；total=0 时 totalPages=0 且 hasMore=false；data 为空数组仍保留 data 字段
+- **语义化错误响应包装器（9 用例）**：unauthorizedResponse 默认 401 + "未授权访问"、forbiddenResponse 默认 403 + "没有权限执行此操作"、notFoundResponse 默认 404 + "资源不存在"、serverErrorResponse 默认 500 + "服务器内部错误"；四个包装器均自定义消息透传；四个包装器均委托 errorResponse（body 结构一致 `success:false` + `error:string`）
+- **parsePaginationParams（10 用例）**：无参数走默认 `page=1 / pageSize=20 / skip=0`；显式 page/pageSize 解析为整数；`page<1` 与负数 page 被 `Math.max(1,...)` 钳制为 1；`pageSize<1` 钳制为 1、`pageSize>100` 钳制为 100、`pageSize=100` 边界不被钳制；`skip = (page-1)*pageSize` 联动计算；小数 page（"2.9"）经 parseInt 截断为 2；**非数字 page（"abc"）无守卫边界锁定**：`parseInt=NaN → Math.max(1,NaN)=NaN`，page 与 skip 均为 NaN（锁定当前未守护行为，若后续加 NaN 守卫需同步更新此用例）
+- **calculatePagination（6 用例）**：返回 `{ total, page, pageSize, totalPages, hasMore }` 五字段；totalPages 与 hasMore 公式同 paginatedResponse；`page*pageSize === total` 时 hasMore=false；`>` 越界 hasMore=false；total=0 时 totalPages=0 且 hasMore=false；**与 paginatedResponse 同公式一致性交叉验证**（同一 total/page/pageSize 下两者 totalPages 与 hasMore 相等）
+
+**关键控制流锁定**：
+- successResponse/errorResponse/paginatedResponse：均 `NextResponse.json(body, { status })`；success/error 的 status 由参数决定（默认 200/400），paginated 不传 status（默认 200）
+- 四个语义包装器：均委托 `errorResponse(message, statusCode)`，不直接构造 NextResponse
+- parsePaginationParams：`page = Math.max(1, parseInt(get("page")||"1", 10))`；`pageSize = Math.min(100, Math.max(1, parseInt(get("pageSize")||"20", 10)))`；`skip = (page-1)*pageSize`；**NaN 无守卫**（parseInt 失败时 NaN 一路传播）
+- calculatePagination vs paginatedResponse：两者各自内联 `totalPages = Math.ceil(total/pageSize)` 与 `hasMore = page*pageSize < total`，公式相同但实现独立（calculatePagination 抽出复用，paginatedResponse 内联）——本轮用交叉用例锁定两者一致性
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m4s）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮无关）。本轮改动零类型错误（纯新增测试，源码无改动）
+- `npx vitest run src/__tests__/lib/api-response.test.ts`：37/37 通过（24ms tests，真实 NextResponse 路径无 mock）
+- `npx vitest run` 全量 2654/2654 通过（140 文件，174s），零回归（基线 2617/139 + 本轮 37/1 = 2654/140）
+
+### 改动量
+
+1 文件（src/__tests__/lib/api-response.test.ts +278），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `dc0e008` test(lib): utils/api-response 9 函数直接单测（真实 NextResponse）
+
+### 推送
+
+- origin (Gitee)：79e19fb..dc0e008 推送（含 worklog commit）
+- github (GitHub)：79e19fb..dc0e008 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（utils/api-response.ts 已闭合）：
+  - `src/lib/utils/performance-optimized.ts`（若有纯函数片段可单测，需先确认无 DOM/timer 依赖；performance.ts 已有 performance.test.ts 覆盖）
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，沙箱无凭证，仅可测纯函数片段，待条件具备）
+  - `src/lib/utils/security.ts`（已有 `__tests__/utils/security.test.ts` + `__tests__/lib/security.test.ts`，复核覆盖率）
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
