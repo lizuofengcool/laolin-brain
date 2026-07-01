@@ -12068,3 +12068,74 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-01 16:00 自动迭代
+
+### 背景与优先级判断
+
+- 沙箱工作目录为空，先 `git clone origin`（origin=Gitee）+ 补 `github` remote，`git config user.email=uploader@local / user.name=uploader` 就位。
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 均为 `3342f3a`（第九十三轮 worklog commit），`origin..github` 与 `github..origin` 双向 0，双端完全一致，无 rebase 必要。
+- 工作树干净，无遗留未提交改动或未推送 commit，直接进入新一轮开发。
+- 优先级 1 复核（依第九十三轮 worklog 结论 + 本轮 grep 复核）：tenant-db raw 软审计、alipay/wechat 真实验签、files 走 TenantDb、sync-engine keep_both、api-auth.test 匹配实现 → 全部闭合。✅ 闭合
+- 结论：优先级 1 全部闭合，优先级 2 可落地功能均被「需外部服务/待产品决策」阻塞，延续优先级 3（lib 域零覆盖纯模块直接单测），切入第九十三轮候选清单首项 `src/lib/utils/performance-optimized.ts`（352 行，DB 查询优化工具模块：14 个导出符号，仅依赖 Date.now / setTimeout / Buffer / console 原语，无 @/lib/db 实际引用，适合直接单测锁定行为）。
+
+### 本轮开发（lib/utils/performance-optimized 14 导出直接单测 · fake timers + setSystemTime）
+
+`src/lib/utils/performance-optimized.ts` 此前零直接覆盖。模块顶部 `import { db } from '@/lib/db'` 为**未使用死导入**（函数体均不引用 db），模块加载会触发 PrismaClient 构造但不连库（与既有全量套件一致，安全）。模块导出 14 个符号：分页工具 2（parsePaginationParams / createPaginatedResult）、批处理/并发 2（batchProcess / concurrentMap）、节流防抖 2（debounce / throttle）、MemoryCache 类 + globalCache 单例 + cachedQuery 3、DB 优化包装 2（optimizedCount / optimizedCreateMany）、性能装饰器 1（withPerformance）、响应工具 2（shouldCompress / optimizedJsonResponse）。globalCache 为模块级单例跨用例持久 → 顶层 beforeEach 调 `globalCache.clear()` 隔离；debounce/throttle/MemoryCache TTL/withPerformance 计时相关用例用 `vi.useFakeTimers()` + `vi.setSystemTime(new Date(0))` 精确控制时间。
+
+**Commit（d5cd948）utils/performance-optimized 14 导出直接单测**：76 用例覆盖全部 14 符号，按行为分组：
+
+- **parsePaginationParams（13 用例）**：无参默认 `page=1/pageSize=20/skip=0/take=20`；显式解析；`page<1` / 负数 / **NaN（'abc'）走 isNaN 守卫回退 1**（与 api-response 无守卫不同，此处锁定有守卫）；小数 page 经 parseInt 截断（2.9→2）；`pageSize<1` / NaN 回退 defaultPageSize；`pageSize>100` 钳制 100、边界 100 不钳；`options.defaultPageSize/maxPageSize` 透传与钳制；`skip=(page-1)*pageSize` 联动
+- **createPaginatedResult（6 用例）**：六字段结构；`totalPages=Math.ceil(total/pageSize)`；**`hasMore = page < totalPages`**（注意：与 api-response 的 calculatePagination `page*pageSize < total` 公式不同，此处锁定 `<` 版本）；total=0→totalPages=0/hasMore=false；page===totalPages 与 page>totalPages 均 hasMore=false；data 原样透传
+- **batchProcess（4 用例）**：空数组不调 processor；单批一次；多批切片 batchIndex 递增（0/1/2）结果按序拼接；默认 batchSize=100（150 items → 2 批 100+50）
+- **concurrentMap（5 用例）**：空数组；同步 resolve 按 index 落位；**乱序完成仍按原 index 落位**（index 0 延迟最长最后完成但 results[0] 仍为其结果）；默认 concurrency=10 每个 item 调一次 mapper；mapper 抛错时 worker 记录 console.error 并 rethrow
+- **debounce（4 用例 · fake timers）**：单次 wait 后执行一次；wait 内多次仅执行最后一次（前置取消）；透传参数；绑定 this（mock.instances[0]===ctx）
+- **throttle（4 用例 · fake timers）**：首次立即执行；限流窗口内后续抑制（窗口结束不补执行）；窗口结束后下次调用再次立即执行；透传参数与 this
+- **MemoryCache 基础 CRUD（8 用例）**：get 未命中 null / set 后取值 / delete 命中 true+移除 / 未命中 false / clear 清空 / has 命中判断 / size 计数 / 默认 defaultTTL=30000
+- **MemoryCache TTL 过期与清理（5 用例 · fake timers + setSystemTime(0)）**：默认 TTL 过期后 get null 且删除（999 未过期→1001 过期）；**`expiresAt === 当前时间` 仍未过期（严格 `>` 判定，1000===1000 不过期）**；自定义 TTL 覆盖 defaultTTL；has 过期返回 false 并删除；size 触发 cleanup 清理过期项
+- **globalCache（2 用例）**：是 MemoryCache 实例；模块级单例跨引用共享状态
+- **cachedQuery（3 用例）**：未命中调 queryFn 并缓存（第二次命中不调）；**queryFn 返回 null 时被视作未命中**（get 返回 null 与未命中不可区分 → null 不缓存每次重调，锁定此 quirk）；ttl 透传过期后重调
+- **optimizedCount（2 用例）**：委托 `model.count({ where })` 返回结果；透传任意 where 含空对象
+- **optimizedCreateMany（4 用例）**：单批 createMany 返回 count；多批拆分 count 累加（2+2+1=5）；默认 batchSize=100；空 data 不调 createMany 返回 0
+- **withPerformance（6 用例 · fake timers + setSystemTime(0)）**：包装返回结果；**执行时间 >100ms 记录 console.log 慢查询**（func 内 setSystemTime(150) 模拟耗时 → `[Performance] myFn took 150ms`）；<=100ms 不记录；func 抛错时 console.error 记录 `[Performance] errFn failed after 50ms:` 后 rethrow；name 缺省回退 func.name（具名函数）；**name 缺省且 func.name 为空回退 "anonymous"**（直接传入匿名箭头无变量名推断）
+- **shouldCompress（4 用例）**：size=0→false；**1024 边界 false（严格 >）**；1025→true；远超→true
+- **optimizedJsonResponse（6 用例）**：默认 status=200 + Content-Type + X-Response-Size；自定义 statusCode 透传；body 为 JSON.stringify 结果；**X-Response-Size 按 utf-8 字节计算（多字节字符 '中' 使字节数>字符数）**；size<=10240 不加 Cache-Control；size>10240 加 `Cache-Control: public, max-age=60`
+
+**关键控制流锁定**：
+- parsePaginationParams：**有 isNaN 守卫**（`if (isNaN(page)||page<1) page=1`）——与 api-response 的 NaN 无守卫形成对比，本轮显式锁定差异
+- createPaginatedResult：`hasMore = page < totalPages`（page 与 totalPages 比较，非 page*pageSize 与 total 比较）
+- MemoryCache：过期判定 `Date.now() > item.expiresAt`（严格 >，等于未过期）；get/has 命中过期时惰性 delete；size 主动 cleanup
+- cachedQuery：`cached !== null` 判定命中 → null 结果永远不缓存（quirk 锁定）
+- withPerformance：`funcName = name || func.name || "anonymous"` 三级回退；慢查询阈值 100ms；错误路径计算 duration 后 console.error 再 rethrow
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m3s）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮无关）。本轮改动零类型错误（纯新增测试，源码无改动）
+- `npx vitest run src/__tests__/lib/performance-optimized.test.ts`：76/76 通过（78ms tests，fake timers + setSystemTime 路径）
+- `npx vitest run` 全量 2730/2730 通过（141 文件，172s），零回归（基线 2654/140 + 本轮 76/1 = 2730/141）
+
+### 改动量
+
+1 文件（src/__tests__/lib/performance-optimized.test.ts +697），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `d5cd948` test(lib): utils/performance-optimized 14 导出直接单测（fake timers + setSystemTime）
+
+### 推送
+
+- origin (Gitee)：3342f3a..d5cd948 推送（含 worklog commit）
+- github (GitHub)：3342f3a..d5cd948 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（utils/performance-optimized.ts 已闭合）：
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，沙箱无凭证，仅可测纯函数片段，待条件具备）
+  - `src/lib/utils/security.ts`（已有 `__tests__/utils/security.test.ts` + `__tests__/lib/security.test.ts`，复核覆盖率）
+  - `src/lib/utils/tenant-permissions.ts` / `tenant-security.ts`（已有测试，复核）
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
