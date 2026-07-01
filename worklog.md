@@ -11931,3 +11931,76 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-01 13:00 自动迭代
+
+### 背景与优先级判断
+
+- 沙箱工作目录为空，先 `git clone origin`（origin=Gitee）+ 补 `github` remote，`git config user.email=uploader@local / user.name=uploader` 就位。
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 均为 `dfd9151`（第九十一轮 worklog commit），`origin..github` 与 `github..origin` 双向 0，双端完全一致，无 rebase 必要。
+- 工作树干净，无遗留未提交改动或未推送 commit，直接进入新一轮开发。
+- 优先级 1 复核（grep 验证当前实现）：
+  · `tenant-db.ts` raw 后门 → `get raw()` getter 软审计已就位（输出调用方堆栈）。✅ 闭合
+  · `alipay.ts`/`wechat.ts` RSA2 验签 → 真实验签已就位（不再"非空即通过"）。✅ 闭合
+  · files/route 走 TenantDb、sync-engine keep_both、api-auth.test 匹配实现 → 前几轮全部闭合。✅ 闭合
+- 结论：优先级 1 全部闭合，优先级 2 可落地功能均被「需外部服务/待产品决策」阻塞，延续优先级 3（lib 域零覆盖纯模块直接单测），切入第九十一轮候选清单首项 `src/lib/utils/file-types.ts`（1184 行，纯文件格式工具模块：零 import 依赖，含 92 项 FILE_TYPES 大表 + 13 个纯函数，仅字符串切分 / Math.log / Math.pow，无 DOM / 无网络 / 无外部状态，适合直接单测锁定行为）。
+
+### 本轮开发（lib/utils/file-types FILE_TYPES 大表 + 13 纯函数直接单测）
+
+`src/lib/utils/file-types.ts` 此前零直接覆盖。注意与 `src/lib/file-type.ts`（单数，简单 `detectFileType`，已有 `file-type.test.ts`）是两个不同模块，本轮目标是 utils 下的复数大表模块。模块导出：`FileCategory`/`FileTypeInfo` 类型、`FILE_TYPES` 大表（92 项，覆盖 document/spreadsheet/presentation/image/video/audio/archive/code/data/ebook/font 11 类）、13 个纯函数（getFileTypeInfo / getFileExtension / getDoubleExtension / getFileCategory / isPreviewable / isSearchable / isAiProcessable / getFileCategories / formatFileSize / getMimeType / isImage / isVideo / isAudio / isDocument / isCode / getSupportedImageFormats / getSupportedVideoFormats / getSupportedAudioFormats）。
+
+**Commit（ef3265e）utils/file-types 直接单测**：56 用例覆盖全表不变量 + 全部 13 纯函数，按行为分组：
+
+- **FILE_TYPES 大表不变量（6 用例）**：**共 92 个条目**；全表扫描每个 key 与条目 `extension` 字段一致；每条目必填字段齐全且 `category` 落在 12 枚举内、`color` 匹配 `#xxxxxx`；`previewable=true` 的条目必带 `previewType`；**category 分布计数锁定**（document 8 / spreadsheet 5 / presentation 3 / image 14 / video 10 / audio 10 / archive 8 / code 20 / data 4 / ebook 5 / font 5 / other 0——表内无 other，仅默认项）；`.tar.gz` 双扩展名条目存在且 category=archive
+- **getFileExtension（5 用例）**：普通文件取最后一个点之后（含点，`a.b.c`→`.c`）；无点返回 `""`；**dotfile（点在第 0 位）返回 `""`**（`lastDot===0` 分支）；保留原始大小写（不 lowercase）；路径分隔符不影响（仅按点切分）
+- **getDoubleExtension（5 用例）**：`parts.length>=3` 取最后两段拼 `.x.y`（`archive.tar.gz`→`.tar.gz`、`a.b.c.d`→`.c.d`）；两段/单段返回 `""`；**dotfile `.gitignore` split 为 `["","gitignore"]` 两段返回 `""`**；保留原大小写
+- **getFileTypeInfo（8 用例）**：命中单扩展名返回**表项引用**（`toBe(FILE_TYPES['.txt'])`）；**双扩展名优先于单扩展名**（`backup.tar.gz`→`.tar.gz` 的 TAR.GZ压缩包，而非 `.gz` 的 GZIP压缩——证明优先级有意义）；**双扩展名未命中回退单扩展名**（`app.config.json` 的 `.config.json` 不在表 → 回退 `.json`）；大小写不敏感（内部 lowercased 查表）；未知扩展名返回默认项（extension=ext / octet-stream / other / 未知文件 / `#6b7280` / previewable=false，且**不含 previewType/searchable/aiProcessable**）；无扩展名与 dotfile 均返回默认项且 extension 为空串；跨 11 分类抽样
+- **getFileCategory（2 用例）**：委托 `getFileTypeInfo().category`；未知文件返 other
+- **isPreviewable（3 用例）**：previewable=true 返 true；previewable=false 的已知文件（docx/avi/flac/7z）返 false；未知文件返 false
+- **isSearchable / isAiProcessable（各 3 用例）**：锁定 `?? false` 兜底——`.gif` 表项无 `searchable`/`aiProcessable` 字段（`toBeUndefined()`），调用返回 false；未知文件返 false
+- **getFileCategories（2 用例）**：返回 12 个分类，**顺序固定**（document→spreadsheet→presentation→image→video→audio→archive→code→data→ebook→font→other）；每项含 id/name/icon
+- **formatFileSize（7 用例）**：`0` 早返回 `"0 B"`；小于 1KB 保持 B（1/512/1023）；1024 边界进 KB；**小数 `toFixed(2)` + `parseFloat` 去尾零**（1536→`1.5 KB`、1500→`1.46 KB`）；MB/GB/TB/PB 边界（1024^2/3/4/5）；sizes 数组上限 PB（2×1024^5 仍 `2 PB`）；**负数无守卫行为锁定**（`-1`/`-1024` → Math.log 产生 NaN → `sizes[NaN]=undefined` → `"NaN undefined"`，锁定当前未守护分支，若后续加负数守卫需同步更新）
+- **getMimeType（2 用例）**：委托 `getFileTypeInfo().mimeType`；未知文件返 `application/octet-stream`
+- **isImage / isVideo / isAudio / isDocument / isCode（6 用例）**：各分类判断；**`.json` 属 data 非 code**；`.md` 属 document；未知文件五判断均 false（category=other）
+- **getSupportedImage/Video/AudioFormats（3 用例）**：image 9 项（jpg/jpeg/png/gif/webp/svg/bmp/ico/avif，排除 previewable=false 的 heic/heif/tiff/tif/raw）；video 仅 mp4/webm；audio 仅 mp3/wav/ogg——过滤 `category 匹配 && previewable=true`，map 出 extension
+
+**关键控制流锁定**：
+- getFileTypeInfo：先查双扩展名（lowercased）→ 命中返表项引用；未命中查单扩展名 → 命中返表项引用；均未命中返回**新建默认对象**（extension=ext，无 previewType/searchable/aiProcessable）
+- getFileExtension：`lastDot===-1`（无点）或 `lastDot===0`（dotfile）均返 `""`；否则 `slice(lastDot)` 含点；不 lowercase
+- getDoubleExtension：`filename.split(".")` 后 `parts.length>=3` 才取 `parts.slice(-2)` 拼 `.${a}.${b}`；否则 `""`
+- isSearchable/isAiProcessable：`getFileTypeInfo(...).searchable ?? false` / `.aiProcessable ?? false`——表项缺字段时兜底 false
+- formatFileSize：`bytes===0` 早返回 `"0 B"`；否则 `i=Math.floor(Math.log(bytes)/Math.log(1024))`，`parseFloat((bytes/Math.pow(1024,i)).toFixed(2)) + " " + sizes[i]`；sizes=[B,KB,MB,GB,TB,PB]；**负数无守卫**（不走早返回，Math.log(-x)=NaN → "NaN undefined"）
+- getSupportedXxxFormats：`Object.values(FILE_TYPES).filter(f=>f.category===X && f.previewable).map(f=>f.extension)`
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；1m5s）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮无关）。本轮改动零类型错误（纯新增测试，源码无改动）
+- `npx vitest run src/__tests__/lib/file-types.test.ts`：56/56 通过（28ms tests）
+- `npx vitest run` 全量 2617/2617 通过（139 文件，170s），零回归（基线 2561/138 + 本轮 56/1 = 2617/139）
+
+### 改动量
+
+1 文件（src/__tests__/lib/file-types.test.ts +438），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `ef3265e` test(lib): utils/file-types FILE_TYPES 大表 + 13 纯函数直接单测
+
+### 推送
+
+- origin (Gitee)：dfd9151..ef3265e 推送（含 worklog commit）
+- github (GitHub)：dfd9151..ef3265e 推送（含 worklog commit）
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（utils/file-types.ts 已闭合）：
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，沙箱无凭证，仅可测纯函数片段，待条件具备）
+  - `src/lib/utils/performance.ts` / `performance-optimized.ts`（若有纯函数片段可单测，需先确认无 DOM/timer 依赖）
+  - `src/lib/utils/security.ts`（已有 `__tests__/utils/security.test.ts`，复核覆盖率）
+  - `src/lib/utils/tenant-permissions.ts` / `tenant-security.ts`（已有 `tenant-permissions.test.ts` / `tenant-security.test.ts`，复核）
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
