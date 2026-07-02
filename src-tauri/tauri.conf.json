@@ -5,12 +5,11 @@
   "identifier": "com.knowledgebase.app",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:3000",
+    "devUrl": "http://localhost:3002",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
   },
   "app": {
-    "title": "智能文档知识库",
     "windows": [
       {
         "title": "智能文档知识库",
@@ -21,44 +20,13 @@
         "resizable": true,
         "fullscreen": false,
         "center": true,
-        "drag_drop_enabled": true
+        "drag-drop-enabled": true
       }
     ],
     "security": {
       "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
-  "capabilities": [
-    {
-      "identifier": "default",
-      "description": "知识库应用的默认权限集",
-      "windows": ["main"],
-      "permissions": [
-        "core:default",
-        "fs:default",
-        "fs:allow-read",
-        "fs:allow-write",
-        "fs:allow-exists",
-        "fs:allow-mkdir",
-        "fs:allow-remove",
-        "fs:allow-rename",
-        "dialog:default",
-        "dialog:allow-open",
-        "dialog:allow-save",
-        "dialog:allow-message",
-        "dialog:allow-ask",
-        "notification:default",
-        "notification:allow-notify",
-        "notification:allow-is-permission-granted",
-        "notification:allow-request-permission",
-        "shell:default",
-        "shell:allow-open",
-        "clipboard-manager:default",
-        "clipboard-manager:allow-write",
-        "clipboard-manager:allow-read"
-      ]
-    }
-  ],
   "bundle": {
     "active": true,
     "targets": "all",

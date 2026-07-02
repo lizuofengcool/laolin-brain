@@ -5,6 +5,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
+use tauri::Manager;
 use crate::{KBFile, KBFileVersion, KBFolder};
 
 /// 数据库错误类型
@@ -14,6 +15,8 @@ pub enum DbError {
     Rusqlite(#[from] rusqlite::Error),
     #[error("IO错误: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Tauri错误: {0}")]
+    Tauri(#[from] tauri::Error),
 }
 
 pub type DbResult<T> = Result<T, DbError>;
@@ -386,41 +389,41 @@ pub fn insert_file(conn: &Connection, file: &KBFile) -> DbResult<()> {
 /// tenant_id 为空字符串时不限制租户（向后兼容）
 pub fn update_file(conn: &Connection, file_id: &str, updates: &FileUpdates, tenant_id: &str) -> DbResult<bool> {
     let mut sets = Vec::new();
-    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
     if let Some(name) = &updates.file_name {
         sets.push("file_name = ?");
-        params.push(name);
+        params.push(Box::new(name.clone()));
     }
     if let Some(tags) = &updates.tags {
         sets.push("tags = ?");
         let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
-        params.push(&tags_json);
+        params.push(Box::new(tags_json));
     }
     if let Some(fav) = updates.is_favorite {
         sets.push("is_favorite = ?");
-        params.push(&fav);
+        params.push(Box::new(fav));
     }
     if let Some(folder_id) = &updates.folder_id {
         sets.push("folder_id = ?");
-        params.push(folder_id);
+        params.push(Box::new(folder_id.clone()));
     }
     if let Some(summary) = &updates.summary {
         sets.push("summary = ?");
-        params.push(summary);
+        params.push(Box::new(summary.clone()));
     }
     if let Some(key_points) = &updates.key_points {
         sets.push("key_points = ?");
         let kp_json = serde_json::to_string(key_points).unwrap_or_default();
-        params.push(&kp_json);
+        params.push(Box::new(kp_json));
     }
     if let Some(deleted) = updates.is_deleted {
         sets.push("is_deleted = ?");
-        params.push(&deleted);
+        params.push(Box::new(deleted));
         if deleted {
             sets.push("deleted_at = ?");
             let now = crate::now_iso8601();
-            params.push(&now);
+            params.push(Box::new(now));
         } else {
             sets.push("deleted_at = NULL");
         }
@@ -433,14 +436,14 @@ pub fn update_file(conn: &Connection, file_id: &str, updates: &FileUpdates, tena
     // 添加 updated_at
     sets.push("updated_at = ?");
     let now = crate::now_iso8601();
-    params.push(&now);
+    params.push(Box::new(now));
 
     // 添加 WHERE 参数
-    params.push(&file_id);
-    params.push(&tenant_id);
+    params.push(Box::new(file_id.to_string()));
+    params.push(Box::new(tenant_id.to_string()));
 
     let sql = format!("UPDATE files SET {} WHERE id = ? AND (tenant_id = ? OR ? = '')", sets.join(", "));
-    let rows = conn.execute(&sql, rusqlite::params_from_iter(params))?;
+    let rows = conn.execute(&sql, rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())))?;
     Ok(rows > 0)
 }
 

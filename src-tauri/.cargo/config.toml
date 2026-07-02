@@ -1,0 +1,8 @@
+# Tauri 项目 Cargo 配置
+# 注意：用户系统全局环境变量 CC=gcc 会导致 bundled sqlite3 用 gcc 编译，
+# 而 Rust 在 Windows MSVC target 下用 link.exe 链接，gcc 编译的 .o 文件
+# 引用 ___chkstk_ms 和 __isnan 等 compiler-rt 符号，MSVC link.exe 无法解析，
+# 导致 LNK2019 错误。
+# 解决方案：在本项目中强制 CC=cl.exe，使用 MSVC 工具链编译 C 代码。
+[env]
+CC = "cl.exe"

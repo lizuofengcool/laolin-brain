@@ -23,19 +23,19 @@ module.exports = {
       // 环境变量
       env: {
         NODE_ENV: "production",
-        PORT: 3000,
+        PORT: 3002,
       },
 
       // 开发环境（pm2 start ecosystem.config.js --env development）
       env_development: {
         NODE_ENV: "development",
-        PORT: 3000,
+        PORT: 3002,
       },
 
       // 测试环境
       env_test: {
         NODE_ENV: "test",
-        PORT: 3001,
+        PORT: 3003,
       },
 
       // 日志配置

@@ -7,10 +7,14 @@
 mod db;
 mod system_search;
 mod search_service;
+mod menu;
+mod tray;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tauri::{command, Emitter};
+use tauri::{Emitter, Manager};
+use rusqlite::params;
+#[allow(unused_imports)]
 use db::{DbError, DbResult, FileUpdates};
 
 // ─── 数据结构定义 ──────────────────────────────────────────────
@@ -84,7 +88,7 @@ struct UploadResult {
 // ─── Tauri 命令 ──────────────────────────────────────────────────
 
 /// 获取应用数据目录路径
-#[command]
+#[tauri::command]
 fn get_app_data_dir(app: tauri::AppHandle) -> Result<String, String> {
     let path = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
@@ -93,7 +97,7 @@ fn get_app_data_dir(app: tauri::AppHandle) -> Result<String, String> {
 
 /// 获取用户的所有文件（过滤掉已删除的）
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn get_files(user_id: String, tenant_id: Option<String>, app: tauri::AppHandle) -> Result<Vec<KBFile>, String> {
     let conn = db::open_db(&app, &user_id).map_err(|e| e.to_string())?;
     let tid = tenant_id.unwrap_or_default();
@@ -102,7 +106,7 @@ fn get_files(user_id: String, tenant_id: Option<String>, app: tauri::AppHandle) 
 
 /// 获取单个文件详情
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn get_file(
     file_id: String,
     user_id: String,
@@ -116,7 +120,7 @@ fn get_file(
 
 /// 搜索文件（按文件名、文本内容、标签）
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn search_files(
     query: String,
     user_id: String,
@@ -130,7 +134,7 @@ fn search_files(
 
 /// 获取收藏的文件
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn get_favorite_files(
     user_id: String,
     tenant_id: Option<String>,
@@ -143,7 +147,7 @@ fn get_favorite_files(
 
 /// 获取文件夹下的文件
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn get_files_by_folder(
     folder_id: String,
     user_id: String,
@@ -156,7 +160,7 @@ fn get_files_by_folder(
 }
 
 /// 上传文件（base64 数据）
-#[command]
+#[tauri::command]
 fn upload_file(
     user_id: String,
     tenant_id: Option<String>,
@@ -220,7 +224,7 @@ fn upload_file(
 
 /// 删除文件（软删除）
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn delete_file(
     file_id: String,
     user_id: String,
@@ -242,7 +246,7 @@ fn delete_file(
 
 /// 更新文件元数据（支持 is_deleted 字段用于恢复文件）
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn update_file(
     file_id: String,
     user_id: String,
@@ -301,7 +305,7 @@ fn update_file(
 
 /// 获取文件版本历史
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn get_versions(
     file_id: String,
     user_id: String,
@@ -314,7 +318,7 @@ fn get_versions(
 }
 
 /// 创建文件版本
-#[command]
+#[tauri::command]
 fn create_version(
     file_id: String,
     user_id: String,
@@ -350,7 +354,7 @@ fn create_version(
 
 /// 恢复到指定版本
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn restore_version(
     version_id: String,
     file_id: String,
@@ -366,7 +370,7 @@ fn restore_version(
         .ok_or_else(|| format!("版本 {} 不存在", version_id))?;
 
     let mut updates = FileUpdates::default();
-    updates.file_name = Some(version.file_name);
+    updates.file_name = Some(version.file_name.clone());
 
     // 注意：file_size、file_path、text_content、thumbnail_url 也需要更新
     // 但由于 FileUpdates 结构限制，我们直接执行 SQL
@@ -391,7 +395,7 @@ fn restore_version(
 
 /// 删除文件版本
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn delete_version(
     version_id: String,
     file_id: String,
@@ -409,7 +413,7 @@ fn delete_version(
 }
 
 /// 创建文件夹
-#[command]
+#[tauri::command]
 fn create_folder(
     folder_name: String,
     user_id: String,
@@ -434,7 +438,7 @@ fn create_folder(
 
 /// 获取用户的所有文件夹
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn get_folders(
     user_id: String,
     tenant_id: Option<String>,
@@ -447,7 +451,7 @@ fn get_folders(
 
 /// 删除文件夹（从数据库中移除）
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn delete_folder(
     folder_id: String,
     user_id: String,
@@ -465,7 +469,7 @@ fn delete_folder(
 
 /// 重命名文件夹
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn rename_folder(
     folder_id: String,
     new_name: String,
@@ -484,7 +488,7 @@ fn rename_folder(
 
 /// 永久删除文件（从数据库中彻底移除 + 删除物理文件）
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn permanent_delete_file(
     file_id: String,
     user_id: String,
@@ -517,7 +521,7 @@ fn permanent_delete_file(
 
 /// 清空回收站（删除所有 is_deleted=true 的文件，返回删除数量）
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn empty_recycle_bin(
     user_id: String,
     tenant_id: Option<String>,
@@ -540,7 +544,7 @@ fn empty_recycle_bin(
             let tags_str: String = row.get("tags")?;
             let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
             let key_points_str: Option<String> = row.get("key_points")?;
-            let key_points = key_points_str.and_then(|s| serde_json::from_str(&s).ok());
+            let key_points: Option<Vec<String>> = key_points_str.and_then(|s| serde_json::from_str(&s).ok());
             Ok(KBFile {
                 id: row.get("id")?,
                 tenant_id: row.get("tenant_id")?,
@@ -585,7 +589,7 @@ fn empty_recycle_bin(
 
 /// 获取已删除的文件（回收站列表）
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn get_deleted_files(
     user_id: String,
     tenant_id: Option<String>,
@@ -598,7 +602,7 @@ fn get_deleted_files(
 
 /// 获取文件数据（读取物理文件并返回 base64 编码，用于文件预览）
 /// tenant_id 为空字符串时不限制租户（向后兼容）
-#[command]
+#[tauri::command]
 fn get_file_data(
     file_id: String,
     user_id: String,
@@ -634,7 +638,7 @@ fn get_file_data(
 }
 
 /// 使用系统默认程序打开文件
-#[command]
+#[tauri::command]
 fn open_file_externally(file_path: String) -> Result<(), String> {
     // 使用 open crate 打开文件（需要 Cargo.toml 添加 open = "5" 依赖）
     // 如果 open crate 不可用，尝试使用平台原生命令
@@ -927,8 +931,8 @@ fn category_to_exts(category: &str) -> Option<String> {
 }
 
 /// 构建全盘索引（后台执行，立即返回，完成后通过事件通知）
-#[command]
-pub fn system_search_build_index(app: tauri::AppHandle) -> Result<String, String> {
+#[tauri::command]
+fn system_search_build_index(app: tauri::AppHandle) -> Result<String, String> {
     if search_service::is_service_running_fast() {
         let app_clone = app.clone();
         std::thread::spawn(move || {
@@ -984,8 +988,8 @@ pub fn system_search_build_index(app: tauri::AppHandle) -> Result<String, String
 }
 
 /// 全盘搜索文件（异步）
-#[command]
-pub async fn system_search_query(
+#[tauri::command]
+async fn system_search_query(
     query: String,
     category: Option<String>,
     limit: Option<usize>,
@@ -1005,8 +1009,8 @@ pub async fn system_search_query(
 }
 
 /// 在指定路径下搜索文件（异步）
-#[command]
-pub async fn system_search_query_in_path(
+#[tauri::command]
+async fn system_search_query_in_path(
     query: String,
     path: String,
     category: Option<String>,
@@ -1036,26 +1040,26 @@ pub async fn system_search_query_in_path(
 }
 
 /// 获取全盘索引状态
-#[command]
-pub fn system_search_status() -> Result<system_search::IndexStatus, String> {
+#[tauri::command]
+fn system_search_status() -> Result<system_search::IndexStatus, String> {
     system_search::get_status()
 }
 
 /// 是否正在构建索引
-#[command]
-pub fn system_search_is_building() -> Result<bool, String> {
+#[tauri::command]
+fn system_search_is_building() -> Result<bool, String> {
     system_search::is_building()
 }
 
 /// 检测是否以管理员权限运行
-#[command]
-pub fn system_search_is_admin() -> Result<bool, String> {
+#[tauri::command]
+fn system_search_is_admin() -> Result<bool, String> {
     system_search::is_admin()
 }
 
 /// 搜索文件内容（异步）
-#[command]
-pub async fn system_search_content(
+#[tauri::command]
+async fn system_search_content(
     query: String,
     path: Option<String>,
     limit: Option<usize>,
@@ -1072,8 +1076,8 @@ pub async fn system_search_content(
 }
 
 /// 查找重复文件（异步）
-#[command]
-pub async fn system_search_duplicates(
+#[tauri::command]
+async fn system_search_duplicates(
     path: Option<String>,
     min_size: Option<u64>,
 ) -> Result<Vec<system_search::DuplicateGroup>, String> {
@@ -1088,65 +1092,139 @@ pub async fn system_search_duplicates(
 }
 
 /// 手动刷新索引
-#[command]
-pub fn system_search_refresh() -> Result<system_search::IndexStatus, String> {
+#[tauri::command]
+fn system_search_refresh() -> Result<system_search::IndexStatus, String> {
     system_search::refresh_index()
 }
 
 /// 启动后台文件监听
-#[command]
-pub fn system_search_start_watcher() -> Result<bool, String> {
+#[tauri::command]
+fn system_search_start_watcher() -> Result<bool, String> {
     system_search::start_watcher()
 }
 
 /// 停止后台文件监听
-#[command]
-pub fn system_search_stop_watcher() -> Result<bool, String> {
+#[tauri::command]
+fn system_search_stop_watcher() -> Result<bool, String> {
     system_search::stop_watcher()
 }
 
 /// 获取监听状态
-#[command]
-pub fn system_search_watcher_status() -> Result<bool, String> {
+#[tauri::command]
+fn system_search_watcher_status() -> Result<bool, String> {
     system_search::watcher_status()
 }
 
 /// 打开目录选择对话框
-#[command]
-pub async fn dialog_open_dir(title: String, app: tauri::AppHandle) -> Result<Option<String>, String> {
+#[tauri::command]
+async fn dialog_open_dir(title: String, app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     let dir = app.dialog().file().set_title(&title).blocking_pick_folder();
     Ok(dir.map(|p| p.to_string()))
 }
 
 /// 完全退出应用
-#[command]
-pub fn app_exit(app: tauri::AppHandle) {
+#[tauri::command]
+fn app_exit(app: tauri::AppHandle) {
     app.exit(0);
 }
 
 // ─── 搜索服务命令 ──────────────────────────────────────────
 
 /// 检查搜索服务是否正在运行
-#[command]
-pub fn search_service_is_running() -> bool {
+#[tauri::command]
+fn search_service_is_running() -> bool {
     search_service::is_service_running()
 }
 
 /// 检查搜索服务是否已安装
-#[command]
-pub fn search_service_is_installed() -> bool {
+#[tauri::command]
+fn search_service_is_installed() -> bool {
     search_service::is_service_installed()
 }
 
 /// 安装并启动搜索服务
-#[command]
-pub fn search_service_install() -> Result<(), String> {
+#[tauri::command]
+fn search_service_install() -> Result<(), String> {
     search_service::install_service()
 }
 
 /// 卸载搜索服务
-#[command]
-pub fn search_service_uninstall() -> Result<(), String> {
+#[tauri::command]
+fn search_service_uninstall() -> Result<(), String> {
     search_service::uninstall_service()
+}
+
+// ─── Tauri 应用入口 ─────────────────────────────────────────────
+
+/// Tauri 应用主入口函数
+/// 在桌面端由 main.rs 调用，在移动端作为 mobile_entry_point
+/// 注意：generate_handler! 中的命令直接引用本模块函数（无 lib:: 前缀），
+/// 这样 #[tauri::command] 宏生成的 __cmd__* 不会重复 import
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .setup(|app| {
+            // 设置原生菜单栏
+            let native_menu = menu::create_menu(app.handle())
+                .expect("创建菜单栏失败");
+            app.set_menu(native_menu);
+
+            // 创建系统托盘
+            tray::create_tray(app.handle())
+                .expect("创建系统托盘失败");
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_app_data_dir,
+            get_files,
+            get_favorite_files,
+            get_files_by_folder,
+            get_deleted_files,
+            upload_file,
+            delete_file,
+            update_file,
+            get_file,
+            search_files,
+            get_versions,
+            create_version,
+            restore_version,
+            delete_version,
+            create_folder,
+            get_folders,
+            delete_folder,
+            rename_folder,
+            permanent_delete_file,
+            empty_recycle_bin,
+            get_file_data,
+            open_file_externally,
+            // 系统搜索命令
+            system_search_build_index,
+            system_search_query,
+            system_search_query_in_path,
+            system_search_status,
+            system_search_is_building,
+            system_search_is_admin,
+            system_search_content,
+            system_search_duplicates,
+            system_search_refresh,
+            system_search_start_watcher,
+            system_search_stop_watcher,
+            system_search_watcher_status,
+            dialog_open_dir,
+            app_exit,
+            // 搜索服务命令
+            search_service_is_running,
+            search_service_is_installed,
+            search_service_install,
+            search_service_uninstall,
+        ])
+        .run(tauri::generate_context!())
+        .expect("Tauri 应用运行时发生错误");
 }

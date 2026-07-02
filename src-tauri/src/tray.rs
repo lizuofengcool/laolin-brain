@@ -3,7 +3,8 @@
 // 左键点击托盘图标显示/聚焦主窗口
 
 use tauri::menu::{Menu, MenuItem as TrayMenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayEvent, TrayIconBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::Manager;
 
 /// 创建系统托盘图标及右键菜单
 /// 包含"显示主窗口"和"退出"两个菜单项
@@ -47,7 +48,7 @@ pub fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Err
         // 托盘图标点击事件处理
         .on_tray_icon_event(|tray, event| {
             // 左键单击（释放时触发）显示主窗口
-            if let TrayEvent::Click {
+            if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
                 ..

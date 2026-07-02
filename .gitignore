@@ -68,6 +68,7 @@ server.log
 
 # Tauri
 /src-tauri/target/
+/src-tauri/gen/
 
 # Local database files
 /prisma/db/
