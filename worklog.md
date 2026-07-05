@@ -12803,3 +12803,99 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-06 07:00 自动迭代
+
+### 背景与优先级判断
+
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 一致，均停在 `dc27e4b`（第一百零二轮 worklog commit）。本地为全新 clone（沙箱无 `/workspace/laolin-brain`，本次从 Gitee origin 克隆后补 github remote）。无远端更新、无需 rebase、无遗留改动。
+- **优先级 1 复核**：6 个关键文件（tenant-db / alipay / wechat / sync-engine / files route / api-auth.test）在第一百轮已逐文件实证 CLOSED，本轮不重复核，结论：优先级 1 全部闭合。优先级 2 可落地功能均被「需外部服务/待产品决策」阻塞。延续优先级 3（lib 域零覆盖纯模块直接单测），切入第一百零二轮「下一轮候选」Top 1：`src/lib/notes/note-manager.ts`。
+- **候选确认**：`src/lib/notes/note-manager.ts`（724 行）此前零真实覆盖——`grep noteManager|NoteManager|getVersions` 在 `src/__tests__` 下无任何命中；`from '@/lib/notes'` 在 `src` 全域亦无 import（storage/base.ts 等的 `getVersions?` 是文件版本域的同名方法签名，非本模块消费）。模块自身是纯内存态（notes/notebooks/tags/versions 4 个 Map）+ 确定性逻辑，无运行时外部 import，适合直接单测。
+- **读源码写测试时发现 1 处真实逻辑 bug**（非测试断言错误，是源码缺陷），故本轮 = 1 个 fix commit + 1 个 test commit，符合「1-3 个相关 commit」规模控制。
+
+### 本轮开发（note-manager.ts 1 处逻辑 bug 修复 + 12 单元 102 用例直接单测 · 零覆盖模块补全）
+
+**fix — `updateNote` 版本快照记录更新前内容 bug**：
+
+`updateNote` 原实现将 `createVersion` 调用置于 `Object.assign(note, updates, { updatedAt: now })` 之前。`createVersion` 内部读取 `note.title / note.content / note.format` 作为版本快照——此时 `Object.assign` 尚未执行，note 仍是更新前的旧值，故版本 N 快照记录的是更新前的旧内容。后果：版本历史永远捕获不到更新内容，`getVersions` 返回的 version N 与 version N-1 内容完全相同，版本功能形同虚设。
+
+**回归构造**：`createNote({title:'t', content:'c1'})` → 版本 1 content='c1'；`updateNote(id, {content:'one two three four five', changeLog:'second'})`。原 bug：版本 2 content 仍为 'c1'（旧值），新内容 'one two...' 从未入档。修复后：版本 2 content='one two three four five'（新值），版本 1 content='c1'，`getVersions` 降序返回 `[v3, v2, v1]` 各捕获对应新内容。
+
+修复：将 `if (updates.content !== undefined) { ... createVersion(...) }` 块整体移至 `Object.assign(note, updates, { updatedAt: now })` 之后，使版本 N 快照读取更新后的新内容。字数重算块（`if (updates.content)` truthy 检查）与笔记本计数调整块（须在赋值前读取 `note.notebookId` 旧值）保持原位不动，仅版本创建调用后移；`updates.changeLog` 取自参数不被 Object.assign 影响，透传正常。
+
+安全性：`from '@/lib/notes'` 在 `src` 全域无 import、`noteManager.getVersions|noteManager.updateNote` 无调用方，本模块为未被 app 消费的独立内存态模块（与上轮 analytics-manager 同型），修复不破坏既有调用语义。
+
+**test — `src/__tests__/lib/notes/note-manager.test.ts`（新建，102 用例 / 1158 行）**：
+
+直接 import 本模块 `NoteManager` 类与 `noteManager` 单例，逐方法锁定控制流。仿 bi-manager.test.ts 的 `vi.resetModules()` + dynamic `await import` 取新鲜单例模式（fresh class → fresh instance → fresh notes/notebooks/tags/versions 4 个 Maps），每个用例前状态隔离。12 个 describe：
+
+- **单例导出**（3）：`noteManager` 为 `NoteManager` 实例；`getInstance()` 多次返回同一实例；`resetModules` 后 `noteManager` 为全新实例（状态隔离）。
+- **createNotebook**（2）：id 形如 `nb_${ts}_${rand}`；默认值兜底（noteCount=0 / sortOrder=0 / isDefault=false / isFavorite=false）；params 透传覆盖。
+- **getNotebook**（2）：命中/未命中；跨租户/跨用户返回 null。
+- **getNotebookList**（6）：userId+tenantId 双重隔离；默认 updatedAt desc；sortBy=updatedAt asc；sortBy=name 走 string 分支（localeCompare）；sortBy=noteCount 走 number 分支；sortBy=isDefault（boolean）三分支都不命中返回 0 保持插入序。
+- **updateNotebook**（3）：浅合并 + updatedAt 刷新；**实际行为**——updates 带 id/tenantId/userId 会被 Object.assign 覆写（与 bi-manager 的"强制保留"不同，记录非断言保留）；未命中/跨租户/跨用户返回 null。
+- **deleteNotebook**（3）：命中删除返回 true；未命中/跨租户返回 false；删除笔记本时下属笔记 notebookId 置 undefined。
+- **createNote**（9）：id 形如 `note_${ts}_${rand}`；默认值兜底（format=markdown/status=active/tags=[]/isFavorite=false/isPinned=false/attachments=[]/relatedNotes=[]）；params 透传；空 content → wordCount=0/readingTime=1（max(1,ceil(0/300))）；纯中文 wordCount=中文字符数；中英混合；600 单词 → readingTime=2；notebookId 命中且属主匹配 → noteCount++ + updatedAt 刷新；notebookId 命中但属主不匹配 → 笔记仍创建但 notebook 不计数；notebookId 指向不存在笔记本 → 笔记仍创建；创建笔记时同步建版本 1（changeLog="初始版本"/createdBy=userId）。
+- **getNote**（3）：命中/未命中；跨租户/跨用户返回 null；命中时同引用突变 lastAccessedAt=new Date()。
+- **getNoteList 过滤**（5）：userId+tenantId+排除 deleted；notebookId 过滤；tags every（须全含，空数组不过滤）；status 过滤（deleted 已被预过滤，显式请求 deleted 仍空）；isFavorite/isPinned 过滤。
+- **getNoteList 排序与分页**（4）：置顶优先（忽略 sortOrder，同置顶态再按 sortBy）；sortBy=wordCount number 分支 asc/desc；分页 page/pageSize 默认 1/20；page 超出范围返回空但 total 仍为全集长度。
+- **updateNote**（10）：未命中/跨租户/跨用户 null；非 content 字段更新不建版本；content 更新重算 wordCount/readingTime + 建版本（**修复后捕获新内容**）；content+title 同改 → 版本捕获新 title；未传 changeLog 默认"更新内容"；content='' falsy 不重算 wordCount 但 !==undefined 仍建版本（捕获空内容）；连续多次 content 更新版本号递增 1/2/3 且各捕获对应新内容；notebookId 变更旧--/新++；**notebookId 变更为 undefined（移出笔记本）guard 跳过调整块、旧笔记本计数不递减（实际行为/计数漂移）**；notebookId 变更到属主不匹配的目标 → 仅旧-- 新不++。
+- **deleteNote/permanentlyDeleteNote/restoreNote**（8）：软删除 status=deleted + updatedAt 刷新 + 笔记本 noteCount--（max 0）；deleteNote 不建版本；未命中/跨租户 false；noteCount max 0 保护；permanentlyDeleteNote 物理删 notes+versions 不调整笔记本计数；restoreNote 置 active + updatedAt；restoreNote 不回补笔记本计数（计数漂移，实际行为）。
+- **createTag**（4）：id 形如 `nt_${ts}_${rand}`/默认 noteCount=0；options.color 透传；同名大小写不敏感 + 同 userId+tenantId 去重返回同引用；同名不同 userId/tenantId 不去重。
+- **getTagList**（4）：userId+tenantId 过滤；sortBy=count（默认，全 0 稳定）；sortBy=name localeCompare；limit 截断。
+- **search**（8）：仅查 status=active（archived/deleted 均排除）；userId+tenantId 过滤；query 小写匹配 title/summary/content/tags（任一）；tags every；notebookId/isFavorite/isPinned 过滤；dateFrom/dateTo 基于 createdAt；**排序仅 Date/number 分支（无 string 分支：sortBy='title' 实际不排序，记录实际行为）**；分页 totalPages/hasMore 计算；默认 page/pageSize=1/20。
+- **getStats**（7）：基础计数（totalNotes/notebooks/tags/favorite/pinned/archived）；totalWords/totalReadingTime 聚合；**totalNotes 含软删除笔记（实际行为：getStats 不过滤 status）**；userId+tenantId 隔离；thisWeekNew/thisMonthNew 基于 createdAt 与 now 比较；topNotebooks 按 noteCount desc 取前 5；topTags 按 noteCount desc 取前 10（全 0 稳定）。
+- **getVersions**（3）：按 version desc；未命中/跨租户/跨用户返回空数组；每条版本含完整字段（id/noteId/version/title/content/format/createdBy/createdAt/tenantId）。
+- **exportNote**（6）：markdown 格式 `# title\n\ncontent`；json 格式 JSON.stringify(note,null,2)；html 含 DOCTYPE+title+h1+content div；pdf 与未知 format 返回 null；未命中/跨租户 null；**导出触发 getNote 副作用：lastAccessedAt 突变**。
+- **calculateWordCount（经 createNote 间接覆盖）**（6）：空串 0；纯英文单词数；纯中文中文字符数；中英混合；数字标点不计入；英文与数字混合字母段计数（`abc123def` → 2）。
+- **跨模块协作：笔记↔笔记本计数一致性**（3）：createNote+deleteNote 全流程 noteCount 随笔记增减；permanentlyDeleteNote 不调整 noteCount（计数漂移）；updateNote 移动笔记后 getNoteList 按 notebookId 过滤正确。
+
+**状态隔离**：`NoteManager` 构造器私有无法 new；每个用例前 `vi.resetModules()` + `await import('@/lib/notes/note-manager')` 取全新单例（fresh class → fresh instance → fresh 4 个 Maps）。依赖 Date.now 的 id 用例（createNotebook/createNote/createTag）用 `vi.useFakeTimers()` + `vi.setSystemTime(NOW)` 固定时刻 + `vi.spyOn(Math,'random').mockReturnValue(r)` 固定随机后缀，期望后缀用同一表达式 `r.toString(36).substr(2,9)` 计算保证匹配（仿 bi-manager.test.ts）。
+
+**createNote 双 random 调用**：createNote 内 `note.id` 与随后的 `createVersion.id` 各调一次 Date.now+Math.random。fake timers 下 Date.now 恒为 NOW_TS，spy 固定 r → 两者后缀相同，仅前缀不同（`note_` vs `nv_`），断言互不冲突。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/notes/note-manager.test.ts`：**102/102 通过**（111ms tests）。首轮零失败（修复后版本快照用例一次性通过，无浮点精度容差问题）。
+- `npx tsc --noEmit`：**0 错误**。源码修复（createVersion 调用位置调整）零类型影响。
+- `npx vitest run` 全量 **3335/3335 通过**（148 文件，166s），零回归。测试数较上轮 3233 增加 102（新增文件），文件数 147→148（+1）。
+
+### 改动量
+
+2 文件：
+- `src/lib/notes/note-manager.ts`（修改，+11/-8）— 1 处逻辑 bug 修复（createVersion 调用从 Object.assign 前移至后）
+- `src/__tests__/lib/notes/note-manager.test.ts`（新建，+1158 行）— 102 用例
+
+2 dev commit。
+
+### Commit
+
+- `924ea6f` fix(lib): notes updateNote 版本快照记录更新前内容 bug 修复
+- `c945276` test(lib): note-manager.ts 12 单元 102 用例直接单测，零覆盖模块补全
+
+### 推送
+
+- origin (Gitee)：dc27e4b..c945276 推送（含本轮 2 dev commit；worklog commit 待本次追加后另推）
+- github (GitHub)：dc27e4b..c945276 推送（同上）
+
+### 下一轮候选
+
+- **note-manager.ts 已闭合**（本轮 1 处 bug 修复 + 真实直接单测落地）。
+- **note-manager.ts 残留计数漂移问题**（本轮测试已记录为「实际行为」，择机修复）：
+  · `updateNote` notebookId 变更为 undefined（移出笔记本）：guard `updates.notebookId !== undefined` 跳过调整块，旧笔记本 noteCount 不递减
+  · `restoreNote` 不回补笔记本 noteCount（deleteNote 已 -- 但 restoreNote 不 ++）
+  · `permanentlyDeleteNote` 不调整笔记本 noteCount（物理删笔记但 notebook 计数不 --）
+  · `createTag` 的 noteCount 恒 0（全模块无递增点，getTagList sortBy='count' 实际无意义）
+  · `search` 排序无 string 分支（sortBy='title' 实际不排序，与 getNoteList 不一致）
+- **lib 域零覆盖纯模块延续**（performance.ts / rbac.ts / logger.ts / visualization/utils.ts / security/index.ts / analytics-manager.ts / note-manager.ts 已闭合；剩余 Top 候选）：
+  - `src/lib/todos/todo-manager.ts` / `comments/comment-manager.ts` / `calendar/calendar-manager.ts` / `knowledge-base/knowledge-base-manager.ts` / `collaboration/collaboration-manager.ts`（同型内存 Map 单例 manager，可仿 note-manager/bi-manager 模式）—— 下一轮 Top 1
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **同型「inline 模拟」测试文件清理**（与 performance.ts/rbac.ts 同型，名义有测试实为零真实覆盖）：
+  - `src/__tests__/lib/tenant-security.test.ts`（inline 模拟数据，未 import `@/lib/utils/tenant-security`；源文件 DB-coupled，价值低）
+  - `src/lib/utils/__tests__/security.test.ts`（co-located，在 include `src/__tests__/**` 之外从不运行，与已删 performance 同型死代码，可复核后清理）
+  - 其它 inline 模拟测试（password-validation / thumbnail-security / path-security / url-sanitize / jwt-parse / ai-input-limits / soft-delete）需逐个核对其源文件是否已有别处真实覆盖
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
