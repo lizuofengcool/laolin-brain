@@ -12522,3 +12522,109 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+
+## 2026-07-06 04:00 自动迭代
+
+### 背景与优先级判断
+
+- 沙箱工作目录为空，先 `git clone origin`（origin=Gitee）+ 补 `github` remote，`git config user.email=uploader@local / user.name=uploader` 就位。
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 一致，均停在 `d48ee17`（第九十九轮 worklog commit）。本地 HEAD=`d48ee17`，工作树干净，无遗留未提交改动、无未推送 commit。无需 rebase、无需 force。
+- **优先级 1 复核（逐文件实证）**：6 个关键文件当前实现体均确认 CLOSED，状态与第九十七/九十八/九十九轮一致，无回退：
+  - `src/lib/db/tenant-db.ts`：`raw` getter + `transaction` 均 `console.warn(new Error().stack[3])` 调用方堆栈软审计。✅
+  - `src/lib/payment/alipay.ts`：`verifyRSA2Sign` 用 `createVerify('RSA-SHA256')` 真实验签，缺 sign/publicKey 返回 false。✅
+  - `src/lib/payment/wechat.ts`：`verifyWechatSign` 用 APIv3 key `createHmac('sha256')` + `timingSafeEqual`，`decryptResource` 用 `aes-256-gcm`。✅
+  - `src/lib/cloud-sync/sync-engine.ts`：`keep_both` 先取云端数据，本地 `update` 重命名为 `[冲突副本]`，云端版本 `create` 为新 id。✅
+  - `src/app/api/files/route.ts`：GET 走 `createTenantDb`，裸 `db.$queryRaw`/`db.$transaction` 均带 `"tenantId" = ${tenantId}`。✅
+  - `src/__tests__/lib/api-auth.test.ts`：期望 4 字段、`async`、query param 拒绝、`plan:'free'` 自动建租户。✅
+- 结论：优先级 1 全部闭合，本轮不重复修。优先级 2 可落地功能均被「需外部服务/待产品决策」阻塞。延续优先级 3（lib 域零覆盖纯模块直接单测），切入第九十九轮「下一轮候选」Top 1：`src/lib/visualization/utils.ts`。
+- **候选确认**：`src/lib/visualization/utils.ts` 此前零真实覆盖（grep `@/lib/visualization` 在 `src/__tests__` 下无任何命中）。模块是纯 math/string/Date 格式化 + 内存数组归约，仅依赖 `./types`（CHART_COLORS 常量 + DataPoint/ChartConfig/ExportOptions 接口），无任何运行时外部依赖（downloadFile 除外，走 jsdom + URL.createObjectURL mock 即可），适合直接断言锁定控制流。
+
+### 本轮开发（lib/visualization/utils.ts 5 工具对象 32 方法真实直接单测 · 零覆盖模块补全）
+
+`src/lib/visualization/utils.ts` 的 5 个导出工具对象共 32 个方法：
+- **formatUtils**（6）：formatNumber / formatPercent / formatCurrency / formatFileSize / formatDate / formatTime
+- **dataUtils**（11）：groupBy / sum / average / max / min / sort / topN / calculatePercentages / normalize / generateTimeSeries / unique
+- **chartUtils**（5）：getColors / getColor / generateGradient / calculateSize / getResponsiveConfig
+- **exportUtils**（4）：toCSV / toJSON / downloadFile / exportChartData
+- **statsUtils**（6）：standardDeviation / median / mode / quantile / correlation / detectOutliers
+
+本轮新建 `src/__tests__/lib/visualization/utils.test.ts`（123 用例，真实 import）。
+
+**控制流锁定（123 用例覆盖 5 工具对象 32 方法）**：
+- **formatUtils**：
+  - formatNumber（5）：`<1000` 直接 toFixed；`>=1000` 走 K 缩写（含边界 1000 → "1.00K"）；`>=1000000` 走 M 缩写；decimals 默认 2 可显式 0；**负值恒 `<1000` 落 else 不走 K/M 缩写**（`-1500` → "-1500.00"——锁定 `value >= 1000` 对负数恒假的非预期路径）。
+  - formatPercent（3）：`value*100.toFixed + '%'`；默认 decimals 1 四舍五入；负值与 `>1` 值同公式。
+  - formatCurrency（2）：默认 currency '¥' decimals 2；自定义 currency/decimals 透传。
+  - formatFileSize（5）：`bytes===0` → "0 B"；1/1023 落 B 档；1024 边界进 KB；MB/GB/TB 跨档；**parseFloat 去尾零**（2048 → "2 KB" 而非 "2.00 KB"）。
+  - formatDate（4）：默认 `YYYY-MM-DD`；自定义 `YYYY-MM-DD HH:mm`；**padStart(2,'0') 补零** 月/日/时/分；接受字符串日期输入。
+  - formatTime（4）：0→"0:00"；`<60`→`m:ss`；60/3599 边界仍走 m:ss（`h===0`）；`>=3600`→`h:mm:ss`。
+- **dataUtils**：
+  - groupBy（3）：按 key 分组；空数组→`{}`；缺失 key 的项归入 `undefined` 组。
+  - sum（4）：默认 key='value'；空数组→0；缺失 value 按 0 累加（`item[key] || 0`）；自定义 key 与负值。
+  - average（3）：sum/length；空数组→0（除零守卫）；单元素返回自身。
+  - max/min（4）：分别返回最大/最小；空数组→0；全负数正常工作。
+  - sort（5）：默认 desc；asc 升序；**不改原数组**（`[...data]` 浅拷贝）；缺失 value 按 0 排序；空数组→空数组。
+  - topN（4）：取前 N desc；n=0→`[]`；n>长度→全量 desc；自定义 key。
+  - calculatePercentages（4）：percentage = value/total；保留原字段（`...item` 展开）；**total=0 → percentage 全 0**（除零守卫）；空数组→空数组。
+  - normalize（4）：normalized = (value-min)/range；**range=0 → normalized 全 0**（除零守卫）；保留原字段；空数组→空数组。
+  - generateTimeSeries（6）：day 闭区间含两端；每项 value=0 且 date 是独立 Date 实例（修改一项不影响其他项，锁定 `new Date(current)` 副本）；week 跨 7 天；month 跨月；start===end→单元素；end 早于 start→空数组（while 条件不满足）。
+  - unique（5）：无 key 基本类型去重；无 key 对象按引用去重（Set 行为）；有 key 按 key 值去重；保留首次出现项；空数组→空数组。
+- **chartUtils**：
+  - getColors（3）：default 默认；soft/dark/business 配色；未知 scheme→回退 default（`CHART_COLORS[scheme] || CHART_COLORS.default`）。
+  - getColor（3）：index 0 取首色；index 超长取模回绕（`index % colors.length`）；指定 scheme。
+  - generateGradient（3）：默认 opacity 0.3→hex '4d'（`Math.round(0.3*255)=77→'4d'`）；opacity 1→'ff'；opacity 0→padStart 补零 '00'。
+  - calculateSize（3）：宽容器（高不超容器高→返回推导值）；窄容器（高超容器高→重算宽=容器高*aspectRatio）；自定义 aspectRatio。
+  - getResponsiveConfig（2）：覆盖 width 保留其它字段；不改原 config（`...config` 浅拷贝）。
+- **exportUtils**：
+  - toCSV（5）：空数组→''；默认列取 `Object.keys(data[0])`；自定义 columns；**字符串含逗号→双引号包裹**（仅逗号转义，不转义引号）；**null/undefined→''**（`value ?? ''`）。
+  - toJSON（2）：pretty=true 默认缩进 2；pretty=false 紧凑。
+  - downloadFile（3）：构造 blob+链接+点击+移除+revoke；默认 mimeType='text/plain'；自定义 mimeType 透传（用 `vi.stubGlobal('URL', ...)` mock createObjectURL/revokeObjectURL + spy `document.createElement` 拦截 `a.click`）。
+  - exportChartData（4）：format=csv→下载 `<filename>.csv`（默认 filename='chart-data'）；format=json→下载 `.json`；自定义 filename 透传；未知 format→`console.warn` 不触发下载（spy `console.warn`）。
+- **statsUtils**：
+  - standardDeviation（4）：空数组→0；单元素→0；全等数据→0；`[1,2,3,4,5]` 总体标准差=sqrt(2)（variance=sum((x-mean)^2)/n 总体方差，非样本方差）。
+  - median（5）：空数组→0；奇数长度→中间元素；偶数长度→中间两元素均值；单元素→自身；不改原数组（`[...data]` 拷贝）。
+  - mode（5）：空数组→null；单众数；**多众数取首次达 maxFreq 的**（先到先得，`frequency[value] > maxFreq` 严格大于）；全等→该值；单元素→自身。
+  - quantile（6）：空数组→0；q=0→最小值；q=1→最大值；q=0.5 命中整数位置→等价中位数（奇数长度）；**q=0.5 非整数位置→线性插值**（偶数长度 `sorted[base] + rest * (sorted[base+1] - sorted[base])`）；不改原数组。
+  - correlation（5）：空数组→0；长度不等→0；完全正相关→1；完全负相关→-1；**零分母（一方恒定）→0**（守卫 `denominator === 0 ? 0 : ...`）。
+  - detectOutliers（5）：空数组→`[]`；**std===0（恒等数据）→`[]`**（守卫）；默认 threshold=3 检测 Z-score 超 3（用 10 个 10 + 1 个 100，z(100)≈3.16>3）；自定义 threshold 更低检出更多；无离群→`[]`。
+
+### 验证
+
+- `npm ci --ignore-scripts --no-audit --no-fund`（沙箱无 node_modules；repo 追踪 `package-lock.json`+`bun.lock` 非 pnpm-lock.yaml，故用 npm ci 忠实于 tracked lockfile，不产生 stray pnpm-lock.yaml；21s，975 packages）
+- `npx prisma generate`（补 PrismaClient 类型，供 tsc 全项目类型检查）
+- `npx tsc --noEmit`：**0 错误**。本轮改动零类型错误（纯新建测试，源码无改动）。
+- `npx vitest run src/__tests__/lib/visualization/utils.test.ts`：**123/123 通过**（35ms tests）。首轮 1 处测试逻辑错误（非源码 bug）失败一次：
+  - detectOutliers 默认 threshold=3 用例：原数据 `[1,2,3,4,100]` 的 z(100)≈2.0（mean=22, std≈39，100 自身大幅抬高 std），未超 3。改为 10 个 10 + 1 个 100（n=11，单一大离群点 z ≈ √(n-1) ≈ 3.16 > 3），通过。
+- `npx vitest run` 全量 **3048/3048 通过**（145 文件，170s），零回归。测试数较上轮 2925 增加 123（新增文件），文件数 144→145（+1）。
+
+### 改动量
+
+1 文件：`src/__tests__/lib/visualization/utils.test.ts`（新建，+1002 行）。1 dev commit。纯测试改动，无源码改动。
+
+### Commit
+
+- `bae2e07` test(lib): visualization/utils.ts 5 工具对象 32 方法真实直接单测，零覆盖模块补全
+
+### 推送
+
+- origin (Gitee)：d48ee17..bae2e07 推送（含本轮 worklog commit）
+- github (GitHub)：d48ee17..bae2e07 推送
+
+### 下一轮候选
+
+- **visualization/utils.ts 已闭合**（本轮真实直接单测落地）。
+- **lib 域零覆盖纯模块延续**（performance.ts、rbac.ts、logger.ts、visualization/utils.ts 已闭合；剩余 Top 候选）：
+  - `src/lib/security/index.ts`（PasswordPolicy + COMMON_PASSWORDS + node:crypto 哈希；DataEncryptor/DataMasker/RateLimiter/RequestSigner/XSSProtection/SQLInjectionProtection/PathTraversalProtection/FileUploadSecurity 多类，表面大但纯逻辑；注意与 `src/lib/utils/security.ts` 是不同文件）—— 下一轮 Top 1
+  - `src/lib/analytics/analytics-manager.ts`（calculateBasicStatistics 等确定性数学，重断言友好）
+  - `src/lib/notes/note-manager.ts` / `todos/todo-manager.ts` / `comments/comment-manager.ts` / `calendar/calendar-manager.ts` / `knowledge-base/knowledge-base-manager.ts` / `collaboration/collaboration-manager.ts`（均为内存 Map 单例 manager，可仿 bi-manager.test.ts 用 `vi.resetModules()` + dynamic import 取新鲜单例）
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **同型「inline 模拟」测试文件清理**（与 performance.ts/rbac.ts 同型，名义有测试实为零真实覆盖）：
+  - `src/__tests__/lib/tenant-security.test.ts`（inline 模拟数据，未 import `@/lib/utils/tenant-security`；源文件 DB-coupled，价值低）
+  - `src/lib/utils/__tests__/security.test.ts`（co-located，在 include `src/__tests__/**` 之外从不运行，与已删 performance 同型死代码，可复核后清理）
+  - 其它 inline 模拟测试（password-validation / thumbnail-security / path-security / url-sanitize / jwt-parse / ai-input-limits / soft-delete）需逐个核对其源文件是否已有别处真实覆盖
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
