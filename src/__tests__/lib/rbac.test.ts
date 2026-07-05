@@ -1,312 +1,494 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect } from "vitest";
+import {
+  ROLE_NAMES,
+  PERMISSION_NAMES,
+  getRolePermissions,
+  hasPermission,
+  hasAllPermissions,
+  hasAnyPermission,
+  getAllRoles,
+  getAllPermissions,
+  getPermissionsByModule,
+  compareRoles,
+  isRoleHigher,
+  isRoleLower,
+} from "@/lib/rbac";
+import type { Role, Permission } from "@/lib/rbac";
 
-// 角色类型
-type Role = "owner" | "admin" | "member" | "viewer";
+/**
+ * 直接覆盖 src/lib/rbac.ts 的 10 个运行时导出（2 常量 + 8 函数）。
+ *
+ * 历史背景：本文件早期版本用「模拟」内联副本测试——自行声明 Role/Permission
+ * 类型、ROLE_PERMISSIONS 映射、hasPermission/compareRoles 等函数——从未 import
+ * 真实模块，故 src/lib/rbac.ts 长期零真实覆盖。更糟的是内联副本与真实模块存在
+ * 三处实质性偏离，使测试给出错误信心：
+ *
+ *   1. 权限名：内联用 `workspace:view`/`workspace:manage`，真实模块用 `space:*`
+ *   2. admin 权限集：内联副本让 admin 缺 `user:remove`/`setting:storage`/
+ *      `comment:delete`，并据此断言"管理员不应拥有 user:remove"——但真实模块
+ *      的 admin **确实拥有** user:remove（仅缺 user:changeRole 与 billing:manage）
+ *   3. 三个函数签名/语义不同：getPermissionsByModule（真实无参，返回全量分组；
+ *      内联副本接受 role 参数）、getAllRoles/getAllPermissions（真实返回
+ *      `{role,name}`/`{permission,name}` 对象数组；内联副本返回字符串数组）
+ *
+ * 本文件改为真实 import + 控制流锁定，纠正上述错误断言。
+ */
 
-// 权限类型
-type Permission =
-  // 文件管理
-  | "file:upload"
-  | "file:download"
-  | "file:delete"
-  | "file:share"
-  | "file:view"
-  | "file:edit"
-  // 文件夹管理
-  | "folder:create"
-  | "folder:delete"
-  | "folder:rename"
-  | "folder:view"
-  // 用户管理
-  | "user:invite"
-  | "user:remove"
-  | "user:changeRole"
-  | "user:view"
-  // 设置管理
-  | "setting:view"
-  | "setting:edit"
-  | "setting:storage"
-  // 计费管理
-  | "billing:view"
-  | "billing:manage"
-  // AI功能
-  | "ai:use"
-  | "ai:manage"
-  // 团队空间
-  | "workspace:view"
-  | "workspace:manage"
-  // 评论
-  | "comment:view"
-  | "comment:create"
-  | "comment:delete";
+// ==================== 常量导出 ====================
 
-// 角色权限映射
-const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
-  owner: [
-    // 所有权限
-    "file:upload", "file:download", "file:delete", "file:share", "file:view", "file:edit",
-    "folder:create", "folder:delete", "folder:rename", "folder:view",
-    "user:invite", "user:remove", "user:changeRole", "user:view",
-    "setting:view", "setting:edit", "setting:storage",
-    "billing:view", "billing:manage",
-    "ai:use", "ai:manage",
-    "workspace:view", "workspace:manage",
-    "comment:view", "comment:create", "comment:delete",
-  ],
-  admin: [
-    "file:upload", "file:download", "file:delete", "file:share", "file:view", "file:edit",
-    "folder:create", "folder:delete", "folder:rename", "folder:view",
-    "user:invite", "user:view", // 管理员可以邀请但不能移除或改角色
-    "setting:view", "setting:edit",
-    "billing:view",
-    "ai:use", "ai:manage",
-    "workspace:view", "workspace:manage",
-    "comment:view", "comment:create", "comment:delete",
-  ],
-  member: [
-    "file:upload", "file:download", "file:share", "file:view", "file:edit",
-    "folder:create", "folder:rename", "folder:view",
-    "user:view",
-    "setting:view",
-    "ai:use",
-    "workspace:view",
-    "comment:view", "comment:create",
-  ],
-  viewer: [
-    "file:download", "file:view",
-    "folder:view",
-    "setting:view",
-    "workspace:view",
-    "comment:view",
-  ],
-};
-
-// 角色等级（用于比较）
-const ROLE_LEVELS: Record<Role, number> = {
-  owner: 4,
-  admin: 3,
-  member: 2,
-  viewer: 1,
-};
-
-describe("RBAC角色权限系统", () => {
-  describe("角色权限定义", () => {
-    it("所有者应该拥有所有权限", () => {
-      const ownerPermissions = ROLE_PERMISSIONS.owner;
-      const allPermissions = new Set(ownerPermissions);
-
-      // 验证包含关键权限
-      expect(allPermissions.has("file:delete")).toBe(true);
-      expect(allPermissions.has("user:remove")).toBe(true);
-      expect(allPermissions.has("billing:manage")).toBe(true);
-      expect(allPermissions.has("workspace:manage")).toBe(true);
-    });
-
-    it("管理员应该拥有大部分管理权限", () => {
-      const adminPermissions = new Set(ROLE_PERMISSIONS.admin);
-
-      expect(adminPermissions.has("file:delete")).toBe(true);
-      expect(adminPermissions.has("user:invite")).toBe(true);
-      expect(adminPermissions.has("setting:edit")).toBe(true);
-    });
-
-    it("管理员不应该拥有所有者专属权限", () => {
-      const adminPermissions = new Set(ROLE_PERMISSIONS.admin);
-
-      expect(adminPermissions.has("user:remove")).toBe(false);
-      expect(adminPermissions.has("user:changeRole")).toBe(false);
-      expect(adminPermissions.has("billing:manage")).toBe(false);
-    });
-
-    it("成员应该拥有基础使用权限", () => {
-      const memberPermissions = new Set(ROLE_PERMISSIONS.member);
-
-      expect(memberPermissions.has("file:upload")).toBe(true);
-      expect(memberPermissions.has("file:download")).toBe(true);
-      expect(memberPermissions.has("file:edit")).toBe(true);
-      expect(memberPermissions.has("comment:create")).toBe(true);
-    });
-
-    it("成员不应该拥有管理权限", () => {
-      const memberPermissions = new Set(ROLE_PERMISSIONS.member);
-
-      expect(memberPermissions.has("file:delete")).toBe(false);
-      expect(memberPermissions.has("user:invite")).toBe(false);
-      expect(memberPermissions.has("setting:edit")).toBe(false);
-    });
-
-    it("访客应该只有只读权限", () => {
-      const viewerPermissions = new Set(ROLE_PERMISSIONS.viewer);
-
-      expect(viewerPermissions.has("file:view")).toBe(true);
-      expect(viewerPermissions.has("file:download")).toBe(true);
-      expect(viewerPermissions.has("folder:view")).toBe(true);
-      expect(viewerPermissions.has("comment:view")).toBe(true);
-    });
-
-    it("访客不应该拥有写入权限", () => {
-      const viewerPermissions = new Set(ROLE_PERMISSIONS.viewer);
-
-      expect(viewerPermissions.has("file:upload")).toBe(false);
-      expect(viewerPermissions.has("file:edit")).toBe(false);
-      expect(viewerPermissions.has("comment:create")).toBe(false);
-      expect(viewerPermissions.has("folder:create")).toBe(false);
-    });
+describe("ROLE_NAMES", () => {
+  it("恰好定义 4 个角色，键为 owner/admin/member/viewer", () => {
+    expect(Object.keys(ROLE_NAMES).sort()).toEqual([
+      "admin",
+      "member",
+      "owner",
+      "viewer",
+    ]);
   });
 
-  describe("权限检查", () => {
-    // 模拟权限检查函数
-    const hasPermission = (role: Role, permission: Permission): boolean => {
-      return ROLE_PERMISSIONS[role]?.includes(permission) ?? false;
-    };
+  it("每个角色映射到非空中文显示名", () => {
+    expect(ROLE_NAMES.owner).toBe("所有者");
+    expect(ROLE_NAMES.admin).toBe("管理员");
+    expect(ROLE_NAMES.member).toBe("成员");
+    expect(ROLE_NAMES.viewer).toBe("访客");
+  });
+});
 
-    const hasAllPermissions = (role: Role, permissions: Permission[]): boolean => {
-      return permissions.every((p) => hasPermission(role, p));
-    };
-
-    const hasAnyPermission = (role: Role, permissions: Permission[]): boolean => {
-      return permissions.some((p) => hasPermission(role, p));
-    };
-
-    it("应该正确检查单个权限", () => {
-      expect(hasPermission("owner", "file:delete")).toBe(true);
-      expect(hasPermission("admin", "file:delete")).toBe(true);
-      expect(hasPermission("member", "file:delete")).toBe(false);
-      expect(hasPermission("viewer", "file:delete")).toBe(false);
-    });
-
-    it("应该正确检查所有权限", () => {
-      expect(hasAllPermissions("owner", ["file:view", "file:edit", "file:delete"])).toBe(true);
-      expect(hasAllPermissions("admin", ["file:view", "file:edit"])).toBe(true);
-      expect(hasAllPermissions("member", ["file:view", "file:delete"])).toBe(false);
-    });
-
-    it("应该正确检查任意权限", () => {
-      expect(hasAnyPermission("member", ["file:delete", "file:upload"])).toBe(true);
-      expect(hasAnyPermission("viewer", ["file:upload", "file:edit"])).toBe(false);
-    });
-
-    it("应该处理不存在的角色", () => {
-      // @ts-ignore - 测试无效角色
-      expect(hasPermission("invalid" as Role, "file:view")).toBe(false);
-    });
+describe("PERMISSION_NAMES", () => {
+  it("恰好定义 26 个权限（回归守卫：新增权限需同步更新本测试）", () => {
+    expect(Object.keys(PERMISSION_NAMES)).toHaveLength(26);
   });
 
-  describe("角色等级比较", () => {
-    // 模拟角色比较函数
-    const compareRoles = (role1: Role, role2: Role): number => {
-      return ROLE_LEVELS[role1] - ROLE_LEVELS[role2];
-    };
-
-    const isRoleHigher = (role1: Role, role2: Role): boolean => {
-      return compareRoles(role1, role2) > 0;
-    };
-
-    const isRoleLower = (role1: Role, role2: Role): boolean => {
-      return compareRoles(role1, role2) < 0;
-    };
-
-    it("所有者应该等级最高", () => {
-      expect(isRoleHigher("owner", "admin")).toBe(true);
-      expect(isRoleHigher("owner", "member")).toBe(true);
-      expect(isRoleHigher("owner", "viewer")).toBe(true);
-    });
-
-    it("管理员应该高于成员和访客", () => {
-      expect(isRoleHigher("admin", "member")).toBe(true);
-      expect(isRoleHigher("admin", "viewer")).toBe(true);
-    });
-
-    it("成员应该高于访客", () => {
-      expect(isRoleHigher("member", "viewer")).toBe(true);
-    });
-
-    it("相同角色应该相等", () => {
-      expect(compareRoles("admin", "admin")).toBe(0);
-    });
-
-    it("应该正确判断低等级", () => {
-      expect(isRoleLower("viewer", "member")).toBe(true);
-      expect(isRoleLower("member", "admin")).toBe(true);
-      expect(isRoleLower("admin", "owner")).toBe(true);
-    });
+  it("覆盖 8 个模块前缀：file/folder/user/setting/billing/ai/space/comment", () => {
+    const modules = new Set(
+      Object.keys(PERMISSION_NAMES).map((p) => p.split(":")[0])
+    );
+    expect(modules).toEqual(
+      new Set([
+        "file",
+        "folder",
+        "user",
+        "setting",
+        "billing",
+        "ai",
+        "space",
+        "comment",
+      ])
+    );
   });
 
-  describe("权限按模块分组", () => {
-    // 模拟按模块获取权限
-    const getPermissionsByModule = (role: Role): Record<string, Permission[]> => {
-      const permissions = ROLE_PERMISSIONS[role];
-      const modules: Record<string, Permission[]> = {};
+  it("space:* 而非 workspace:*（纠正历史内联副本的权限名偏离）", () => {
+    expect("space:view" in PERMISSION_NAMES).toBe(true);
+    expect("space:manage" in PERMISSION_NAMES).toBe(true);
+    expect("workspace:view" in PERMISSION_NAMES).toBe(false);
+    expect("workspace:manage" in PERMISSION_NAMES).toBe(false);
+  });
 
-      for (const permission of permissions) {
-        const [module] = permission.split(":");
-        if (!modules[module]) {
-          modules[module] = [];
-        }
-        modules[module].push(permission);
+  it("每个权限映射到非空中文显示名", () => {
+    for (const name of Object.values(PERMISSION_NAMES)) {
+      expect(typeof name).toBe("string");
+      expect(name.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ==================== getRolePermissions ====================
+
+describe("getRolePermissions", () => {
+  it("owner 拥有全部 26 个权限（与 PERMISSION_NAMES 一致）", () => {
+    const perms = getRolePermissions("owner");
+    expect(perms).toHaveLength(26);
+    // 内容与 PERMISSION_NAMES 键集一致（顺序无关，用 set 比较）
+    expect(new Set(perms)).toEqual(new Set(Object.keys(PERMISSION_NAMES)));
+  });
+
+  it("admin 拥有 24 个权限（仅缺 user:changeRole 与 billing:manage）", () => {
+    const perms = getRolePermissions("admin");
+    expect(perms).toHaveLength(24);
+    // 关键纠正：真实 admin **拥有** user:remove（历史内联副本错误地断言为缺）
+    expect(perms).toContain("user:remove");
+    expect(perms).toContain("setting:storage");
+    expect(perms).toContain("comment:delete");
+    // owner 专属：user:changeRole、billing:manage
+    expect(perms).not.toContain("user:changeRole");
+    expect(perms).not.toContain("billing:manage");
+  });
+
+  it("member 拥有 14 个权限（基础使用，无删除/管理类）", () => {
+    const perms = getRolePermissions("member");
+    expect(perms).toHaveLength(14);
+    // 有写入但无删除
+    expect(perms).toContain("file:upload");
+    expect(perms).toContain("file:edit");
+    expect(perms).toContain("folder:rename");
+    expect(perms).toContain("comment:create");
+    expect(perms).not.toContain("file:delete");
+    expect(perms).not.toContain("folder:delete");
+    expect(perms).not.toContain("comment:delete");
+    expect(perms).not.toContain("user:invite");
+    expect(perms).not.toContain("user:remove");
+    expect(perms).not.toContain("billing:manage");
+  });
+
+  it("viewer 拥有 6 个只读权限", () => {
+    const perms = getRolePermissions("viewer");
+    expect(perms).toHaveLength(6);
+    expect(perms).toEqual([
+      "file:download",
+      "file:view",
+      "folder:view",
+      "setting:view",
+      "space:view",
+      "comment:view",
+    ]);
+    // 无任何写入/管理权限
+    expect(perms).not.toContain("file:upload");
+    expect(perms).not.toContain("file:edit");
+    expect(perms).not.toContain("folder:create");
+    expect(perms).not.toContain("comment:create");
+  });
+
+  it("未知角色返回空数组（`ROLE_PERMISSIONS[role] || []` 短路回退）", () => {
+    // @ts-expect-error 故意传入非法角色（"invalid" 不属于 Role 联合）测试运行时回退
+    expect(getRolePermissions("invalid")).toEqual([]);
+  });
+});
+
+// ==================== hasPermission ====================
+
+describe("hasPermission", () => {
+  it("owner 对全部 26 个权限均返回 true（全量 sweep）", () => {
+    const allPerms = Object.keys(PERMISSION_NAMES) as Permission[];
+    for (const p of allPerms) {
+      expect(hasPermission("owner", p)).toBe(true);
+    }
+  });
+
+  it("admin 拥有 user:remove（纠正历史副本的错误断言）但缺 user:changeRole/billing:manage", () => {
+    expect(hasPermission("admin", "user:remove")).toBe(true);
+    expect(hasPermission("admin", "setting:storage")).toBe(true);
+    expect(hasPermission("admin", "comment:delete")).toBe(true);
+    expect(hasPermission("admin", "user:changeRole")).toBe(false);
+    expect(hasPermission("admin", "billing:manage")).toBe(false);
+    // admin 仍有 file:delete / user:invite / setting:edit
+    expect(hasPermission("admin", "file:delete")).toBe(true);
+    expect(hasPermission("admin", "user:invite")).toBe(true);
+    expect(hasPermission("admin", "setting:edit")).toBe(true);
+  });
+
+  it("member 有 file:upload/file:edit，缺 file:delete/user:invite/setting:edit", () => {
+    expect(hasPermission("member", "file:upload")).toBe(true);
+    expect(hasPermission("member", "file:edit")).toBe(true);
+    expect(hasPermission("member", "comment:create")).toBe(true);
+    expect(hasPermission("member", "file:delete")).toBe(false);
+    expect(hasPermission("member", "user:invite")).toBe(false);
+    expect(hasPermission("member", "setting:edit")).toBe(false);
+    expect(hasPermission("member", "billing:view")).toBe(false);
+  });
+
+  it("viewer 有 file:view/file:download/folder:view，缺 file:upload/file:edit/comment:create", () => {
+    expect(hasPermission("viewer", "file:view")).toBe(true);
+    expect(hasPermission("viewer", "file:download")).toBe(true);
+    expect(hasPermission("viewer", "folder:view")).toBe(true);
+    expect(hasPermission("viewer", "setting:view")).toBe(true);
+    expect(hasPermission("viewer", "file:upload")).toBe(false);
+    expect(hasPermission("viewer", "file:edit")).toBe(false);
+    expect(hasPermission("viewer", "comment:create")).toBe(false);
+    expect(hasPermission("viewer", "folder:create")).toBe(false);
+  });
+
+  it("未知角色对任意权限返回 false（getRolePermissions 回退 []）", () => {
+    // @ts-expect-error 故意传入非法角色（"invalid" 不属于 Role 联合）
+    expect(hasPermission("invalid", "file:view")).toBe(false);
+  });
+});
+
+// ==================== hasAllPermissions ====================
+
+describe("hasAllPermissions", () => {
+  it("owner 满足任意子集", () => {
+    expect(
+      hasAllPermissions("owner", ["file:view", "file:edit", "file:delete"])
+    ).toBe(true);
+  });
+
+  it("admin 满足其拥有权限的子集", () => {
+    expect(hasAllPermissions("admin", ["file:view", "file:edit"])).toBe(true);
+  });
+
+  it("admin 不满足包含 user:changeRole 的集合", () => {
+    expect(
+      hasAllPermissions("admin", ["file:view", "user:changeRole"])
+    ).toBe(false);
+  });
+
+  it("member 不满足同时含 file:view 与 file:delete 的集合（缺 file:delete）", () => {
+    expect(hasAllPermissions("member", ["file:view", "file:delete"])).toBe(
+      false
+    );
+  });
+
+  it("空权限列表返回 true（vacuous truth：[].every(...) 恒真）", () => {
+    expect(hasAllPermissions("viewer", [])).toBe(true);
+    expect(hasAllPermissions("member", [])).toBe(true);
+  });
+});
+
+// ==================== hasAnyPermission ====================
+
+describe("hasAnyPermission", () => {
+  it("member 命中 file:delete（无）或 file:upload（有）→ true", () => {
+    expect(hasAnyPermission("member", ["file:delete", "file:upload"])).toBe(
+      true
+    );
+  });
+
+  it("viewer 对全部为写入权限的列表返回 false", () => {
+    expect(
+      hasAnyPermission("viewer", ["file:upload", "file:edit", "folder:create"])
+    ).toBe(false);
+  });
+
+  it("owner 对任意非空列表返回 true", () => {
+    expect(
+      hasAnyPermission("owner", ["billing:manage", "user:changeRole"])
+    ).toBe(true);
+  });
+
+  it("空权限列表返回 false（[].some(...) 恒假）", () => {
+    expect(hasAnyPermission("owner", [])).toBe(false);
+    expect(hasAnyPermission("admin", [])).toBe(false);
+  });
+});
+
+// ==================== getAllRoles ====================
+
+describe("getAllRoles", () => {
+  it("返回 4 个角色，按 ROLE_NAMES 插入顺序：owner/admin/member/viewer", () => {
+    const roles = getAllRoles();
+    expect(roles.map((r) => r.role)).toEqual([
+      "owner",
+      "admin",
+      "member",
+      "viewer",
+    ]);
+  });
+
+  it("每项为 { role, name } 形状且 name 与 ROLE_NAMES 一致", () => {
+    const roles = getAllRoles();
+    expect(roles).toHaveLength(4);
+    for (const r of roles) {
+      expect(r).toEqual({ role: r.role, name: ROLE_NAMES[r.role] });
+    }
+  });
+
+  it("首项 owner→所有者，末项 viewer→访客", () => {
+    const roles = getAllRoles();
+    expect(roles[0]).toEqual({ role: "owner", name: "所有者" });
+    expect(roles[3]).toEqual({ role: "viewer", name: "访客" });
+  });
+});
+
+// ==================== getAllPermissions ====================
+
+describe("getAllPermissions", () => {
+  it("返回 26 个权限（与 PERMISSION_NAMES 键数一致）", () => {
+    const perms = getAllPermissions();
+    expect(perms).toHaveLength(26);
+    expect(perms).toHaveLength(Object.keys(PERMISSION_NAMES).length);
+  });
+
+  it("每项为 { permission, name } 形状且 name 与 PERMISSION_NAMES 一致", () => {
+    const perms = getAllPermissions();
+    for (const p of perms) {
+      expect(p).toEqual({
+        permission: p.permission,
+        name: PERMISSION_NAMES[p.permission],
+      });
+      expect(typeof p.name).toBe("string");
+      expect(p.name.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("包含 file:upload / billing:manage / space:manage / comment:delete", () => {
+    const set = new Set(getAllPermissions().map((p) => p.permission));
+    expect(set.has("file:upload")).toBe(true);
+    expect(set.has("billing:manage")).toBe(true);
+    expect(set.has("space:manage")).toBe(true);
+    expect(set.has("comment:delete")).toBe(true);
+  });
+});
+
+// ==================== getPermissionsByModule ====================
+
+describe("getPermissionsByModule", () => {
+  it("返回 8 个模块（file/folder/user/setting/billing/ai/space/comment）", () => {
+    const modules = getPermissionsByModule();
+    expect(Object.keys(modules).sort()).toEqual([
+      "ai",
+      "billing",
+      "comment",
+      "file",
+      "folder",
+      "setting",
+      "space",
+      "user",
+    ]);
+  });
+
+  it("不接受 role 参数：返回全量权限分组（非单角色权限分组）", () => {
+    // 真实签名无参——传入 role 也会被忽略，返回的是 PERMISSION_NAMES 全量分组
+    // @ts-expect-error 故意传参验证签名无参语义
+    const withArg = getPermissionsByModule("viewer");
+    const noArg = getPermissionsByModule();
+    expect(withArg).toEqual(noArg);
+    // file 模块应是全量 6 个权限（PERMISSION_NAMES 中所有 file:*），而非 viewer 的 2 个
+    expect(withArg.file).toHaveLength(6);
+  });
+
+  it("各模块权限数：file=6 folder=4 user=4 setting=3 billing=2 ai=2 space=2 comment=3", () => {
+    const modules = getPermissionsByModule();
+    expect(modules.file).toHaveLength(6);
+    expect(modules.folder).toHaveLength(4);
+    expect(modules.user).toHaveLength(4);
+    expect(modules.setting).toHaveLength(3);
+    expect(modules.billing).toHaveLength(2);
+    expect(modules.ai).toHaveLength(2);
+    expect(modules.space).toHaveLength(2);
+    expect(modules.comment).toHaveLength(3);
+    // 合计 26
+    const total = Object.values(modules).reduce((s, arr) => s + arr.length, 0);
+    expect(total).toBe(26);
+  });
+
+  it("每项为 { permission, name } 形状，且 name 与 PERMISSION_NAMES 一致", () => {
+    const modules = getPermissionsByModule();
+    for (const [mod, perms] of Object.entries(modules)) {
+      for (const p of perms) {
+        expect(p.permission.startsWith(`${mod}:`)).toBe(true);
+        expect(p).toEqual({
+          permission: p.permission,
+          name: PERMISSION_NAMES[p.permission],
+        });
       }
-
-      return modules;
-    };
-
-    it("应该正确按模块分组权限", () => {
-      const modules = getPermissionsByModule("owner");
-
-      expect(modules["file"]).toBeDefined();
-      expect(modules["folder"]).toBeDefined();
-      expect(modules["user"]).toBeDefined();
-      expect(modules["setting"]).toBeDefined();
-    });
-
-    it("文件模块应该包含文件相关权限", () => {
-      const modules = getPermissionsByModule("owner");
-      const filePermissions = modules["file"];
-
-      expect(filePermissions).toContain("file:upload");
-      expect(filePermissions).toContain("file:download");
-      expect(filePermissions).toContain("file:delete");
-      expect(filePermissions).toContain("file:view");
-    });
-
-    it("访客的文件模块应该只有查看和下载", () => {
-      const modules = getPermissionsByModule("viewer");
-      const filePermissions = modules["file"];
-
-      expect(filePermissions).toContain("file:view");
-      expect(filePermissions).toContain("file:download");
-      expect(filePermissions).not.toContain("file:upload");
-      expect(filePermissions).not.toContain("file:delete");
-    });
+    }
   });
 
-  describe("所有角色列表", () => {
-    // 模拟获取所有角色
-    const getAllRoles = (): Role[] => {
-      return ["owner", "admin", "member", "viewer"];
-    };
+  it("file 模块含 file:upload/file:download/file:delete/file:share/file:view/file:edit", () => {
+    const filePerms = new Set(
+      getPermissionsByModule().file.map((p) => p.permission)
+    );
+    expect(filePerms).toEqual(
+      new Set([
+        "file:upload",
+        "file:download",
+        "file:delete",
+        "file:share",
+        "file:view",
+        "file:edit",
+      ])
+    );
+  });
+});
 
-    const getAllPermissions = (): Permission[] => {
-      const allPermissions = new Set<Permission>();
-      for (const role of getAllRoles()) {
-        for (const permission of ROLE_PERMISSIONS[role]) {
-          allPermissions.add(permission);
-        }
+// ==================== compareRoles ====================
+
+describe("compareRoles", () => {
+  // roleOrder = ['owner','admin','member','viewer']（index 0..3）
+  // index1 < index2 → 1（role1 更高）；index1 > index2 → -1；相等 → 0
+
+  it("owner 高于 admin/member/viewer → 1", () => {
+    expect(compareRoles("owner", "admin")).toBe(1);
+    expect(compareRoles("owner", "member")).toBe(1);
+    expect(compareRoles("owner", "viewer")).toBe(1);
+  });
+
+  it("admin 高于 member/viewer → 1，低于 owner → -1", () => {
+    expect(compareRoles("admin", "member")).toBe(1);
+    expect(compareRoles("admin", "viewer")).toBe(1);
+    expect(compareRoles("admin", "owner")).toBe(-1);
+  });
+
+  it("member 高于 viewer → 1，低于 owner/admin → -1", () => {
+    expect(compareRoles("member", "viewer")).toBe(1);
+    expect(compareRoles("member", "owner")).toBe(-1);
+    expect(compareRoles("member", "admin")).toBe(-1);
+  });
+
+  it("viewer 低于 owner/admin/member → -1", () => {
+    expect(compareRoles("viewer", "owner")).toBe(-1);
+    expect(compareRoles("viewer", "admin")).toBe(-1);
+    expect(compareRoles("viewer", "member")).toBe(-1);
+  });
+
+  it("相同角色返回 0", () => {
+    expect(compareRoles("owner", "owner")).toBe(0);
+    expect(compareRoles("admin", "admin")).toBe(0);
+    expect(compareRoles("member", "member")).toBe(0);
+    expect(compareRoles("viewer", "viewer")).toBe(0);
+  });
+
+  it("反对称性：compareRoles(a,b) === -compareRoles(b,a)（a≠b）", () => {
+    // 对角线 a===b 时两侧均为 0，但 -0 经 Object.is 与 0 不等（toBe 用 Object.is），
+    // 故仅对相异角色验证反对称性；对角线由"相同角色返回 0"用例覆盖。
+    const roles: Role[] = ["owner", "admin", "member", "viewer"];
+    for (const a of roles) {
+      for (const b of roles) {
+        if (a === b) continue;
+        expect(compareRoles(a, b)).toBe(-compareRoles(b, a));
       }
-      return Array.from(allPermissions);
-    };
+    }
+  });
+});
 
-    it("应该返回所有4种角色", () => {
-      const roles = getAllRoles();
-      expect(roles.length).toBe(4);
-      expect(roles).toContain("owner");
-      expect(roles).toContain("admin");
-      expect(roles).toContain("member");
-      expect(roles).toContain("viewer");
-    });
+// ==================== isRoleHigher / isRoleLower ====================
 
-    it("应该返回所有权限", () => {
-      const permissions = getAllPermissions();
-      expect(permissions.length).toBeGreaterThan(20);
-    });
+describe("isRoleHigher", () => {
+  it("owner 高于 admin/member/viewer", () => {
+    expect(isRoleHigher("owner", "admin")).toBe(true);
+    expect(isRoleHigher("owner", "member")).toBe(true);
+    expect(isRoleHigher("owner", "viewer")).toBe(true);
+  });
+
+  it("admin 高于 member/viewer，不高于 owner", () => {
+    expect(isRoleHigher("admin", "member")).toBe(true);
+    expect(isRoleHigher("admin", "viewer")).toBe(true);
+    expect(isRoleHigher("admin", "owner")).toBe(false);
+  });
+
+  it("相同角色返回 false（compareRoles === 0，不 > 0）", () => {
+    expect(isRoleHigher("owner", "owner")).toBe(false);
+    expect(isRoleHigher("admin", "admin")).toBe(false);
+  });
+
+  it("viewer 不高于任何角色", () => {
+    expect(isRoleHigher("viewer", "member")).toBe(false);
+    expect(isRoleHigher("viewer", "admin")).toBe(false);
+    expect(isRoleHigher("viewer", "owner")).toBe(false);
+  });
+});
+
+describe("isRoleLower", () => {
+  it("viewer 低于 member/admin/owner", () => {
+    expect(isRoleLower("viewer", "member")).toBe(true);
+    expect(isRoleLower("viewer", "admin")).toBe(true);
+    expect(isRoleLower("viewer", "owner")).toBe(true);
+  });
+
+  it("member 低于 admin/owner，不低于 viewer", () => {
+    expect(isRoleLower("member", "admin")).toBe(true);
+    expect(isRoleLower("member", "owner")).toBe(true);
+    expect(isRoleLower("member", "viewer")).toBe(false);
+  });
+
+  it("相同角色返回 false（compareRoles === 0，不 < 0）", () => {
+    expect(isRoleLower("owner", "owner")).toBe(false);
+    expect(isRoleLower("viewer", "viewer")).toBe(false);
+  });
+
+  it("owner 不低于任何角色", () => {
+    expect(isRoleLower("owner", "admin")).toBe(false);
+    expect(isRoleLower("owner", "member")).toBe(false);
+    expect(isRoleLower("owner", "viewer")).toBe(false);
   });
 });
