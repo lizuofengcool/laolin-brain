@@ -12354,3 +12354,83 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-06 02:00 自动迭代
+
+### 背景与优先级判断
+
+- 沙箱工作目录为空，先 `git clone origin`（origin=Gitee）+ 补 `github` remote，`git config user.email=uploader@local / user.name=uploader` 就位。
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 一致，均停在 `f9b7c44`（第九十七轮 worklog commit）。本地 HEAD=`f9b7c44`，工作树干净，无遗留未提交改动、无未推送 commit。无需 rebase、无需 force。
+- **优先级 1 复核（逐文件实证，第九十七轮已全量复核过，本轮快速再确认）**：6 个关键文件当前实现体均确认 CLOSED，状态与第九十七轮一致，无回退：
+  - `src/lib/db/tenant-db.ts`：`raw` getter + `transaction` 均 `console.warn(new Error().stack[3])` 调用方堆栈软审计，`rawDb` 无审计导出已移除。✅
+  - `src/lib/payment/alipay.ts`：`verifyRSA2Sign` 用 `createVerify('RSA-SHA256')` + base64 sign + `RSA_PKCS1_PADDING` 真实验签，缺 sign/publicKey 返回 false（非"非空即通过"）；配置真实密钥时 createPayment/queryPayment/refund 显式 `success:false`。✅
+  - `src/lib/payment/wechat.ts`：`verifyWechatSign` 用 APIv3 key `createHmac('sha256')` + `timingSafeEqual` 恒定时间比较，缺字段拒绝；`decryptResource` 用 `aes-256-gcm`（auth tag + AAD）真解密。✅
+  - `src/lib/cloud-sync/sync-engine.ts`：`keep_both` 先 `fetchCloudFileData` 取云端数据，本地 `update` 重命名为 `[冲突副本] ${fileName}` 保留本地版本，云端版本 `create` 为新 id 文件并存；`resolveConflict` 头部 `findUnique({where:{id,tenantId}})` 跨租户守卫。✅
+  - `src/app/api/files/route.ts`：GET 走 `createTenantDb(tenantId)`；POST dedup 走 TenantDb，裸 `db.$queryRaw`/`db.$transaction` 均显式带 `"tenantId" = ${tenantId}`。✅
+  - `src/__tests__/lib/api-auth.test.ts`：期望 4 字段、`async` await、query param token 期望 401、`plan:'free'` 自动建租户。✅
+- 结论：优先级 1 全部闭合，本轮不重复修。优先级 2 可落地功能均被「需外部服务/待产品决策」阻塞。延续优先级 3（lib 域零覆盖纯模块直接单测），切入第九十七轮「下一轮候选」Top 1：`src/lib/rbac.ts`。
+- **候选确认**：`src/__tests__/lib/rbac.test.ts` 与第九十七轮 performance.ts 同型问题——inline 自声明 `Role`/`Permission` 类型、`ROLE_PERMISSIONS` 映射、`hasPermission`/`compareRoles` 等函数，**从未 import `@/lib/rbac`**，故 rbac.ts 长期零真实覆盖。且内联副本与真实模块存在三处实质性偏离（见下），使测试给出错误信心。
+
+### 本轮开发（lib/rbac.ts 10 导出真实直接单测 · 纠正内联副本三处偏离）
+
+`src/lib/rbac.ts` 是纯模块（零运行时外部依赖，仅 TypeScript 类型 + Record 映射 + 数组/字符串比较），10 个运行时导出：`ROLE_NAMES` / `PERMISSION_NAMES`（2 常量）+ `getRolePermissions` / `hasPermission` / `hasAllPermissions` / `hasAnyPermission` / `getAllRoles` / `getAllPermissions` / `getPermissionsByModule` / `compareRoles` / `isRoleHigher` / `isRoleLower`（8 函数）。本轮重写 `src/__tests__/lib/rbac.test.ts`（50 用例，真实 import），无 co-located 死代码副本需删除（仅此一个测试文件）。
+
+**内联副本三处实质性偏离（本轮纠正）**：
+1. **权限名**：内联副本用 `workspace:view`/`workspace:manage`，真实模块用 `space:view`/`space:manage`。内联副本测试的"按模块分组"断言基于错误的 `workspace:*` 命名，与真实模块完全脱节。
+2. **admin 权限集**：内联副本让 admin 缺 `user:remove`/`setting:storage`/`comment:delete`，并据此断言"管理员不应拥有 user:remove"——但真实模块的 admin **确实拥有** `user:remove`（仅缺 `user:changeRole` 与 `billing:manage`）。此断言主动误导：会让回归（误删 admin 的 user:remove）通过测试。
+3. **三个函数签名/语义**：`getPermissionsByModule`（真实无参，返回 PERMISSION_NAMES 全量按前缀分组；内联副本接受 `role` 参数返回单角色分组）、`getAllRoles`（真实返回 `{role,name}[]` 对象数组；内联副本返回 `Role[]` 字符串数组）、`getAllPermissions`（真实返回 `{permission,name}[]`；内联副本返回 `Permission[]` 字符串数组）。
+
+**控制流锁定（50 用例覆盖 10 导出）**：
+- **ROLE_NAMES**（2）：恰好 4 键 owner/admin/member/viewer；映射所有者/管理员/成员/访客。
+- **PERMISSION_NAMES**（4）：恰好 26 权限（回归守卫）；覆盖 8 模块前缀；**`space:*` 而非 `workspace:*`**（纠正偏离 1）；每权限非空中文名。
+- **getRolePermissions**（5）：owner=26（与 PERMISSION_NAMES 键集一致）；admin=24（**含 user:remove/setting:storage/comment:delete，缺 user:changeRole/billing:manage**——纠正偏离 2）；member=14（有 upload/edit/rename/comment:create，缺 delete/invite/remove/billing）；viewer=6（精确数组 `[file:download,file:view,folder:view,setting:view,space:view,comment:view]`）；未知角色→`[]`（`|| []` 短路回退）。
+- **hasPermission**（5）：owner 全 26 权限 sweep 全 true；**admin 有 user:remove（纠正偏离 2 的错误断言）、缺 user:changeRole/billing:manage**；member/upload+edit 有、delete+invite+setting:edit 无；viewer/view+download 有、upload+edit+comment:create 无；未知角色→false。
+- **hasAllPermissions**（5）：owner 任意子集 true；admin 子集 true；admin 含 user:changeRole → false；member 含 file:delete → false；**空列表 → true（vacuous truth，`[].every` 恒真）**。
+- **hasAnyPermission**（4）：member 命中 upload → true；viewer 全写入列表 → false；owner 任意非空 → true；**空列表 → false（`[].some` 恒假）**。
+- **getAllRoles**（3）：4 角色按插入顺序 owner/admin/member/viewer；每项 `{role,name}` 且 name 与 ROLE_NAMES 一致；首项 owner→所有者、末项 viewer→访客。
+- **getAllPermissions**（3）：26 权限（与 PERMISSION_NAMES 键数一致）；每项 `{permission,name}` 且 name 一致；含 file:upload/billing:manage/space:manage/comment:delete。
+- **getPermissionsByModule**（5）：8 模块；**不接受 role 参数（传参被忽略，返回全量分组——纠正偏离 3）**；各模块数 file=6/folder=4/user=4/setting=3/billing=2/ai=2/space=2/comment=3 合计 26；每项 `{permission,name}` 且 permission 以模块前缀开头；file 模块含 6 个 file:* 权限。
+- **compareRoles**（6）：owner>admin/member/viewer→1；admin>member/viewer→1、<owner→-1；member>viewer→1、<owner/admin→-1；viewer<所有→-1；相同→0；**反对称性（a≠b：对角线 a===b 时 `-0` 经 `Object.is` 与 `0` 不等，toBe 失败，故仅验证相异角色；对角线由"相同角色返回 0"用例覆盖）**。
+- **isRoleHigher**（4）：owner 高于所有；admin 高于 member/viewer 不高于 owner；相同→false；viewer 不高于任何。
+- **isRoleLower**（4）：viewer 低于所有；member 低于 admin/owner 不低于 viewer；相同→false；owner 不低于任何。
+
+### 验证
+
+- `npm ci --ignore-scripts --no-audit --no-fund`（沙箱无 node_modules；repo 追踪 `package-lock.json`+`bun.lock` 非 pnpm-lock.yaml，故用 npm ci 忠实于 tracked lockfile，不产生 stray pnpm-lock.yaml；21s，975 packages）
+- `npx prisma generate`（补 PrismaClient 类型，供 tsc 全项目类型检查）
+- `npx tsc --noEmit`：**0 错误**。注：第九十七轮记录的 1 处既有基线错误 `src/components/ui/collapsible.tsx:3 Cannot find module '@radix-ui/react-collapsible'` 系 **pnpm 严格 hoisting 产物**（pnpm 不把非直接依赖提升到顶层 node_modules）；本轮用 npm ci（扁平 hoisting），`@radix-ui/react-collapsible` 作为传递依赖被提升至顶层可解析，基线错误消失。本轮改动零类型错误（纯重写测试，源码无改动；两处 `@ts-expect-error` 均被合法消费：`getRolePermissions("invalid")` / `hasPermission("invalid",...)` 的 TS2345 参数类型错误，`getPermissionsByModule("viewer")` 的 TS2554 参数个数错误）。
+- `npx vitest run src/__tests__/lib/rbac.test.ts`：50/50 通过（41ms tests）。首轮反对称性用例因 `-0`/`0` 的 `Object.is` 不等失败一次，修正为仅验证 a≠b 后通过。
+- `npx vitest run` 全量 **2868/2868 通过**（143 文件，159s），零回归。测试数较上轮 2839 增加 29（重写文件由 21 inline 模拟用例→50 真实用例，净 +29）。文件数维持 143。
+
+### 改动量
+
+1 文件：`src/__tests__/lib/rbac.test.ts`（重写，+489/-307 行）。1 dev commit。纯测试改动，无源码改动。
+
+### Commit
+
+- `ff687fc` test(lib): rbac.ts 10 导出真实直接单测，纠正内联副本三处偏离
+
+### 推送
+
+- origin (Gitee)：f9b7c44..ff687fc 推送（含本轮 worklog commit）
+- github (GitHub)：f9b7c44..ff687fc 推送
+
+### 下一轮候选
+
+- **rbac.ts 已闭合**（本轮真实直接单测落地，三处内联副本偏离已纠正）。
+- **lib 域零覆盖纯模块延续**（performance.ts、rbac.ts 已闭合；剩余 Top 候选）：
+  - `src/lib/visualization/utils.ts`（formatUtils/dataUtils/statsUtils/exportUtils，纯 math/string/Date 格式化，仅依赖 ./types）
+  - `src/lib/notes/note-manager.ts` / `todos/todo-manager.ts` / `comments/comment-manager.ts` / `calendar/calendar-manager.ts` / `knowledge-base/knowledge-base-manager.ts` / `collaboration/collaboration-manager.ts`（均为内存 Map 单例 manager，可仿 bi-manager.test.ts 用 `vi.resetModules()` + dynamic import 取新鲜单例）
+  - `src/lib/analytics/analytics-manager.ts`（calculateBasicStatistics 等确定性数学，重断言友好）
+  - `src/lib/logging/logger.ts`（Logger 单例，level 过滤 + maxLogs 驱逐，纯内存）
+  - `src/lib/security/index.ts`（PasswordPolicy + COMMON_PASSWORDS + node:crypto 哈希辅助；注意与 `src/lib/utils/security.ts` 是不同文件）
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **同型「inline 模拟」测试文件清理**（与 performance.ts/rbac.ts 同型，名义有测试实为零真实覆盖）：
+  - `src/__tests__/lib/tenant-security.test.ts`（inline 模拟数据，未 import `@/lib/utils/tenant-security`；源文件 DB-coupled，价值低）
+  - `src/lib/utils/__tests__/security.test.ts`（co-located，在 include `src/__tests__/**` 之外从不运行，与已删 performance 同型死代码，可复核后清理）
+  - 其它 inline 模拟测试（password-validation / thumbnail-security / path-security / url-sanitize / jwt-parse / ai-input-limits / soft-delete）需逐个核对其源文件是否已有别处真实覆盖
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
