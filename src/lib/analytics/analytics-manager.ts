@@ -515,6 +515,9 @@ export class AnalyticsManager {
           for (let d = 0; d < dimensions; d++) {
             newCentroids[j][d] /= counts[j];
           }
+        } else {
+          // 空簇保留旧质心，避免质心被重置为零向量而在下一轮迭代中错误吸引数据点
+          newCentroids[j] = [...centroids[j]];
         }
       }
 
