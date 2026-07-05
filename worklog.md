@@ -12205,3 +12205,75 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-06 00:00 自动迭代
+
+### 背景与优先级判断
+
+- 沙箱工作目录为空，先 `git clone origin`（origin=Gitee）+ 补 `github` remote，`git config user.email=uploader@local / user.name=uploader` 就位。
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 不一致——origin 已在 `1566115`（领先 3 个 commit：`d953a79`/`3666685`/`1566115`，均为 Tauri 配置修复，发生在第九十五轮 worklog 之后但未记录），github 停在 `908dd6f`。本地 HEAD=`1566115` 与 origin 一致。
+- **遗留未推送 commit 清理**：上述 3 个 Tauri commit 已在 Gitee 但未推 GitHub，先 `git push github main` 同步（`908dd6f..1566115`）。这 3 个 commit 未补 worklog 记录（属上一轮遗留），本次仅同步双端、不再回溯补记，避免改写历史。
+- 工作树干净，进入新一轮开发。
+- **优先级 1 复核（逐文件实证，未轻信 worklog 闭合结论）**：
+  - `src/lib/db/tenant-db.ts`：`raw` getter 与 `transaction` 均加 `console.warn(new Error().stack[3])` 调用方堆栈软审计，文件尾注释说明 rawDb 不再无审计导出。✅ 闭合
+  - `src/lib/payment/alipay.ts`：`verifyRSA2Sign` 用 `createVerify('RSA-SHA256')` + base64 解码 + `RSA_PKCS1_PADDING` 真实验签，`normalizePublicKey` 自动补 PEM 头尾；已配置真实密钥时 createPayment/queryPayment/refund 均**显式失败**而非静默返回 mock。✅ 闭合
+  - `src/lib/payment/wechat.ts`：`verifyWechatSign` 用 APIv3 密钥 HMAC-SHA256 + `timingSafeEqual` 恒定时间比较，缺字段/未配置直接拒绝；`decryptResource` 用 `aes-256-gcm`（32 字节密钥校验 + auth tag）真解密，解密失败拒绝回调。✅ 闭合
+  - `src/lib/cloud-sync/sync-engine.ts`：`keep_both` 分支先 `fetchCloudFileData` 取云端数据，再把本地文件 `update` 重命名为 `[冲突副本] ${fileName}`（保留本地版本），最后把云端版本 `create` 为新 id 文件（与本地并存）；函数头 `findUnique({ where: { id: fileId, tenantId } })` 跨租户守卫覆盖后续裸 id 操作。✅ 闭合
+  - `src/__tests__/lib/api-auth.test.ts`：期望 4 字段（userId/email/tenantId/role）、`async` await、query param token 不被接受（期望 401）。✅ 闭合
+  - `src/app/api/files/route.ts`：上轮已复核闭合，本轮跳过重复扫描。
+- 结论：优先级 1 全部实证闭合。优先级 2 可落地功能均被「需外部服务/待产品决策」阻塞（grep TODO/FIXME 命中处均在 ai/model-manager、ai/document-qna、plugins/registry、monitoring、wecom、billing.service 等需真实外部 API/邮件/通知集成的桩，沙箱无凭证不宜臆造）。延续优先级 3（lib 域零覆盖纯模块直接单测）。
+- 候选筛选：交叉比对 `src/lib/**/*.ts` 与 `src/__tests__/**/*.test.ts`。`src/lib/theme.ts` 零直接覆盖（`grep theme` 在 `__tests__` 无 import 命中），11 个运行时导出（DEFAULT_THEME/getThemeMode/setThemeMode/applyTheme/prefersDarkMode/getResolvedTheme/onThemeChange/onSystemThemeChange/initTheme/toggleTheme/getThemeModeName），仅依赖 window/localStorage/document/matchMedia（jsdom 默认未实现 matchMedia，需测试内 polyfill）。切入此项。
+
+### 本轮开发（lib/theme.ts 11 导出直接单测 · matchMedia polyfill + SSR + 旧浏览器回退）
+
+`src/lib/theme.ts` 实现浅色/深色/跟随系统三模式主题，11 个导出围绕 localStorage 读写、root class/colorScheme 应用、matchMedia 系统偏好检测、themechange 自定义事件、mediaQuery change 监听展开。本轮新增 `src/__tests__/lib/theme.test.ts`（45 用例，按 11 导出分组）：
+
+**关键 mock 设计**：
+- `window.matchMedia` 是**函数** `(query: string) => MediaQueryList`，非直接 MQL 对象。故 `makeMatchMediaFn(matches)` 返回 `{ fn, mql }`，`fn` 是函数返回固定 mql，mql 含 `addEventListener/removeEventListener/addListener/removeListener` 与 `__emit(next)` 触发 change 事件。`installMatchMedia(matches)` 一行安装并返回 mql。
+- SSR 分支（`typeof window === 'undefined'`）经 `withWindowUndefined(fn)` 辅助函数用 `Object.defineProperty(globalThis, 'window', {value: undefined})` 临时置空并 try/finally 恢复原 descriptor。**不使用 `vi.stubGlobal('window', undefined)` + `vi.unstubAllGlobals()`**——实证 jsdom 下 `vi.unstubAllGlobals` 对 `window` 这种内置 global 不可靠（首轮 SSR 测试后 window 未能恢复，后续 14 个 beforeEach 全部 `Cannot read properties of undefined`）。
+- 旧浏览器回退：`delete mql.addEventListener/removeEventListener` 模拟无现代 API，验证 `onSystemThemeChange` 回退 `addListener/removeListener`。
+
+**控制流锁定（45 用例覆盖）**：
+- **DEFAULT_THEME**（1）：=== 'system'。
+- **getThemeMode**（7）：无值→system；light/dark/system 直读；非法值（purple）/空串→system 回退；SSR→system。
+- **setThemeMode**（5）：dark 写 localStorage + add dark class + colorScheme=dark + 派发 themechange CustomEvent(detail.mode)；light 移除 dark class；非法 mode console.warn 不写不派发；SSR 无操作。
+- **applyTheme**（5）：dark/light 直接映射；system+prefersDark→dark；system+!prefersDark→light；SSR 无操作。
+- **prefersDarkMode**（3）：matches=true→true；false→false；SSR→false。
+- **getResolvedTheme**（5）：light/dark 忽略系统直返；system+prefersDark→dark；system+!prefersDark→light；DEFAULT_THEME(system)+prefersDark→dark。
+- **onThemeChange**（3）：回调收 detail.mode；取消函数移除后不再回调；SSR 返回 no-op。
+- **onSystemThemeChange**（4）：现代路径 addEventListener 注册回调收 matches；removeEventListener 取消；旧浏览器回退 addListener；SSR no-op。
+- **initTheme**（4）：读 localStorage 应用；无值+system+!prefersDark→light；无值+system+prefersDark→dark；SSR no-op。
+- **toggleTheme**（4）：resolved=light→设 dark；resolved=dark→设 light；system+prefersDark(resolved=dark)→light；system+!prefersDark(resolved=light)→dark（锁定 toggle 按 resolved 在 light/dark 间切换，非 system 切换）。
+- **getThemeModeName**（4）：light→浅色模式；dark→深色模式；system→跟随系统；三名称互不重复。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；58.8s）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮无关）。本轮改动零类型错误（纯新增测试，源码无改动）。
+- `npx vitest run src/__tests__/lib/theme.test.ts`：45/45 通过（29ms tests）
+- `npx vitest run` 全量 2796/2796 通过（143 文件，123s），零回归（基线 2751/142 + 本轮 45/1 = 2796/143）
+
+### 改动量
+
+1 文件（src/__tests__/lib/theme.test.ts +483），1 dev commit。纯新增测试，无源码改动。
+
+### Commit
+
+- `fb601b4` test(lib): theme.ts 11 导出直接单测（matchMedia polyfill + SSR 分支 + 旧浏览器回退）
+
+### 推送
+
+- origin (Gitee)：1566115..fb601b4 推送（含 worklog commit）
+- github (GitHub)：先补推遗留 3 个 Tauri commit（908dd6f..1566115），再推本轮（1566115..fb601b4）
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（theme.ts 已闭合）：
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb 或全量 IDB mock，成本较高，择机）
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，沙箱无凭证，仅可测纯函数片段，待条件具备）
+  - `src/lib/utils/security.ts` / `tenant-permissions.ts` / `tenant-security.ts`（已有测试，复核覆盖率）
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
