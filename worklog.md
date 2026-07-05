@@ -12713,3 +12713,93 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-06 22:00 自动迭代
+
+### 背景与优先级判断
+
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 一致，均停在 `dd09cfc`（第一百零一轮 worklog commit）。本地 HEAD=`b69926a`（本轮已先落 2 个 dev commit，见下），ahead 2，无远端更新、无需 rebase、无需 force。
+- **优先级 1 复核**：6 个关键文件（tenant-db / alipay / wechat / sync-engine / files route / api-auth.test）在第一百轮已逐文件实证 CLOSED，本轮不重复核，结论：优先级 1 全部闭合。优先级 2 可落地功能均被「需外部服务/待产品决策」阻塞。延续优先级 3（lib 域零覆盖纯模块直接单测），切入第一百零一轮「下一轮候选」Top 1：`src/lib/analytics/analytics-manager.ts`。
+- **候选确认**：`src/lib/analytics/analytics-manager.ts` 此前零真实覆盖——`grep analyticsManager` 在 `src/__tests__` 下无任何命中；唯一运行时外部 import 是 `statsUtils` from `../visualization`（纯数学，已在第一百轮覆盖）。模块自身是纯内存态（tasks/reports Map）+ 确定性数学（线性回归、K-Means、Z-score/IQR 异常检测、相关性 P 值正态近似、预测置信区间），适合直接单测。
+- **读源码写测试时发现 1 处真实逻辑 bug**（非测试断言错误，是源码缺陷），故本轮 = 1 个 fix commit + 1 个 test commit，符合「1-3 个相关 commit」规模控制。
+
+### 本轮开发（analytics-manager.ts 1 处逻辑 bug 修复 + 11 单元 58 用例直接单测 · 零覆盖模块补全）
+
+**fix — `cluster` K-Means 空簇质心被重置为零向量 bug**：
+
+`cluster()` 迭代更新质心时，`newCentroids` 通过 `Array.from({length: actualK}, () => new Array(dimensions).fill(0))` 初始化为零向量。原循环 `for (j) { if (counts[j] > 0) { newCentroids[j][d] /= counts[j]; } }` 仅在簇非空时计算均值，空簇分支被跳过 → 空簇的 `newCentroids[j]` 仍为零向量。下一轮迭代中零向量会通过 `euclideanDistance` 错误吸引距原点近的数据点（dist=0 时直接被分配到该空簇），破坏聚类结果，使原本应稳定分离的簇被合并到原点附近。
+
+**回归构造**：`cluster([[0,0],[5,5],[5,5]], 3)`，洗牌不变序（`vi.spyOn(Math, 'random').mockReturnValue(0.5)` 使 `sort(() => 0.5 - 0.5)` 稳定）→ 初始质心 `[[0,0],[5,5],[5,5]]`。第一轮：`[0,0]→c0`，`[5,5]→c1`，`[5,5]→c1`，c2 空。原 bug：c2 质心被置为 `[0,0]`（零向量），第二轮 `[0,0]` 距 c0 和 c2 都是 0，按 `closest=0`（首遇）分配给 c0，c2 永远空、质心永远零。修复后：c2 保留旧质心 `[5,5]`，silhouetteScore=1（两簇各自完美紧致）。
+
+修复：空簇分支 `newCentroids[j] = [...centroids[j]]` 保留上一轮质心，避免被重置为零向量。这是 K-Means 经典实现中「空簇处理」的标准策略之一（保留旧质心比随机重选更稳定）。
+
+安全性：`grep cluster(` 在 `src` 下仅命中源文件 + 本测试 + worklog，**无任何调用方**，修复不破坏既有调用语义。
+
+**test — `src/__tests__/lib/analytics/analytics-manager.test.ts`（新建，58 用例 / 810 行）**：
+
+直接 import 本模块 `AnalyticsManager` 类与 `analyticsManager` 单例，逐方法锁定控制流。仿 bi-manager.test.ts 的 `vi.resetModules()` + dynamic `await import` 取新鲜单例模式（fresh class → fresh instance → fresh tasks/reports Maps），每个用例前状态隔离。11 个 describe：
+
+- **单例导出**（2）：`analyticsManager` 为 `AnalyticsManager` 实例；`getInstance()` 多次返回同一实例；`resetModules` 后 `analyticsManager` 为全新实例（状态隔离）。
+- **calculateBasicStatistics**（5）：空数组 14 字段全 0 兜底；单值（mode=null、stdDev=0）；偶数中位数（avg of 2 mid）；奇数中位数（mid）；statsUtils 透传（mode 返回首遇值、stdDev 为总体标准差、quantile 线性插值）。
+- **analyzeTrend**（7）：长度不符/`<2` 兜底全 0；斜率/截距/R² 计算验证；增长率 `firstY=0` 兜底；`trend` 阈值 `Math.abs(growthRate) > 0.05`（0.05 恰 stable、0.06 up）；完美线性 R²=1；预测点 predicted 值断言。
+- **analyzeComparison**（4）：差值/百分比相对首组计算；`biggestChange` 按 `Math.abs(diff)` 最大选取；`isSignificant` 阈值 `Math.abs(changePercent) > 0.1`；空组兜底 mean=0。
+- **analyzeCorrelation**（5）：完全正相关 r=1、完全负相关 r=-1、独立变量 r≈0；长度不符 statsUtils 返回 0 → pValue 正态近似计算；strength 阈值（0.2/0.4/0.7）、direction 阈值（±0.1）。
+- **detectAnomalies**（8）：Z-score 默认阈值 3 + severity 分级（`>threshold*2` high、`>threshold*1.5` medium）；`std=0` 早退（anomalyCount=0）；IQR 上下界 `q1-threshold*iqr` / `q3+threshold*iqr` + severity 按 iqrRatio 分级；空数据兜底；method 参数透传。
+- **forecast**（6）：`n<2` 兜底 predictions 空 + accuracy 全 0；完美线性 `[2,4,6,8]` 预测 2 期 → period 4/5、value 10/12、confidence 0.95/0.9 递减；置信区间含 `stdDev*1.96` margin（`stdDev=0` 时 fallback `value*0.1`）；MAPE `y=0` 兜底 0；准确度 mae/mse/rmse/mape 计算验证。
+- **cluster**（8）：空数据 / `k<=0` 兜底；单簇全归 c0；`K>N` 时 `actualK=min(k,N)` 截断；`Math.random` spy 固定返回 0.5 稳定洗牌；**空簇保留旧质心回归断言**（验证本次 fix：c2.size=0 但 center 仍 `[5,5]` 而非 `[0,0]`）；完美分离两簇 silhouetteScore=1；欧氏距离断言。
+- **generateInsights**（7）：各统计类型（basic/trend/comparison/correlation/anomaly/forecast/cluster）返回的洞察串；空数据兜底；多类型混合。
+- **createTask/getTask/getTasks/getReport**（5）：任务生命周期（pending→running→completed）；async `executeTask` 用 `vi.runAllTimersAsync()` 推进 2×`setTimeout(100)`；`completedAt` 断言为 `new Date(NOW_TS + 200)`；`getTasks` 过滤、`getReport` 聚合。
+- **模块导出**（1）：`AnalyticsManager` 类与 `analyticsManager` 单例均导出。
+
+**K-Means 稳定化**：`cluster` 初始化 `data.sort(() => Math.random() - 0.5)` 洗牌选 k 个初始质心，非确定性。cluster 用例 `beforeEach` `vi.spyOn(Math, 'random').mockReturnValue(0.5)` 使 `0.5 - 0.5 = 0` → `sort` 比较函数恒返回 0 → 数组保持原序，初始质心可预测。
+
+**executeTask 时间戳**：`executeTask` 内 `setTimeout(100)` 设 status=running 后再 `setTimeout(100)` 执行分析并设 completed。测试 `vi.useFakeTimers()` + `vi.setSystemTime(NOW)`，`await vi.runAllTimersAsync()` 推进两轮 timer，`completedAt` 严格断言为 `new Date(NOW_TS + 200)`（不是 NOW，避免常见误判）。
+
+**浮点精度容差**：两处用 `toBeCloseTo` 而非 `toBe`：
+- `analyzeCorrelation` 长度不符（r=0）用例：`normalCDF(0)` 多项式系数在 x=0 处浮点误差致 `pValue ≈ 1.0000003`（非精确 1），改 `toBeCloseTo(1, 5)`。
+- `forecast` 完美线性第 1 期 confidence：`0.95 - 1*0.05` 在 IEEE 754 浮点下 `= 0.8999999999999999`（非精确 0.9），改 `toBeCloseTo(0.9, 10)`。
+
+两处均为 IEEE 754 浮点表示固有限制（非源码 bug），测试侧用容差断言匹配实现。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/analytics/analytics-manager.test.ts`：**58/58 通过**（129ms tests）。首轮 2 处测试断言浮点精度错误（非源码 bug）各失败一次：
+  - `pValue` 用例：原 `toBe(1)`，实际 `1.00000029980098`，改 `toBeCloseTo(1, 5)`。
+  - `confidence` 用例：原 `toBe(0.9)`，实际 `0.8999999999999999`，改 `toBeCloseTo(0.9, 10)`。
+- `npx tsc --noEmit`：**0 错误**。源码修复（空簇保留旧质心）零类型影响。
+- `npx vitest run` 全量 **3233/3233 通过**（147 文件，125s），零回归。测试数较上轮 3175 增加 58（新增文件），文件数 146→147（+1）。
+
+### 改动量
+
+2 文件：
+- `src/lib/analytics/analytics-manager.ts`（修改，+3/-0）— 1 处逻辑 bug 修复（空簇保留旧质心）
+- `src/__tests__/lib/analytics/analytics-manager.test.ts`（新建，+810 行）— 58 用例
+
+2 dev commit。
+
+### Commit
+
+- `6d0ddfe` fix(lib): analytics cluster 空簇质心被重置为零向量 bug 修复
+- `b69926a` test(lib): analytics-manager.ts 9 单元 58 用例直接单测，零覆盖模块补全
+
+### 推送
+
+- origin (Gitee)：dd09cfc..b69926a 推送（含本轮 2 dev commit；worklog commit 待本次追加后另推）
+- github (GitHub)：dd09cfc..b69926a 推送（同上）
+
+### 下一轮候选
+
+- **analytics-manager.ts 已闭合**（本轮 1 处 bug 修复 + 真实直接单测落地）。
+- **lib 域零覆盖纯模块延续**（performance.ts / rbac.ts / logger.ts / visualization/utils.ts / security/index.ts / analytics-manager.ts 已闭合；剩余 Top 候选）：
+  - `src/lib/notes/note-manager.ts`（内存 Map 单例 manager，可仿 bi-manager.test.ts 用 `vi.resetModules()` + dynamic import 取新鲜单例）—— 下一轮 Top 1
+  - `src/lib/todos/todo-manager.ts` / `comments/comment-manager.ts` / `calendar/calendar-manager.ts` / `knowledge-base/knowledge-base-manager.ts` / `collaboration/collaboration-manager.ts`（同型内存 Map 单例 manager）
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **同型「inline 模拟」测试文件清理**（与 performance.ts/rbac.ts 同型，名义有测试实为零真实覆盖）：
+  - `src/__tests__/lib/tenant-security.test.ts`（inline 模拟数据，未 import `@/lib/utils/tenant-security`；源文件 DB-coupled，价值低）
+  - `src/lib/utils/__tests__/security.test.ts`（co-located，在 include `src/__tests__/**` 之外从不运行，与已删 performance 同型死代码，可复核后清理）
+  - 其它 inline 模拟测试（password-validation / thumbnail-security / path-security / url-sanitize / jwt-parse / ai-input-limits / soft-delete）需逐个核对其源文件是否已有别处真实覆盖
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
