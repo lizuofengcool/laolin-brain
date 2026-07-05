@@ -12277,3 +12277,80 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-06 01:00 自动迭代
+
+### 背景与优先级判断
+
+- 沙箱工作目录为空，先 `git clone origin`（origin=Gitee）+ 补 `github` remote，`git config user.email=uploader@local / user.name=uploader` 就位。
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 一致，均停在 `eb1123a`（第九十六轮 worklog commit）。本地 HEAD=`eb1123a`，工作树干净，无遗留未提交改动、无未推送 commit。无需 rebase、无需 force。
+- **优先级 1 复核（逐文件实证，未轻信 worklog 闭合结论）**：用 search subagent 重读 6 个关键文件的当前实现体，全部确认 CLOSED：
+  - `src/lib/db/tenant-db.ts`：`raw` getter 与 `transaction` 均 `console.warn(new Error().stack[3])` 调用方堆栈软审计，`rawDb` 无审计导出已移除。✅
+  - `src/lib/payment/alipay.ts`：`verifyRSA2Sign` 用 `createVerify('RSA-SHA256')` + base64 + `RSA_PKCS1_PADDING` 真实验签；配置真实密钥时 createPayment/queryPayment/refund 显式 `success:false` 失败而非静默 mock。✅
+  - `src/lib/payment/wechat.ts`：`verifyWechatSign` 用 APIv3 key `createHmac('sha256')` + `timingSafeEqual` 恒定时间比较，缺字段直接拒绝；`decryptResource` 用 `aes-256-gcm`（auth tag + AAD）真解密，解密失败拒绝回调。✅
+  - `src/lib/cloud-sync/sync-engine.ts`：`keep_both` 先 `fetchCloudFileData` 取云端数据，本地 `update` 重命名为 `[冲突副本] ${fileName}` 保留本地版本，云端版本 `create` 为新 id 文件并存；`resolveConflict` 头部 `findUnique({where:{id,tenantId}})` 跨租户守卫。✅
+  - `src/app/api/files/route.ts`：GET 走 `createTenantDb(tenantId)`；POST dedup 走 TenantDb，其余裸 `db.$queryRaw`/`db.$transaction` 均显式带 `"tenantId" = ${tenantId}` WHERE 或 create data（TenantDb.transaction 不注入 tx 上下文之故，租户隔离手动保留）。✅
+  - `src/__tests__/lib/api-auth.test.ts`：期望 4 字段（userId/email/tenantId/role）、`async` await、query param token 期望 401、`plan:'free'` 自动建租户。✅
+- 结论：优先级 1 全部实证闭合，本轮不重复修。优先级 2 可落地功能均被「需外部服务/待产品决策」阻塞。延续优先级 3（lib 域零覆盖纯模块直接单测）。
+- **候选筛选**：用 search subagent 交叉比对 `src/lib/**/*.ts` 与 `src/__tests__/**` 的真实 import 关系（`vi.mock` 不计为直接覆盖；inline「模拟」副本不计为直接覆盖）。产出 Top 12 排名。**关键发现**：`src/lib/utils/performance.ts` 名义上有两个「同名」测试文件，但：
+  - `src/__tests__/lib/performance.test.ts`（在 vitest include 内、会运行）—— 早期版本用「模拟」内联副本（自声明 `parsePaginationParams`/`createPaginatedResult`/`MemoryCache`/`debounce`/`throttle`/`batchProcess`/`concurrentMap` 的本地拷贝），**从未 import 真实模块**，故 `src/lib/utils/performance.ts` 长期零真实覆盖。
+  - `src/lib/utils/__tests__/performance.test.ts`（co-located，在 vitest include `src/__tests__/**` **之外**、从不运行）—— 虽 `import ... from "../performance"`，但调用真实模块**不存在的 API**：`new MemoryCache({defaultTTL})`（真实构造函数是 `defaultTTL: number`）、`cache.has()`（不存在）、`cache.getStats()`（不存在）、`result.hasMore`（真实是 `hasNext`/`hasPrev`）、`createPaginatedResult(data,total,{page,pageSize,skip})`（真实第 3/4 参数是 number）、`batchProcess(items,fn,{batchSize})`（真实第 3 参数是 number）。属误导性死代码：既不运行又描述错误 API。
+- 切入此项：重写 `src/__tests__/lib/performance.test.ts` 为真实 import + 控制流锁定，并删除误导性 co-located 死代码。
+
+### 本轮开发（lib/utils/performance.ts 8 导出真实直接单测 · 删除误导性死代码副本）
+
+`src/lib/utils/performance.ts` 是纯工具模块（仅依赖 Math/Map/Date.now/setTimeout/Promise），8 个运行时导出：`parsePaginationParams` / `createPaginatedResult` / `MemoryCache`（get/set/delete/clear/getOrSet/cleanup/size）/ `globalCache` / `debounce` / `throttle` / `batchProcess` / `concurrentMap`。本轮重写 `src/__tests__/lib/performance.test.ts`（64 用例，真实 import），并删除 `src/lib/utils/__tests__/performance.test.ts`。
+
+**时序策略**：MemoryCache / globalCache / debounce / throttle 四个 describe 用 `vi.useFakeTimers()` + `vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))` 精确控制 `Date.now()` 与 `setTimeout`，afterEach `vi.useRealTimers()` 防泄漏；batchProcess / concurrentMap 用真实 setTimeout 验证真实并发时序。
+
+**控制流锁定（64 用例覆盖 8 导出）**：
+- **parsePaginationParams**（13）：空对象→{page1,pageSize20,skip0,take20}；显式直读；page=0/负数钳制 1；**pageSize=0 经 `||` 短路回退默认 20（非 Math.max 钳位——首轮写错为 1，被测试反推纠正）**；pageSize 负数（truthy）经 `Math.max(1,...)` 钳制 1；pageSize>100 封顶 100；limit 回退；pageSize 优先 limit；skip=(page-1)*pageSize；返回字段恰好 4 个。**（首轮 pageSize=0 断言写成 1，运行失败暴露真实控制流是 `||` 短路回退 20，已修正断言为 20 并补负数→1 用例）**
+- **createPaginatedResult**（7）：首页 hasNext/hasPrev；末页；中间页；**total=0→totalPages=0、hasNext=false（1<0）、hasPrev=false（1>1）**；整除无余页；data 引用不拷贝；返回字段恰好 7 个。
+- **MemoryCache**（11 顶层 + getOrSet 4 + cleanup 4 = 19）：set/get；get 不存在→null；未过期 defaultTTL 窗口内可读（59999ms）；过期 get→null 且删除（size 归 0）；set 显式 ttl 覆盖 defaultTTL；set 无 ttl 走 defaultTTL；delete 存在→true/不存在→false；clear；size；**可存 falsy 值 0/''/false 且 get 能区分于「不存在」**；getOrSet 未命中调 fetcher/命中不调/ttl 透传/**命中 falsy 值 0 不再调 fetcher（get 返回 0，`0 !== null` 真）**；cleanup 仅清过期返回数量/无过期返回 0/全过期返回全部/空缓存返回 0。
+- **globalCache**（3）：是 MemoryCache 实例；默认 TTL 30s（29999 可读/30001 过期）；与新建实例相互独立。
+- **debounce**（5）：同步不执行；延迟后一次；连续多次只执行最后一次（trailing，最新参数）；窗口内新调用重置计时器；参数透传。
+- **throttle**（5）：首次立即执行（leading）；窗口内后续丢弃；窗口结束后恢复；参数透传；窗口内第二次调用参数不覆盖已执行的首次。
+- **batchProcess**（6）：顺序处理；空数组；batchSize>长度单批；默认 batchSize 10；batchSize=1 顺序（并发上限 1）；**processor 抛错 reject 传播**。
+- **concurrentMap**（6）：随机延迟打乱完成顺序仍按 index 对齐返回；并发数不超上限；空数组；concurrency>length 时 worker 数取 length；默认 concurrency 5；**mapper 抛错 reject 传播**。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --ignore-scripts`（沙箱无 node_modules；repo 追踪 package-lock.json/bun.lock 非 pnpm-lock.yaml，pnpm-lock.yaml 留为未跟踪本地产物不提交；58.1s）
+- `npx prisma generate`（补 PrismaClient 类型）
+- `npx tsc --noEmit`：仅 1 处**既有基线错误** `src/components/ui/collapsible.tsx:3` `Cannot find module '@radix-ui/react-collapsible'`（缺失可选 peer 依赖，第六十轮已记录，与本轮无关）。本轮改动零类型错误（纯新增/重写测试 + 删除死代码，源码无改动）。
+- `npx vitest run src/__tests__/lib/performance.test.ts`：64/64 通过（119ms tests）
+- `npx vitest run` 全量 **2839/2839 通过**（143 文件，139s），零回归。文件数维持 143（删除的 co-located 文件本就不在 include 内、不计入；重写的文件原已计入）。测试数较上轮 2796 增加 43（重写文件由 20 模拟用例→64 真实用例，净 +44，与一处模拟用例计数微调合并为 +43）。
+
+### 改动量
+
+2 文件：`src/__tests__/lib/performance.test.ts`（重写，+519/-298 净 +221 行真实用例）、`src/lib/utils/__tests__/performance.test.ts`（删除，-199 行死代码）。1 dev commit。纯测试改动，无源码改动。
+
+### Commit
+
+- `131f94c` test(lib): performance.ts 8 导出真实直接单测，删除误导性死代码副本
+
+### 推送
+
+- origin (Gitee)：eb1123a..131f94c 推送（含本轮 worklog commit）
+- github (GitHub)：eb1123a..131f94c 推送
+
+### 下一轮候选
+
+- **lib 域零覆盖纯模块延续**（performance.ts 已闭合；本轮新增筛选出的 Top 候选）：
+  - `src/lib/rbac.ts`（Role/Permission 类型 + ROLE_PERMISSIONS map + hasPermission/getRolePermissions 等纯比较函数；现有 `src/__tests__/lib/rbac.test.ts` 同样 inline 自声明类型、未 import 真实模块——与 performance.ts 同型问题，可同法重写为真实 import）
+  - `src/lib/visualization/utils.ts`（formatUtils/dataUtils/statsUtils/exportUtils，纯 math/string/Date 格式化，仅依赖 ./types）
+  - `src/lib/notes/note-manager.ts` / `todos/todo-manager.ts` / `comments/comment-manager.ts` / `calendar/calendar-manager.ts` / `knowledge-base/knowledge-base-manager.ts` / `collaboration/collaboration-manager.ts`（均为内存 Map 单例 manager，可仿 bi-manager.test.ts 用 `vi.resetModules()` + dynamic import 取新鲜单例）
+  - `src/lib/analytics/analytics-manager.ts`（calculateBasicStatistics 等确定性数学，重断言友好）
+  - `src/lib/logging/logger.ts`（Logger 单例，level 过滤 + maxLogs 驱逐，纯内存）
+  - `src/lib/security/index.ts`（PasswordPolicy + COMMON_PASSWORDS + node:crypto 哈希辅助；注意与 `src/lib/utils/security.ts` 是不同文件）
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **同型「inline 模拟」测试文件清理**（与 performance.ts 同型，名义有测试实为零真实覆盖）：
+  - `src/__tests__/lib/rbac.test.ts`（inline 自声明 Role/Permission，未 import `@/lib/rbac`）
+  - `src/__tests__/lib/tenant-security.test.ts`（inline 模拟数据，未 import `@/lib/utils/tenant-security`；源文件 DB-coupled，价值低）
+  - `src/lib/utils/__tests__/security.test.ts`（co-located，在 include 之外从不运行，与已删 performance 同型死代码，可复核后清理）
+  - 其它 inline 模拟测试（password-validation / thumbnail-security / path-security / url-sanitize / jwt-parse / ai-input-limits / soft-delete）需逐个核对其源文件是否已有别处真实覆盖
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
