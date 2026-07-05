@@ -12434,3 +12434,91 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+## 2026-07-06 03:00 自动迭代
+
+### 背景与优先级判断
+
+- 沙箱工作目录为空，先 `git clone origin`（origin=Gitee）+ 补 `github` remote，`git config user.email=uploader@local / user.name=uploader` 就位。
+- `git fetch origin/main && git fetch github/main`：双端 HEAD 一致，均停在 `84f0a39`（第九十八轮 worklog commit）。本地 HEAD=`84f0a39`，工作树干净，无遗留未提交改动、无未推送 commit。无需 rebase、无需 force。
+- **优先级 1 复核（逐文件实证）**：6 个关键文件当前实现体均确认 CLOSED，状态与第九十七/九十八轮一致，无回退：
+  - `src/lib/db/tenant-db.ts`：`raw` getter + `transaction` 均 `console.warn(new Error().stack[3])` 调用方堆栈软审计。✅
+  - `src/lib/payment/alipay.ts`：`verifyRSA2Sign` 用 `createVerify('RSA-SHA256')` 真实验签，缺 sign/publicKey 返回 false。✅
+  - `src/lib/payment/wechat.ts`：`verifyWechatSign` 用 APIv3 key `createHmac('sha256')` + `timingSafeEqual`，`decryptResource` 用 `aes-256-gcm`。✅
+  - `src/lib/cloud-sync/sync-engine.ts`：`keep_both` 先取云端数据，本地 `update` 重命名为 `[冲突副本]`，云端版本 `create` 为新 id。✅
+  - `src/app/api/files/route.ts`：GET 走 `createTenantDb`，裸 `db.$queryRaw`/`db.$transaction` 均带 `"tenantId" = ${tenantId}`。✅
+  - `src/__tests__/lib/api-auth.test.ts`：期望 4 字段、`async`、query param 拒绝、`plan:'free'` 自动建租户。✅
+- 结论：优先级 1 全部闭合，本轮不重复修。优先级 2 可落地功能均被「需外部服务/待产品决策」阻塞。延续优先级 3（lib 域零覆盖纯模块直接单测），切入第九十八轮「下一轮候选」Top 1：`src/lib/logging/logger.ts`。
+- **候选确认**：`src/lib/logging/logger.ts` 此前零真实覆盖（grep `@/lib/logging/logger` 在 `src/__tests__` 下无任何命中）。Logger 是纯内存实现（logs 数组 + maxLogs 软上限 + minLevel 过滤 + 控制台镜像输出），仅依赖全局 Date/Math/console，无运行时外部依赖，适合 fake timers + console spy 锁定控制流。注意：`Logger` 类本身**未导出**（仅 `logger` 单例 + `createLoggerMiddleware` + `defaultLogRotationConfig` 导出），故必须通过导出的单例测试，无法 `new Logger()` 取独立实例。
+
+### 本轮开发（lib/logging/logger.ts 17 方法真实直接单测 · 零覆盖模块补全）
+
+`src/lib/logging/logger.ts` 的运行时导出：`logger` 单例（Logger 类的 17 个实例方法）+ `createLoggerMiddleware()` 工厂 + `defaultLogRotationConfig` 常量。本轮新建 `src/__tests__/lib/logging/logger.test.ts`（57 用例，真实 import）。
+
+**隔离策略**：
+- vitest 默认按测试文件隔离模块注册表，跨文件无单例污染。
+- 文件内 `beforeEach` 调 `logger.clear()` + `logger.setMinLevel("debug")` 将单例重置为出厂状态（空 logs、minLevel=debug）。
+- `vi.useFakeTimers()` + `vi.setSystemTime(FIXED_NOW)` 固定时间戳，使 id（含 `Date.now()`）、timestamp、byHour 分组、时间范围过滤全部确定性可断言。
+- `console.debug/info/warn/error` 全部 spy 并 mock 为 no-op，避免污染测试输出，并断言"低于 minLevel 时 `log()` 在 `consoleOutput` 之前早退"。
+
+**控制流锁定（57 用例覆盖 17 实例方法 + middleware + 常量）**：
+- **getMinLevel/setMinLevel**（3）：默认 debug；设置即时反映；往返复位。
+- **log() 级别过滤**（6）：minLevel=debug 全 5 级记录；info 过滤 debug；warn 过滤 debug/info；error 仅 error/fatal；fatal 仅 fatal（边界级别等于 minLevel 时记录）；**低于 minLevel 时 `log()` 在 consoleOutput 之前早退（`console.debug` 未被调用）**——锁定 `levelValues[entry.level] < levelValues[this.minLevel]` 早退分支在 push 与 consoleOutput 之前。
+- **log() 条目形状**（2）：注入 id（正则 `^log_\d+_[a-z0-9]{9}$`）与 timestamp（Date 实例，getTime===FIXED_NOW）；保留传入可选字段（userId/tenantId/module/ipAddress/userAgent/requestId/details/duration/statusCode/method/path）。
+- **便捷方法默认 type/level**（6）：debug/info/warn→type=system；**error/fatal→type=error（非 system，与 debug/info/warn 不同）**——锁定 `error()`/`fatal()` 的 `options?.type || "error"` 默认值；options 透传并覆盖默认 type。
+- **access()**（3）：2xx→level=info；status>=400→warn；**399/400 边界**（399→info、400→warn，锁定 `statusCode >= 400` 三元）；message 格式 `${method} ${path} - ${status} (${duration}ms)`；method/path/statusCode/duration 落库。
+- **operation()**（1）：level=info/type=operation/message=`${action} ${resource}`/module=operation。
+- **audit()**（1）：level=info/type=audit/message=`[AUDIT] ${action} ${resource}`/module=audit。
+- **security()**（4）：severity low/medium/high/critical → level info/warn/error/fatal（锁定三元嵌套映射）；message=`[SECURITY-${SEVERITY}] ${event}`；module=security。
+- **query() 过滤**（8）：type/level/module/userId/tenantId 各自过滤；**时间范围 startTime/endTime**（beforeEach 3 条 @base + 测试加 +60s/+120s 两条，范围 [base+30s, base+150s] 命中后两条）；keyword message 大小写不敏感；**keyword 命中 details 的 JSON.stringify**（锁定 `log.details && JSON.stringify(log.details).toLowerCase().includes(keyword)` 短路）。
+- **query() 排序分页**（5）：默认 timestamp desc；sortBy=timestamp asc；**sortBy=level desc**（按 levelValues 数值倒序：error/warn/info/debug）；分页 page/pageSize + total + 跨页内容；默认 page=1 pageSize=50。
+- **getStats()**（4）：total/byLevel/byType/byModule 计数；**errorRate=(error+fatal)/total*100**（4 条中 2 错误→50）；空日志 errorRate=0/total=0（锁定 `stats.total > 0 ? ... : 0` 除零保护）；byHour 按 `toISOString().slice(0,13)`（YYYY-MM-DDTHH）分桶。
+- **exportLogs()**（4）：json 可 JSON.parse 回原条目；**csv 含逗号字段双引号转义**（`"hello,world"`，锁定 `value.includes(",")` 分支与 `value.replace(/"/g, '""')`）；text 每行 `[ts] [LEVEL] [type] message`；尊重 filter options。
+- **cleanOldLogs()**（2）：删除早于阈值并返回删除数；**保留 timestamp >= olderThan 的边界条目**（锁定 `log.timestamp >= olderThan` 的 `>=` 边界，非 `>`）。
+- **clear()**（1）：清空所有日志。
+- **maxLogs 软上限**（1）：写入 10001 条（每条时间戳递增使 desc 排序确定），裁剪至 10000；**最新 m10000 在 desc 首位、最早 m0 被淘汰、m1 保留**——锁定 `this.logs.slice(-this.maxLogs)` 保留尾部（最新）淘汰头部（最早）。
+- **createLoggerMiddleware()**（3）：成功请求记录 access 日志（method/path/status/duration/ipAddress/userAgent/requestId 从 headers 读取）并透传响应；**next 抛错记录 error 日志（details=error 对象）并 rethrow**；缺省 headers 时 requestId 自动生成 `req_<ts>_<random>`、ipAddress/userAgent 回退 "unknown"（锁定 `|| "unknown"` 与 `|| req_...` 回退链）。
+- **defaultLogRotationConfig**（1）：10MB / 10 文件 / 30 天 / 压缩。
+- **consoleOutput 分发**（2）：info→console.info 且前缀含 `[INFO]`/`[type]`；error/fatal→console.error（锁定 switch 分支 error 与 fatal 共用 case）。
+
+### 验证
+
+- `npm ci --ignore-scripts --no-audit --no-fund`（沙箱无 node_modules；repo 追踪 `package-lock.json`+`bun.lock` 非 pnpm-lock.yaml，故用 npm ci 忠实于 tracked lockfile，不产生 stray pnpm-lock.yaml；21s，975 packages）
+- `npx prisma generate`（补 PrismaClient 类型，供 tsc 全项目类型检查）
+- `npx tsc --noEmit`：**0 错误**。本轮改动零类型错误（纯新建测试，源码无改动）。
+- `npx vitest run src/__tests__/lib/logging/logger.test.ts`：**57/57 通过**（89ms tests）。首轮 2 处测试逻辑错误（非源码 bug）失败一次：
+  1. 时间范围过滤：beforeEach 已写 3 条 @base，原范围 [base+90s, base+150s] 只命中 +120s 一条（+60s < 90s 被排除），断言 2 错误。修正范围为 [base+30s, base+150s] 命中 +60s 与 +120s 两条。
+  2. maxLogs：fake timers 下 10001 条共享同一时间戳，stable desc 排序保持插入顺序，首条为 m1 而非 m10000。修正为每条 `vi.setSystemTime(FIXED_NOW + i)` 递增时间戳，使 desc 排序确定，并增加 m0 淘汰/m1 保留断言。
+- `npx vitest run` 全量 **2925/2925 通过**（144 文件，169s），零回归。测试数较上轮 2868 增加 57（新增文件），文件数 143→144（+1）。
+
+### 改动量
+
+1 文件：`src/__tests__/lib/logging/logger.test.ts`（新建，+668 行）。1 dev commit。纯测试改动，无源码改动。
+
+### Commit
+
+- `f4bee24` test(lib): logger.ts 17 方法真实直接单测，零覆盖模块补全
+
+### 推送
+
+- origin (Gitee)：84f0a39..f4bee24 推送（含本轮 worklog commit）
+- github (GitHub)：84f0a39..f4bee24 推送
+
+### 下一轮候选
+
+- **logger.ts 已闭合**（本轮真实直接单测落地）。
+- **lib 域零覆盖纯模块延续**（performance.ts、rbac.ts、logger.ts 已闭合；剩余 Top 候选）：
+  - `src/lib/visualization/utils.ts`（formatUtils/dataUtils/statsUtils/exportUtils，纯 math/string/Date 格式化，仅依赖 ./types）—— 下一轮 Top 1
+  - `src/lib/security/index.ts`（PasswordPolicy + COMMON_PASSWORDS + node:crypto 哈希；DataEncryptor/DataMasker/RateLimiter/RequestSigner/XSSProtection/SQLInjectionProtection/PathTraversalProtection/FileUploadSecurity 多类，表面大但纯逻辑；注意与 `src/lib/utils/security.ts` 是不同文件）—— 高价值候选
+  - `src/lib/analytics/analytics-manager.ts`（calculateBasicStatistics 等确定性数学，重断言友好）
+  - `src/lib/notes/note-manager.ts` / `todos/todo-manager.ts` / `comments/comment-manager.ts` / `calendar/calendar-manager.ts` / `knowledge-base/knowledge-base-manager.ts` / `collaboration/collaboration-manager.ts`（均为内存 Map 单例 manager，可仿 bi-manager.test.ts 用 `vi.resetModules()` + dynamic import 取新鲜单例）
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **同型「inline 模拟」测试文件清理**（与 performance.ts/rbac.ts 同型，名义有测试实为零真实覆盖）：
+  - `src/__tests__/lib/tenant-security.test.ts`（inline 模拟数据，未 import `@/lib/utils/tenant-security`；源文件 DB-coupled，价值低）
+  - `src/lib/utils/__tests__/security.test.ts`（co-located，在 include `src/__tests__/**` 之外从不运行，与已删 performance 同型死代码，可复核后清理）
+  - 其它 inline 模拟测试（password-validation / thumbnail-security / path-security / url-sanitize / jwt-parse / ai-input-limits / soft-delete）需逐个核对其源文件是否已有别处真实覆盖
+- **billing 域 POST 变更套餐路径**（延续）：`src/app/api/billing/subscription/route.ts` 仅 GET，若后续补 POST handler 可同步补测试
+- **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
+- **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
+- `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
