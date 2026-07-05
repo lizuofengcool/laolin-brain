@@ -316,13 +316,6 @@ export class NoteManager {
 
     const now = new Date();
 
-    // 创建新版本
-    if (updates.content !== undefined) {
-      const currentVersions = this.versions.get(id) || [];
-      const newVersion = currentVersions.length + 1;
-      this.createVersion(note, newVersion, userId, updates.changeLog || '更新内容');
-    }
-
     // 重新计算字数和阅读时间
     if (updates.content) {
       const wordCount = this.calculateWordCount(updates.content);
@@ -331,7 +324,7 @@ export class NoteManager {
       (note as any).readingTime = readingTime;
     }
 
-    // 处理笔记本变更
+    // 处理笔记本变更（须在 Object.assign 之前读取 note.notebookId 旧值）
     if (updates.notebookId !== undefined && updates.notebookId !== note.notebookId) {
       // 从旧笔记本移除
       if (note.notebookId) {
@@ -350,6 +343,16 @@ export class NoteManager {
     }
 
     Object.assign(note, updates, { updatedAt: now });
+
+    // 创建新版本：须在 Object.assign 之后调用，使版本 N 快照记录更新后的内容。
+    // 此前 createVersion 在赋值前调用，会把更新前的旧内容当作新版本快照，
+    // 致使版本历史永远捕获不到更新后的内容（version N 始终等于 version N-1 的内容）。
+    if (updates.content !== undefined) {
+      const currentVersions = this.versions.get(id) || [];
+      const newVersion = currentVersions.length + 1;
+      this.createVersion(note, newVersion, userId, updates.changeLog || '更新内容');
+    }
+
     return note;
   }
 
