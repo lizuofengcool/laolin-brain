@@ -561,16 +561,18 @@ export class RequestSigner {
   }
 
   /**
-   * 生成签名
+   * 计算签名（内部复用）
+   *
+   * sign 与 verify 必须使用同一个 nonce 才能让重算签名匹配。
+   * 历史实现 verify 调用 this.sign(params, timestamp) 会重新生成随机 nonce，
+   * 导致重算签名永远与原签名不一致 → verify 恒返回 false，请求签名功能失效。
+   * 此处抽出纯计算函数，sign 传入新生成的随机 nonce，verify 传入待验签的 nonce。
    */
-  sign(params: Record<string, any>, timestamp?: number): {
-    signature: string;
-    timestamp: number;
-    nonce: string;
-  } {
-    const ts = timestamp || Math.floor(Date.now() / 1000);
-    const nonce = crypto.randomBytes(16).toString("hex");
-
+  private computeSignature(
+    params: Record<string, any>,
+    timestamp: number,
+    nonce: string
+  ): string {
     // 按key排序参数
     const sortedParams = Object.keys(params)
       .sort()
@@ -581,13 +583,22 @@ export class RequestSigner {
 
     // 构造签名字符串
     const signString =
-      JSON.stringify(sortedParams) + ts + nonce + this.secret;
+      JSON.stringify(sortedParams) + timestamp + nonce + this.secret;
 
-    // 计算签名
-    const signature = crypto
-      .createHash("sha256")
-      .update(signString)
-      .digest("hex");
+    return crypto.createHash("sha256").update(signString).digest("hex");
+  }
+
+  /**
+   * 生成签名
+   */
+  sign(params: Record<string, any>, timestamp?: number): {
+    signature: string;
+    timestamp: number;
+    nonce: string;
+  } {
+    const ts = timestamp || Math.floor(Date.now() / 1000);
+    const nonce = crypto.randomBytes(16).toString("hex");
+    const signature = this.computeSignature(params, ts, nonce);
 
     return {
       signature,
@@ -617,14 +628,22 @@ export class RequestSigner {
       };
     }
 
-    // 重新计算签名
-    const expected = this.sign(params, timestamp);
+    // 使用传入的 nonce 重算签名（与 sign 使用同一计算路径）
+    const expectedSignature = this.computeSignature(params, timestamp, nonce);
 
-    // 比较签名（使用timingSafeEqual防止时序攻击）
-    const valid = crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expected.signature)
-    );
+    // 比较签名（使用 timingSafeEqual 防止时序攻击）
+    // timingSafeEqual 在长度不等时抛 RangeError，需先做长度守卫：
+    // 正常 SHA-256 hex 签名均为 64 字符，恶意传入短/长签名时直接判失败而非抛错。
+    const sigBuf = Buffer.from(signature);
+    const expBuf = Buffer.from(expectedSignature);
+    if (sigBuf.length !== expBuf.length) {
+      return {
+        valid: false,
+        reason: "Invalid signature",
+      };
+    }
+
+    const valid = crypto.timingSafeEqual(sigBuf, expBuf);
 
     if (!valid) {
       return {
@@ -704,18 +723,22 @@ export class XSSProtection {
  * SQL注入防护工具
  */
 export class SQLInjectionProtection {
+  // 注意：正则不带 g 标志。detect 用 RegExp.test() 逐个匹配，带 g 标志时 test 会
+  // 维护 lastIndex 状态，跨调用复用同一 pattern 对象会导致"同一恶意输入第二次检测返回 false"
+  // 的漏报（match 命中后 lastIndex 前移，下次从中间开始搜，miss 掉开头的注入特征）。
+  // 仅保留 i 标志做大小写不敏感匹配即可。
   private static dangerousPatterns = [
-    /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|EXEC|EXECUTE|UNION|SCRIPT)\b)/gi,
-    /(--|#|\/\*|\*\/|;)/g,
-    /(\bOR\b|\bAND\b)\s+\d+\s*=\s*\d+/gi,
-    /(\bOR\b|\bAND\b)\s+['"][^'"]*['"]\s*=\s*['"][^'"]*['"]/gi,
-    /\bxp_\w+/gi,
-    /\bsp_\w+/gi,
-    /UNION\s+SELECT/gi,
-    /INTO\s+(OUT|DUMP)FILE/gi,
-    /LOAD_FILE\s*\(/gi,
-    /BENCHMARK\s*\(/gi,
-    /SLEEP\s*\(/gi,
+    /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|EXEC|EXECUTE|UNION|SCRIPT)\b)/i,
+    /(--|#|\/\*|\*\/|;)/,
+    /(\bOR\b|\bAND\b)\s+\d+\s*=\s*\d+/i,
+    /(\bOR\b|\bAND\b)\s+['"][^'"]*['"]\s*=\s*['"][^'"]*['"]/i,
+    /\bxp_\w+/i,
+    /\bsp_\w+/i,
+    /UNION\s+SELECT/i,
+    /INTO\s+(OUT|DUMP)FILE/i,
+    /LOAD_FILE\s*\(/i,
+    /BENCHMARK\s*\(/i,
+    /SLEEP\s*\(/i,
   ];
 
   /**
