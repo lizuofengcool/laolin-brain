@@ -297,15 +297,9 @@ export class KnowledgeBaseManager {
     const kb = this.knowledgeBases.get(item.knowledgeBaseId);
     const now = new Date();
 
-    // 创建新版本
-    if (kb?.settings.versioning && updates.content !== undefined) {
-      const currentVersions = this.versions.get(id) || [];
-      const newVersion = currentVersions.length + 1;
-      this.createVersion(item, newVersion, userId, updates.changeLog || '更新内容');
-    }
-
-    // 重新计算字数和阅读时间
-    if (updates.content) {
+    // 重新计算字数和阅读时间（与版本创建条件一致：content !== undefined，
+    // 此前用 if (updates.content) 真值判断，空串 '' 会跳过重算但仍创建版本，致 wordCount 漂移）
+    if (updates.content !== undefined) {
       const wordCount = this.calculateWordCount(updates.content);
       const readingTime = Math.max(1, Math.ceil(wordCount / 300));
       (item as any).wordCount = wordCount;
@@ -316,6 +310,14 @@ export class KnowledgeBaseManager {
 
     if (updates.status === 'published' && !item.publishedAt) {
       (item as any).publishedAt = now;
+    }
+
+    // 创建新版本：须在 Object.assign 之后调用，createVersion 快照 item.title/content/summary，
+    // 此前在赋值前调用导致新版本记录的是更新前的旧内容，与版本 1 重复，更新后的内容从未入版本史。
+    if (kb?.settings.versioning && updates.content !== undefined) {
+      const currentVersions = this.versions.get(id) || [];
+      const newVersion = currentVersions.length + 1;
+      this.createVersion(item, newVersion, userId, updates.changeLog || '更新内容');
     }
 
     return item;
@@ -592,6 +594,13 @@ export class KnowledgeBaseManager {
         return sortOrder === 'asc'
           ? aVal.getTime() - bVal.getTime()
           : bVal.getTime() - aVal.getTime();
+      }
+      // 此前缺失字符串分支，致 sortBy='title'（KnowledgeSearchParams 合法值）始终返回 0 不排序。
+      // getItemList 的排序已含字符串分支，此处对齐。
+      if (typeof aVal === 'string' && typeof bVal === 'string') {
+        return sortOrder === 'asc'
+          ? aVal.localeCompare(bVal)
+          : bVal.localeCompare(aVal);
       }
       if (typeof aVal === 'number' && typeof bVal === 'number') {
         return sortOrder === 'asc' ? aVal - bVal : bVal - aVal;
