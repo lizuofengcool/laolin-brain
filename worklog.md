@@ -13244,3 +13244,91 @@ CommentManager 构造器公开（非 private 单例），每用例 `new CommentM
   - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
 - **note-manager.ts 残留 1 处漂移**（仍未动，跨多方法单独一轮）：`createTag` 的 `noteCount` 恒 0——todo-manager + calendar-manager 已实现 `applyTagCountDelta` helper 模式，可仿照迁移到 note-manager（注意 note-manager 的 tag 是按 id 还是 name 关联，须先核对）
 - **同型「inline 模拟」测试文件清理**（与 performance.ts/rbac.ts 同型，名义有测试实为零真实覆盖）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts`（co-located 在 include 之外从不运行）等
+
+## 2026-07-07 02:00 自动迭代
+
+**仓库状态**：沙箱重置后 `/workspace/laolin-brain` 不存在，`git clone origin`（Gitee）+ `git remote add github`，`git fetch` 双端。本地 / origin / github 三方均停在 `7ad8899`（第一百零八轮 worklog commit），working tree clean，无遗留改动 / 未推送 commit。双端无远端更新，无需 rebase。`npm install`（package-lock.json，975 包，29s）恢复 node_modules（无 pnpm-lock，按 fallback 用 npm）。
+
+**优先级 1 复核**：5 处已知安全 / 逻辑问题均在前序轮次闭合，本轮逐项核实确认无回退——
+- `tenant-db.ts`：`raw` getter 已带调用堆栈软审计（`new Error().stack` 取 caller）✓
+- `alipay.ts` / `wechat.ts`：已实现真实 `verifyRSA2Sign`（`createVerify('RSA-SHA256')`）/ `verifyWechatSign`，mock 模式受开关门控，注释明确「不再非空即通过」✓
+- `api/files/route.ts`：去重路径已走 `createTenantDb`（`dedupTenantDb.file.findFirst`），配额聚合查询 WHERE 含 tenantId（租户安全）✓
+- `sync-engine.ts` `keep_both`：已改为重命名本地为「[冲突副本]」+ 云端版本以新 id 创建新文件，不再直接覆盖；并前置 `fileId` 跨租户归属校验 ✓
+- `api-auth.test.ts`：已与实现对齐（4 字段 userId/email/tenantId/role、async/await、URL query param 拒绝）✓
+
+无新增优先级 1 问题。本轮转入 worklog「下一轮候选」Top 1——上轮显式标注的 **`src/lib/knowledge-base/knowledge-base-manager.ts`（859 行，零覆盖纯模块）**。
+
+**fix — `src/lib/knowledge-base/knowledge-base-manager.ts`（3 处 bug 修复）**：
+
+1. **updateItem 版本快照记录旧内容**：原实现 `createVersion(item, newVersion, ...)` 在 `Object.assign(item, updates)` 之前调用，而 `createVersion` 快照 `item.title/content/summary`，故新版本记录的是更新前的旧内容，与版本 1 重复，更新后的内容从未进入版本史。`getVersions` 取最新版本得到的永远是上一次的内容，版本管理形同虚设。修复：将版本创建移至 `Object.assign` 之后，使新版本记录更新后的内容。
+
+2. **updateItem 空串 content 跳过 wordCount 重算**：版本创建条件用 `updates.content !== undefined`（空串 `''` 为真，会创建版本），但 wordCount/readingTime 重算用 `if (updates.content)` 真值判断（空串 `''` 为假，跳过重算）。致 `content=''` 更新时创建了记录空内容的版本，但 `item.wordCount/readingTime` 残留旧值，与版本内容不一致。修复：统一为 `if (updates.content !== undefined)`，与版本创建条件对齐。
+
+3. **search 排序缺失字符串分支**：`KnowledgeSearchParams.sortBy` 合法值含 `'title'`（string），但 `search` 的排序仅处理 Date / number 两个分支，string 落入 `return 0` 不排序，致 `sortBy='title'` 失效（保持插入序）。`getItemList` 的排序已含 string `localeCompare` 分支，两处行为不一致。修复：在 `search` 排序中补齐 string `localeCompare` 分支，对齐 `getItemList`。
+
+**test — `src/__tests__/lib/knowledge-base/knowledge-base-manager.test.ts`（新建，+1960 行，165 用例）**：
+
+KnowledgeBaseManager 构造器私有（单例），经 `getInstance()` 取单例，每用例 beforeEach 重置 5 个私有 Map（knowledgeBases/items/categories/tags/versions）隔离状态；`Date.now()` 依赖的 id/时间戳断言用 `vi.useFakeTimers()` + `vi.setSystemTime(NOW)`，`Math.random` 在精确 id 断言用例中 spy 固定返回值并用同一表达式 `r.toString(36).substr(2,9)` 计算期望后缀。
+
+覆盖全部公开方法 + 3 处本轮修复，按 describe 分组：
+- 单例与状态隔离（3）：getInstance 同实例 / 模块导出单例 / 重置后无残留
+- createKnowledgeBase（8）：id 格式 / 默认 status·counts / ownerId·tenantId / settings 浅合并 / description·icon·coverImage 透传 / 时间戳 / 写入可取回
+- getKnowledgeBase（4）：命中同引用 / 未命中 / 跨租户 / 已删除仍可取（不校验 status）
+- getKnowledgeBaseList（8）：租户过滤 / 排除 deleted / search name·description·大小写 / 分页默认·自定义·末页
+- updateKnowledgeBase（4）：合并+updatedAt / 未命中 / 跨租户 / 部分更新
+- deleteKnowledgeBase（4）：软删除 / 未命中 / 跨租户 / 列表消失
+- createItem（15）：kb 未命中·跨租户 / id 格式 / 默认 type·status / 初始计数 / wordCount 中英 / readingTime 计算·下界 / 默认空数组 / publishedAt / kb.itemCount++ / 版本 1 / versioning 关闭 / 字段透传
+- getItem（3）：命中 / 未命中 / 跨租户
+- getItemList（13）：kb+租户过滤 / 排除 archived / categoryId / tags(every) / status / 排序 updatedAt·createdAt·title(string)·views(number) / 分页默认·自定义 / 空 / 跨租户
+- updateItem（14，含修复点 1+2）：content 重算 / **空串重算（修复点 2）** / **新版本记录新内容（修复点 1）** / 版本号递增 / 仅 title 无新版本 / versioning 关闭 / changeLog 默认 / publishedAt 首次设·不覆盖 / tags 更新 / 未命中 / 跨租户 / 同引用
+- deleteItem（5）：硬删除 / kb.itemCount-- / 未命中 / 跨租户 / kb 容错
+- incrementViews（3）：+1 / 未命中 / 跨租户
+- likeItem·unlikeItem（5）：+1 / -1 / 下界 0 / like 未命中·跨租户 / unlike 未命中·跨租户
+- createCategory（5）：kb 未命中·跨租户 / 字段 / kb.categoryCount++
+- getCategoryList（4）：过滤 / sortOrder 升序 / 跨租户 / 空
+- getCategoryTree（5）：扁平 / 嵌套 / 多层 / 跨租户 / 空
+- createTag（5）：kb 未命中·跨租户 / 字段 / kb.tagCount++ / 重名大小写不敏感返回既有
+- getTagList（6）：过滤 / sortBy count·name / limit / 跨租户 / 空
+- search（22，含修复点 3）：仅 published / query 匹配 title·summary·content·tags·大小写 / type / status（非 published 必空·published 等价无过滤）/ categoryId / tags / authorId / dateFrom·dateTo / 排序 updatedAt·createdAt·views·**title asc·desc（修复点 3）** / 分页·totalPages·hasMore / 末页 hasMore / 空元数据 / 跨租户
+- getStats（10）：kb 未命中·跨租户 / totalItems 含全量·published/draft/archived 计数 / totalCategories·totalTags / totalViews·Likes·Bookmarks / thisWeek·thisMonth / topCategories·未知 name / topTags / topAuthors / 空零值
+- generateKnowledgeGraph（9）：kb 未命中·跨租户 / item 节点 / draft 不生成 / tag 节点+边 / related 边仅目标在节点集 / maxNodes / density 计算 / 空 density=0
+- getVersions（6）：初始版本 1 / updateItem 递增 / version 降序 / **版本内容随更新推进** / tenant 过滤 / 无版本空
+- calculateWordCount 间接（4）：纯中文 / 纯英文 / 中英混合 / 空串
+
+**2 dev commit 拆分**：knowledge-base-manager 零既有测试，fix commit（`23fbe98`）不破坏任何既有测试（trivially green），test commit（`0f4f648`）新增 165 用例断言修复后行为，各自绿。与第一百零六/八轮 todo-manager / comment-manager fix/test 拆分同型。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/knowledge-base/knowledge-base-manager.test.ts`：**165/165 通过**（86ms tests）。
+- `npx tsc --noEmit`：**0 错误**。
+- `npx vitest run` 全量 **3878/3878 通过**（152 文件，178s），零回归。测试数较上轮 3713 增加 165（新增 knowledge-base-manager 文件），文件数 151→152（+1）。
+
+### 改动量
+
+2 文件：
+- `src/lib/knowledge-base/knowledge-base-manager.ts`（修改，+18/-9）— 3 处 bug 修复（版本快照移至赋值后 / 空串 content 重算 / search 排序补 string 分支）
+- `src/__tests__/lib/knowledge-base/knowledge-base-manager.test.ts`（新建，+1960 行）— 165 用例
+
+2 dev commit（fix / test 拆分：fix commit 不破坏既有测试——knowledge-base-manager 零既有测试，test commit 加新测试断言修复后行为；两 commit 各自绿）。
+
+### Commit
+
+- `23fbe98` fix(lib): knowledge-base-manager 3 处 bug 修复（版本快照/空串重算/搜索排序）
+- `0f4f648` test(lib): knowledge-base-manager 165 用例直接单测，零覆盖模块补全
+
+### 推送
+
+- origin (Gitee)：`7ad8899..23fbe98` + `0f4f648` 推送（含本轮 2 dev commit；worklog commit 待本次追加后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **knowledge-base-manager.ts 已闭合**（本轮 3 处 bug 修复 + 165 用例直接单测）。
+- **knowledge-base-manager.ts 残留漂移**（本轮未动，单独一轮）：`tag.itemCount` / `category.itemCount` 从未被维护——`createItem` 接 `tags: string[]`（标签名）但未联动 `KnowledgeTag` 注册表，`createTag` 初始化 `itemCount:0` 后无任何路径递增/递减，致 `getTagList(sortBy:'count')` 全 0 失效（同 note-manager `createTag noteCount 恒 0` 同型问题）。修复需在 createItem/updateItem/deleteItem 维护标签与分类的 itemCount 计数（注意 item.tags 是 name 而 KnowledgeTag 按 id 存，需按 name 查找或动态计算），宜单独一轮。
+- **lib 域零覆盖纯模块延续**（同型内存 Map 单例 manager，可仿 todo/calendar/note/comment/knowledge-base-manager 模式）：
+  - `src/lib/collaboration/collaboration-manager.ts`（1168 行）—— 下一轮 Top 1（规模最大，建议优先）
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **comment-manager.ts 残留 latent gap**（仍未动，单独一轮）：`getReplies` 实现为扁平直接回复，非递归——`maxDepth>1` 与 `maxDepth=1` 行为相同。
+- **note-manager.ts 残留 1 处漂移**（仍未动）：`createTag` 的 `noteCount` 恒 0——可仿 todo/calendar-manager `applyTagCountDelta` 模式迁移。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
