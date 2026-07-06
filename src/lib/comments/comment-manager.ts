@@ -216,7 +216,7 @@ export class CommentManager {
       });
 
       return {
-        comments: commentsWithReplies as unknown as Comment[],
+        comments: commentsWithReplies,
         total,
         page,
         pageSize,
@@ -237,6 +237,9 @@ export class CommentManager {
 
   /**
    * 获取回复列表（递归）
+   * depth 表示下探层数：1=仅直接回复（叶子 replies 为 []），2=直接回复+孙回复，依此类推；
+   * depth<=0 返回空数组。每个回复递归填充自身 replies 字段，maxDepth>1 时返回多层嵌套树
+   * （此前实现仅返回扁平直接回复，maxDepth>1 与 maxDepth=1 行为相同——本轮修复为真递归）。
    */
   private getReplies(commentId: string, tenantId: string, depth: number): Comment[] {
     if (depth <= 0) return [];
@@ -246,7 +249,11 @@ export class CommentManager {
       .map(id => this.comments.get(id))
       .filter((c): c is Comment => c !== undefined && c.tenantId === tenantId);
 
-    return replies;
+    // 递归填充子回复（depth-1），使 maxDepth>1 时返回多层嵌套树而非扁平直接回复
+    return replies.map(reply => ({
+      ...reply,
+      replies: this.getReplies(reply.id, tenantId, depth - 1),
+    }));
   }
 
   /**

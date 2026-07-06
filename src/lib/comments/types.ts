@@ -39,6 +39,7 @@ export interface Comment {
   replyCount: number;
   createdAt: Date;
   updatedAt: Date;
+  replies?: Comment[]; // 嵌套回复（includeReplies=true 时由 queryComments 递归填充）
 }
 
 /**
