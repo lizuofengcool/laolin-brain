@@ -13553,3 +13553,88 @@ fix commit 同步更新文件头控制流注释（updateNote/deleteNote/permanen
 - **knowledge-base-manager.ts 残留漂移**（仍未动，单独一轮）：`tag.itemCount` / `category.itemCount` 从未被维护——`createItem` 接 `tags: string[]`（标签名）但未联动 `KnowledgeTag` 注册表，致 `getTagList(sortBy:'count')` 全 0 失效（同 note-manager 本轮闭合的同型问题，可仿 applyTagCountDelta 模式迁移）。
 - **comment-manager.ts 残留 latent gap**（仍未动）：`getReplies` 实现为扁平直接回复，非递归——`maxDepth>1` 与 `maxDepth=1` 行为相同。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
+
+## 2026-07-07 06:00 自动迭代
+
+### 第一百一十三轮（knowledge-base-manager 标签/分类 itemCount 漂移修复 + 29 用例补全）
+
+**背景**：上轮 worklog「下一轮候选」标注 knowledge-base-manager.ts 残留漂移——`KnowledgeTag.itemCount` / `KnowledgeCategory.itemCount` 自 createTag/createCategory 初始化为 0 后全模块无任何路径递增/递减，致 `getTagList(sortBy:'count')` 全 0 失效（排序无效果）、itemCount 字段恒 0。与上轮 note-manager noteCount 漂移同型，本轮迁移已验证的 `applyTagCountDelta` 模式 + 新增对称的 `applyCategoryDelta` 闭合该漂移。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（首轮克隆），`git clone` 自 Gitee origin 后补加 github remote。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `31fdd10`，工作树干净，无遗留 commit/改动。
+- 复核任务清单优先级 1 的 5 项均已在历史轮次闭合（tenant-db.ts raw 审计 / alipay+wechat RSA2&V3 验签 / api/files 走 TenantDb / sync-engine keep_both / api-auth.test 重写匹配实现），本轮转入优先级 2/3。
+- `knowledgeBaseManager` 单例仅被 `src/lib/knowledge-base/index.ts` re-export，无任何外部模块引用（grep 确认），修复安全。
+- 沙箱无 node_modules，需跑测试验证零回归，故执行 `npm ci`（项目用 package-lock.json，无 pnpm-lock.yaml，按规范不混用 lockfile）+ `npx prisma generate`。
+
+**fix — `src/lib/knowledge-base/knowledge-base-manager.ts`（标签/分类 itemCount 计数同步）**：
+
+新增私有 `applyTagCountDelta(tagNames, knowledgeBaseId, tenantId, delta)`：按 name 大小写不敏感 + knowledgeBaseId + tenantId 匹配已注册 KnowledgeTag，命中则 `itemCount += delta`（max 0 保护防负数，未注册名静默跳过——item.tags 为自由 string[]，仅当用户显式 createTag 后才有 KnowledgeTag 实体可计；单次调用内按 name 小写去重防双计）。与 todo/calendar/note-manager 同型。
+
+新增私有 `applyCategoryDelta(categoryId, knowledgeBaseId, tenantId, delta)`：按 id + knowledgeBaseId + tenantId 精确匹配已注册 KnowledgeCategory，命中则 `itemCount += delta`（max 0 保护，未注册 id 静默跳过——item.categoryId 可指向未通过 createCategory 注册的任意 id，与标签未注册名静默跳过对称）。
+
+接入 3 个条目 CRUD 入口（knowledge-base 无软删除/恢复，deleteItem 为硬删除，故仅 3 入口，比 note-manager 5 入口简单）：
+1. **createItem**：`this.items.set` + `kb.itemCount++` 后、createVersion 前，`applyTagCountDelta(item.tags, ..., 1)` + `if (item.categoryId) applyCategoryDelta(item.categoryId, ..., 1)`（与 deleteItem -- 对称）。
+2. **updateItem**：Object.assign 前快照 `oldTagsSnapshot` + `oldTagsLower` Set + `oldCategoryId`；Object.assign 后（publishedAt 设置后、版本创建前）：
+   - 标签：仅 `updates.tags` 显式提供时按集合差集同步——`removed = oldTagsSnapshot.filter(t => !newTagsLower.has(t.toLowerCase()))` 走 -1，`added = newTags.filter(t => !oldTagsLower.has(t.toLowerCase()))` 走 +1，共同不变。`tags:[]` 清空时 removed=全部、added=空，全部 --。避免改 content/categoryId/status 误触标签计数。与 note/todo/calendar-manager updateItem 同型。
+   - 分类：比较 Object.assign 前后的 `item.categoryId`，不同则旧--新++。updates 未含 categoryId 时 Object.assign 不覆盖，old===new 无操作；categoryId 置 undefined（清空分类）时 old!==undefined → 旧--，新 falsy 不++。比 tags 的 `if (updates.tags)` 守卫更简洁（categoryId 为单值非数组，快照比较天然处理"未提供"与"清空"两种语义）。
+3. **deleteItem**（硬删除）：kb.itemCount-- 后、items.delete 前，`applyTagCountDelta(item.tags, ..., -1)` + `if (item.categoryId) applyCategoryDelta(item.categoryId, ..., -1)`（与 createItem ++ 对称）。
+
+**关键不变量**：`getStats.topTags` / `topCategories` 仍动态从 items 计算（不从注册表 itemCount 读），不受影响；`kb.itemCount` / `categoryCount` / `tagCount` 计数路径不变。唯一行为变化：`getTagList(sortBy:'count')` 现按已维护 itemCount 排序（此前全 0 无效果），`tag.itemCount` / `category.itemCount` 字段反映真实使用计数。
+
+**test — `src/__tests__/lib/knowledge-base/knowledge-base-manager.test.ts`（+305/-6 行，166→195 用例）**：
+
+fix commit 同步更新文件头控制流注释（createItem/updateItem/deleteItem/createCategory/createTag/getTagList 段）以匹配新行为；既有 166 用例无需改断言——既有用例未注册 KnowledgeTag/KnowledgeCategory 即创建带 tags/categoryId 条目，itemCount 仍 0 不受影响（未注册名/id 静默跳过），全绿。test commit 新增 2 个 describe 共 29 用例覆盖全部路径：
+
+标签使用计数同步（applyTagCountDelta）17 用例：
+- createItem（7）：命中已注册 ++ / 未注册静默跳过 / 多条目累加 / 大小写不敏感 / 重复名去重 / 跨 kb 不误计 / 跨 tenant 不误计
+- updateItem（5）：集合差集同步（['a','b']→['b','c']）/ 大小写不敏感差集（work→WORK 不变）/ 未提供 tags 不动（改 content 不误触）/ tags:[] 清空全部 -- / 重复名去重
+- deleteItem（1）：-- 与 createItem ++ 对称
+- create→delete→create（1）：计数对称
+- max 0 保护（1）：重复删除计数不低于 0
+- 计数消费（2）：getTagList sortBy='count' 反映真实计数降序 / 无引用标签全 0 稳定
+
+分类使用计数同步（applyCategoryDelta）12 用例：
+- createItem（3）：命中已注册 ++ / 未注册静默跳过 / 多条目累加
+- updateItem（4）：categoryId 变更旧--新++ / 未提供 categoryId 不动 / categoryId 清空（置 undefined）旧-- / 切到未注册分类旧--（新不++）
+- deleteItem（1）：-- 与 createItem ++ 对称
+- create→delete→create（1）：计数对称
+- max 0 保护（1）
+- 综合场景（1）：create+update+delete 反映真实计数
+- 跨 kb 同名分类不误计（1）：按 id 精确匹配
+
+**2 dev commit 拆分**：与第一百零六/八/九/十/十一/十二轮 todo/comment/knowledge-base/collaboration/note-manager fix/test 拆分同型。fix commit 仅 source 修复；test commit 含文件头注释更新 + 29 新用例。两 commit 各自绿。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/knowledge-base/knowledge-base-manager.test.ts`：**195/195 通过**（125ms tests）。
+- `npx tsc --noEmit`：**0 错误**（npm ci + prisma generate 后环境完整，全量 0 错误）。
+- `npx vitest run` 全量 **4072/4072 通过**（153 文件，185.77s），零回归。测试数较上轮 4043 增加 29（新增 29 用例），文件数 153 不变。
+
+### 改动量
+
+2 文件：
+- `src/lib/knowledge-base/knowledge-base-manager.ts`（修改，+95/-0）— 新增 applyTagCountDelta + applyCategoryDelta 私有方法 + 接入 3 个 CRUD 入口
+- `src/__tests__/lib/knowledge-base/knowledge-base-manager.test.ts`（修改，+305/-6）— 文件头注释更新 + 29 新用例
+
+2 dev commit（fix / test 拆分：fix commit 仅 source 修复；test commit 含文件头注释更新 + 29 新用例）。
+
+### Commit
+
+- `2d9fb8e` fix(lib): knowledge-base-manager 标签/分类 itemCount 漂移修复（迁移 applyTagCountDelta/applyCategoryDelta 模式）
+- `d1def8d` test(lib): knowledge-base-manager 补 29 用例覆盖标签/分类 itemCount 计数同步
+
+### 推送
+
+- origin (Gitee)：`31fdd10..2d9fb8e` + `d1def8d` 推送（含本轮 2 dev commit；worklog commit 待本次追加后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **knowledge-base-manager.ts 已闭合**（本轮 tag/category itemCount 漂移修复 + 29 用例补全，todo/calendar/note/knowledge-base 四 manager 标签计数模式统一）。
+- **collaboration-manager.ts 残留最后 1 处 latent gap**（仍未动，单独一轮）：`compareVersions` 为桩实现（零 changes/stats，注释「这里可以实现真正的diff算法」），需真正 diff 算法（如 Myers diff）。
+- **lib 域零覆盖纯模块延续**（同型内存 Map 单例 manager，可仿 todo/calendar/note/comment/knowledge-base/collaboration-manager 模式）：
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）—— 下一轮 Top 1 候选
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **comment-manager.ts 残留 latent gap**（仍未动）：`getReplies` 实现为扁平直接回复，非递归——`maxDepth>1` 与 `maxDepth=1` 行为相同。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
