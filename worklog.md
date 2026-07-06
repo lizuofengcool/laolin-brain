@@ -13029,3 +13029,76 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **note-manager.ts 残留 1 处漂移**（仍未动，跨多方法单独一轮）：`createTag` 的 `noteCount` 恒 0——本轮 calendar-manager 已实现 `applyTagCountDelta` helper 模式，可仿照迁移到 note-manager（注意 note-manager 的 tag 是按 id 还是 name 关联，须先核对）
 - **同型「inline 模拟」测试文件清理**（与 performance.ts/rbac.ts 同型，名义有测试实为零真实覆盖）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts`（co-located 在 include 之外从不运行）等
 - **环境 dep**：本轮 npm install 后 `@radix-ui/react-collapsible` 已装入，`collapsible.tsx` tsc 报错不复现（前序 worklog 提及的 pre-existing 问题已自然消解）
+
+---
+
+## 2026-07-06 23:00 自动迭代
+
+**仓库状态**：本轮为沙箱首次执行——`/workspace/laolin-brain` 不存在（沙箱为空），故 `git clone origin`（Gitee）后 `git remote add github`，并 `git fetch` 双端。本地 / origin / github 三方均停在 `cc43ad5`（第一百零五轮 worklog commit），working tree clean，无遗留改动 / 未推送 commit。
+
+**优先级 1 复核**：README / 历史工作流列出的 5 处已知安全 / 逻辑问题，逐项核验均在前序轮次闭合——`tenant-db.ts` raw 后门已带调用堆栈软审计、`payment/alipay.ts` & `wechat.ts` 已接 RSA2 / V3 HMAC-SHA256 真实验签、`api/files/route.ts` 已走 TenantDb、`cloud-sync/sync-engine.ts` keep_both 已修、`api-auth.test.ts` 已重写匹配实现。故本轮转入 worklog「下一轮候选」Top 1——lib 域零覆盖纯模块延续（同型内存 Map 单例 manager），择定 `src/lib/todos/todo-manager.ts`（878 行，纯内存态、无外部 import、无 API 路由消费，零测试覆盖）。
+
+**fix — `src/lib/todos/todo-manager.ts`（3 处逻辑 bug 修复，均为计数维护类）**：
+
+1. **`createTag` 的 `taskCount` 恒 0（标签计数漂移）**：全模块无递增点（`createTask`/`updateTask`/`deleteTask` 写 `todo.tags` 不同步 `tags` Map），致 `getTagList sortBy='count'` 无意义、`getStats topTags` 全 0——与上一轮 calendar-manager `createTag` eventCount 漂移同型。新增私有 `applyTagCountDelta(tagNames, userId, tenantId, delta)` helper（按 name 大小写不敏感 + userId + tenantId 匹配已注册 `TodoTag`，单次调用内按 name 小写去重防 `todo.tags` 含重复名时双计，`max 0` 保护防负数；未注册标签名静默跳过——`todo.tags` 为自由 `string[]`，仅当用户显式 `createTag` 后才有 `TodoTag` 实体可计），在 3 处同步标签计数：
+   - `createTask`：全部新标签 `++`（与 `list.taskCount++` 对称）
+   - `updateTask`：`updates.tags` 显式提供时按集合差集同步（旧-新减 / 新-旧加 / 共同不变，大小写不敏感；`updates.tags` 未提供（如 `completeTask` 仅改 `status`）时不动，避免误触）
+   - `deleteTask`：全部旧标签 `--`（与 `createTask` `++` 对称）
+
+2. **`uncompleteTask`（completed→pending）不回退 `list.completedCount`**：原实现 `updateTask` 仅处理 →completed 方向（`completedCount++`），反向不动，致 uncomplete 后 `completedCount` 虚高。同理 `completed→cancelled` 也不回退。
+
+3. **列表变更 + 完成状态同时发生时计数错乱**：原实现将「完成 `completedCount++`」「取消时间戳」「列表变更计数迁移」拆在 3 个独立 `if` 块——完成块对旧列表 `completedCount++` 但列表变更块按**旧** status 迁移，致旧列表多计、新列表漏计。例如 `updateTask(id, { listId: B, status: 'completed' })`：完成块对 A `completedCount++`（任务已离开 A，多计），列表变更块按旧 pending status 不动 A/B 的 `completedCount`（B 漏计）。
+
+   **2/3 合并修复**：将三块散落逻辑统一为 delta 逻辑——先计算有效 `oldListId`/`oldStatus`/`newListId`/`newStatus`（`updates.x !== undefined ? updates.x : oldX`）与 `wasCompleted`/`willBeCompleted`，再按「旧/新 listId 是否相同」与「completed 状态是否翻转」两分支闭合：
+   - list 变更（`newListId !== oldListId`）：旧列表 `taskCount--`（仅当 `wasCompleted` 时 `completedCount--`）/ 新列表 `taskCount++`（仅当 `willBeCompleted` 时 `completedCount++`）
+   - 同列表 completed 翻转（`wasCompleted !== willBeCompleted`）：`completedCount` `++`（→completed）/ `--`（→非 completed）
+   
+   覆盖 complete / uncomplete / completed→cancelled / cancelled→completed 全组合；timestamp 副作用（`completedAt`/`actualMinutes`/`cancelledAt`）保留原触发条件但改为基于 `willBeCompleted && !wasCompleted` / `newStatus==='cancelled' && oldStatus!=='cancelled'`。
+
+**附带契约修复**：`updates.listId === undefined` 时 `Object.assign` 会把 `listId` 置为 undefined（清空），但上方计数迁移守卫按「未提供」处理（不迁移），二者不一致致旧列表 `taskCount` 漂移（task 离开列表但计数不减）。新增恢复 `todo.listId = oldListId`，使「undefined 视为未提供」契约自洽（清空列表须显式经 `deleteList`，或调用方传 null——当前类型 `listId?: string` 不支持 null，故 undefined 即 no-op）。
+
+**test — `src/__tests__/lib/todos/todo-manager.test.ts`（新建，112 用例）**：
+
+仿 calendar/note/bi-manager 模式对 `TodoManager` 内存注册表做白盒直接单测。20 个 `describe` 块覆盖：单例导出（`getInstance` 多次同引用 / `resetModules` 后状态隔离）、任务列表 CRUD（`createList` id=`tl_${ts}_${rand}` + 默认值 + params 透传 / `getList` 跨租户隔离 / `getListList` sortBy=`updatedAt`(default,desc)/`name`/`taskCount` 三分支 + 跨租户 / `updateList` 浅合并 / `deleteList` 任务 listId 置空 + 删除列表）、任务 CRUD（`createTask` id=`todo_${ts}_${rand}` + 默认值 + 子任务构建 `st_${ts}_${index}` + `list.taskCount++` + 本轮标签 `++` / `getTask` 跨租户隔离 / `getTaskList` 预过滤 `cancelled` + 6 类过滤(listId/tags every/status/priority/isFavorite/overdue) + 排序 priority/dueDate(无 dueDate 沉底)/title 三分支 + 分页 / `updateTask` completed 设 `completedAt`+`actualMinutes` + 本轮 uncomplete 回退 + 列表变更+完成组合 + 标签集合差集 + `listId` undefined no-op 契约 / `deleteTask` 计数回退 + 本轮标签 `--` / `completeTask`/`uncompleteTask`）、子任务管理（`addSubTask`/`toggleSubTask`/`deleteSubTask` + `updateTaskProgress` 经子任务操作触发 + 进度按比例 round(completed/total*100)）、标签管理（`createTag` 大小写不敏感去重 + 跨租户独立 / `getTagList` sortBy=`count`(本轮真实计数)/`name` + `limit`）、搜索（query 匹配 `title`/`description`/`tags`(any) + 11 类过滤(listId/tags every/status/priority/assigneeId/isFavorite/overdue/dateFrom/dateTo/dueDateFrom/dueDateTo) + 排序 + 分页 `total`/`totalPages`/`hasMore`）、统计（空数据全 0 / 跨租户聚合 / 状态分布 + `completionRate` / `overdueTasks` / `priorityDistribution` / `topLists` / 本轮 `topTags` 真实计数 / `averageCompletionTime` 分钟）。新修复点配 12 个专测：createTask 标签 `++`（大小写不敏感+去重+跨租户隔离）/ 未注册跳过 / updateTask 集合差集 / 大小写不敏感差集 / updates.tags 未提供不动 / 重复名不双计 / deleteTask 标签 `--` / max 0 保护 / uncomplete 回退 / completed→cancelled 回退 / 列表变更+完成组合 / topTags 真实计数。
+
+**状态隔离**：`TodoManager` 构造器私有无法 `new`；每用例前 `vi.resetModules()` + `await import('@/lib/todos/todo-manager')` 取全新单例（fresh class → fresh instance → fresh `todos`/`lists`/`tags` Maps）。依赖 `Date.now` 的 id 用例（`createList`/`createTask`/`createTag`/`addSubTask`）用 `vi.useFakeTimers()` + `vi.setSystemTime(NOW)` 固定时刻 + `vi.spyOn(Math, 'random').mockReturnValue(r)` 固定随机后缀，期望后缀用同一表达式 `r.toString(36).substr(2, 9)` 计算保证匹配（仿 calendar/note-manager 模式）。`updatedAt` 不等断言用例（`getListList` 默认 sortBy=updatedAt desc 同 ms 时序巧合）用 fake timers 推进 1s。
+
+**首轮 2 处测试逻辑问题一次性修复**：
+- `getListList` 默认 sortBy=updatedAt desc：两 list 同 ms 创建致 `updatedAt` Date 相等、sort 返回 0 顺序不稳定——改 fake timers 推进 1s 区分。
+- `updateTask` `listId: undefined`：原断言期望旧 `taskCount--`（误以为会清空迁移），实际守卫 `!== undefined` 视为未提供不迁移——改为断言 no-op 契约（`taskCount` 不变 + `listId` 不变），并驱动出「Object.assign 清空 listId 与守卫不一致」的附带契约修复（见上）。
+- `updateTaskProgress` 经 `updateTask` 改 status 不触发（私有方法仅经子任务操作触发）：原断言期望 completed 后 progress=100，实际不动——改为断言实际契约（progress 保持 0），latent gap 记入下一轮候选。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/todos/todo-manager.test.ts`：**112/112 通过**（140ms tests）。首轮 4 处测试逻辑问题一次性修复（上述 same-ms 时序 / listId undefined 契约 / progress 触发 / 一处断言方向），最终全绿。
+- `npx tsc --noEmit`：**0 错误**。
+- `npx vitest run` 全量 **3547/3547 通过**（150 文件，180s），零回归。测试数较上轮 3435 增加 112（新增 todo-manager 文件），文件数 149→150（+1）。
+
+### 改动量
+
+2 文件：
+- `src/lib/todos/todo-manager.ts`（修改，+103/-23）— 3 处逻辑 bug 修复（标签计数漂移 `applyTagCountDelta` helper + 3 调用点 / 列表完成计数统一 delta 逻辑闭合 uncomplete+列表变更+完成组合 / `listId` undefined 契约自洽）
+- `src/__tests__/lib/todos/todo-manager.test.ts`（新建，+1231 行）— 112 用例
+
+2 dev commit（fix / test 拆分：fix commit 不破坏既有测试——todo-manager 零既有测试，test commit 加新测试断言修复后行为；两 commit 各自绿）。
+
+### Commit
+
+- `9795252` fix(lib): todo-manager 标签计数漂移 + 列表完成计数不对称 3 处 bug 修复
+- `ec627d3` test(lib): todo-manager.ts 112 用例直接单测，零覆盖模块补全
+
+### 推送
+
+- origin (Gitee)：cc43ad5..9795252 + ec627d3 推送（含本轮 2 dev commit；worklog commit 待本次追加后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **todo-manager.ts 已闭合**（本轮 3 处 bug 修复 + 112 用例直接单测）。
+- **todo-manager.ts 残留 latent gap**（本轮未动，跨方法单独一轮）：`updateTask` 改 `status` 不触发 `updateTaskProgress`——私有方法仅经 `addSubTask`/`toggleSubTask`/`deleteSubTask` 触发，故经 `completeTask` 完成无子任务任务后 `progress` 仍为 0（与 `progress` 字段 0-100/100=done 语义及私有方法内 `subTasks.length===0 ? (status==='completed'?100:0)` 的意图不符）。修复需在 `updateTask` 末尾调 `updateTaskProgress(todo)`，宜单独一轮验证不影响子任务进度逻辑。
+- **lib 域零覆盖纯模块延续**（同型内存 Map 单例 manager，可仿 todo/calendar/note/bi-manager 模式）：
+  - `src/lib/comments/comment-manager.ts`（904 行）/ `knowledge-base/knowledge-base-manager.ts`（859 行）/ `collaboration/collaboration-manager.ts`（1168 行）—— 下一轮 Top 1（择一，建议 comment-manager 规模适中）
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **note-manager.ts 残留 1 处漂移**（仍未动，跨多方法单独一轮）：`createTag` 的 `noteCount` 恒 0——本轮 todo-manager + 上轮 calendar-manager 已实现 `applyTagCountDelta` helper 模式，可仿照迁移到 note-manager（注意 note-manager 的 tag 是按 id 还是 name 关联，须先核对）
+- **同型「inline 模拟」测试文件清理**（与 performance.ts/rbac.ts 同型，名义有测试实为零真实覆盖）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts`（co-located 在 include 之外从不运行）等
