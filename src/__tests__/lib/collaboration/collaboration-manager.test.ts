@@ -190,6 +190,31 @@ describe('在线用户管理', () => {
     expect(updated?.participants.find(p => p.userId === 'p1')?.role).toBe('host');
   });
 
+  it('userOffline：host 下线且无剩余参与者 → endSession', () => {
+    manager.userOnline('host', 'H');
+    const s = makeSession('file-1', 'host', 'H', 't-1');
+    manager.userOffline('host');
+    const updated = manager.getSession(s.id);
+    expect(updated?.status).toBe('ended');
+    expect(updated?.endedAt).toEqual(NOW);
+    // host 已从 participants 移除
+    expect(updated?.participants.find(p => p.userId === 'host')).toBeUndefined();
+  });
+
+  it('userOffline：host 下线有多个参与者 → 转移给 participants[0] 且其余人不变', () => {
+    manager.userOnline('host', 'H');
+    const s = makeSession('file-1', 'host', 'H', 't-1');
+    manager.joinSession(s.id, 'p1', 'P1', 'editor');
+    manager.joinSession(s.id, 'p2', 'P2', 'viewer');
+    manager.userOffline('host');
+    const updated = manager.getSession(s.id);
+    expect(updated?.status).toBe('active');
+    expect(updated?.hostUserId).toBe('p1');
+    expect(updated?.participants).toHaveLength(2);
+    expect(updated?.participants.find(p => p.userId === 'p1')?.role).toBe('host');
+    expect(updated?.participants.find(p => p.userId === 'p2')?.role).toBe('viewer');
+  });
+
   it('userOffline：非 host 下线仅从 participants 移除', () => {
     manager.userOnline('p1', 'P');
     const s = makeSession('file-1', 'host', 'H', 't-1');
@@ -302,6 +327,20 @@ describe('文件编辑者管理', () => {
     expect(manager.getFileEditors('file-1')).toHaveLength(0);
     const u = manager.getOnlineUsers()[0];
     expect(u.currentFileId).toBeUndefined();
+  });
+
+  it('leaveEditing：保留 currentSpaceId（修复点：此前不传 spaceId 致其清空）', () => {
+    manager.userOnline('u1', 'A');
+    manager.updateUserCurrentFile('u1', 'file-1', 'space-1');
+    manager.joinEditing('file-1', 'u1', 'A');
+    expect(manager.leaveEditing('file-1', 'u1')).toBe(true);
+    const u = manager.getOnlineUsers()[0];
+    // currentFileId 被清空（用户已离开该文件）
+    expect(u.currentFileId).toBeUndefined();
+    // currentSpaceId 保留（用户仍在 space 内浏览其它文件）
+    expect(u.currentSpaceId).toBe('space-1');
+    // 保留后 getOnlineUsers(spaceId) 仍能命中
+    expect(manager.getOnlineUsers('space-1')).toHaveLength(1);
   });
 
   it('leaveEditing：fileId 不存在返回 false', () => {
@@ -1223,6 +1262,49 @@ describe('通知管理', () => {
     expect(s.taskAssigned).toBe(false);
     expect(s.taskCompleted).toBe(false);
     expect(s.taskMentioned).toBe(true);
+  });
+
+  it('updateNotificationSettings：doNotDisturb 深合并（修复点：此前浅合并整体替换）', () => {
+    // 先设置完整的 doNotDisturb（enabled + 时间窗）
+    manager.updateNotificationSettings('u1', {
+      doNotDisturb: { enabled: true, startTime: '22:00', endTime: '08:00' },
+    });
+    expect(manager.getNotificationSettings('u1').doNotDisturb).toEqual({
+      enabled: true,
+      startTime: '22:00',
+      endTime: '08:00',
+    });
+
+    // 仅更新 enabled，startTime/endTime 必须保留（此前浅合并会丢失）
+    manager.updateNotificationSettings('u1', {
+      doNotDisturb: { enabled: false },
+    });
+    const dnd = manager.getNotificationSettings('u1').doNotDisturb;
+    expect(dnd.enabled).toBe(false);
+    expect(dnd.startTime).toBe('22:00'); // 保留
+    expect(dnd.endTime).toBe('08:00'); // 保留
+  });
+
+  it('updateNotificationSettings：doNotDisturb 不传时保持原值不变', () => {
+    manager.updateNotificationSettings('u1', {
+      doNotDisturb: { enabled: true, startTime: '22:00' },
+    });
+    // 更新其它字段，不传 doNotDisturb
+    manager.updateNotificationSettings('u1', { taskAssigned: false });
+    const s = manager.getNotificationSettings('u1');
+    expect(s.taskAssigned).toBe(false);
+    expect(s.doNotDisturb).toEqual({ enabled: true, startTime: '22:00' });
+  });
+
+  it('updateNotificationSettings：doNotDisturb 多次部分更新累积合并', () => {
+    manager.updateNotificationSettings('u1', { doNotDisturb: { enabled: true } });
+    manager.updateNotificationSettings('u1', { doNotDisturb: { startTime: '23:00' } });
+    manager.updateNotificationSettings('u1', { doNotDisturb: { endTime: '07:00' } });
+    expect(manager.getNotificationSettings('u1').doNotDisturb).toEqual({
+      enabled: true,
+      startTime: '23:00',
+      endTime: '07:00',
+    });
   });
 });
 
