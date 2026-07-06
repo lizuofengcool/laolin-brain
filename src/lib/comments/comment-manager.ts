@@ -105,15 +105,15 @@ export class CommentManager {
       replies.push(commentId);
       this.commentReplies.set(params.parentId, replies);
 
-      // 更新父评论的回复数
+      // 更新父评论的回复数（租户隔离：跨租户父评论不计入回复数）
       const parentComment = this.comments.get(params.parentId);
-      if (parentComment) {
+      if (parentComment && parentComment.tenantId === tenantId) {
         parentComment.replyCount = replies.length;
         parentComment.updatedAt = new Date();
       }
 
-      // 通知父评论作者
-      if (parentComment && parentComment.userId !== userId) {
+      // 通知父评论作者（租户隔离：仅同租户父评论作者收到回复通知）
+      if (parentComment && parentComment.tenantId === tenantId && parentComment.userId !== userId) {
         this.sendNotification(parentComment.userId, tenantId, {
           type: 'new_reply',
           commentId,
@@ -211,7 +211,7 @@ export class CommentManager {
     // 如果需要包含回复
     if (includeReplies && !parentId) {
       const commentsWithReplies = paginatedComments.map(comment => {
-        const replies = this.getReplies(comment.id, tenantId, maxDepth - 1);
+        const replies = this.getReplies(comment.id, tenantId, maxDepth);
         return { ...comment, replies };
       });
 
@@ -543,7 +543,7 @@ export class CommentManager {
 
     const comments = commentIds
       .map(id => this.comments.get(id))
-      .filter((c): c is Comment => c !== undefined && c.tenantId === tenantId && c.status === 'published');
+      .filter((c): c is Comment => c !== undefined && c.tenantId === tenantId && c.status === 'published' && !c.parentId);
 
     let totalReplies = 0;
     let totalLikes = 0;
@@ -763,6 +763,11 @@ export class CommentManager {
     let comments = commentIds
       .map(id => this.comments.get(id))
       .filter((c): c is Comment => c !== undefined && c.tenantId === tenantId && c.status === 'published');
+
+    // includeReplies=false 时仅导出顶级评论
+    if (!options.includeReplies) {
+      comments = comments.filter(c => !c.parentId);
+    }
 
     // 日期过滤
     if (options.dateFrom) {
