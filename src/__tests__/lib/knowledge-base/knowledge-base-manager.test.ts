@@ -19,21 +19,25 @@
  * - createItem：kb 未命中 / 跨租户 → null；id=`ki_${ts}_${rand}`；type 默认 article / status
  *   默认 draft；views/likes/bookmarks=0；wordCount=中文+英文词；readingTime=max(1,ceil(wc/300))；
  *   tags/attachments/relatedItems 默认 []；publishedAt 仅 published 时设；kb.itemCount++；
+ *   标签/分类 itemCount 同步（applyTagCountDelta/applyCategoryDelta，未注册静默跳过）；
  *   versioning 开 → 创建版本 1
  * - getItem：命中；未命中 / 跨租户 → null
  * - getItemList：过滤 kb+tenant+status!=='archived'；categoryId/tags(every)/status 过滤；
  *   排序 Date/string/number；分页默认 page 1 / pageSize 20
- * - updateItem（本轮修复 1+2）：content!==undefined 重算 wordCount/readingTime（此前空串 '' 跳过）；
+ * - updateItem（本轮修复 1+2+4）：content!==undefined 重算 wordCount/readingTime（此前空串 '' 跳过）；
  *   Object.assign 后创建版本（此前在赋值前调用致新版本记录旧内容）；status→published 且无
- *   publishedAt 时设；未命中 / 跨租户 → null
- * - deleteItem：硬删除（Map.delete）；kb.itemCount--；未命中 / 跨租户 → false
+ *   publishedAt 时设；本轮新增标签/分类计数同步（updates.tags 显式提供时按集合差集同步；
+ *   categoryId 前后不同时旧--新++）；未命中 / 跨租户 → null
+ * - deleteItem：硬删除（Map.delete）；kb.itemCount--；标签/分类 itemCount 同步（与 createItem ++ 对称）；
+ *   未命中 / 跨租户 → false
  * - incrementViews / likeItem / unlikeItem：未命中 / 跨租户 → false；unlike 下界 0
- * - createCategory：kb 未命中 / 跨租户 → null；id=`kc_...`；sortOrder=0；kb.categoryCount++
+ * - createCategory：kb 未命中 / 跨租户 → null；id=`kc_...`；sortOrder=0；itemCount=0（由 createItem/
+ *   updateItem/deleteItem 经 applyCategoryDelta 维护）；kb.categoryCount++
  * - getCategoryList：过滤 + 按 sortOrder 升序
  * - getCategoryTree：递归 buildTree(parentId)；根为 parentId===undefined
  * - createTag：kb 未命中 / 跨租户 → null；id=`kt_...`；重名（大小写不敏感）返回既有不增 tagCount；
- *   kb.tagCount++
- * - getTagList：过滤；sortBy count(默认,降序) / name(升序)；limit 截断
+ *   itemCount=0（由 createItem/updateItem/deleteItem 经 applyTagCountDelta 维护）；kb.tagCount++
+ * - getTagList：过滤；sortBy count(默认,降序,按已维护 itemCount) / name(升序)；limit 截断
  * - search（本轮修复 3）：仅 published；query 匹配 title/summary/content/tags；type/status/
  *   categoryId/tags/authorId/dateFrom/dateTo 过滤；排序此前缺 string 分支致 sortBy='title'
  *   失效（本轮补齐对齐 getItemList）；分页 + hasMore + totalPages
@@ -1955,6 +1959,301 @@ describe('KnowledgeBaseManager', () => {
         't-a'
       );
       expect(item!.wordCount).toBe(0);
+    });
+  });
+
+  // ==================== 标签/分类使用计数同步 ====================
+  // 覆盖 applyTagCountDelta / applyCategoryDelta：createItem ++ / updateItem 差集同步 /
+  // deleteItem -- / 未注册静默跳过 / 大小写不敏感 / 重复名去重 / max 0 保护 / 计数消费
+  describe('标签使用计数同步（applyTagCountDelta）', () => {
+    it('createItem 命中已注册标签 itemCount++', () => {
+      const kbId = makeKb();
+      const tag = manager.createTag(kbId, 'React', 't-a');
+      expect(tag!.itemCount).toBe(0);
+      makeItem(kbId, 't-a', 'a', { tags: ['React'] });
+      expect(tag!.itemCount).toBe(1);
+    });
+
+    it('createItem 未注册标签静默跳过（itemCount 仍 0，无 KnowledgeTag 实体）', () => {
+      const kbId = makeKb();
+      const tag = manager.createTag(kbId, 'React', 't-a');
+      makeItem(kbId, 't-a', 'a', { tags: ['Vue'] }); // Vue 未注册
+      expect(tag!.itemCount).toBe(0);
+    });
+
+    it('createItem 多条目累加', () => {
+      const kbId = makeKb();
+      const tag = manager.createTag(kbId, 'A', 't-a');
+      makeItem(kbId, 't-a', 'a', { tags: ['A'] });
+      makeItem(kbId, 't-a', 'a', { tags: ['A'] });
+      makeItem(kbId, 't-a', 'a', { tags: ['A'] });
+      expect(tag!.itemCount).toBe(3);
+    });
+
+    it('createItem 大小写不敏感命中（item.tags 含 "REACT" 命中 "React"）', () => {
+      const kbId = makeKb();
+      const tag = manager.createTag(kbId, 'React', 't-a');
+      makeItem(kbId, 't-a', 'a', { tags: ['REACT'] });
+      expect(tag!.itemCount).toBe(1);
+    });
+
+    it('createItem 重复名去重（item.tags 含重复名时单次仅计 1）', () => {
+      const kbId = makeKb();
+      const tag = manager.createTag(kbId, 'A', 't-a');
+      makeItem(kbId, 't-a', 'a', { tags: ['A', 'a', 'A'] });
+      expect(tag!.itemCount).toBe(1);
+    });
+
+    it('createItem 跨 kb 不误计（同名标签在不同 kb 各自计数）', () => {
+      const kb1 = makeKb();
+      const kb2 = manager.createKnowledgeBase({ name: 'KB2' }, 'o', 't-a').id;
+      const t1 = manager.createTag(kb1, 'Shared', 't-a');
+      const t2 = manager.createTag(kb2, 'Shared', 't-a');
+      makeItem(kb1, 't-a', 'a', { tags: ['Shared'] });
+      expect(t1!.itemCount).toBe(1);
+      expect(t2!.itemCount).toBe(0);
+    });
+
+    it('createItem 跨 tenant 不误计', () => {
+      const kbA = makeKb('t-a');
+      const kbB = makeKb('t-b');
+      const tA = manager.createTag(kbA, 'Shared', 't-a');
+      const tB = manager.createTag(kbB, 'Shared', 't-b');
+      makeItem(kbA, 't-a', 'a', { tags: ['Shared'] });
+      expect(tA!.itemCount).toBe(1);
+      expect(tB!.itemCount).toBe(0);
+    });
+
+    it('updateItem 集合差集同步（["a","b"]→["b","c"]：a-- c++ b 不变）', () => {
+      const kbId = makeKb();
+      const ta = manager.createTag(kbId, 'a', 't-a');
+      const tb = manager.createTag(kbId, 'b', 't-a');
+      const tc = manager.createTag(kbId, 'c', 't-a');
+      const itemId = makeItem(kbId, 't-a', 'a', { tags: ['a', 'b'] });
+      expect(ta!.itemCount).toBe(1);
+      expect(tb!.itemCount).toBe(1);
+      manager.updateItem(itemId, { tags: ['b', 'c'] }, 'u', 't-a');
+      expect(ta!.itemCount).toBe(0); // removed
+      expect(tb!.itemCount).toBe(1); // unchanged
+      expect(tc!.itemCount).toBe(1); // added
+    });
+
+    it('updateItem 大小写不敏感差集（"work"→"WORK" 视为不变）', () => {
+      const kbId = makeKb();
+      const tag = manager.createTag(kbId, 'work', 't-a');
+      const itemId = makeItem(kbId, 't-a', 'a', { tags: ['work'] });
+      manager.updateItem(itemId, { tags: ['WORK'] }, 'u', 't-a');
+      expect(tag!.itemCount).toBe(1); // 同名不视为变更
+    });
+
+    it('updateItem 未提供 tags 不动（改 content 不误触标签计数）', () => {
+      const kbId = makeKb();
+      const tag = manager.createTag(kbId, 'A', 't-a');
+      const itemId = makeItem(kbId, 't-a', 'a', { tags: ['A'] });
+      manager.updateItem(itemId, { content: '新内容' }, 'u', 't-a');
+      expect(tag!.itemCount).toBe(1); // 未变动
+    });
+
+    it('updateItem tags:[] 清空全部 -- ', () => {
+      const kbId = makeKb();
+      const ta = manager.createTag(kbId, 'a', 't-a');
+      const tb = manager.createTag(kbId, 'b', 't-a');
+      const itemId = makeItem(kbId, 't-a', 'a', { tags: ['a', 'b'] });
+      expect(ta!.itemCount).toBe(1);
+      expect(tb!.itemCount).toBe(1);
+      manager.updateItem(itemId, { tags: [] }, 'u', 't-a');
+      expect(ta!.itemCount).toBe(0);
+      expect(tb!.itemCount).toBe(0);
+    });
+
+    it('updateItem 重复名去重（新 tags 含重复名时单次仅计 1）', () => {
+      const kbId = makeKb();
+      const tc = manager.createTag(kbId, 'c', 't-a');
+      const itemId = makeItem(kbId, 't-a', 'a', { tags: [] });
+      manager.updateItem(itemId, { tags: ['c', 'C', 'c'] }, 'u', 't-a');
+      expect(tc!.itemCount).toBe(1);
+    });
+
+    it('deleteItem -- 与 createItem ++ 对称', () => {
+      const kbId = makeKb();
+      const tag = manager.createTag(kbId, 'A', 't-a');
+      const itemId = makeItem(kbId, 't-a', 'a', { tags: ['A'] });
+      expect(tag!.itemCount).toBe(1);
+      manager.deleteItem(itemId, 't-a');
+      expect(tag!.itemCount).toBe(0);
+    });
+
+    it('create→delete→create 计数对称（先++再--再++回 1）', () => {
+      const kbId = makeKb();
+      const tag = manager.createTag(kbId, 'A', 't-a');
+      const i1 = makeItem(kbId, 't-a', 'a', { tags: ['A'] });
+      expect(tag!.itemCount).toBe(1);
+      manager.deleteItem(i1, 't-a');
+      expect(tag!.itemCount).toBe(0);
+      makeItem(kbId, 't-a', 'a', { tags: ['A'] });
+      expect(tag!.itemCount).toBe(1);
+    });
+
+    it('max 0 保护：重复删除计数不低于 0', () => {
+      const kbId = makeKb();
+      const tag = manager.createTag(kbId, 'A', 't-a');
+      const itemId = makeItem(kbId, 't-a', 'a', { tags: ['A'] });
+      manager.deleteItem(itemId, 't-a');
+      expect(tag!.itemCount).toBe(0);
+      // 直接操纵注册表模拟极端：再调一次 delete（item 已删，需重建同 id 极难，
+      // 这里改用 updateItem tags:[] 后再 delete 验证不出现负数）
+      const i2 = makeItem(kbId, 't-a', 'a', { tags: ['A'] });
+      manager.updateItem(i2, { tags: [] }, 'u', 't-a'); // -- 至 0
+      manager.deleteItem(i2, 't-a'); // 再次 -- 但 max(0, -1)=0
+      expect(tag!.itemCount).toBe(0);
+    });
+
+    it('getTagList sortBy=count 反映真实计数降序', () => {
+      const kbId = makeKb();
+      const ta = manager.createTag(kbId, 'a', 't-a');
+      const tb = manager.createTag(kbId, 'b', 't-a');
+      const tc = manager.createTag(kbId, 'c', 't-a');
+      makeItem(kbId, 't-a', 'a', { tags: ['a'] });
+      makeItem(kbId, 't-a', 'a', { tags: ['b'] });
+      makeItem(kbId, 't-a', 'a', { tags: ['b'] });
+      makeItem(kbId, 't-a', 'a', { tags: ['c'] });
+      makeItem(kbId, 't-a', 'a', { tags: ['c'] });
+      makeItem(kbId, 't-a', 'a', { tags: ['c'] });
+      const list = manager.getTagList(kbId, 't-a', { sortBy: 'count' });
+      expect(list.map((t) => t.name)).toEqual(['c', 'b', 'a']);
+      expect(list[0].itemCount).toBe(3);
+      expect(list[1].itemCount).toBe(2);
+      expect(list[2].itemCount).toBe(1);
+    });
+
+    it('getTagList sortBy=count 无引用标签全 0 稳定', () => {
+      const kbId = makeKb();
+      manager.createTag(kbId, 'a', 't-a');
+      manager.createTag(kbId, 'b', 't-a');
+      // 不创建任何条目，itemCount 全 0
+      const list = manager.getTagList(kbId, 't-a', { sortBy: 'count' });
+      list.forEach((t) => expect(t.itemCount).toBe(0));
+    });
+  });
+
+  describe('分类使用计数同步（applyCategoryDelta）', () => {
+    it('createItem 命中已注册分类 itemCount++', () => {
+      const kbId = makeKb();
+      const cat = manager.createCategory(kbId, 'Cat', 't-a');
+      expect(cat!.itemCount).toBe(0);
+      makeItem(kbId, 't-a', 'a', { categoryId: cat!.id });
+      expect(cat!.itemCount).toBe(1);
+    });
+
+    it('createItem 未注册分类静默跳过（无 KnowledgeCategory 实体）', () => {
+      const kbId = makeKb();
+      const cat = manager.createCategory(kbId, 'Cat', 't-a');
+      makeItem(kbId, 't-a', 'a', { categoryId: 'ghost-cat' }); // 未注册
+      expect(cat!.itemCount).toBe(0);
+    });
+
+    it('createItem 多条目累加', () => {
+      const kbId = makeKb();
+      const cat = manager.createCategory(kbId, 'Cat', 't-a');
+      makeItem(kbId, 't-a', 'a', { categoryId: cat!.id });
+      makeItem(kbId, 't-a', 'a', { categoryId: cat!.id });
+      expect(cat!.itemCount).toBe(2);
+    });
+
+    it('updateItem categoryId 变更：旧--新++', () => {
+      const kbId = makeKb();
+      const c1 = manager.createCategory(kbId, 'C1', 't-a');
+      const c2 = manager.createCategory(kbId, 'C2', 't-a');
+      const itemId = makeItem(kbId, 't-a', 'a', { categoryId: c1!.id });
+      expect(c1!.itemCount).toBe(1);
+      expect(c2!.itemCount).toBe(0);
+      manager.updateItem(itemId, { categoryId: c2!.id }, 'u', 't-a');
+      expect(c1!.itemCount).toBe(0); // 旧 --
+      expect(c2!.itemCount).toBe(1); // 新 ++
+    });
+
+    it('updateItem 未提供 categoryId 不动（改 content 不误触分类计数）', () => {
+      const kbId = makeKb();
+      const cat = manager.createCategory(kbId, 'Cat', 't-a');
+      const itemId = makeItem(kbId, 't-a', 'a', { categoryId: cat!.id });
+      manager.updateItem(itemId, { content: '新内容' }, 'u', 't-a');
+      expect(cat!.itemCount).toBe(1); // 未变动
+    });
+
+    it('updateItem categoryId 清空（置 undefined）旧--', () => {
+      const kbId = makeKb();
+      const cat = manager.createCategory(kbId, 'Cat', 't-a');
+      const itemId = makeItem(kbId, 't-a', 'a', { categoryId: cat!.id });
+      expect(cat!.itemCount).toBe(1);
+      manager.updateItem(itemId, { categoryId: undefined }, 'u', 't-a');
+      expect(cat!.itemCount).toBe(0); // 清空 → 旧 --
+      expect(manager.getItem(itemId, 't-a')!.categoryId).toBeUndefined();
+    });
+
+    it('updateItem 切到未注册分类：旧--（新不++ 因未注册）', () => {
+      const kbId = makeKb();
+      const c1 = manager.createCategory(kbId, 'C1', 't-a');
+      const itemId = makeItem(kbId, 't-a', 'a', { categoryId: c1!.id });
+      expect(c1!.itemCount).toBe(1);
+      manager.updateItem(itemId, { categoryId: 'ghost-cat' }, 'u', 't-a');
+      expect(c1!.itemCount).toBe(0); // 旧 --
+      // ghost-cat 未注册，无实体可 ++
+    });
+
+    it('deleteItem -- 与 createItem ++ 对称', () => {
+      const kbId = makeKb();
+      const cat = manager.createCategory(kbId, 'Cat', 't-a');
+      const itemId = makeItem(kbId, 't-a', 'a', { categoryId: cat!.id });
+      expect(cat!.itemCount).toBe(1);
+      manager.deleteItem(itemId, 't-a');
+      expect(cat!.itemCount).toBe(0);
+    });
+
+    it('create→delete→create 计数对称', () => {
+      const kbId = makeKb();
+      const cat = manager.createCategory(kbId, 'Cat', 't-a');
+      const i1 = makeItem(kbId, 't-a', 'a', { categoryId: cat!.id });
+      expect(cat!.itemCount).toBe(1);
+      manager.deleteItem(i1, 't-a');
+      expect(cat!.itemCount).toBe(0);
+      makeItem(kbId, 't-a', 'a', { categoryId: cat!.id });
+      expect(cat!.itemCount).toBe(1);
+    });
+
+    it('max 0 保护：删除后计数不低于 0', () => {
+      const kbId = makeKb();
+      const cat = manager.createCategory(kbId, 'Cat', 't-a');
+      const itemId = makeItem(kbId, 't-a', 'a', { categoryId: cat!.id });
+      manager.deleteItem(itemId, 't-a');
+      expect(cat!.itemCount).toBe(0);
+      // 重建并清空分类后再删，确保不出现负数
+      const i2 = makeItem(kbId, 't-a', 'a', { categoryId: cat!.id });
+      manager.updateItem(i2, { categoryId: undefined }, 'u', 't-a'); // -- 至 0
+      manager.deleteItem(i2, 't-a'); // item 已无 categoryId，不触发 --
+      expect(cat!.itemCount).toBe(0);
+    });
+
+    it('category.itemCount 反映真实计数（create+update+delete 综合场景）', () => {
+      const kbId = makeKb();
+      const cat = manager.createCategory(kbId, 'Cat', 't-a');
+      const i1 = makeItem(kbId, 't-a', 'a', { categoryId: cat!.id });
+      const i2 = makeItem(kbId, 't-a', 'a', { categoryId: cat!.id });
+      makeItem(kbId, 't-a', 'a', { categoryId: cat!.id }); // i3
+      expect(cat!.itemCount).toBe(3);
+      manager.deleteItem(i1, 't-a'); // -- → 2
+      expect(cat!.itemCount).toBe(2);
+      manager.updateItem(i2, { categoryId: undefined }, 'u', 't-a'); // -- → 1
+      expect(cat!.itemCount).toBe(1);
+    });
+
+    it('跨 kb 同名分类不误计（按 id 精确匹配）', () => {
+      const kb1 = makeKb();
+      const kb2 = manager.createKnowledgeBase({ name: 'KB2' }, 'o', 't-a').id;
+      const c1 = manager.createCategory(kb1, 'Shared', 't-a');
+      const c2 = manager.createCategory(kb2, 'Shared', 't-a');
+      makeItem(kb1, 't-a', 'a', { categoryId: c1!.id });
+      expect(c1!.itemCount).toBe(1);
+      expect(c2!.itemCount).toBe(0);
     });
   });
 });
