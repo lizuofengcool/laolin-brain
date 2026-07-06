@@ -213,6 +213,10 @@ export class TodoManager {
       }
     }
 
+    // 同步标签使用计数（仅 createTag 注册过的标签实体会计数，
+    // 未注册的标签名静默跳过——todo.tags 为自由 string[]）
+    this.applyTagCountDelta(todo.tags, userId, tenantId, 1);
+
     return todo;
   }
 
@@ -349,55 +353,96 @@ export class TodoManager {
 
     const now = new Date();
 
-    // 处理完成状态
-    if (updates.status === 'completed' && todo.status !== 'completed') {
+    // 计算有效旧/新 listId 与 status（Object.assign 前），用于统一维护列表计数。
+    // 原实现将「完成计数 ++」「列表变更计数迁移」拆在 3 个独立 if 块中，存在两类 bug：
+    //   1) uncompleteTask（completed → pending）不回退 completedCount（仅处理 →completed 方向）
+    //   2) 列表变更 + 完成状态同时发生时，完成块对旧列表 ++ 但列表变更块按旧 status 迁移，
+    //      导致旧列表 completedCount 多计、新列表 completedCount 漏计
+    // 统一为 delta 逻辑后，按「旧/新 listId 是否相同」与「completed 状态是否翻转」两分支闭合。
+    const oldListId = todo.listId;
+    const oldStatus = todo.status;
+    const newListId = updates.listId !== undefined ? updates.listId : oldListId;
+    const newStatus = updates.status !== undefined ? updates.status : oldStatus;
+    const wasCompleted = oldStatus === 'completed';
+    const willBeCompleted = newStatus === 'completed';
+
+    // 完成时间戳 / 实际用时（仅 status 由非 completed → completed 时设置）
+    if (willBeCompleted && !wasCompleted) {
       (todo as any).completedAt = now;
       // 计算实际用时
       if (todo.startDate) {
-        const actualMinutes = Math.round(
+        (todo as any).actualMinutes = Math.round(
           (now.getTime() - todo.startDate.getTime()) / 60000
         );
-        (todo as any).actualMinutes = actualMinutes;
-      }
-      // 更新列表完成计数
-      if (todo.listId) {
-        const list = this.lists.get(todo.listId);
-        if (list && list.userId === userId && list.tenantId === tenantId) {
-          list.completedCount++;
-        }
       }
     }
 
-    // 处理取消状态
-    if (updates.status === 'cancelled' && todo.status !== 'cancelled') {
+    // 取消时间戳（仅 status 由非 cancelled → cancelled 时设置）
+    if (newStatus === 'cancelled' && oldStatus !== 'cancelled') {
       (todo as any).cancelledAt = now;
     }
 
-    // 处理列表变更
-    if (updates.listId !== undefined && updates.listId !== todo.listId) {
-      // 从旧列表移除
-      if (todo.listId) {
-        const oldList = this.lists.get(todo.listId);
+    // 列表计数维护（统一 delta 逻辑）
+    if (newListId !== oldListId) {
+      // 列表变更：旧列表 taskCount--（仅当旧任务为 completed 时 completedCount--），
+      // 新列表 taskCount++（仅当新状态为 completed 时 completedCount++）
+      if (oldListId) {
+        const oldList = this.lists.get(oldListId);
         if (oldList && oldList.userId === userId && oldList.tenantId === tenantId) {
           oldList.taskCount = Math.max(0, oldList.taskCount - 1);
-          if (todo.status === 'completed') {
+          if (wasCompleted) {
             oldList.completedCount = Math.max(0, oldList.completedCount - 1);
           }
         }
       }
-      // 添加到新列表
-      if (updates.listId) {
-        const newList = this.lists.get(updates.listId);
+      if (newListId) {
+        const newList = this.lists.get(newListId);
         if (newList && newList.userId === userId && newList.tenantId === tenantId) {
           newList.taskCount++;
-          if (todo.status === 'completed') {
+          if (willBeCompleted) {
             newList.completedCount++;
+          }
+        }
+      }
+    } else if (wasCompleted !== willBeCompleted) {
+      // 同列表、completed 状态翻转：completedCount ++（→completed）/ --（→非 completed）
+      // 修复原 uncompleteTask / completed→cancelled 不回退 completedCount 的 bug
+      if (oldListId) {
+        const list = this.lists.get(oldListId);
+        if (list && list.userId === userId && list.tenantId === tenantId) {
+          if (willBeCompleted) {
+            list.completedCount++;
+          } else {
+            list.completedCount = Math.max(0, list.completedCount - 1);
           }
         }
       }
     }
 
+    // 标签计数同步：先快照旧标签集（Object.assign 后 todo.tags 即被覆盖为新数组）
+    const oldTagsSnapshot = todo.tags;
+    const oldTagsLower = new Set(oldTagsSnapshot.map((t) => t.toLowerCase()));
+
     Object.assign(todo, updates, { updatedAt: now });
+
+    // updates.listId === undefined 时 Object.assign 会把 listId 置为 undefined（清空），
+    // 但上方计数迁移守卫按「未提供」处理（不迁移），二者不一致会致旧列表 taskCount 漂移。
+    // 此处恢复 listId = oldListId，使「undefined 视为未提供」契约自洽（清空列表须显式经
+    // deleteList，或调用方传 null —— 当前类型 listId?: string 不支持 null，故 undefined 即 no-op）。
+    if (updates.listId === undefined) {
+      todo.listId = oldListId;
+    }
+
+    // 标签计数同步：仅 updates.tags 显式提供时调整（避免 completeTask 等无关更新误触）
+    if (updates.tags) {
+      const newTags = updates.tags;
+      const newTagsLower = new Set(newTags.map((t) => t.toLowerCase()));
+      const removed = oldTagsSnapshot.filter((t) => !newTagsLower.has(t.toLowerCase()));
+      const added = newTags.filter((t) => !oldTagsLower.has(t.toLowerCase()));
+      this.applyTagCountDelta(removed, userId, tenantId, -1);
+      this.applyTagCountDelta(added, userId, tenantId, 1);
+    }
+
     return todo;
   }
 
@@ -418,6 +463,9 @@ export class TodoManager {
         }
       }
     }
+
+    // 同步标签使用计数（与 createTask 的 ++ 对称）
+    this.applyTagCountDelta(todo.tags, userId, tenantId, -1);
 
     this.todos.delete(id);
     return true;
@@ -535,6 +583,38 @@ export class TodoManager {
   }
 
   // ==================== 标签管理 ====================
+
+  /**
+   * 同步标签使用计数（taskCount 增减）。
+   * 按 name 大小写不敏感 + userId + tenantId 匹配已注册 TodoTag；
+   * 单次调用内按 name 小写去重，防止 todo.tags 含重复名时双重计数；
+   * max 0 保护防止负数；未注册标签名静默跳过（todo.tags 为自由 string[]，
+   * 仅当用户显式 createTag 后才有 TodoTag 实体可计）。
+   */
+  private applyTagCountDelta(
+    tagNames: string[],
+    userId: string,
+    tenantId: string,
+    delta: 1 | -1
+  ): void {
+    const seen = new Set<string>();
+    for (const name of tagNames) {
+      if (!name) continue;
+      const lower = name.toLowerCase();
+      if (seen.has(lower)) continue;
+      seen.add(lower);
+
+      const tag = Array.from(this.tags.values()).find(
+        (t) =>
+          t.userId === userId &&
+          t.tenantId === tenantId &&
+          t.name.toLowerCase() === lower
+      );
+      if (!tag) continue;
+
+      tag.taskCount = Math.max(0, tag.taskCount + delta);
+    }
+  }
 
   /**
    * 创建标签
