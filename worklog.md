@@ -13414,3 +13414,68 @@ KnowledgeBaseManager 构造器私有（单例），经 `getInstance()` 取单例
 - **comment-manager.ts 残留 latent gap**（仍未动）：`getReplies` 实现为扁平直接回复，非递归——`maxDepth>1` 与 `maxDepth=1` 行为相同。
 - **note-manager.ts 残留 1 处漂移**（仍未动）：`createTag` 的 `noteCount` 恒 0——可仿 todo/calendar-manager `applyTagCountDelta` 模式迁移。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
+
+## 2026-07-07 04:00 自动迭代
+
+### 第一百一十一轮（collaboration-manager.ts 3 处残留 bug 修复 + 6 用例补全）
+
+**背景**：上轮 worklog「下一轮候选」标注了 collaboration-manager.ts 闭合后仍残留的 4 处 latent gap。本轮处理其中 3 处明确 bug（compareVersions 桩实现需真正 diff 算法，规模较大，留待单独一轮）。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（首轮克隆），`git clone` 自 Gitee origin 后补加 github remote。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `00e81d1`，工作树干净，无遗留 commit/改动。
+- 复核任务清单优先级 1 的 5 项均已在历史轮次闭合（tenant-db.ts raw 审计 / alipay+wechat RSA2&V3 验签 / api/files 走 TenantDb / sync-engine keep_both / api-auth.test 重写匹配实现），本轮转入优先级 2/3。
+- `collaborationManager` 单例未被任何外部模块引用（上轮已确认），修复安全。
+- 沙箱无 node_modules，需跑测试验证零回归，故执行 `npm ci`（项目用 package-lock.json，无 pnpm-lock.yaml，按规范不混用 lockfile）+ `npx prisma generate`。
+
+**fix — `src/lib/collaboration/collaboration-manager.ts`（3 处残留 bug 修复）**：
+
+1. **leaveEditing 清空 currentSpaceId**：与上轮 joinEditing 修复前同型问题。`leaveEditing` 末尾 `this.updateUserCurrentFile(userId, undefined)` 不传 spaceId，而 `updateUserCurrentFile` 直接 `user.currentSpaceId = spaceId`（未传即 undefined），致用户离开文件编辑后失去 space 归属，`getOnlineUsers(spaceId)` 过滤失效。修复：透传 `currentUser?.currentSpaceId` 保留原值（清 currentFileId 合理——用户已离开该文件；保留 spaceId——用户仍在 space 内浏览其它文件）。
+
+2. **updateNotificationSettings 对 doNotDisturb 浅合并**：`doNotDisturb` 为嵌套对象 `{ enabled, startTime?, endTime? }`，原 `{ ...current, ...updates }` 会用 `updates.doNotDisturb` 整体替换 `current.doNotDisturb`，致仅传 `{ doNotDisturb: { enabled: true } }` 时丢失此前设置的 startTime/endTime。修复：对 doNotDisturb 单独深合并 `{ ...current.doNotDisturb, ...updates.doNotDisturb }`，其余字段维持浅合并；不传 doNotDisturb 时保持原值。
+
+3. **userOffline 在 host 下线时直接 endSession**：与 `leaveSession` 的「转移 host」行为不一致——host 一次网络抖动即终结整个协作会话。修复：与 leaveSession 一致——host 下线时转移给第一个剩余参与者（`participants[0]` 升为 host），仅当无剩余参与者时才 endSession；非 host 下线仅从 participants 移除（行为不变）。同时统一了原 host/非 host 两个分支的参与者移除逻辑（原先 host 分支不移除 host 就 endSession，致 endSession 后 participants 仍含已下线 host）。
+
+**test — `src/__tests__/lib/collaboration/collaboration-manager.test.ts`（+82 行，140→146 用例）**：
+
+fix commit 同步更新既有 userOffline host 测试（原断言 endSession，改为断言转移 host）与文件头控制流注释，使既有 140 用例匹配修复后行为；test commit 新增 6 用例覆盖 3 处修复：
+- leaveEditing 保留 currentSpaceId（1）：清 currentFileId 但保留 spaceId，且 `getOnlineUsers(spaceId)` 仍能命中
+- userOffline host 转移（2）：host 下线无剩余参与者 → endSession；多个参与者时转移给 `participants[0]` 且其余人 role 不变
+- updateNotificationSettings doNotDisturb 深合并（3）：仅更新 enabled 时 startTime/endTime 保留；不传 doNotDisturb 时原值不变；多次部分更新累积合并
+
+**2 dev commit 拆分**：与第一百零六/八/九/十轮 todo/comment/knowledge-base/collaboration-manager fix/test 拆分同型。本轮 collaboration-manager 已有 140 既有用例（上轮新建），其中 1 用例（userOffline host）断言旧 endSession 行为，须随 fix commit 一并更新以保持 fix commit 绿；test commit 仅新增 6 用例断言修复后行为。两 commit 各自绿。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/collaboration/collaboration-manager.test.ts`：**146/146 通过**（76ms tests）。
+- `npx tsc --noEmit`：collaboration 相关 **0 错误**（grep collaboration 无命中；其余报错均为环境无 node_modules / 未生成 Prisma client 的既有问题，与本次改动无关）。
+- `npx vitest run` 全量 **4024/4024 通过**（153 文件，179s），零回归。测试数较上轮 4018 增加 6（新增 6 用例），文件数 153 不变。
+
+### 改动量
+
+2 文件：
+- `src/lib/collaboration/collaboration-manager.ts`（修改，+33/-8）— 3 处残留 bug 修复（leaveEditing 保留 spaceId / doNotDisturb 深合并 / userOffline host 转移）
+- `src/__tests__/lib/collaboration/collaboration-manager.test.ts`（修改，+82/-11）— 1 既有用例更新 + 6 新用例
+
+2 dev commit（fix / test 拆分：fix commit 含 source 修复 + 既有用例断言更新以保持绿；test commit 仅新增用例）。
+
+### Commit
+
+- `9e5f45d` fix(lib): collaboration-manager 3 处残留 bug 修复（leaveEditing spaceId/doNotDisturb 深合并/userOffline host 转移）
+- `464ae18` test(lib): collaboration-manager 补 6 用例覆盖本轮 3 处残留 bug 修复
+
+### 推送
+
+- origin (Gitee)：`00e81d1..9e5f45d` + `464ae18` 推送（含本轮 2 dev commit；worklog commit 待本次追加后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **collaboration-manager.ts 残留最后 1 处 latent gap**（仍未动，单独一轮）：`compareVersions` 为桩实现（零 changes/stats，注释「这里可以实现真正的diff算法」），需真正 diff 算法（如 Myers diff）。
+- **lib 域零覆盖纯模块延续**（同型内存 Map 单例 manager，可仿 todo/calendar/note/comment/knowledge-base/collaboration-manager 模式）：
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）—— 下一轮 Top 1 候选
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **knowledge-base-manager.ts 残留漂移**（仍未动，单独一轮）：`tag.itemCount` / `category.itemCount` 从未被维护——`createItem` 接 `tags: string[]`（标签名）但未联动 `KnowledgeTag` 注册表，致 `getTagList(sortBy:'count')` 全 0 失效。
+- **comment-manager.ts 残留 latent gap**（仍未动）：`getReplies` 实现为扁平直接回复，非递归——`maxDepth>1` 与 `maxDepth=1` 行为相同。
+- **note-manager.ts 残留 1 处漂移**（仍未动）：`createTag` 的 `noteCount` 恒 0——可仿 todo/calendar-manager `applyTagCountDelta` 模式迁移。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
