@@ -26,13 +26,15 @@
  *     致使版本 N 快照记录的是更新前的旧内容（版本历史永远捕获不到更新内容）。
  *     修复后 createVersion 移至 Object.assign 之后，版本 N 记录更新后的新内容。
  *     content 为 truthy 时重算 wordCount/readingTime；content 为 '' 时 falsy 不重算但仍建版本；
- *     notebookId 变更时旧笔记本 noteCount--（max 0）/ 新笔记本 noteCount++
- *   · deleteNote 软删除（status='deleted'）+ 笔记本 noteCount--（max 0），不建版本
- *   · permanentlyDeleteNote 从 notes/versions Map 物理删除；活跃笔记 -- 笔记本计数，
+ *     notebookId 变更时旧笔记本 noteCount--（max 0）/ 新笔记本 noteCount++；
+ *     updates.tags 显式提供时按集合差集同步标签 noteCount（旧-新减 / 新-旧加 / 共同不变）
+ *   · deleteNote 软删除（status='deleted'）+ 笔记本 noteCount--（max 0）+ 标签 noteCount--，不建版本
+ *   · permanentlyDeleteNote 从 notes/versions Map 物理删除；活跃笔记 -- 笔记本计数 + -- 标签计数，
  *     已软删除笔记不重复 --（避免与 deleteNote 双重递减）
- *   · restoreNote 置 status='active' + 回补笔记本 noteCount++（与 deleteNote -- 对称）
+ *   · restoreNote 置 status='active' + 回补笔记本 noteCount++ + 回补标签 noteCount++（与 deleteNote -- 对称）
  * - 标签管理：createTag 按 name 小写 + userId + tenantId 去重（命中返回已存在项）；
- *   noteCount 恒为 0（全模块无递增点）；getTagList sortBy 'count'(默认，全 0 稳定)/'name'(localeCompare)，limit 截断
+ *   noteCount 经 applyTagCountDelta 同步（按 name 大小写不敏感匹配已注册 NoteTag，未注册名静默跳过，
+ *   单次调用去重，max 0 保护）；getTagList sortBy 'count'(默认)/'name'(localeCompare)，limit 截断
  * - 搜索：仅查 status === 'active'（archived/deleted 均排除）；query 小写匹配 title/summary/content/tags(any)；
  *   tags 用 every（须全含）；dateFrom/dateTo 基于 createdAt；排序 Date/string/number 三分支
  * - 统计：notes 过滤含全状态（含 deleted，记录实际行为）；thisWeekNew/monthAgo 基于 createdAt 与 now 比较；

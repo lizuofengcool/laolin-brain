@@ -201,6 +201,9 @@ export class NoteManager {
       }
     }
 
+    // 同步标签使用计数（已通过 createTag 注册的同名标签 noteCount++）
+    this.applyTagCountDelta(note.tags, userId, tenantId, 1);
+
     // 创建初始版本
     this.createVersion(note, 1, userId, '初始版本');
 
@@ -345,7 +348,22 @@ export class NoteManager {
       }
     }
 
+    // 标签计数同步：先快照旧标签集（Object.assign 后 note.tags 即被覆盖为新数组）
+    const oldTagsSnapshot = note.tags;
+    const oldTagsLower = new Set(oldTagsSnapshot.map((t) => t.toLowerCase()));
+
     Object.assign(note, updates, { updatedAt: now });
+
+    // 标签计数同步：仅 updates.tags 显式提供时按集合差集同步（旧-新减 / 新-旧加 / 共同不变），
+    // 避免无关更新（如改 content/notebookId/status）误触标签计数。与 todo/calendar-manager 同型。
+    if (updates.tags) {
+      const newTags = updates.tags;
+      const newTagsLower = new Set(newTags.map((t) => t.toLowerCase()));
+      const removed = oldTagsSnapshot.filter((t) => !newTagsLower.has(t.toLowerCase()));
+      const added = newTags.filter((t) => !oldTagsLower.has(t.toLowerCase()));
+      this.applyTagCountDelta(removed, userId, tenantId, -1);
+      this.applyTagCountDelta(added, userId, tenantId, 1);
+    }
 
     // 创建新版本：须在 Object.assign 之后调用，使版本 N 快照记录更新后的内容。
     // 此前 createVersion 在赋值前调用，会把更新前的旧内容当作新版本快照，
@@ -378,6 +396,9 @@ export class NoteManager {
       }
     }
 
+    // 同步标签使用计数（与 createNote 的 ++ 对称）
+    this.applyTagCountDelta(note.tags, userId, tenantId, -1);
+
     return true;
   }
 
@@ -396,6 +417,12 @@ export class NoteManager {
       if (notebook && notebook.userId === userId && notebook.tenantId === tenantId) {
         notebook.noteCount = Math.max(0, notebook.noteCount - 1);
       }
+    }
+
+    // 同步标签使用计数：仅活跃笔记（未软删除）须 --，已软删除笔记 deleteNote 已 --
+    // （否则同一笔记删除两次会导致标签计数双重递减，与笔记本计数对称）。
+    if (note.status !== 'deleted') {
+      this.applyTagCountDelta(note.tags, userId, tenantId, -1);
     }
 
     this.notes.delete(id);
@@ -420,6 +447,9 @@ export class NoteManager {
         notebook.noteCount++;
       }
     }
+
+    // 回补标签使用计数（与 deleteNote 的 -- 对称）
+    this.applyTagCountDelta(note.tags, userId, tenantId, 1);
 
     return true;
   }
@@ -486,6 +516,39 @@ export class NoteManager {
     }
 
     return list;
+  }
+
+  // ==================== 标签计数同步（私有） ====================
+
+  /**
+   * 调整标签使用计数：按 name 大小写不敏感 + userId + tenantId 匹配已注册的 NoteTag，
+   * 命中则 noteCount += delta（max 0 保护，避免负数）。未注册的标签名静默跳过——
+   * note.tags 为自由 string[]，仅当用户显式 createTag 后才有 NoteTag 实体可计数。
+   * 同一标签名在一次调用中按唯一计（去重，避免 note.tags 含重复名时双重计数）。
+   */
+  private applyTagCountDelta(
+    tagNames: string[],
+    userId: string,
+    tenantId: string,
+    delta: 1 | -1
+  ): void {
+    const seen = new Set<string>();
+    for (const name of tagNames) {
+      if (!name) continue;
+      const lower = name.toLowerCase();
+      if (seen.has(lower)) continue;
+      seen.add(lower);
+
+      const tag = Array.from(this.tags.values()).find(
+        (t) =>
+          t.userId === userId &&
+          t.tenantId === tenantId &&
+          t.name.toLowerCase() === lower
+      );
+      if (!tag) continue;
+
+      tag.noteCount = Math.max(0, tag.noteCount + delta);
+    }
   }
 
   // ==================== 搜索功能 ====================
