@@ -818,6 +818,199 @@ describe('notes/note-manager NoteManager', () => {
     });
   });
 
+  // ─── 标签使用计数同步（applyTagCountDelta） ───────────────
+
+  describe('标签使用计数同步（applyTagCountDelta）', () => {
+    it('createNote 命中已注册标签 → noteCount++', () => {
+      const tagA = noteManager.createTag('a', 'u-a', 't-a');
+      const tagB = noteManager.createTag('b', 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(0);
+      expect(tagB.noteCount).toBe(0);
+      noteManager.createNote({ title: 'n', content: 'c', tags: ['a', 'b'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1);
+      expect(tagB.noteCount).toBe(1);
+    });
+
+    it('createNote 未注册标签名静默跳过（不报错、不计）', () => {
+      const tagA = noteManager.createTag('a', 'u-a', 't-a');
+      noteManager.createNote({ title: 'n', content: 'c', tags: ['a', 'unregistered'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1);
+      // unregistered 无 NoteTag 实体，静默跳过
+    });
+
+    it('createNote 多笔记共用同一标签 → 累加', () => {
+      const tagA = noteManager.createTag('a', 'u-a', 't-a');
+      noteManager.createNote({ title: 'n1', content: 'c', tags: ['a'] }, 'u-a', 't-a');
+      noteManager.createNote({ title: 'n2', content: 'c', tags: ['a'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(2);
+    });
+
+    it('createNote 标签名大小写不敏感匹配', () => {
+      const tagA = noteManager.createTag('Work', 'u-a', 't-a');
+      noteManager.createNote({ title: 'n', content: 'c', tags: ['work'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1);
+    });
+
+    it('createNote tags 含重复名按唯一计（不双计）', () => {
+      const tagA = noteManager.createTag('a', 'u-a', 't-a');
+      noteManager.createNote({ title: 'n', content: 'c', tags: ['a', 'A', 'a'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1);
+    });
+
+    it('createNote 跨 userId/tenantId 不误计', () => {
+      const tagA = noteManager.createTag('a', 'u-a', 't-a');
+      const tagB = noteManager.createTag('a', 'u-b', 't-a'); // 同名不同用户
+      const tagC = noteManager.createTag('a', 'u-a', 't-b'); // 同名不同租户
+      noteManager.createNote({ title: 'n', content: 'c', tags: ['a'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1);
+      expect(tagB.noteCount).toBe(0);
+      expect(tagC.noteCount).toBe(0);
+    });
+
+    it('updateNote tags 显式提供时按集合差集同步', () => {
+      const tagA = noteManager.createTag('a', 'u-a', 't-a');
+      const tagB = noteManager.createTag('b', 'u-a', 't-a');
+      const tagC = noteManager.createTag('c', 'u-a', 't-a');
+      const note = noteManager.createNote(
+        { title: 'n', content: 'c', tags: ['a', 'b'] },
+        'u-a',
+        't-a'
+      );
+      expect(tagA.noteCount).toBe(1);
+      expect(tagB.noteCount).toBe(1);
+      expect(tagC.noteCount).toBe(0);
+      // ['a','b'] → ['b','c']：a 减、b 不变、c 加
+      noteManager.updateNote(note.id, { tags: ['b', 'c'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(0);
+      expect(tagB.noteCount).toBe(1);
+      expect(tagC.noteCount).toBe(1);
+    });
+
+    it('updateNote tags 大小写不敏感差集', () => {
+      const tagA = noteManager.createTag('Work', 'u-a', 't-a');
+      const note = noteManager.createNote({ title: 'n', content: 'c', tags: ['work'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1);
+      // 'work' → 'WORK'：小写相同，视为不变
+      noteManager.updateNote(note.id, { tags: ['WORK'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1);
+    });
+
+    it('updateNote 未提供 tags 时不动标签计数（改 content/status 不误触）', () => {
+      const tagA = noteManager.createTag('a', 'u-a', 't-a');
+      const note = noteManager.createNote({ title: 'n', content: 'c', tags: ['a'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1);
+      noteManager.updateNote(note.id, { content: 'new content' }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1); // 不动
+      noteManager.updateNote(note.id, { status: 'archived' }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1); // 不动
+    });
+
+    it('updateNote tags:[] 清空所有标签 → 全部 --', () => {
+      const tagA = noteManager.createTag('a', 'u-a', 't-a');
+      const tagB = noteManager.createTag('b', 'u-a', 't-a');
+      const note = noteManager.createNote(
+        { title: 'n', content: 'c', tags: ['a', 'b'] },
+        'u-a',
+        't-a'
+      );
+      expect(tagA.noteCount).toBe(1);
+      expect(tagB.noteCount).toBe(1);
+      noteManager.updateNote(note.id, { tags: [] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(0);
+      expect(tagB.noteCount).toBe(0);
+      expect(note.tags).toEqual([]);
+    });
+
+    it('updateNote tags 含重复名按唯一计（不双计）', () => {
+      const tagA = noteManager.createTag('a', 'u-a', 't-a');
+      const note = noteManager.createNote({ title: 'n', content: 'c' }, 'u-a', 't-a');
+      noteManager.updateNote(note.id, { tags: ['a', 'A', 'a'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1);
+    });
+
+    it('deleteNote 软删除 → 标签 noteCount--（与 createNote ++ 对称）', () => {
+      const tagA = noteManager.createTag('a', 'u-a', 't-a');
+      const note = noteManager.createNote({ title: 'n', content: 'c', tags: ['a'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1);
+      noteManager.deleteNote(note.id, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(0);
+    });
+
+    it('permanentlyDeleteNote 活跃笔记 → 标签 --', () => {
+      const tagA = noteManager.createTag('a', 'u-a', 't-a');
+      const note = noteManager.createNote({ title: 'n', content: 'c', tags: ['a'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1);
+      noteManager.permanentlyDeleteNote(note.id, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(0);
+    });
+
+    it('permanentlyDeleteNote 已软删除笔记不重复 --（避免双重递减）', () => {
+      const tagA = noteManager.createTag('a', 'u-a', 't-a');
+      const note = noteManager.createNote({ title: 'n', content: 'c', tags: ['a'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1);
+      noteManager.deleteNote(note.id, 'u-a', 't-a'); // 软删除 → --
+      expect(tagA.noteCount).toBe(0);
+      noteManager.permanentlyDeleteNote(note.id, 'u-a', 't-a'); // 物理删除，不重复 --
+      expect(tagA.noteCount).toBe(0); // 仍为 0
+    });
+
+    it('restoreNote → 回补标签 noteCount++（与 deleteNote -- 对称）', () => {
+      const tagA = noteManager.createTag('a', 'u-a', 't-a');
+      const note = noteManager.createNote({ title: 'n', content: 'c', tags: ['a'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1);
+      noteManager.deleteNote(note.id, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(0);
+      noteManager.restoreNote(note.id, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1); // 回补
+    });
+
+    it('删除/恢复循环计数对称（create → delete → restore → delete）', () => {
+      const tagA = noteManager.createTag('a', 'u-a', 't-a');
+      const note = noteManager.createNote({ title: 'n', content: 'c', tags: ['a'] }, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1);
+      noteManager.deleteNote(note.id, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(0);
+      noteManager.restoreNote(note.id, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(1);
+      noteManager.deleteNote(note.id, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(0);
+    });
+
+    it('max 0 保护：重复软删除计数不低于 0', () => {
+      const tagA = noteManager.createTag('a', 'u-a', 't-a');
+      const note = noteManager.createNote({ title: 'n', content: 'c', tags: ['a'] }, 'u-a', 't-a');
+      noteManager.deleteNote(note.id, 'u-a', 't-a');
+      expect(tagA.noteCount).toBe(0);
+      noteManager.deleteNote(note.id, 'u-a', 't-a'); // 已软删除，仍走 -- 路径
+      expect(tagA.noteCount).toBe(0); // max 0 保护
+    });
+
+    it('getTagList sortBy="count" 反映真实计数（降序）', () => {
+      noteManager.createTag('a', 'u', 't');
+      noteManager.createTag('b', 'u', 't');
+      noteManager.createTag('c', 'u', 't');
+      // a 用 3 次、b 用 1 次、c 用 0 次
+      noteManager.createNote({ title: 'n1', content: 'c', tags: ['a'] }, 'u', 't');
+      noteManager.createNote({ title: 'n2', content: 'c', tags: ['a'] }, 'u', 't');
+      noteManager.createNote({ title: 'n3', content: 'c', tags: ['a'] }, 'u', 't');
+      noteManager.createNote({ title: 'n4', content: 'c', tags: ['b'] }, 'u', 't');
+      const list = noteManager.getTagList('u', 't', { sortBy: 'count' });
+      expect(list.map(t => t.name)).toEqual(['a', 'b', 'c']);
+      expect(list.map(t => t.noteCount)).toEqual([3, 1, 0]);
+    });
+
+    it('getStats topTags 反映真实计数（降序取前 10）', () => {
+      noteManager.createTag('a', 'u', 't');
+      noteManager.createTag('b', 'u', 't');
+      noteManager.createNote({ title: 'n1', content: 'c', tags: ['a'] }, 'u', 't');
+      noteManager.createNote({ title: 'n2', content: 'c', tags: ['a'] }, 'u', 't');
+      noteManager.createNote({ title: 'n3', content: 'c', tags: ['b'] }, 'u', 't');
+      const s = noteManager.getStats('u', 't');
+      expect(s.topTags.map(t => t.name)).toEqual(['a', 'b']);
+      expect(s.topTags.map(t => t.count)).toEqual([2, 1]);
+    });
+  });
+
   // ─── 搜索 ───────────────────────────────────────────────
 
   describe('search', () => {
@@ -1016,13 +1209,13 @@ describe('notes/note-manager NoteManager', () => {
       expect(s.topNotebooks[0]).toMatchObject({ name: 'nb5', count: 6 });
     });
 
-    it('topTags 按 noteCount desc 取前 10（全 0 稳定）', () => {
+    it('topTags 按 noteCount desc 取前 10（无笔记引用时全 0 稳定）', () => {
       for (let i = 0; i < 12; i++) {
         noteManager.createTag(`t${i}`, 'u', 't');
       }
       const s = noteManager.getStats('u', 't');
       expect(s.topTags).toHaveLength(10); // 取前 10
-      expect(s.topTags.every(t => t.count === 0)).toBe(true); // noteCount 恒 0
+      expect(s.topTags.every(t => t.count === 0)).toBe(true); // 无笔记引用这些标签，noteCount 全 0
     });
   });
 
