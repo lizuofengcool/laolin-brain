@@ -202,8 +202,10 @@ export class CollaborationManager {
 
     this.fileEditors.set(fileId, editors);
 
-    // 更新用户当前文件
-    this.updateUserCurrentFile(userId, fileId);
+    // 更新用户当前文件（保留 currentSpaceId：此前不传 spaceId 会将其清空为 undefined，
+    // 致 getOnlineUsers(spaceId) 过滤失效——用户加入编辑后反而失去 space 归属）
+    const currentUser = this.onlineUsers.get(userId);
+    this.updateUserCurrentFile(userId, fileId, currentUser?.currentSpaceId);
 
     return editor;
   }
@@ -800,9 +802,32 @@ export class CollaborationManager {
     task.comments.push(comment);
     task.updatedAt = new Date();
 
+    // 通知任务相关人（assignee / createdBy）有新评论——此前从未发送 task_commented 通知，
+    // 致 CollaborationNotificationType 中的该类型与 NotificationSettings.taskCommented 开关
+    // 形同虚设。排除评论者本人，去重。
+    const recipients = new Set<string>();
+    if (task.assignee) recipients.add(task.assignee);
+    if (task.createdBy) recipients.add(task.createdBy);
+    recipients.delete(userId);
+    for (const recipientId of recipients) {
+      this.sendNotification(recipientId, tenantId, {
+        type: 'task_commented',
+        title: '任务评论',
+        content: `${userName}在任务「${task.title}」中发表了评论`,
+        data: {
+          taskId,
+          fromUserId: userId,
+          fromUserName: userName,
+          action: 'commented',
+        },
+      });
+    }
+
     // 通知被@的人
     if (options?.mentions) {
       for (const mentionedUserId of options.mentions) {
+        // 被@的人若已是评论相关人，task_commented 已通知；此处再发 task_mentioned，
+        // 两类通知语义不同（评论 vs 提及），故不跳过。
         this.sendNotification(mentionedUserId, tenantId, {
           type: 'task_mentioned',
           title: '任务提及',
@@ -973,9 +998,11 @@ export class CollaborationManager {
   ): void {
     // 检查用户通知设置
     const settings = this.getNotificationSettings(userId);
-    const typeKey = notification.type as keyof NotificationSettings;
-
-    if (typeKey in settings && !settings[typeKey as keyof NotificationSettings]) {
+    // notification.type 为 snake_case（如 'task_assigned'），NotificationSettings 的 key 为
+    // camelCase（如 taskAssigned）。此前直接 `typeKey in settings` 永远为 false，致用户开关
+    // 形同虚设；改为显式映射后尊重用户设置。
+    const settingsKey = this.notificationTypeToSettingsKey(notification.type);
+    if (settingsKey && !settings[settingsKey]) {
       return; // 用户关闭了该类型通知
     }
 
@@ -1073,6 +1100,28 @@ export class CollaborationManager {
    */
   getNotificationSettings(userId: string): NotificationSettings {
     return this.notificationSettings.get(userId) || { ...DEFAULT_NOTIFICATION_SETTINGS };
+  }
+
+  /**
+   * 将通知类型（snake_case）映射为 NotificationSettings 的 key（camelCase）。
+   * 不在映射表中的类型（理论上不存在）返回 null，表示无对应开关、放行。
+   */
+  private notificationTypeToSettingsKey(
+    type: CollaborationNotificationType
+  ): keyof NotificationSettings | null {
+    const map: Record<CollaborationNotificationType, keyof NotificationSettings> = {
+      task_assigned: 'taskAssigned',
+      task_completed: 'taskCompleted',
+      task_commented: 'taskCommented',
+      task_mentioned: 'taskMentioned',
+      file_shared: 'fileShared',
+      file_edited: 'fileEdited',
+      file_commented: 'fileCommented',
+      invitation: 'invitation',
+      mention: 'mention',
+      review_requested: 'reviewRequested',
+    };
+    return map[type] ?? null;
   }
 
   /**
