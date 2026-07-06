@@ -28,13 +28,13 @@
  *     content 为 truthy 时重算 wordCount/readingTime；content 为 '' 时 falsy 不重算但仍建版本；
  *     notebookId 变更时旧笔记本 noteCount--（max 0）/ 新笔记本 noteCount++
  *   · deleteNote 软删除（status='deleted'）+ 笔记本 noteCount--（max 0），不建版本
- *   · permanentlyDeleteNote 从 notes/versions Map 物理删除，不调整笔记本计数
- *   · restoreNote 仅置 status='active'，不回补笔记本计数（计数漂移，记录实际行为）
+ *   · permanentlyDeleteNote 从 notes/versions Map 物理删除；活跃笔记 -- 笔记本计数，
+ *     已软删除笔记不重复 --（避免与 deleteNote 双重递减）
+ *   · restoreNote 置 status='active' + 回补笔记本 noteCount++（与 deleteNote -- 对称）
  * - 标签管理：createTag 按 name 小写 + userId + tenantId 去重（命中返回已存在项）；
  *   noteCount 恒为 0（全模块无递增点）；getTagList sortBy 'count'(默认，全 0 稳定)/'name'(localeCompare)，limit 截断
  * - 搜索：仅查 status === 'active'（archived/deleted 均排除）；query 小写匹配 title/summary/content/tags(any)；
- *   tags 用 every（须全含）；dateFrom/dateTo 基于 createdAt；排序仅 Date/number 两分支（无 string 分支，
- *   sortBy='title' 实际不排序——记录实际行为）；分页 totalPages/hasMore 计算
+ *   tags 用 every（须全含）；dateFrom/dateTo 基于 createdAt；排序 Date/string/number 三分支
  * - 统计：notes 过滤含全状态（含 deleted，记录实际行为）；thisWeekNew/monthAgo 基于 createdAt 与 now 比较；
  *   topNotebooks 按 noteCount desc 取前 5；topTags 按 noteCount desc 取前 10
  * - 版本：getVersions 按 version desc；版本 N 快照捕获更新后内容（本轮修复验证）
@@ -610,16 +610,17 @@ describe('notes/note-manager NoteManager', () => {
       expect(note.notebookId).toBe(nb2.id);
     });
 
-    it('notebookId 变更为 undefined（移出笔记本）：guard 跳过调整块，旧笔记本计数不递减（实际行为）', () => {
-      // updates.notebookId !== undefined 为 false → 整个笔记本调整块被跳过；
-      // 但 Object.assign 仍把 note.notebookId 置为 undefined（计数漂移，记录实际行为）
+    it('notebookId 变更为 undefined（移出笔记本）：旧笔记本计数递减（已修复）', () => {
+      // 修复前 guard 为 updates.notebookId !== undefined，把"显式移出"与"未传该字段"
+      // 混为一谈，导致移出笔记本时旧计数不递减（计数漂移）。
+      // 修复后用 'notebookId' in updates 判定，显式传 undefined 触发旧笔记本 --。
       const nb = noteManager.createNotebook({ name: 'nb' }, 'u-a', 't-a');
       const note = noteManager.createNote(
         { title: 'n', content: 'c', notebookId: nb.id }, 'u-a', 't-a'
       );
       expect(nb.noteCount).toBe(1);
       noteManager.updateNote(note.id, { notebookId: undefined }, 'u-a', 't-a');
-      expect(nb.noteCount).toBe(1); // 未递减（guard 实际行为）
+      expect(nb.noteCount).toBe(0); // 旧笔记本递减（已修复）
       expect(note.notebookId).toBeUndefined();
     });
 
@@ -674,7 +675,7 @@ describe('notes/note-manager NoteManager', () => {
       expect(nb.noteCount).toBe(0); // max(0, 0-1) = 0
     });
 
-    it('permanentlyDeleteNote 物理删除 notes + versions Map，不调整笔记本计数', () => {
+    it('permanentlyDeleteNote 物理删除 notes + versions Map；活跃笔记递减笔记本计数（已修复）', () => {
       const nb = noteManager.createNotebook({ name: 'nb' }, 'u-a', 't-a');
       const note = noteManager.createNote(
         { title: 'n', content: 'c', notebookId: nb.id }, 'u-a', 't-a'
@@ -683,7 +684,19 @@ describe('notes/note-manager NoteManager', () => {
       expect(noteManager.permanentlyDeleteNote(note.id, 'u-a', 't-a')).toBe(true);
       expect(noteManager.getNote(note.id, 'u-a', 't-a')).toBeNull();
       expect(noteManager.getVersions(note.id, 'u-a', 't-a')).toEqual([]);
-      expect(nb.noteCount).toBe(1); // 不调整（实际行为，记录计数漂移）
+      expect(nb.noteCount).toBe(0); // 活跃笔记物理删除递减（已修复）
+    });
+
+    it('permanentlyDeleteNote 对已软删除笔记不重复递减（避免双重递减）', () => {
+      // deleteNote 已 --，permanentlyDeleteNote 须跳过递减，否则同一笔记删两次计数 -2
+      const nb = noteManager.createNotebook({ name: 'nb' }, 'u-a', 't-a');
+      const note = noteManager.createNote(
+        { title: 'n', content: 'c', notebookId: nb.id }, 'u-a', 't-a'
+      );
+      noteManager.deleteNote(note.id, 'u-a', 't-a'); // 软删除 → noteCount 0
+      expect(nb.noteCount).toBe(0);
+      noteManager.permanentlyDeleteNote(note.id, 'u-a', 't-a'); // 物理删除 → 不再递减
+      expect(nb.noteCount).toBe(0); // 已软删除，跳过递减
     });
 
     it('permanentlyDeleteNote 未命中 / 跨租户返回 false', () => {
@@ -708,7 +721,7 @@ describe('notes/note-manager NoteManager', () => {
       expect(noteManager.restoreNote(note.id, 'u-b', 't-a')).toBe(false);
     });
 
-    it('restoreNote 不回补笔记本计数（计数漂移，实际行为）', () => {
+    it('restoreNote 回补笔记本计数（与 deleteNote -- 对称，已修复）', () => {
       const nb = noteManager.createNotebook({ name: 'nb' }, 'u-a', 't-a');
       const note = noteManager.createNote(
         { title: 'n', content: 'c', notebookId: nb.id }, 'u-a', 't-a'
@@ -717,7 +730,7 @@ describe('notes/note-manager NoteManager', () => {
       noteManager.deleteNote(note.id, 'u-a', 't-a');
       expect(nb.noteCount).toBe(0); // 删除时 --
       noteManager.restoreNote(note.id, 'u-a', 't-a');
-      expect(nb.noteCount).toBe(0); // 恢复时未回补（实际行为）
+      expect(nb.noteCount).toBe(1); // 恢复时回补 ++（已修复）
       expect(note.status).toBe('active');
     });
   });
@@ -873,18 +886,23 @@ describe('notes/note-manager NoteManager', () => {
       expect(range.total).toBe(1); // 仅 mid
     });
 
-    it('排序仅 Date/number 分支（无 string 分支：sortBy="title" 实际不排序）', () => {
-      // 默认 sortBy=updatedAt + sortOrder=desc 走 Date 分支
+    it('排序支持 string 分支：sortBy="title" 按 localeCompare 排序（已修复）', () => {
+      // 修复前 search 排序仅 Date/number 两分支，sortBy='title' 比较返回 0 → 保持插入序（不排序）
+      // 修复后补 string 分支，与 getNoteList 一致。用「插入序 ≠ 字母序」的标题验证排序确实生效。
       vi.useFakeTimers();
       vi.setSystemTime(NOW);
-      noteManager.createNote({ title: 'a', content: 'c' }, 'u', 't');
+      noteManager.createNote({ title: 'banana', content: 'c' }, 'u', 't'); // 先创建
       vi.setSystemTime(new Date(NOW_TS + 1000));
-      noteManager.createNote({ title: 'b', content: 'c' }, 'u', 't');
+      noteManager.createNote({ title: 'apple', content: 'c' }, 'u', 't'); // 后创建
+      // 默认 sortBy=updatedAt + sortOrder=desc 走 Date 分支：后创建在前
       const desc = noteManager.search({ sortBy: 'updatedAt', sortOrder: 'desc' }, 'u', 't');
-      expect(desc.notes.map(n => n.title)).toEqual(['b', 'a']);
-      // sortBy='title' 无 string 分支 → 比较返回 0 → 保持插入序（不排序）
-      const noSort = noteManager.search({ sortBy: 'title', sortOrder: 'asc' }, 'u', 't');
-      expect(noSort.notes.map(n => n.title)).toEqual(['a', 'b']); // 保持插入序
+      expect(desc.notes.map(n => n.title)).toEqual(['apple', 'banana']);
+      // sortBy='title' 走 string 分支：asc 字母序升（与插入序 banana→apple 相反）
+      const asc = noteManager.search({ sortBy: 'title', sortOrder: 'asc' }, 'u', 't');
+      expect(asc.notes.map(n => n.title)).toEqual(['apple', 'banana']);
+      // sortBy='title' desc 字母序降
+      const titleDesc = noteManager.search({ sortBy: 'title', sortOrder: 'desc' }, 'u', 't');
+      expect(titleDesc.notes.map(n => n.title)).toEqual(['banana', 'apple']);
     });
 
     it('分页 totalPages / hasMore 计算', () => {
@@ -1138,12 +1156,12 @@ describe('notes/note-manager NoteManager', () => {
       expect(nb.noteCount).toBe(0);
     });
 
-    it('permanentlyDeleteNote 不调整 notebook.noteCount（计数漂移，实际行为）', () => {
+    it('permanentlyDeleteNote 递减活跃笔记的 notebook.noteCount（已修复）', () => {
       const nb = noteManager.createNotebook({ name: 'nb' }, 'u-a', 't-a');
       const note = noteManager.createNote({ title: 'n', content: 'c', notebookId: nb.id }, 'u-a', 't-a');
       expect(nb.noteCount).toBe(1);
       noteManager.permanentlyDeleteNote(note.id, 'u-a', 't-a');
-      expect(nb.noteCount).toBe(1); // 不调整
+      expect(nb.noteCount).toBe(0); // 活跃笔记物理删除递减（已修复）
     });
 
     it('updateNote 移动笔记到新笔记本后，getNoteList 按 notebookId 过滤正确', () => {

@@ -325,7 +325,10 @@ export class NoteManager {
     }
 
     // 处理笔记本变更（须在 Object.assign 之前读取 note.notebookId 旧值）
-    if (updates.notebookId !== undefined && updates.notebookId !== note.notebookId) {
+    // 用 'notebookId' in updates 而非 !== undefined 判定：调用方传 notebookId: undefined
+    // 表示显式移出笔记本，此时应递减旧笔记本计数。!== undefined 会把"显式移出"与
+    // "未传该字段"混为一谈，导致移出笔记本时旧计数不递减（计数漂移）。
+    if ('notebookId' in updates && updates.notebookId !== note.notebookId) {
       // 从旧笔记本移除
       if (note.notebookId) {
         const oldNotebook = this.notebooks.get(note.notebookId);
@@ -333,7 +336,7 @@ export class NoteManager {
           oldNotebook.noteCount = Math.max(0, oldNotebook.noteCount - 1);
         }
       }
-      // 添加到新笔记本
+      // 添加到新笔记本（updates.notebookId 为 undefined/falsy 时跳过，即移出笔记本）
       if (updates.notebookId) {
         const newNotebook = this.notebooks.get(updates.notebookId);
         if (newNotebook && newNotebook.userId === userId && newNotebook.tenantId === tenantId) {
@@ -385,6 +388,16 @@ export class NoteManager {
     const note = this.notes.get(id);
     if (!note || note.userId !== userId || note.tenantId !== tenantId) return false;
 
+    // 仅当笔记未被软删除时调整笔记本计数：deleteNote 已对软删除笔记 --，
+    // 此处对未软删除的活跃笔记做物理删除时须 --，避免计数漂移；对已软删除笔记
+    // 不再重复 --（否则同一笔记删除两次会导致计数双重递减）。
+    if (note.status !== 'deleted' && note.notebookId) {
+      const notebook = this.notebooks.get(note.notebookId);
+      if (notebook && notebook.userId === userId && notebook.tenantId === tenantId) {
+        notebook.noteCount = Math.max(0, notebook.noteCount - 1);
+      }
+    }
+
     this.notes.delete(id);
     this.versions.delete(id);
     return true;
@@ -399,6 +412,15 @@ export class NoteManager {
 
     note.status = 'active';
     note.updatedAt = new Date();
+
+    // 回补笔记本计数：deleteNote 软删除时已 --，restore 须对称 ++ 以保持计数一致。
+    if (note.notebookId) {
+      const notebook = this.notebooks.get(note.notebookId);
+      if (notebook && notebook.userId === userId && notebook.tenantId === tenantId) {
+        notebook.noteCount++;
+      }
+    }
+
     return true;
   }
 
@@ -541,6 +563,11 @@ export class NoteManager {
         return sortOrder === 'asc'
           ? aVal.getTime() - bVal.getTime()
           : bVal.getTime() - aVal.getTime();
+      }
+      if (typeof aVal === 'string' && typeof bVal === 'string') {
+        return sortOrder === 'asc'
+          ? aVal.localeCompare(bVal)
+          : bVal.localeCompare(aVal);
       }
       if (typeof aVal === 'number' && typeof bVal === 'number') {
         return sortOrder === 'asc' ? aVal - bVal : bVal - aVal;
