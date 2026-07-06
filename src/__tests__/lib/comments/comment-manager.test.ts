@@ -17,8 +17,9 @@
  * - queryComments：无 parentId 时取 targetComments 顶级评论（过滤掉有 parentId 的）；
  *   有 parentId 时取 commentReplies；filter 可选；排序 newest/oldest/most_liked/most_replies；
  *   分页 page 默认 1 / pageSize 默认 20；includeReplies=true 时附加 replies 字段
- *   （本轮修复：getReplies 传 maxDepth 而非 maxDepth-1，使默认 maxDepth=1 即可返回直接回复）
- * - getReplies（私有）：depth<=0 返回空；否则返回直接回复（非递归，扁平）
+ *   （maxDepth 控制递归下探层数：1=直接回复，2=含孙回复，依此类推）
+ * - getReplies（私有，递归）：depth<=0 返回空；否则返回直接回复，每个回复递归填充自身
+ *   replies 字段（depth-1 下探），maxDepth>1 时返回多层嵌套树（本轮修复：此前为扁平直接回复）
  * - applyFilter（私有）：status(单值或数组) / userId / dateFrom / dateTo / hasAttachments / hasMentions /
  *   search(内容小写包含)
  * - sortComments（私有）：newest(createdAt desc) / oldest(createdAt asc) / most_liked(likes desc) /
@@ -551,6 +552,156 @@ describe('comments/comment-manager CommentManager', () => {
         parentId: parent.id, includeReplies: true,
       });
       expect(res.comments[0]).not.toHaveProperty('replies');
+    });
+
+    // ─── 递归回复树（getReplies maxDepth>1）—— 本轮修复 ──
+    describe('递归回复树（getReplies maxDepth>1）', () => {
+      it('maxDepth=2 → 顶级.r1.r2 两层嵌套，叶子 replies 为 []', () => {
+        const top = seedTop({ params: { content: 'top' } });
+        const r1 = manager.createComment('tenant-a', 'u2', 'B', makeParams({ content: 'r1', parentId: top.id }));
+        const r2 = manager.createComment('tenant-a', 'u3', 'C', makeParams({ content: 'r2', parentId: r1!.id }));
+
+        const res = manager.queryComments({
+          tenantId: 'tenant-a', targetId: 'target-1', targetType: 'file',
+          includeReplies: true, maxDepth: 2,
+        });
+
+        expect(res.comments).toHaveLength(1);
+        expect(res.comments[0].id).toBe(top.id);
+        const topReplies = res.comments[0].replies!;
+        expect(topReplies).toHaveLength(1);
+        expect(topReplies[0].id).toBe(r1!.id);
+        // 第二层：r1 的子回复 r2
+        expect(topReplies[0].replies).toHaveLength(1);
+        expect(topReplies[0].replies![0].id).toBe(r2!.id);
+        // 叶子 r2 的 replies 为空数组（已下探到底）
+        expect(topReplies[0].replies![0].replies).toEqual([]);
+      });
+
+      it('maxDepth=3 → 三层嵌套 top.r1.r2.r3', () => {
+        const top = seedTop({ params: { content: 'top' } });
+        const r1 = manager.createComment('tenant-a', 'u2', 'B', makeParams({ content: 'r1', parentId: top.id }));
+        const r2 = manager.createComment('tenant-a', 'u3', 'C', makeParams({ content: 'r2', parentId: r1!.id }));
+        const r3 = manager.createComment('tenant-a', 'u4', 'D', makeParams({ content: 'r3', parentId: r2!.id }));
+
+        const res = manager.queryComments({
+          tenantId: 'tenant-a', targetId: 'target-1', targetType: 'file',
+          includeReplies: true, maxDepth: 3,
+        });
+
+        const r1Node = res.comments[0].replies![0];
+        const r2Node = r1Node.replies![0];
+        const r3Node = r2Node.replies![0];
+        expect(r1Node.id).toBe(r1!.id);
+        expect(r2Node.id).toBe(r2!.id);
+        expect(r3Node.id).toBe(r3!.id);
+        expect(r3Node.replies).toEqual([]);
+      });
+
+      it('maxDepth=1 → 直接回复叶子 replies 为 []（形状一致）', () => {
+        const top = seedTop({ params: { content: 'top' } });
+        manager.createComment('tenant-a', 'u2', 'B', makeParams({ content: 'r1', parentId: top.id }));
+
+        const res = manager.queryComments({
+          tenantId: 'tenant-a', targetId: 'target-1', targetType: 'file',
+          includeReplies: true, maxDepth: 1,
+        });
+
+        expect(res.comments[0].replies![0].replies).toEqual([]);
+      });
+
+      it('maxDepth 超过实际深度 → 返回完整树，无报错，叶子 replies 为 []', () => {
+        const top = seedTop({ params: { content: 'top' } });
+        const r1 = manager.createComment('tenant-a', 'u2', 'B', makeParams({ content: 'r1', parentId: top.id }));
+        manager.createComment('tenant-a', 'u3', 'C', makeParams({ content: 'r2', parentId: r1!.id }));
+
+        const res = manager.queryComments({
+          tenantId: 'tenant-a', targetId: 'target-1', targetType: 'file',
+          includeReplies: true, maxDepth: 5,
+        });
+
+        const r1Node = res.comments[0].replies![0];
+        expect(r1Node.replies).toHaveLength(1);
+        expect(r1Node.replies![0].replies).toEqual([]);
+      });
+
+      it('maxDepth=2 截断第三层：r3 不出现', () => {
+        const top = seedTop({ params: { content: 'top' } });
+        const r1 = manager.createComment('tenant-a', 'u2', 'B', makeParams({ content: 'r1', parentId: top.id }));
+        const r2 = manager.createComment('tenant-a', 'u3', 'C', makeParams({ content: 'r2', parentId: r1!.id }));
+        manager.createComment('tenant-a', 'u4', 'D', makeParams({ content: 'r3', parentId: r2!.id }));
+
+        const res = manager.queryComments({
+          tenantId: 'tenant-a', targetId: 'target-1', targetType: 'file',
+          includeReplies: true, maxDepth: 2,
+        });
+
+        const r1Node = res.comments[0].replies![0];
+        expect(r1Node.replies).toHaveLength(1);
+        expect(r1Node.replies![0].id).toBe(r2!.id);
+        // 第三层 r3 被截断：r2 作为叶子 replies 为 []
+        expect(r1Node.replies![0].replies).toEqual([]);
+      });
+
+      it('多分支：顶级有两条回复，各自带子回复', () => {
+        const top = seedTop({ params: { content: 'top' } });
+        const r1 = manager.createComment('tenant-a', 'u2', 'B', makeParams({ content: 'r1', parentId: top.id }));
+        const r3 = manager.createComment('tenant-a', 'u4', 'D', makeParams({ content: 'r3', parentId: top.id }));
+        manager.createComment('tenant-a', 'u3', 'C', makeParams({ content: 'r2', parentId: r1!.id }));
+        manager.createComment('tenant-a', 'u5', 'E', makeParams({ content: 'r4', parentId: r3!.id }));
+
+        const res = manager.queryComments({
+          tenantId: 'tenant-a', targetId: 'target-1', targetType: 'file',
+          includeReplies: true, maxDepth: 2,
+        });
+
+        const topReplies = res.comments[0].replies!;
+        expect(topReplies).toHaveLength(2);
+        // 每个直接回复各带 1 条子回复
+        for (const node of topReplies) {
+          expect(node.replies).toHaveLength(1);
+          expect(node.replies![0].replies).toEqual([]);
+        }
+      });
+
+      it('租户隔离：跨租户嵌套回复被递归过滤', () => {
+        const top = seedTop({ params: { content: 'top' } });
+        const r1 = manager.createComment('tenant-a', 'u2', 'B', makeParams({ content: 'r1', parentId: top.id }));
+        // r2 属于 tenant-b，作为 r1 的回复（跨租户）
+        manager.createComment('tenant-b', 'u3', 'C', makeParams({ content: 'r2-cross', parentId: r1!.id }));
+
+        const res = manager.queryComments({
+          tenantId: 'tenant-a', targetId: 'target-1', targetType: 'file',
+          includeReplies: true, maxDepth: 3,
+        });
+
+        const r1Node = res.comments[0].replies![0];
+        expect(r1Node.id).toBe(r1!.id);
+        // 跨租户 r2 被过滤，r1 为叶子
+        expect(r1Node.replies).toEqual([]);
+      });
+
+      it('嵌套回复为完整 Comment 对象（含 content/userId/parentId 等字段）', () => {
+        const top = seedTop({ params: { content: 'top' } });
+        const r1 = manager.createComment('tenant-a', 'u2', 'B', makeParams({ content: 'r1-content', parentId: top.id }));
+        const r2 = manager.createComment('tenant-a', 'u3', 'C', makeParams({ content: 'r2-content', parentId: r1!.id }));
+
+        const res = manager.queryComments({
+          tenantId: 'tenant-a', targetId: 'target-1', targetType: 'file',
+          includeReplies: true, maxDepth: 2,
+        });
+
+        const r1Node = res.comments[0].replies![0];
+        expect(r1Node.content).toBe('r1-content');
+        expect(r1Node.userId).toBe('u2');
+        expect(r1Node.parentId).toBe(top.id);
+        expect(r1Node.likes).toBe(0);
+        expect(r1Node.isEdited).toBe(false);
+        const r2Node = r1Node.replies![0];
+        expect(r2Node.content).toBe('r2-content');
+        expect(r2Node.userId).toBe('u3');
+        expect(r2Node.parentId).toBe(r1!.id);
+      });
     });
 
     it('空结果分页元数据', () => {
