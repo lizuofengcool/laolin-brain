@@ -109,15 +109,24 @@ export class CollaborationManager {
       }
     }
 
-    // 结束所有协作会话
+    // 处理所有协作会话：与 leaveSession 行为一致——host 下线时转移给第一个剩余参与者
+    // （而非直接 endSession），仅当无剩余参与者时才结束。此前 host 下线直接 endSession
+    // 会因一次网络抖动终结整个协作会话，与 leaveSession 的优雅转移语义不一致。
     for (const [sessionId, session] of this.sessions) {
+      if (session.status !== 'active') continue;
+      const participantIndex = session.participants.findIndex(p => p.userId === userId);
+      if (participantIndex === -1) continue;
+
+      session.participants.splice(participantIndex, 1);
+      session.lastActivityAt = new Date();
+
       if (session.hostUserId === userId) {
-        this.endSession(sessionId);
-      } else {
-        const participantIndex = session.participants.findIndex(p => p.userId === userId);
-        if (participantIndex !== -1) {
-          session.participants.splice(participantIndex, 1);
-          session.lastActivityAt = new Date();
+        if (session.participants.length > 0) {
+          const newHost = session.participants[0];
+          newHost.role = 'host';
+          session.hostUserId = newHost.userId;
+        } else {
+          this.endSession(sessionId);
         }
       }
     }
@@ -223,8 +232,11 @@ export class CollaborationManager {
     editors.splice(index, 1);
     this.fileEditors.set(fileId, editors);
 
-    // 更新用户当前文件
-    this.updateUserCurrentFile(userId, undefined);
+    // 更新用户当前文件（清 currentFileId 合理：用户已离开该文件；
+    // 但保留 currentSpaceId：用户仍在 space 内浏览其它文件，此前不传 spaceId 会将其清空为
+    // undefined，与 joinEditing 修复前的同型问题一致——getOnlineUsers(spaceId) 过滤会失效）
+    const currentUser = this.onlineUsers.get(userId);
+    this.updateUserCurrentFile(userId, undefined, currentUser?.currentSpaceId);
 
     return true;
   }
@@ -1132,7 +1144,16 @@ export class CollaborationManager {
     updates: Partial<NotificationSettings>
   ): NotificationSettings {
     const current = this.getNotificationSettings(userId);
-    const updated = { ...current, ...updates };
+    // doNotDisturb 为嵌套对象，浅合并会用 updates.doNotDisturb 整体替换 current.doNotDisturb，
+    // 致已存在的 startTime/endTime 丢失（如仅传 { doNotDisturb: { enabled: true } } 会清掉
+    // 此前设置的 startTime/endTime）。此处对 doNotDisturb 单独深合并，其余字段维持浅合并。
+    const updated: NotificationSettings = {
+      ...current,
+      ...updates,
+      doNotDisturb: updates.doNotDisturb
+        ? { ...current.doNotDisturb, ...updates.doNotDisturb }
+        : current.doNotDisturb,
+    };
     this.notificationSettings.set(userId, updated);
     return updated;
   }

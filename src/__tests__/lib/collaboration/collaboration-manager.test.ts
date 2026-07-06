@@ -8,7 +8,8 @@
  *
  * 关键控制流：
  * - userOnline：写入 onlineUsers；status='online'；userOffline 不删除条目只置 'offline'，
- *   并从所有 fileEditors 移除、host 的会话 endSession / 非移除参与者
+ *   并从所有 fileEditors 移除；会话参与者被移除，host 下线时转移 host 给剩余参与者
+ *   （与 leaveSession 一致），仅当无剩余参与者时 endSession
  * - getOnlineUsers：仅 status==='online'；spaceId 过滤 currentSpaceId
  * - joinEditing（本轮修复 2）：已存在则更新 status/lastActiveAt，否则新增；调用
  *   updateUserCurrentFile 时保留 currentSpaceId（此前不传 spaceId 致其清空，getOnlineUsers
@@ -175,16 +176,18 @@ describe('在线用户管理', () => {
     expect(manager.getFileEditors('file-1')).toHaveLength(0);
   });
 
-  it('userOffline：host 下线直接 endSession（非转移，与 leaveSession 不同）', () => {
+  it('userOffline：host 下线转移 host 给剩余参与者（与 leaveSession 一致）', () => {
     manager.userOnline('host', 'H');
     const s = makeSession('file-1', 'host', 'H', 't-1');
     manager.joinSession(s.id, 'p1', 'P1', 'editor');
     manager.userOffline('host');
     const updated = manager.getSession(s.id);
-    expect(updated?.status).toBe('ended');
-    expect(updated?.endedAt).toEqual(NOW);
-    // 非host参与者仍在 participants（endSession 不清理）
-    expect(updated?.participants.length).toBe(2);
+    // 不再直接 endSession：host 下线时转移给剩余参与者，会话保持 active
+    expect(updated?.status).toBe('active');
+    expect(updated?.hostUserId).toBe('p1');
+    // host 已从 participants 移除，p1 升为 host
+    expect(updated?.participants.find(p => p.userId === 'host')).toBeUndefined();
+    expect(updated?.participants.find(p => p.userId === 'p1')?.role).toBe('host');
   });
 
   it('userOffline：非 host 下线仅从 participants 移除', () => {
