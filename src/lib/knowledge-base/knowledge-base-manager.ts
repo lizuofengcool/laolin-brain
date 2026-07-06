@@ -197,6 +197,12 @@ export class KnowledgeBaseManager {
     kb.itemCount++;
     kb.updatedAt = now;
 
+    // 同步标签/分类使用计数（与 deleteItem -- 对称）
+    this.applyTagCountDelta(item.tags, knowledgeBaseId, tenantId, 1);
+    if (item.categoryId) {
+      this.applyCategoryDelta(item.categoryId, knowledgeBaseId, tenantId, 1);
+    }
+
     // 创建初始版本
     if (kb.settings.versioning) {
       this.createVersion(item, 1, authorId, '初始版本');
@@ -306,10 +312,39 @@ export class KnowledgeBaseManager {
       (item as any).readingTime = readingTime;
     }
 
+    // 标签/分类计数同步：先快照旧值（Object.assign 后 item.tags/categoryId 即被覆盖）
+    const oldTagsSnapshot = item.tags;
+    const oldTagsLower = new Set(oldTagsSnapshot.map((t) => t.toLowerCase()));
+    const oldCategoryId = item.categoryId;
+
     Object.assign(item, updates, { updatedAt: now });
 
     if (updates.status === 'published' && !item.publishedAt) {
       (item as any).publishedAt = now;
+    }
+
+    // 标签计数同步：仅 updates.tags 显式提供时按集合差集同步（旧-新减 / 新-旧加 / 共同不变），
+    // 避免无关更新（如改 content/categoryId/status）误触标签计数。与 todo/calendar/note-manager 同型。
+    if (updates.tags) {
+      const newTags = updates.tags;
+      const newTagsLower = new Set(newTags.map((t) => t.toLowerCase()));
+      const removed = oldTagsSnapshot.filter((t) => !newTagsLower.has(t.toLowerCase()));
+      const added = newTags.filter((t) => !oldTagsLower.has(t.toLowerCase()));
+      this.applyTagCountDelta(removed, item.knowledgeBaseId, tenantId, -1);
+      this.applyTagCountDelta(added, item.knowledgeBaseId, tenantId, 1);
+    }
+
+    // 分类计数同步：比较 Object.assign 前后的 categoryId，不同则旧--新++。
+    // updates 未含 categoryId 时 Object.assign 不覆盖，old===new 无操作；categoryId 置
+    // undefined（清空分类）时 old!==undefined → 旧--。
+    const newCategoryId = item.categoryId;
+    if (newCategoryId !== oldCategoryId) {
+      if (oldCategoryId) {
+        this.applyCategoryDelta(oldCategoryId, item.knowledgeBaseId, tenantId, -1);
+      }
+      if (newCategoryId) {
+        this.applyCategoryDelta(newCategoryId, item.knowledgeBaseId, tenantId, 1);
+      }
     }
 
     // 创建新版本：须在 Object.assign 之后调用，createVersion 快照 item.title/content/summary，
@@ -334,6 +369,12 @@ export class KnowledgeBaseManager {
     if (kb) {
       kb.itemCount--;
       kb.updatedAt = new Date();
+    }
+
+    // 同步标签/分类使用计数（与 createItem ++ 对称）
+    this.applyTagCountDelta(item.tags, item.knowledgeBaseId, tenantId, -1);
+    if (item.categoryId) {
+      this.applyCategoryDelta(item.categoryId, item.knowledgeBaseId, tenantId, -1);
     }
 
     this.items.delete(id);
@@ -851,6 +892,60 @@ export class KnowledgeBaseManager {
   }
 
   // ==================== 工具函数 ====================
+
+  /**
+   * 同步标签使用计数：按 name（大小写不敏感）+ knowledgeBaseId + tenantId 匹配已注册 KnowledgeTag，
+   * 命中则 itemCount += delta（max 0 保护，避免负数）。未注册的标签名静默跳过——
+   * item.tags 为自由 string[]，仅当用户显式 createTag 后才有 KnowledgeTag 实体可计数。
+   * 同一标签名在一次调用中按唯一计（去重，避免 item.tags 含重复名时双重计数）。
+   * 与 todo/calendar/note-manager 的 applyTagCountDelta 同型。
+   */
+  private applyTagCountDelta(
+    tagNames: string[],
+    knowledgeBaseId: string,
+    tenantId: string,
+    delta: 1 | -1
+  ): void {
+    const seen = new Set<string>();
+    for (const name of tagNames) {
+      if (!name) continue;
+      const lower = name.toLowerCase();
+      if (seen.has(lower)) continue;
+      seen.add(lower);
+
+      const tag = Array.from(this.tags.values()).find(
+        (t) =>
+          t.knowledgeBaseId === knowledgeBaseId &&
+          t.tenantId === tenantId &&
+          t.name.toLowerCase() === lower
+      );
+      if (!tag) continue;
+
+      tag.itemCount = Math.max(0, tag.itemCount + delta);
+    }
+  }
+
+  /**
+   * 同步分类条目计数：按 id + knowledgeBaseId + tenantId 匹配已注册 KnowledgeCategory，
+   * 命中则 itemCount += delta（max 0 保护）。未注册的 categoryId 静默跳过——
+   * item.categoryId 可指向未通过 createCategory 注册的任意 id（与标签未注册名静默跳过对称）。
+   */
+  private applyCategoryDelta(
+    categoryId: string,
+    knowledgeBaseId: string,
+    tenantId: string,
+    delta: 1 | -1
+  ): void {
+    const category = this.categories.get(categoryId);
+    if (
+      !category ||
+      category.knowledgeBaseId !== knowledgeBaseId ||
+      category.tenantId !== tenantId
+    ) {
+      return;
+    }
+    category.itemCount = Math.max(0, category.itemCount + delta);
+  }
 
   /**
    * 计算字数
