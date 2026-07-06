@@ -443,6 +443,16 @@ export class TodoManager {
       this.applyTagCountDelta(added, userId, tenantId, 1);
     }
 
+    // 进度同步：当本次更新显式改了 status 时，重新计算 progress 使其与 status / 子任务
+    // 完成度一致。此前 progress 仅经 addSubTask / toggleSubTask / deleteSubTask 刷新，
+    // 致 completeTask / uncompleteTask 等经 updateTask 改 status 的路径下 progress 滞留
+    // 旧值（如无子任务任务完成后仍为 0）。仅 updates.status 提供时触发：① 未改 status 时
+    // 不动 progress（尊重调用方可能显式传入的 updates.progress）；② UpdateTodoParams 不含
+    // subTasks，子任务变更仅经 addSubTask/toggleSubTask/deleteSubTask 三入口（各自已刷新）。
+    if (updates.status !== undefined) {
+      this.updateTaskProgress(todo);
+    }
+
     return todo;
   }
 

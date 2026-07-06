@@ -44,6 +44,9 @@
  *   createdAt；toggleSubTask 翻转 completed 并 set/clear completedAt；deleteSubTask splice；
  *   三者均触发 updateTaskProgress（无子任务→status===completed?100:0；有子任务→
  *   round(completed/total*100)）；跨租户 → null/false
+ *   本轮修复：updateTask 末尾亦调用 updateTaskProgress，使经 completeTask / uncompleteTask
+ *   等改 status 路径下 progress 与 status 同步（无子任务任务 completed→100 / 非 completed→0）；
+ *   有子任务任务仍按子任务完成比（不被 status 覆盖）
  * - 标签管理：createTag 按 name 小写 + userId + tenantId 去重（命中返回已存在项）；
  *   taskCount 初始 0；getTagList sortBy 'count'(默认，本轮修复后有真实计数)/'name'(localeCompare)，
  *   limit 截断
@@ -914,13 +917,77 @@ describe('todos/todo-manager TodoManager', () => {
     });
   });
 
-  describe('updateTaskProgress（私有，经子任务操作触发）', () => {
-    it('无子任务时 updateTask 改 status 不触发 updateTaskProgress（progress 保持 0）—— 实际契约', () => {
-      // updateTaskProgress 仅经 addSubTask / toggleSubTask / deleteSubTask 触发；
-      // updateTask 即便将 status 置 completed 也不刷新 progress（latent gap，记入下一轮候选）
+  describe('updateTaskProgress（私有，经子任务操作与 updateTask 触发）', () => {
+    it('无子任务时 updateTask 改 status 为 completed 触发 updateTaskProgress（progress=100）', () => {
+      // 修复后 updateTask 末尾调用 updateTaskProgress：无子任务任务经 completeTask
+      // （→ updateTask({status:'completed'})）后 progress 由 0 同步为 100，
+      // 与 progress 字段 0-100/100=done 语义一致。
       const task = todoManager.createTask({ title: 'a' }, 'u-a', 't-a');
       todoManager.updateTask(task.id, { status: 'completed' }, 'u-a', 't-a');
+      expect(task.progress).toBe(100);
+    });
+
+    it('completeTask 同样将无子任务任务 progress 同步为 100', () => {
+      const task = todoManager.createTask({ title: 'a' }, 'u-a', 't-a');
+      todoManager.completeTask(task.id, 'u-a', 't-a');
+      expect(task.status).toBe('completed');
+      expect(task.progress).toBe(100);
+    });
+
+    it('uncompleteTask 将无子任务任务 progress 回退为 0', () => {
+      const task = todoManager.createTask({ title: 'a' }, 'u-a', 't-a');
+      todoManager.completeTask(task.id, 'u-a', 't-a');
+      expect(task.progress).toBe(100);
+      todoManager.uncompleteTask(task.id, 'u-a', 't-a');
+      expect(task.status).toBe('pending');
       expect(task.progress).toBe(0);
+    });
+
+    it('updateTask 改 status 为 cancelled 时无子任务任务 progress=0', () => {
+      const task = todoManager.createTask({ title: 'a' }, 'u-a', 't-a');
+      todoManager.updateTask(task.id, { status: 'cancelled' }, 'u-a', 't-a');
+      expect(task.status).toBe('cancelled');
+      expect(task.progress).toBe(0);
+    });
+
+    it('updateTask 改 status 为 in-progress 时无子任务任务 progress=0（非 completed）', () => {
+      const task = todoManager.createTask({ title: 'a' }, 'u-a', 't-a');
+      todoManager.updateTask(task.id, { status: 'in-progress' }, 'u-a', 't-a');
+      expect(task.status).toBe('in-progress');
+      expect(task.progress).toBe(0);
+    });
+
+    it('updateTask 不改 status 时不影响无子任务任务 progress（pending 保持 0）', () => {
+      const task = todoManager.createTask({ title: 'a' }, 'u-a', 't-a');
+      todoManager.updateTask(task.id, { title: 'renamed' }, 'u-a', 't-a');
+      expect(task.title).toBe('renamed');
+      expect(task.progress).toBe(0);
+    });
+
+    it('updateTask 显式传 progress 且未改 status 时尊重显式值（不被 updateTaskProgress 覆盖）', () => {
+      // 进度同步仅在 updates.status 提供时触发，故调用方可经 updates.progress 直接设置
+      // 任意中间进度（如 30/60），不会被 updateTaskProgress 按 status 重算覆盖。
+      const task = todoManager.createTask({ title: 'a' }, 'u-a', 't-a');
+      todoManager.updateTask(task.id, { progress: 30 }, 'u-a', 't-a');
+      expect(task.progress).toBe(30);
+      // 再次更新为 60，仍未改 status → 尊重显式值
+      todoManager.updateTask(task.id, { progress: 60 }, 'u-a', 't-a');
+      expect(task.progress).toBe(60);
+    });
+
+    it('有子任务任务经 updateTask 改 status 时 progress 仍按子任务完成比（非 status）', () => {
+      // updateTaskProgress 对有子任务任务恒按 round(completed/total*100)，
+      // 即便 status 被置 completed 也不强制 100（与 toggleSubTask 既有契约一致）。
+      const task = todoManager.createTask(
+        { title: 'a', subTasks: [{ title: 's1' }, { title: 's2' }] },
+        'u-a',
+        't-a'
+      );
+      todoManager.toggleSubTask(task.id, task.subTasks[0].id, 'u-a', 't-a'); // 1/2 → 50
+      expect(task.progress).toBe(50);
+      todoManager.updateTask(task.id, { status: 'completed' }, 'u-a', 't-a');
+      expect(task.status).toBe('completed');
+      expect(task.progress).toBe(50); // 仍按子任务比，不被 completed 覆盖为 100
     });
 
     it('无子任务的 pending 任务 progress=0', () => {
