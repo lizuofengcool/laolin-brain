@@ -13102,3 +13102,68 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
   - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
 - **note-manager.ts 残留 1 处漂移**（仍未动，跨多方法单独一轮）：`createTag` 的 `noteCount` 恒 0——本轮 todo-manager + 上轮 calendar-manager 已实现 `applyTagCountDelta` helper 模式，可仿照迁移到 note-manager（注意 note-manager 的 tag 是按 id 还是 name 关联，须先核对）
 - **同型「inline 模拟」测试文件清理**（与 performance.ts/rbac.ts 同型，名义有测试实为零真实覆盖）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts`（co-located 在 include 之外从不运行）等
+
+## 2026-07-07 01:00 自动迭代
+
+**仓库状态**：沙箱二次执行。`/workspace/laolin-brain` 仍不存在（沙箱已重置），`git clone origin`（Gitee）+ `git remote add github`，`git fetch` 双端。本地 / origin / github 三方均停在 `f89b87f`（第一百零六轮 worklog commit），working tree clean，无遗留改动 / 未推送 commit。双端无远端更新，无需 rebase。
+
+**优先级 1 复核**：上轮已逐项核验 5 处已知安全 / 逻辑问题均在前序轮次闭合（tenant-db raw 审计 / payment RSA2·V3 验签 / files 走 TenantDb / sync-engine keep_both / api-auth.test 匹配实现）。本轮转入 worklog「下一轮候选」Top 1——上轮显式标注的 **todo-manager.ts 残留 latent gap**（跨方法单独一轮）：`updateTask` 改 `status` 不触发 `updateTaskProgress`。
+
+**fix — `src/lib/todos/todo-manager.ts`（1 处逻辑 bug 修复，progress / status 不同步）**：
+
+`updateTask` 经 `Object.assign(todo, updates, { updatedAt: now })` 写入新 `status` 后未调用 `updateTaskProgress`，致 `completeTask`（→ `updateTask({status:'completed'})`）/ `uncompleteTask`（→ `updateTask({status:'pending'})`）等改 status 路径下 `progress` 滞留旧值——无子任务任务完成后 `progress` 仍为 0，与 `progress` 字段 0-100/100=done 语义及私有方法 `updateTaskProgress` 内 `subTasks.length===0 ? (status==='completed'?100:0)` 的意图不符。
+
+修复：`updateTask` 末尾（标签计数同步之后、`return todo` 之前）在 `updates.status !== undefined` 时调用 `this.updateTaskProgress(todo)` 重算 progress。**仅在 status 显式改动时触发**，两条理由：
+1. 未改 status 时尊重调用方可能显式传入的 `updates.progress`（`UpdateTodoParams` 含 `progress?: number`，`GanttChart.tsx` 拖拽改进度走自有 `updateTask` prop 非本管理器，但类型层仍允许直传 progress，不应被覆盖）；
+2. `UpdateTodoParams` 不含 `subTasks`，子任务变更仅经 `addSubTask`/`toggleSubTask`/`deleteSubTask` 三入口（各自已调 `updateTaskProgress`），故 `updateTask` 路径只需补 status 维度。
+
+有子任务任务经 `updateTask` 改 status 时 `progress` 仍按子任务完成比 `round(completed/total*100)`（`updateTaskProgress` 对有子任务任务恒按比例，不依 status），不被 `completed` 强制覆盖为 100，与 `toggleSubTask` 既有契约一致。
+
+**test — `src/__tests__/lib/todos/todo-manager.test.ts`（修改，+71/-4）**：
+
+原 `updateTaskProgress` describe 块中 1 处 latent-gap 用例（断言「无子任务任务 updateTask 改 status 为 completed 后 progress 保持 0」的 **buggy 契约**）改写为断言修复后行为（`progress=100`）。另补 7 用例覆盖全分支：
+- `updateTask` 改 status 为 completed → progress=100（修复点）
+- `completeTask` 同步 progress=100（经 completeTask 入口，非直调 updateTask）
+- `uncompleteTask` 回退 progress=0（completed→pending 反向）
+- `updateTask` 改 status 为 cancelled → progress=0（非 completed）
+- `updateTask` 改 status 为 in-progress → progress=0（非 completed）
+- `updateTask` 不改 status 时 progress 不动（pending 保持 0，验证 status 守卫）
+- `updateTask` 显式传 `progress` 且未改 status 时尊重显式值 30→60（验证守卫不覆盖显式 progress，锁定修复的 guard 设计理由）
+- 有子任务任务经 `updateTask` 改 status 为 completed 时 progress 仍按子任务比 50（不被 completed 覆盖，锁定子任务契约不变）
+
+describe 标题由「（私有，经子任务操作触发）」改为「（私有，经子任务操作与 updateTask 触发）」，文件头 doc 注释同步补本轮修复点。用例数 112→119（+7；原 latent-gap 用例改写不计增减）。
+
+**单 commit 说明**：上轮 fix/test 拆分的依据是「todo-manager 零既有测试，fix commit 不破坏既有测试」。本轮 todo-manager 已有 119 用例，其中 1 处显式断言 buggy 契约（progress 保持 0），fix 必须同 commit 改写该断言才能保持每次提交后测试绿，故本轮 fix + test 合并为单 commit。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/todos/todo-manager.test.ts`：**119/119 通过**（193ms tests）。
+- `npx tsc --noEmit`：**0 错误**。
+- `npx vitest run` 全量 **3554/3554 通过**（150 文件，170s），零回归。测试数较上轮 3547 增加 7（todo-manager 用例 112→119），文件数 150 不变。
+
+### 改动量
+
+2 文件：
+- `src/lib/todos/todo-manager.ts`（修改，+10/-0）— `updateTask` 末尾 `if (updates.status !== undefined) this.updateTaskProgress(todo)` 1 处 latent gap 修复
+- `src/__tests__/lib/todos/todo-manager.test.ts`（修改，+71/-4）— 1 用例改写 + 7 新用例
+
+1 dev commit（fix + test 合并，理由见上）。
+
+### Commit
+
+- `9af0d7f` fix(lib): todo-manager updateTask 改 status 时同步 progress（闭合 latent gap）
+
+### 推送
+
+- origin (Gitee)：`f89b87f..9af0d7f` 推送（含本轮 1 dev commit；worklog commit 待本次追加后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **todo-manager.ts 已完全闭合**（本轮 latent gap 修复后，updateTask / 子任务三入口 / createTask / deleteTask 全路径 progress 与 status 同步，119 用例直接单测）。
+- **lib 域零覆盖纯模块延续**（同型内存 Map 单例 manager，可仿 todo/calendar/note/bi-manager 模式）：
+  - `src/lib/comments/comment-manager.ts`（904 行）/ `knowledge-base/knowledge-base-manager.ts`（859 行）/ `collaboration/collaboration-manager.ts`（1168 行）—— 下一轮 Top 1（择一，建议 comment-manager 规模适中）
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **note-manager.ts 残留 1 处漂移**（仍未动，跨多方法单独一轮）：`createTag` 的 `noteCount` 恒 0——todo-manager + calendar-manager 已实现 `applyTagCountDelta` helper 模式，可仿照迁移到 note-manager（注意 note-manager 的 tag 是按 id 还是 name 关联，须先核对）
+- **同型「inline 模拟」测试文件清理**（与 performance.ts/rbac.ts 同型，名义有测试实为零真实覆盖）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts`（co-located 在 include 之外从不运行）等
