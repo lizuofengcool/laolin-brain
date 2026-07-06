@@ -12970,3 +12970,62 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
   - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
 - **同型「inline 模拟」测试文件清理**（与 performance.ts/rbac.ts 同型，名义有测试实为零真实覆盖）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts`（co-located 在 include 之外从不运行）等
 - **环境 dep**：`@radix-ui/react-collapsible` 未装致 `collapsible.tsx` tsc 报错（pre-existing，非功能阻塞），可择机补装或确认是否为可选 peer dep
+
+---
+
+## 2026-07-06 11:00 自动迭代
+
+**仓库初始化**：本轮为沙箱首次执行——`/workspace/laolin-brain` 不存在（沙箱为空），故 `git clone origin`（Gitee）后 `git remote add github`，并 `git fetch` 双端。本地 / origin / github 三方均停在 `6bfbfef`（上一轮第一百零四轮 worklog commit），working tree clean，无遗留改动 / 未推送 commit。
+
+**优先级 1 复核**：README / 历史工作流列出的 5 处已知安全 / 逻辑问题，逐项核验均在前序轮次闭合（与本日 08:00 轮记录一致）——`tenant-db.ts` raw 后门已带调用堆栈软审计、`payment/alipay.ts` & `wechat.ts` 已接 RSA2 / V3 HMAC-SHA256 真实验签、`api/files/route.ts` 已走 TenantDb、`cloud-sync/sync-engine.ts` keep_both 已修、`api-auth.test.ts` 已重写匹配实现。故本轮转入 worklog「下一轮候选」Top 1——lib 域零覆盖纯模块延续（同型内存 Map 单例 manager），择定 `src/lib/calendar/calendar-manager.ts`（796 行，纯内存态、无外部 import、无 API 路由消费，零测试覆盖）。
+
+**fix — `src/lib/calendar/calendar-manager.ts`（2 处逻辑 bug 修复）**：
+
+1. **`updateEvent` reminders 被 Object.assign 覆盖**：原实现先构建完整 `EventReminder[]`（`id`/`eventId`/`isSent=false`/`createdAt`）赋值 `(event as any).reminders = reminders`，随后 `Object.assign(event, updates, { updatedAt: now })` 用 `updates.reminders` 原始 `{type, minutesBefore}[]` 数组覆盖，丢失 `id`/`eventId`/`isSent`/`createdAt` 字段——与上一轮 note-manager `updateNote` 版本快照 bug 同型（Object.assign 顺序）。改为先构建 `newReminders`，`Object.assign` 后再赋值 `event.reminders = newReminders`。
+
+2. **`createTag` eventCount 漂移**：全模块无递增点，`createEvent`/`updateEvent`/`deleteEvent`/`deleteCalendar` 写 `event.tags` 不同步 `EventTag.eventCount`，致 `getTagList sortBy='count'` 无意义、`getStats topTags` 全 0——与 note-manager `createTag` 漂移同型（上轮 note-manager 同问题被 defer 为「跨多方法宜单独一轮」，本轮在 calendar-manager 内闭合）。新增私有 `applyTagCountDelta(tagNames, userId, tenantId, delta)` helper（按 name 大小写不敏感 + userId + tenantId 匹配已注册 `EventTag`，单次调用内按 name 小写去重防 `event.tags` 含重复名时双重计数，`max 0` 保护防负数；未注册标签名静默跳过——`event.tags` 为自由 `string[]`，仅当用户显式 `createTag` 后才有 `EventTag` 实体可计），在四处同步标签计数：
+   - `createEvent`：全部新标签 `++`
+   - `updateEvent`：`updates.tags` 显式提供时按集合差集同步（旧-新减 / 新-旧加 / 共同不变，避免 `max 0` 截断后增减不平衡的漂移）；`updates.tags` 未提供（如 `cancelEvent` 仅改 `status`）时不动（避免误触）
+   - `deleteEvent`：全部旧标签 `--`（与 `createEvent` `++` 对称）
+   - `deleteCalendar`：级联删除日程时同步递减各自标签（原实现直接 `events.delete` 不触标签计数）
+
+**test — `src/__tests__/lib/calendar/calendar-manager.test.ts`（新建，99 用例）**：
+
+仿 note-manager / bi-manager 模式对 `CalendarManager` 内存注册表做白盒直接单测。19 个 `describe` 块覆盖：单例导出（`getInstance` 多次同引用 / `resetModules` 后状态隔离）、日历 CRUD（`createCalendar` 默认值兜底 + params 透传 / `getCalendar` 跨租户隔离 / `getCalendarList` sortBy=`sortOrder`/`name`/`eventCount` 三分支 / `updateCalendar` 浅合并 + `id`/`tenantId` 可被覆写 / `deleteCalendar` 级联删日程 + 同步递减标签计数）、日程 CRUD（`createEvent` id / reminders / 默认值 + `calendar.eventCount++` + 标签计数同步 / `getEvent` 跨租户隔离 / `getEventList` 预过滤 `cancelled` + 5 类过滤 + 排序三分支 + 分页 / `updateEvent` reminders 完整字段保留 + `calendarId` 变更计数 + 标签集合差集同步 / `deleteEvent` `calendar.eventCount--` + 标签计数递减 / `cancelEvent` 不动计数）、重复展开（非重复单实例 / `daily` 多实例 / `repeatCount` / `repeatEndDate` 边界 / `weekly`-`monthly`-`yearly`）、标签管理（`createTag` 大小写不敏感去重 + 跨租户独立 / `getTagList` sortBy=`count`/`name` + `limit`）、搜索（query 匹配 `title`/`description`/`location`/`tags`(any) + 8 类过滤 + 排序 + 分页 `total`/`totalPages`/`hasMore`）、统计（空数据全 0 / 跨租户聚合 / `cancelled` 计入 `totalEvents` / `completedEvents` / `topCalendars` / `topTags` 真实计数 / `averageDuration` 分钟）、工具（`getMonthDays` 返回 42 天 / `getWeekDays` 返回 7 天且不修改输入）。新修复点配 6 个专测：reminders 字段保留 / `createEvent` 标签 `++` / `updateEvent` 集合差集 / `deleteEvent` 标签 `--` / `deleteCalendar` 级联递减 / 大小写不敏感 + 去重 + 跨租户隔离。
+
+**状态隔离**：`CalendarManager` 构造器私有无法 `new`；每用例前 `vi.resetModules()` + `await import('@/lib/calendar/calendar-manager')` 取全新单例（fresh class → fresh instance → fresh `calendars`/`events`/`tags` Maps）。依赖 `Date.now` 的 id 用例（`createCalendar`/`createEvent`/`createTag`）用 `vi.useFakeTimers()` + `vi.setSystemTime(NOW)` 固定时刻 + `vi.spyOn(Math, 'random').mockReturnValue(r)` 固定随机后缀，期望后缀用同一表达式 `r.toString(36).substr(2, 9)` 计算保证匹配（仿 note-manager / bi-manager 模式）。`updatedAt` 不等断言用例用 fake timers + `setSystemTime(NOW+1000)` 推进 1s 避免 same-ms 时序巧合。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/calendar/calendar-manager.test.ts`：**99/99 通过**（158ms tests）。首轮零失败（2 处测试逻辑问题一次性修复——`sortBy=title desc` 断言方向反 + `updatedAt` 不等断言 same-ms 时序巧合，前者改断言为 `[e1, e2]` 反字母序、后者 fake timers 推进 1s）。
+- `npx tsc --noEmit`：**0 错误**。仓库整体 0 错误（注意：本环境 npm install 后 `@radix-ui/react-collapsible` 已作为传递依赖装入，故上轮 worklog 提到的 `collapsible.tsx` pre-existing tsc 报错本轮不复现）。
+- `npx vitest run` 全量 **3435/3435 通过**（149 文件，181s），零回归。测试数较上轮 3336 增加 99（新增 calendar-manager 文件），文件数 148→149（+1）。
+
+### 改动量
+
+2 文件：
+- `src/lib/calendar/calendar-manager.ts`（修改，+63/-4）— 2 处逻辑 bug 修复（reminders Object.assign 顺序 + 标签计数同步 helper + 四处调用点）
+- `src/__tests__/lib/calendar/calendar-manager.test.ts`（新建，+1474 行）— 99 用例
+
+2 dev commit（fix / test 拆分：fix commit 不破坏既有测试——calendar-manager 零既有测试，test commit 加新测试断言修复后行为；两 commit 各自绿）。
+
+### Commit
+
+- `8c339ec` fix(lib): calendar-manager updateEvent 提醒覆盖 + 标签计数漂移 2 处 bug 修复
+- `618cfdc` test(lib): calendar-manager.ts 99 用例直接单测，零覆盖模块补全
+
+### 推送
+
+- origin (Gitee)：6bfbfef..8c339ec + 618cfdc 推送（含本轮 2 dev commit；worklog commit 待本次追加后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **calendar-manager.ts 已闭合**（本轮 2 处 bug 修复 + 99 用例直接单测）。
+- **lib 域零覆盖纯模块延续**（同型内存 Map 单例 manager，可仿 calendar/note/bi-manager 模式）：
+  - `src/lib/todos/todo-manager.ts`（878 行）/ `comments/comment-manager.ts`（904 行）/ `knowledge-base/knowledge-base-manager.ts`（859 行）/ `collaboration/collaboration-manager.ts`（1168 行）—— 下一轮 Top 1（择一，建议 todo-manager 规模适中）
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **note-manager.ts 残留 1 处漂移**（仍未动，跨多方法单独一轮）：`createTag` 的 `noteCount` 恒 0——本轮 calendar-manager 已实现 `applyTagCountDelta` helper 模式，可仿照迁移到 note-manager（注意 note-manager 的 tag 是按 id 还是 name 关联，须先核对）
+- **同型「inline 模拟」测试文件清理**（与 performance.ts/rbac.ts 同型，名义有测试实为零真实覆盖）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts`（co-located 在 include 之外从不运行）等
+- **环境 dep**：本轮 npm install 后 `@radix-ui/react-collapsible` 已装入，`collapsible.tsx` tsc 报错不复现（前序 worklog 提及的 pre-existing 问题已自然消解）
