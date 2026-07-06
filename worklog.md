@@ -12899,3 +12899,74 @@ Mock 要点：同 alipay 范式，`vi.mock('@/lib/payment/wechat', () => ({ wech
 - **POST body 数值字段值域 sweep**（第七十轮候选延续）：`sortOrder` / `priority` / `port` 等 Prisma Int 字段非 Date 算术下游，影响小（UX），可择机处理或维持现状
 - **backups POST zod 不校验密码复杂度**（第四十八轮，延续）：维持 defer 待产品决策
 - `src/lib/ai/document-qna.ts`、`src/lib/saas/billing.service.ts:290`（getPaymentParams mock payUrl）、`src/lib/integrations/wecom.ts` 等需真实外部服务集成的桩，待对应集成条件具备时再逐个落地（沙箱无凭证/网络，不宜臆造）
+
+---
+
+## 2026-07-06 08:00 自动迭代
+
+**优先级 1 复核**：逐项核验 README/worklog 历史列出的 5 处已知安全/逻辑问题，均已在前序轮次闭合——
+- `tenant-db.ts`：`raw` getter 与 `transaction` 已带调用堆栈软审计（`new Error().stack` + `console.warn`）✓
+- `payment/alipay.ts` & `wechat.ts`：已接 RSA2（`createVerify('RSA-SHA256')` + PEM 规整）/ V3 HMAC-SHA256（`timingSafeEqual`）真实验签，`createPayment`/`queryPayment`/`refund` 在已配置但未接 SDK 时显式失败而非静默 mock ✓
+- `api/files/route.ts`：GET 走 `createTenantDb(tenantId).file.findMany`，POST 去重走 `dedupTenantDb.file.findFirst`，配额 raw SQL 显式带 `tenantId` 过滤 ✓
+- `cloud-sync/sync-engine.ts`：`resolveConflict` keep_both 分支已修——重命名本地为 `[冲突副本]` + 云端版本以新 id 落地（不再直接覆盖丢本地），并加 `fileId` 跨租户归属前置守卫 ✓
+- `api-auth.test.ts`：已重写为匹配实现（4 字段 / async / 仅读 Authorization 头拒 query param / `requirePlatformAdmin` ADMIN_EMAILS fail-closed）✓
+
+故本轮转入 worklog「下一轮候选」中的 note-manager.ts 残留计数漂移问题（上轮测试已记录为「实际行为」的 4 处逻辑 bug，优先级 1 范畴）。
+
+**fix — `src/lib/notes/note-manager.ts`（4 处逻辑 bug 修复）**：
+
+1. **`updateNote` 移出笔记本不递减旧笔记本计数**：guard `updates.notebookId !== undefined` 把"显式传 `notebookId: undefined`（移出笔记本）"与"未传该字段"混为一谈，前者整个调整块被跳过，旧笔记本 `noteCount` 不递减（计数漂移）。改为 `'notebookId' in updates` 判定——属性存在即为显式更新，`undefined` 走移出分支（旧 -- / 新不 ++）。三 case 守卫自洽：未传字段（`in` false 跳过）、传同 id（`!== note.notebookId` false 跳过）、传不同 id（旧 -- 新 ++）。
+
+2. **`restoreNote` 不回补笔记本计数**：`deleteNote` 软删除时已 `noteCount--`，`restoreNote` 仅置 `status='active'` 不对称 `++`，致 `delete + restore` 后计数永久 -1。补 `notebook.noteCount++`（与 `deleteNote --` 对称，沿用 `deleteNote` 不查 `status` 的对称设计——`deleteNote` 亦无条件 `--`，故 `restoreNote` 无条件 `++`，每对 delete/restore 净零平衡）。
+
+3. **`permanentlyDeleteNote` 物理删除不调整笔记本计数**：活跃笔记物理删后 `noteCount` 不 `--`（漂移）。补 `note.status !== 'deleted'` 守卫下的 `noteCount--`——仅对未软删除的活跃笔记递减；已软删除笔记（`deleteNote` 已 `--`）跳过，避免双重递减（同一笔记删两次 -2）。
+
+4. **`search` 排序缺 string 分支**：`list.sort` 仅 Date/number 两分支，`sortBy='title'` 比较返回 0 → 保持插入序（不排序），与 `getNoteList` 三分支不一致。补 `typeof string` localeCompare 分支。
+
+**test — `src/__tests__/lib/notes/note-manager.test.ts`（5 处断言更新 + 1 新用例）**：
+
+源码修复改变"实际行为"，故须同步更新既有测试断言（保持每提交测试绿，不拆 fix/test 两 commit 否则 fix commit 会让"实际行为"断言失败）：
+
+- `updateNote` 移出笔记本：`expect(nb.noteCount).toBe(1)` → `.toBe(0)`，标题改为"旧笔记本计数递减（已修复）"
+- `permanentlyDeleteNote`（活跃笔记）：`toBe(1)` → `.toBe(0)`，标题"活跃笔记递减笔记本计数（已修复）"
+- `permanentlyDeleteNote`（已软删除）：**新增**用例"对已软删除笔记不重复递减（避免双重递减）"——`deleteNote`（→0）后 `permanentlyDeleteNote` 仍 0
+- `restoreNote`：`toBe(0)` → `.toBe(1)`，标题"回补笔记本计数（与 deleteNote -- 对称，已修复）"
+- 跨模块一致性 `permanentlyDeleteNote`：`toBe(1)` → `.toBe(0)`
+- `search` 排序：原用例用 title `['a','b']`（插入序巧合等于字母升序，无法证伪 fix），改用 `['banana','apple']`（插入序 ≠ 字母序）+ 补 `sortOrder='desc'` 断言，标题"支持 string 分支...（已修复）"
+
+文件头注释同步更新（permanentlyDeleteNote / restoreNote / search 三处"实际行为"描述改为修复后语义）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/notes/note-manager.test.ts`：**103/103 通过**（96ms tests）。上轮 102 用例 + 本轮新增 1（permanentlyDeleteNote 软删除不重复递减）。
+- `npx tsc --noEmit`：改动文件（note-manager.ts / note-manager.test.ts）**0 错误**。仓库整体仅 1 处 pre-existing 无关错误：`src/components/ui/collapsible.tsx` 缺 `@radix-ui/react-collapsible`（环境 optional dep 未装，非本轮引入）。
+- `npx vitest run` 全量 **3336/3336 通过**（148 文件，178s），零回归。较上轮 3335 增加 1（新增用例）。
+
+### 改动量
+
+2 文件：
+- `src/lib/notes/note-manager.ts`（修改，+27/-4）— 4 处逻辑 bug 修复
+- `src/__tests__/lib/notes/note-manager.test.ts`（修改，+42/-22）— 5 处断言更新 + 1 新用例 + 头注释
+
+1 dev commit（fix + test 耦合，单 commit 保持每提交测试绿）。
+
+### Commit
+
+- `5865d1f` fix(lib): note-manager 笔记本计数漂移 4 处 bug 修复 + search 字符串排序
+
+### 推送
+
+- origin (Gitee)：87db047..5865d1f 推送（含本轮 1 dev commit；worklog commit 待本次追加后另推）
+- github (GitHub)：87db047..5865d1f 推送（同上）
+
+### 下一轮候选
+
+- **note-manager.ts 计数漂移已闭合**（本轮 4 处修复 + 测试同步）。
+- **note-manager.ts 残留 1 处漂移**（本轮未动，规模较大择机单独处理）：
+  · `createTag` 的 `noteCount` 恒 0：全模块无递增点（`createNote`/`updateNote` 写 `note.tags` 不同步 `tags` Map）。修复需在 `createNote`/`updateNote`/`deleteNote` 三处同步标签计数，跨多个方法，宜单独一轮。
+- **lib 域零覆盖纯模块延续**（同型内存 Map 单例 manager，可仿 note-manager/bi-manager 模式）：
+  - `src/lib/todos/todo-manager.ts` / `comments/comment-manager.ts` / `calendar/calendar-manager.ts` / `knowledge-base/knowledge-base-manager.ts` / `collaboration/collaboration-manager.ts` —— 下一轮 Top 1
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **同型「inline 模拟」测试文件清理**（与 performance.ts/rbac.ts 同型，名义有测试实为零真实覆盖）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts`（co-located 在 include 之外从不运行）等
+- **环境 dep**：`@radix-ui/react-collapsible` 未装致 `collapsible.tsx` tsc 报错（pre-existing，非功能阻塞），可择机补装或确认是否为可选 peer dep
