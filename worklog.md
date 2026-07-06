@@ -13638,3 +13638,73 @@ fix commit 同步更新文件头控制流注释（createItem/updateItem/deleteIt
   - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
 - **comment-manager.ts 残留 latent gap**（仍未动）：`getReplies` 实现为扁平直接回复，非递归——`maxDepth>1` 与 `maxDepth=1` 行为相同。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
+
+## 2026-07-07 07:00 自动迭代
+
+### 第一百一十四轮（comment-manager getReplies 递归修复 + 8 用例补全）
+
+**背景**：上轮 worklog「下一轮候选」标注 comment-manager.ts 残留 latent gap——`getReplies` 注释为「递归」但实现仅返回扁平直接回复，`maxDepth>1` 与 `maxDepth=1` 行为相同（孙回复及更深回复从不被附加，`queryComments` 的 `includeReplies=true` 只能取一层）。本轮将其改为真递归填充多层嵌套树，使 `maxDepth` 控制真实下探层数。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（首轮克隆），`git clone` 自 Gitee origin 后补加 github remote。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `d5221a4`，工作树干净，无遗留 commit/改动。
+- 复核任务清单优先级 1 的 5 项均已在历史轮次闭合（tenant-db.ts raw 审计 / alipay+wechat RSA2&V3 验签 / api/files 走 TenantDb / sync-engine keep_both / api-auth.test 重写匹配实现），本轮转入优先级 2/3。
+- `commentManager` 单例仅被 `src/app/api/comments/route.ts` 的 `getStats` / `exportComments` 调用，`queryComments`/`getReplies` 无任何生产消费方（API 路由用 Prisma `db.comment.findMany` 自建 replyMap，与内存 manager 无关），修复安全。
+- `exportComments` 不走 `getReplies`（按 targetKey 扁平取 published 评论），递归修复对其零影响。
+- 沙箱无 node_modules，按规范执行 `npm ci`（项目用 package-lock.json，无 pnpm-lock.yaml，不混用 lockfile）+ `npx prisma generate` 后环境完整。
+
+**fix — `src/lib/comments/comment-manager.ts` + `src/lib/comments/types.ts`（getReplies 真递归）**：
+
+`getReplies(commentId, tenantId, depth)` 原实现：`depth<=0` 返回 `[]`，否则返回 `commentReplies` 直接回复（一层，无递归）。改为对每个直接回复 `replies.map(reply => ({ ...reply, replies: this.getReplies(reply.id, tenantId, depth - 1) }))`，使 `depth` 表示下探层数（1=直接回复、2=含孙回复、依此类推），叶子回复 `replies` 为 `[]`（形状一致）。
+
+同步在 `Comment` 接口新增可选 `replies?: Comment[]` 字段，使 `queryComments` 返回的嵌套结构类型自洽，移除 `commentsWithReplies as unknown as Comment[]` 强转（`{ ...comment, replies }` 现可直接赋给 `Comment[]`）。`Comment.replies?` 为可选字段，向后兼容：`createComment`/`getComment`/`exportComments` 等不设 `replies` 的路径不受影响。
+
+**关键不变量**：`includeReplies=false`（默认）仍不附加 `replies` 字段；`includeReplies=true && parentId` 仍不附加（仅顶级查询附加）；`maxDepth=0` 仍返回 `[]`；`maxDepth=1` 仍返回直接回复（仅向叶子追加 `replies:[]`，既有契约不破坏）。唯一行为变化：`maxDepth>1` 时返回多层嵌套树（此前仅一层）。
+
+**test — `src/__tests__/lib/comments/comment-manager.test.ts`（+153/-2 行，159→167 用例）**：
+
+fix commit 仅 source 修复；test commit 含文件头控制流注释更新（`getReplies` 由「非递归，扁平」改为真递归描述 + `queryComments` 的 includeReplies 注释改为 maxDepth 控制下探层数）+ 8 新用例。既有 159 用例无需改断言——递归修复仅向叶子追加 `replies:[]`，既有 `maxDepth=1` 用例仅校验 `replies` 长度与 `replies[0].parentId`，全绿。新增 describe「递归回复树（getReplies maxDepth>1）」8 用例：
+- maxDepth=2（1）：顶级.r1.r2 两层嵌套 + 叶子 replies 为 []
+- maxDepth=3（1）：三层嵌套 top.r1.r2.r3
+- maxDepth=1（1）：直接回复叶子 replies 为 []（形状一致，不破坏既有契约）
+- maxDepth 超过实际深度（1）：返回完整树无报错，叶子 replies 为 []
+- maxDepth=2 截断第三层（1）：r3 不出现，r2 作为叶子 replies 为 []
+- 多分支（1）：顶级两条回复各自带子回复
+- 租户隔离（1）：跨租户嵌套回复被递归过滤（r2 属 tenant-b 作为 r1 回复，tenant-a 查询时被过滤，r1 为叶子）
+- 嵌套回复为完整 Comment 对象（1）：content/userId/parentId/likes/isEdited 等字段保留（验证 `{ ...reply, replies }` spread 不丢字段）
+
+**2 dev commit 拆分**：与第一百零六/八/九/十/十一/十二/十三轮 todo/comment/knowledge-base/collaboration/note-manager fix/test 拆分同型。fix commit 仅 source 修复；test commit 含文件头注释更新 + 8 新用例。两 commit 各自绿。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/comments/comment-manager.test.ts`：**167/167 通过**（84ms tests）。
+- `npx tsc --noEmit`：**0 错误**（npm ci + prisma generate 后环境完整，全量 0 错误）。
+- `npx vitest run` 全量 **4080/4080 通过**（153 文件，128.64s），零回归。测试数较上轮 4072 增加 8（新增 8 用例），文件数 153 不变。
+
+### 改动量
+
+3 文件：
+- `src/lib/comments/types.ts`（修改，+1/-0）— Comment 接口新增可选 `replies?: Comment[]` 字段
+- `src/lib/comments/comment-manager.ts`（修改，+9/-2）— getReplies 改为真递归 + 移除 queryComments 的 `as unknown as Comment[]` 强转
+- `src/__tests__/lib/comments/comment-manager.test.ts`（修改，+153/-2）— 文件头注释更新 + 8 新用例
+
+2 dev commit（fix / test 拆分：fix commit 含 source 修复；test commit 含文件头注释更新 + 8 新用例）。
+
+### Commit
+
+- `609be43` fix(lib): comment-manager getReplies 改为真递归填充多层嵌套树
+- `b4fb853` test(lib): comment-manager 补 8 用例覆盖 getReplies 递归嵌套树
+
+### 推送
+
+- origin (Gitee)：`d5221a4..609be43` + `b4fb853` 推送（含本轮 2 dev commit；worklog commit 待本次追加后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **comment-manager.ts 已闭合**（本轮 getReplies 递归修复 + 8 用例补全，maxDepth>1 多层嵌套树正确返回）。
+- **collaboration-manager.ts 残留最后 1 处 latent gap**（仍未动，单独一轮）：`compareVersions` 为桩实现（零 changes/stats，注释「这里可以实现真正的diff算法」），需真正 diff 算法（如 Myers diff）。
+- **lib 域零覆盖纯模块延续**（同型内存 Map 单例 manager，可仿 todo/calendar/note/comment/knowledge-base/collaboration-manager 模式）：
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）—— 下一轮 Top 1 候选
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
