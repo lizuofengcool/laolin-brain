@@ -13332,3 +13332,85 @@ KnowledgeBaseManager 构造器私有（单例），经 `getInstance()` 取单例
 - **comment-manager.ts 残留 latent gap**（仍未动，单独一轮）：`getReplies` 实现为扁平直接回复，非递归——`maxDepth>1` 与 `maxDepth=1` 行为相同。
 - **note-manager.ts 残留 1 处漂移**（仍未动）：`createTag` 的 `noteCount` 恒 0——可仿 todo/calendar-manager `applyTagCountDelta` 模式迁移。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
+
+---
+
+## 2026-07-07 03:00 自动迭代
+
+### 第一百一十轮（collaboration-manager.ts 3 处 bug 修复 + 140 用例直接单测）
+
+**背景**：上轮 worklog「下一轮候选」Top 1 为 `src/lib/collaboration/collaboration-manager.ts`（1168 行，零覆盖纯内存态 manager）。本轮按 todo/calendar/note/comment/knowledge-base-manager 同型模式：先白盒扫 bug 修复，再补直接单测。
+
+前置确认：
+- 双端 fetch 后无远端更新，本地与 origin/main、github/main 均对齐，工作树干净，无遗留 commit/改动。
+- `collaborationManager` 单例未被任何外部模块引用（grep 仅命中 worklog 与其它 manager 同名方法），修复安全。
+- 沙箱无 node_modules，本轮需跑测试验证零回归，故执行 `npm ci`（项目用 package-lock.json，无 pnpm-lock.yaml，按规范不混用 lockfile）。
+
+**fix — `src/lib/collaboration/collaboration-manager.ts`（3 处 bug 修复）**：
+
+1. **sendNotification 通知类型→设置 key 映射错误**：`notification.type` 为 snake_case（如 `'task_assigned'`），而 `NotificationSettings` 的 key 为 camelCase（如 `taskAssigned`）。原实现 `const typeKey = notification.type as keyof NotificationSettings; if (typeKey in settings && !settings[typeKey])` —— snake_case 永远不在 camelCase keys 中，`typeKey in settings` 恒为 false，致用户通知开关（含默认关闭的 `fileEdited`）形同虚设，所有类型通知一律放行。修复：新增私有 `notificationTypeToSettingsKey` 显式建立 10 个类型→key 的映射表，命中且 `!settings[key]` 时拦截，未命中（理论上不存在）放行。
+
+2. **joinEditing 清空 currentSpaceId**：`joinEditing` 末尾调用 `this.updateUserCurrentFile(userId, fileId)` 不传 `spaceId`，而 `updateUserCurrentFile` 直接 `user.currentSpaceId = spaceId`（未传即 `undefined`），致用户已有 `currentSpaceId` 被清空。后果：用户加入文件编辑后反而失去 space 归属，`getOnlineUsers(spaceId)` 过滤失效（返回空）。修复：透传 `currentUser?.currentSpaceId` 保留原值。
+
+3. **addTaskComment 从不发送 task_commented 通知**：`CollaborationNotificationType` 定义了 `'task_commented'`、`NotificationSettings` 有 `taskCommented` 开关，但 `addTaskComment` 仅在 `mentions` 时发 `task_mentioned`，从不发 `task_commented`，致该通知类型与开关形同虚设（assignee/createdBy 收不到评论通知）。修复：评论时对 `task.assignee` + `task.createdBy`（用 Set 去重、`delete(userId)` 排除评论者本人）发送 `task_commented`；`mentions` 仍发 `task_mentioned`（两类语义不同，被@者若是相关人已收 task_commented，再发 task_mentioned 不跳过）。
+
+**test — `src/__tests__/lib/collaboration/collaboration-manager.test.ts`（新建，+1384 行，140 用例）**：
+
+`CollaborationManager` 构造器公开，每用例 `new CollaborationManager()` 隔离状态；`Date.now()` 依赖的 id/时间戳断言用 `vi.useFakeTimers()` + `vi.setSystemTime(NOW)`，`Math.random` 在精确 id 断言用例中 spy 固定返回值并用同表达式 `r.toString(36).substr(2,9)` 计算期望后缀。
+
+覆盖全部公开方法 + 3 处本轮修复，按 describe 分组：
+- 单例与构造（3）：collaborationManager 单例 / 实例相互隔离 / 默认 maxParticipants=10（join 第 10 人拒）
+- 在线用户管理（13）：userOnline 覆盖同 userId / userOffline 置 offline 不删条目+移除 fileEditors+host endSession（非转移，与 leaveSession 区分）/ 非移除参与者 / updateUserStatus / getOnlineUsers(spaceId) / getUserOnlineStatus 默认 offline / updateUserCurrentFile
+- 文件编辑者管理（13，含修复点 2）：joinEditing 默认 status·自定义·已存在更新 / **保留 currentSpaceId（修复点 2）** / 未上线仍加入 / leaveEditing 清 currentFileId / getFileEditors / updateCursorPosition
+- 协作会话管理（18）：createSession id 格式·host 自动入·operations/conflicts 初始化 / 带spaceId / joinSession role 默认 viewer·cursorColor·已存在返回既有·不存在·ended·满员 / leaveSession 非host·host 转移·末人结束·不存在·不在会话 / endSession / getSession / getActiveSession（ended 不返回）
+- 协作操作与冲突（13）：submitOperation version 递增·更新 lastActivityAt·不存在·ended / getOperations·sinceVersion / detectConflict 区间重叠·不重叠·缺 length / resolveConflict·已 resolved·无记录
+- 编辑历史与版本对比（5）：recordEditHistory unshift·带 changes/version / getEditHistory limit / compareVersions 结构
+- 任务管理（19）：createTask id·默认值·透传·assignee 通知·无 assignee / getTask 跨租户 / updateTask 合并·completed 通知·completedAt·重复不通知·assignee 变更·未命中 / deleteTask 仅 createdBy / queryTasks tenantId·space/assignee/status/priority 过滤·数组过滤·dueDate·tags some·排序 createdAt/priority/status/dueDate·分页默认·自定义
+- 任务评论与子任务（12，含修复点 3）：**assignee+createdBy 收 task_commented 排除评论者（修复点 3）** / 评论者为 assignee 仅 createdBy 收 / 同人去重 / 无 assignee 仅 createdBy / mentions 仍发 task_mentioned 并存 / 未命中·跨租户 / 评论写入·updatedAt / addSubtask / updateSubtaskStatus completedAt·清空·未命中
+- 批注管理（9）：createAnnotation id·resolved·replies / getFileAnnotations 跨租户 / addAnnotationReply·跨租户·fileId 无记录 / resolveAnnotation·已 resolved·跨租户·fileId 无记录
+- 通知管理（18，含修复点 1）：**默认放行 task_assigned（修复点 1）** / **关闭 taskAssigned 拦截** / **关闭 taskCompleted 拦截** / **file_edited 默认关拦截·开启放行** / **关闭后恢复** / **不影响其它类型** / **修复点 1+3 联动（关 taskCommented 仅该用户拦截，他人仍收）** / unshift 最新在前 / tenantId 过滤 / unreadOnly·type·limit / markNotificationAsRead·未命中·跨租户 / markAllNotificationsAsRead·跨租户计数 / getUnreadNotificationCount / getNotificationSettings 默认副本 / updateNotificationSettings 合并·多次合并
+- 权限检查（5）：owner/editor/commenter/viewer + getRolePermissions
+- 显示名称（4）：TaskStatus/TaskPriority/AnnotationType/CollaborationRole
+- 综合场景（3）：完整任务协作流（创建→分配→评论→完成→通知全链路）/ 会话协作流（创建→加入→操作→冲突→解决→host 转移→结束）/ **通知设置全类型映射生效（10 类型 × 开/关 矩阵全覆盖，闭合修复点 1）**
+
+**2 dev commit 拆分**：collaboration-manager 零既有测试，fix commit（`1702fc6`）不破坏任何既有测试（trivially green），test commit（`fad1264`）新增 140 用例断言修复后行为，各自绿。与第一百零六/八/九轮 todo/comment/knowledge-base-manager fix/test 拆分同型。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/collaboration/collaboration-manager.test.ts`：**140/140 通过**（95ms tests）。首轮 2 用例失败为测试自身断言错误（`leaveSession` 用例误用默认 host `'host-1'` 却传 `'host'`；综合流用例误计 assignee 作为评论者时的 task_commented 次数），修正断言后全绿，非代码 bug。
+- `npx tsc --noEmit`：collaboration 相关 **0 错误**（其余报错均为环境无 node_modules / 未生成 Prisma client 的既有问题，与本次改动无关）。
+- `npx vitest run` 全量 **4018/4018 通过**（153 文件，190s），零回归。测试数较上轮 3878 增加 140（新增 collaboration-manager 文件），文件数 152→153（+1）。
+
+### 改动量
+
+2 文件：
+- `src/lib/collaboration/collaboration-manager.ts`（修改，+54/-5）— 3 处 bug 修复（通知类型→设置 key 显式映射 / joinEditing 保留 currentSpaceId / addTaskComment 发 task_commented）
+- `src/__tests__/lib/collaboration/collaboration-manager.test.ts`（新建，+1384 行）— 140 用例
+
+2 dev commit（fix / test 拆分：fix commit 不破坏既有测试——collaboration-manager 零既有测试，test commit 加新测试断言修复后行为；两 commit 各自绿）。
+
+### Commit
+
+- `1702fc6` fix(lib): collaboration-manager 3 处 bug 修复（通知开关/编辑 spaceId/任务评论通知）
+- `fad1264` test(lib): collaboration-manager 140 用例直接单测，零覆盖模块补全
+
+### 推送
+
+- origin (Gitee)：`be5a92d..1702fc6` + `fad1264` 推送（含本轮 2 dev commit；worklog commit 待本次追加后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **collaboration-manager.ts 已闭合**（本轮 3 处 bug 修复 + 140 用例直接单测）。
+- **collaboration-manager.ts 残留 latent gap**（本轮未动，单独一轮）：
+  - `leaveEditing` 调用 `updateUserCurrentFile(userId, undefined)` 同样清空 `currentSpaceId`（与 joinEditing 同型问题，本轮仅修 joinEditing）。leaveEditing 清 currentFileId 合理，但清 currentSpaceId 不一定合理（用户仍在 space 内浏览其它文件），宜单独一轮统一决策。
+  - `userOffline` 在 host 下线时直接 `endSession`（不转移 host），与 `leaveSession` 的「转移 host」行为不一致，设计意图待确认。
+  - `updateNotificationSettings` 对 `doNotDisturb` 整体替换而非合并（shallow merge），若 updates 含 doNotDisturb 会覆盖 startTime/endTime。
+  - `compareVersions` 为桩实现（零 changes/stats），需真正 diff 算法。
+- **knowledge-base-manager.ts 残留漂移**（仍未动，单独一轮）：`tag.itemCount` / `category.itemCount` 从未被维护——`createItem` 接 `tags: string[]`（标签名）但未联动 `KnowledgeTag` 注册表，致 `getTagList(sortBy:'count')` 全 0 失效。
+- **lib 域零覆盖纯模块延续**（同型内存 Map 单例 manager，可仿 todo/calendar/note/comment/knowledge-base/collaboration-manager 模式）：
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）—— 下一轮 Top 1 候选
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **comment-manager.ts 残留 latent gap**（仍未动）：`getReplies` 实现为扁平直接回复，非递归——`maxDepth>1` 与 `maxDepth=1` 行为相同。
+- **note-manager.ts 残留 1 处漂移**（仍未动）：`createTag` 的 `noteCount` 恒 0——可仿 todo/calendar-manager `applyTagCountDelta` 模式迁移。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
