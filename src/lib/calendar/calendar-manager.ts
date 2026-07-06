@@ -139,11 +139,12 @@ export class CalendarManager {
     const calendar = this.calendars.get(id);
     if (!calendar || calendar.userId !== userId || calendar.tenantId !== tenantId) return false;
 
-    // 删除日历中的所有日程
+    // 删除日历中的所有日程（同步递减标签使用计数，与 deleteEvent 对称）
     const eventsInCalendar = Array.from(this.events.values()).filter(
       (e) => e.calendarId === id && e.userId === userId && e.tenantId === tenantId
     );
     eventsInCalendar.forEach((event) => {
+      this.applyTagCountDelta(event.tags, userId, tenantId, -1);
       this.events.delete(event.id);
     });
 
@@ -212,6 +213,9 @@ export class CalendarManager {
       calendar.eventCount++;
       calendar.updatedAt = now;
     }
+
+    // 同步标签使用计数（已通过 createTag 注册的同名标签 eventCount++）
+    this.applyTagCountDelta(event.tags, userId, tenantId, 1);
 
     return event;
   }
@@ -319,9 +323,11 @@ export class CalendarManager {
 
     const now = new Date();
 
-    // 处理提醒更新
+    // 处理提醒更新（构建完整 EventReminder[]，须在 Object.assign 之后赋值，
+    // 否则会被 updates.reminders 原始 {type,minutesBefore}[] 数组覆盖丢失 id/eventId/isSent/createdAt）
+    let newReminders: EventReminder[] | null = null;
     if (updates.reminders) {
-      const reminders: EventReminder[] = updates.reminders.map((r, index) => ({
+      newReminders = updates.reminders.map((r, index) => ({
         id: `rem_${Date.now()}_${index}`,
         eventId: id,
         type: r.type,
@@ -329,7 +335,6 @@ export class CalendarManager {
         isSent: false,
         createdAt: now,
       }));
-      (event as any).reminders = reminders;
     }
 
     // 处理日历变更
@@ -346,7 +351,25 @@ export class CalendarManager {
       }
     }
 
+    // 标签计数同步：先快照旧标签集（Object.assign 后 event.tags 即被覆盖为新数组）
+    const oldTagsSnapshot = event.tags;
+    const oldTagsLower = new Set(oldTagsSnapshot.map((t) => t.toLowerCase()));
+
     Object.assign(event, updates, { updatedAt: now });
+    if (newReminders) {
+      event.reminders = newReminders;
+    }
+
+    // 标签计数同步：仅 updates.tags 显式提供时调整（避免 cancelEvent 等无关更新误触）
+    if (updates.tags) {
+      const newTags = updates.tags;
+      const newTagsLower = new Set(newTags.map((t) => t.toLowerCase()));
+      const removed = oldTagsSnapshot.filter((t) => !newTagsLower.has(t.toLowerCase()));
+      const added = newTags.filter((t) => !oldTagsLower.has(t.toLowerCase()));
+      this.applyTagCountDelta(removed, userId, tenantId, -1);
+      this.applyTagCountDelta(added, userId, tenantId, 1);
+    }
+
     return event;
   }
 
@@ -362,6 +385,9 @@ export class CalendarManager {
     if (calendar && calendar.userId === userId && calendar.tenantId === tenantId) {
       calendar.eventCount = Math.max(0, calendar.eventCount - 1);
     }
+
+    // 同步标签使用计数（与 createEvent 的 ++ 对称）
+    this.applyTagCountDelta(event.tags, userId, tenantId, -1);
 
     this.events.delete(id);
     return true;
@@ -533,6 +559,39 @@ export class CalendarManager {
     }
 
     return list;
+  }
+
+  // ==================== 标签计数同步（私有） ====================
+
+  /**
+   * 调整标签使用计数：按 name 大小写不敏感 + userId + tenantId 匹配已注册的 EventTag，
+   * 命中则 eventCount += delta（max 0 保护，避免负数）。未注册的标签名静默跳过——
+   * event.tags 为自由 string[]，仅当用户显式 createTag 后才有 EventTag 实体可计数。
+   * 同一标签名在一次调用中按唯一计（去重，避免 event.tags 含重复名时双重计数）。
+   */
+  private applyTagCountDelta(
+    tagNames: string[],
+    userId: string,
+    tenantId: string,
+    delta: 1 | -1
+  ): void {
+    const seen = new Set<string>();
+    for (const name of tagNames) {
+      if (!name) continue;
+      const lower = name.toLowerCase();
+      if (seen.has(lower)) continue;
+      seen.add(lower);
+
+      const tag = Array.from(this.tags.values()).find(
+        (t) =>
+          t.userId === userId &&
+          t.tenantId === tenantId &&
+          t.name.toLowerCase() === lower
+      );
+      if (!tag) continue;
+
+      tag.eventCount = Math.max(0, tag.eventCount + delta);
+    }
   }
 
   // ==================== 搜索功能 ====================
