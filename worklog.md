@@ -13916,3 +13916,74 @@ fix commit 仅 source 修复；test commit 含文件头控制流注释新增 `co
   - `src/lib/mobile/types.ts` 纯工具函数（formatFileSizeMobile / formatTimeMobile / getCurrentBreakpoint / getDeviceType / getOS）可补纯函数单测
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
 - **TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处「TODO: 实际实现」）、`src/lib/ai/model-manager.ts`（4 处「TODO: 实际调用模型API」）、`src/lib/ai/document-qna.ts`（配额检查/AI 调用/使用记录桩）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖
+
+## 2026-07-08 00:00 自动迭代
+
+### 第一百一十八轮（mobile/types 补 29 用例覆盖纯工具函数与默认常量）
+
+**背景**：上轮 worklog「下一轮候选」将 `src/lib/mobile/types.ts` 纯工具函数列为 Top 候选（此前零覆盖，仅有 mobile-manager.test.ts 引用其常量 DEFAULT_BREAKPOINTS / DEFAULT_MOBILE_SETTINGS）。该文件含 6 个默认配置常量与 9 个纯/半纯工具函数，本轮闭合其测试覆盖。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `0c51ca3`（第一百一十七轮 worklog commit），工作树干净，无遗留 commit/改动。
+- 复核任务清单优先级 1 的 5 项均已在历史轮次闭合（spot-check 确认）：
+  · `tenant-db.ts`：`raw` getter 与 `transaction` 均带 `new Error().stack` 调用方软审计（`[TenantDb.raw] ... 越过租户隔离层访问原始 PrismaClient` / `[TenantDb.transaction] ... 越过租户隔离层执行原始事务`）
+  · `alipay.ts`：`verifyRSA2Sign` 已真实实现（非「非空即通过」），且已配置真实密钥但未接 SDK 时返回明确错误而非 mock 链接
+  · `sync-engine.ts`：`resolveConflict` 的 `keep_both` 分支已完整实现（本地重命名为冲突副本 + 云端版本作为新文件落地，并带跨租户 fileId 归属守卫）
+  · `api/files` 走 TenantDb、api-auth.test 已匹配实现——本轮继续优先级 3（补测试）。
+- 评估候选：`mobile/types.ts`（纯函数 + 常量，零行为风险）vs `integrations/feishu.ts` 等（依赖真实 OAuth/网络，多为返回常量的 TODO 桩，测试价值低）。选 mobile/types.ts。
+- 本次为纯测试新增，不改 source，零行为风险。
+
+**test — `src/__tests__/lib/mobile/types.test.ts`（新增，+488 行，29 用例）**：
+
+覆盖 6 个默认配置常量 + 9 个纯/半纯工具函数。函数依赖 `navigator.userAgent` / `navigator.maxTouchPoints` / `'ontouchstart' in window` / `getComputedStyle` / `new Date()`，分别以如下策略处理：
+
+- navigator 属性（userAgent / maxTouchPoints）：`Object.defineProperty(navigator, key, { value, configurable: true, writable: true })` 临时挂桩，afterEach 还原（仿 mobile-manager.test.ts 的 stubNav/restoreNav）。
+- `getSafeAreaInsets`：默认 jsdom `getComputedStyle` 对未知 CSS 变量返回 '' → 全 0；CSS 变量解析/非数字回退分支用 `vi.spyOn(window, 'getComputedStyle')` mockReturnValue 控制 `getPropertyValue` 返回值。
+- `formatTimeMobile` 内部 `new Date()` 取当前时间，故 `vi.useFakeTimers({ now: new Date('2026-01-15T12:00:00.000Z') })` 固定 now 以使 diff 分支可确定断言；`>=1 周` 分支以 `date.toLocaleDateString(locale, {month:'short', day:'numeric'})` 复算期望值（同环境确定相等）。
+
+**关键发现（jsdom 真实行为，影响 isTouchDevice 断言）**：探测得知 jsdom 默认 `window.ontouchstart = null`（`'ontouchstart' in window === true`，descriptor configurable:true）、`navigator.maxTouchPoints === undefined`（`undefined > 0 === false`）。故 `isTouchDevice()` 默认返回 **true**（非直觉的 false）。初版测试误断言默认 false 而失败一轮；修正为：默认 true → 删除 ontouchstart 后 false → 仅 maxTouchPoints>0 时 true → 恢复 ontouchstart 后 true，并显式还原 jsdom 默认状态避免污染后续用例。
+
+**latent 观察（未改 source）**：
+- `formatFileSizeMobile(bytes, locale)` 的 `locale` 形参在函数体内从未引用（locale 实际无效）。补断言确认同一 bytes 不同 locale 结果一致，记录此 dead 参数留待后续若需本地化时再启用。
+- `getOS` 优先级链 `ios > android > windows > macos > linux > unknown`：iPad UA 含 "Mac OS X" 但因 `iPhone|iPad|iPod` 先判定 → ios（已补断言验证优先级，防回归）。
+
+29 用例分布：
+- 默认配置常量（6）：DEFAULT_BREAKPOINTS（值 + 单调性）/ DEFAULT_GESTURE_CONFIG / DEFAULT_OFFLINE_CACHE_CONFIG（500MB/7天/5分钟等）/ DEFAULT_LAZY_LOAD_CONFIG / DEFAULT_VIRTUAL_SCROLL_CONFIG / DEFAULT_MOBILE_SETTINGS（标量默认 + 嵌套引用 `===` 复用同对象）
+- 设备判定纯函数（5 文件级用例）：isMobile（iPhone/Android Mobile→true，桌面/无匹配→false）/ isTablet（iPad/Android 无 Mobile→true，手机/iPhone/桌面→false，含负向先行断言 `(?!.*Mobile)` 验证）/ isTouchDevice（见上 jsdom 默认 true 的 4 段断言）/ getDeviceType（tablet 优先于 mobile，无匹配→desktop，含 Android 平板→tablet）/ getOS（6 OS + 未知，含 iPad 含 "Mac" 仍 ios 的优先级验证）
+- getCurrentBreakpoint（3）：默认断点各边界（xs..xxl 阈值恰好等于判定）/ 自定义断点覆盖 / 默认参数使用 DEFAULT_BREAKPOINTS
+- getSafeAreaInsets（3）：默认全 0 / CSS 变量解析为数值 / 非数字值回退 0（parseInt 截断与 NaN||0）
+- formatFileSizeMobile（5）：0 字节短路 / B 级（<10 取 1 位小数否则取整）/ KB 级 / MB·GB·TB 进位 / locale 形参未使用确认
+- formatTimeMobile（7）：刚刚（now 与 now-30s）/ X分钟前 / X小时前 / X天前 / >=1 周 toLocaleDateString / locale 控制 >=1 周日期格式（zh-CN ≠ en-US）/ 未来时间 diff 负→刚刚
+
+无 source 改动，故仅 1 个 test commit（与第一百一十六/十七轮同型——纯测试新增，无 fix）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/mobile/types.test.ts`：初版 28/29 通过（isTouchDevice 默认断言 1 轮失败，修正 jsdom 真实行为后）→ **29/29 通过**。
+- `npx tsc --noEmit`：**0 错误**（npm ci + prisma generate 后环境完整）。
+- `npx vitest run` 全量 **4170/4170 通过**（156 文件，148.02s），零回归。测试数较上轮 4141 增加 29（新增 29 用例），文件数 155→156（新增 1 文件）。
+
+### 改动量
+
+1 文件：
+- `src/__tests__/lib/mobile/types.test.ts`（新增，+488/-0）— navigator 挂桩工具 + getComputedStyle spy + fake timers + 29 用例
+
+1 test commit（纯测试新增，无 source 改动）。
+
+### Commit
+
+- `382e470` test(lib): mobile/types 补 29 用例覆盖纯工具函数与默认常量
+
+### 推送
+
+- origin (Gitee)：`0c51ca3..382e470` 推送（含本轮 1 test commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **mobile/types.ts 已闭合**（本轮 29 用例覆盖 6 常量 + 9 纯工具函数，零覆盖模块清零；`formatFileSizeMobile` 的 dead locale 形参与 `getOS` 优先级链已记观察，留待需本地化/重构时处理）。
+- **lib 域零覆盖纯模块延续**：
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，且多为返回常量的 TODO 桩，测试价值较低，待接入真实 SDK 后再覆盖；可先对 getAuthUrl URL 拼装、initialize/testConnection 守卫、handleAuthCallback 返回结构做薄边界单测）
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
+- **TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处「TODO: 实际实现」）、`src/lib/ai/model-manager.ts`（4 处「TODO: 实际调用模型API」）、`src/lib/ai/document-qna.ts`（配额检查/AI 调用/使用记录桩）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖
