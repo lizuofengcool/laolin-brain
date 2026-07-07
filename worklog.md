@@ -14052,3 +14052,74 @@ fix commit 仅 source 修复；test commit 含文件头控制流注释新增 `co
   - `src/lib/integrations/index.ts` 的 `IntegrationManager` 类（registerProvider/getAvailableTypes/addIntegration/getIntegrationsByTenant/getEnabledIntegrations/testIntegration/sendMessageToAll）——纯内存 Map 逻辑，可仿 integration-manager.test.ts 注入 fake Provider 做边界单测（注意与 integration-manager.ts 的同名类区分，二者接口不同）。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
 - **TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处「TODO: 实际实现」）、`src/lib/ai/model-manager.ts`（4 处「TODO: 实际调用模型API」）、`src/lib/ai/document-qna.ts`（配额检查/AI 调用/使用记录桩）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖
+
+## 2026-07-08 17:00 自动迭代
+
+### 第一百二十轮（integrations/index 补 34 用例覆盖 IntegrationManager 全路径）
+
+**背景**：上轮 worklog「下一轮候选」将 `src/lib/integrations/index.ts` 的 `IntegrationManager` 类列为首选候选——此前零覆盖（既有 `src/__tests__/lib/integration-manager.test.ts` 覆盖的是 `./integration-manager` 的 meta 版同名类，二者接口完全不同：meta 版 providers 按 `provider.meta.id` 键存、有 connect/disconnect/syncTasks/webhooks；index 版 providers 按 `provider.type` 键存、有 integrations 配置 Map + sendMessageToAll 广播）。index 版为纯内存 Map 逻辑，无任何网络/IO，可全量边界单测，故本轮闭合。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `df6a58e`（第一百一十九轮 worklog commit），工作树干净，无遗留 commit/改动，无需 rebase。
+- 任务清单优先级 1 的 5 项经逐项 spot-check 源码确认均已在历史轮次闭合：
+  · `tenant-db.ts` `raw` getter 与 `transaction` 均带 `new Error().stack` 调用方软审计 + `console.warn`；
+  · `alipay.ts` `verifyRSA2Sign` 用 `crypto.createVerify('RSA-SHA256')` + `RSA_PKCS1_PADDING` 真实验签，`normalizePublicKey` 自动补 PEM 头尾/换行，非空即通过的旧逻辑已删；
+  · `api/files/route.ts` GET 走 `createTenantDb(tenantId).file.findMany`、去重走 `createTenantDb(tenantId).file.findFirst`，不再裸按 userId 过滤；
+  · `sync-engine.ts` `keep_both` 分支：先 `fetchCloudFileData` 取云端数据，再将本地文件 `update` 重命名为 `[冲突副本]`，最后以新 cuid `create` 云端版本，不再直接覆盖丢失本地版本；且 `resolveConflict` 入口有 `db.file.findUnique({ where: { id: fileId, tenantId } })` 跨租户归属校验；
+  · `api-auth.test.ts` 已匹配 `api-auth.ts` 实现：返回 userId/email/tenantId/role 四字段、async、仅读 Authorization 头不读 query param。
+  → 本轮继续优先级 3（补测试）。
+- 评估候选：`integrations/index.ts IntegrationManager`（纯内存、零行为风险、上轮明确点名）vs TODO 桩集中区（需 mock 外部 API，成本更高）。选前者。
+- 本次为纯测试新增，不改 source，零行为风险。
+
+**test — `src/__tests__/lib/integrations/integration-manager-index.test.ts`（新增，+446 行，34 用例）**：
+
+文件名带 `-index` 后缀以与既有的 `integration-manager.test.ts`（测 meta 版）显式区分。覆盖 `IntegrationManager` 类（import 自 `@/lib/integrations/index`）全部 9 个公开方法。每个用例 `new IntegrationManager()` 全新实例避免私有 `providers`/`integrations` Map 状态污染；`makeProvider` 工厂默认 capabilities 四能力位全 true、所有方法为 `vi.fn` 以便断言调用参数与返回值；`makeConfig` 工厂默认 `enabled=true + status=active` 便于 `getEnabledIntegrations` 命中。
+
+覆盖维度（按 describe 分组）：
+- **provider 注册表**（6 用例）：registerProvider 后 getProvider 按 type 取回同一实例；同 type 重复注册覆盖（后注册胜出）；getProvider 未注册返回 undefined；getAvailableTypes 返回 `{type,name,description,capabilities}` 投影子集且不含 icon（`not.toHaveProperty('icon')` 锁定）；getAvailableTypes 保留注册顺序；无 provider 时返回空数组。
+- **集成配置存储**（5 用例）：addIntegration 后 getIntegration 按 id 取回同一对象；同 id 重复添加覆盖；getIntegration 未知 id 返回 undefined；getIntegrationsByTenant 跨租户隔离（t1/t2 互不串）；无匹配返回空数组。
+- **getEnabledIntegrations**（6 用例）：enabled=true+status=active 包含；enabled=false 排除；status=inactive 排除；status=error 排除；其他租户排除；混合场景仅返回 enabled+active+同租箱子集。
+- **testIntegration**（5 用例）：未注册 type 抛 `Integration provider not found: {type}`；initialize+testConnection 均成功返回 true（断言 initialize 收到传入 config、testConnection 无参调用）；initialize 抛错时吞错返回 false 且不再调用 testConnection；testConnection 抛错返回 false；testConnection 返回 false 时返回 false。
+- **sendMessageToAll**（11 用例）：向启用且 message 能力为真的集成发送 success+1（断言 initialize 收到 integration.config、sendMessage 收到 `(message.to, message)`）；多个 message 能力为真的集成均收到；跳过 message 能力为 false 的；跳过 enabled=false；跳过 status 非 active；跳过其他租户；sendMessage 抛错 failed+1 且 errors 记录 `{type, error.message}`；initialize 抛错 failed+1 且 sendMessage 不被调用；provider 无 sendMessage 方法时静默跳过（即使 message 能力为 true）；集成 type 无对应已注册 provider 时静默跳过；混合成功/失败场景聚合正确。
+- **单例**（1 用例）：`integrationManager` 是 `IntegrationManager` 实例。
+
+**latent 观察（未改 source）**：
+- `testIntegration` 吞掉 initialize/testConnection 的异常统一返回 false（不向上抛出），调用方无法区分「provider 未注册」（抛错）与「初始化/连接失败」（返回 false）。已补断言锁定当前行为；若后续需向上暴露失败原因，可在此处调整并同步测试。
+- `sendMessageToAll` 对「integration.type 无对应已注册 provider」的情况静默跳过（filter 阶段 `provider?.capabilities.message` 为 undefined 即 falsy 过滤掉），不计入 failed/errors。已补断言锁定。
+
+34 用例分布：provider 注册表 6 / 配置存储 5 / getEnabledIntegrations 6 / testIntegration 5 / sendMessageToAll 11 / 单例 1。
+
+无 source 改动，故仅 1 个 test commit（与第一百一十六/十七/十八/十九轮同型——纯测试新增，无 fix）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/integrations/integration-manager-index.test.ts`：**34/34 通过**（23ms）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量 **4245/4245 通过**（158 文件，189.09s），零回归。测试数较上轮 4211 增加 34（新增 34 用例），文件数 157→158（新增 1 文件）。
+
+环境备注：沙箱无 node_modules，仓库 lockfile 为 `package-lock.json`（npm，无 pnpm-lock.yaml），故 `npm ci` 安装 975 包（37s）后 `npx prisma generate`，再跑测试；未触碰 lockfile（`npm ci` 冻结安装），`git status` 仅新增本测试文件。
+
+### 改动量
+
+1 文件：
+- `src/__tests__/lib/integrations/integration-manager-index.test.ts`（新增，+446/-0）— makeProvider/makeConfig 工厂 + 34 用例（provider 注册表 / 配置存储 / getEnabledIntegrations / testIntegration / sendMessageToAll / 单例）
+
+1 test commit（纯测试新增，无 source 改动）。
+
+### Commit
+
+- `2a21278` test(lib): integrations/index 补 34 用例覆盖 IntegrationManager 全路径
+
+### 推送
+
+- origin (Gitee)：`df6a58e..2a21278` 推送（含本轮 1 test commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **integrations/index IntegrationManager 已闭合**（本轮 34 用例覆盖 9 方法全路径，零覆盖模块清零；testIntegration 吞错与 sendMessageToAll 静默跳过的 latent 行为已记观察，留待需向上暴露失败原因时处理）。
+- **lib 域零覆盖纯模块延续**：
+  - `src/lib/integrations/` 目录已全量闭合（index IntegrationManager + feishu/github/wecom 三 Provider + integration-manager meta 版均有覆盖）。可转向其他零覆盖纯模块。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
+- **TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处「TODO: 实际实现」）、`src/lib/ai/model-manager.ts`（4 处「TODO: 实际调用模型API」）、`src/lib/ai/document-qna.ts`（配额检查/AI 调用/使用记录桩）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖
