@@ -14123,3 +14123,70 @@ fix commit 仅 source 修复；test commit 含文件头控制流注释新增 `co
   - `src/lib/integrations/` 目录已全量闭合（index IntegrationManager + feishu/github/wecom 三 Provider + integration-manager meta 版均有覆盖）。可转向其他零覆盖纯模块。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
 - **TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处「TODO: 实际实现」）、`src/lib/ai/model-manager.ts`（4 处「TODO: 实际调用模型API」）、`src/lib/ai/document-qna.ts`（配额检查/AI 调用/使用记录桩）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖
+
+## 2026-07-08 02:00 自动迭代
+
+### 第一百二十一轮（ai/document-qna 补 37 用例覆盖会话缓存与问答检索全路径）
+
+**背景**：上轮 worklog「下一轮候选」将 `src/lib/ai/document-qna.ts` 列为 TODO 桩集中区首选候选——此前零覆盖（既有的 `ai-model-manager.test.ts`/`ai-usage.test.ts`/`ai-vision.test.ts` 覆盖的是同目录其他模块，document-qna 无对应测试文件）。该模块以 module-level `chatSessionsCache`（Map）作对话会话临时存储，并经 `retrieveRelevantDocuments` 做关键词检索，仅一处外部依赖 `db.file.findMany`，可全量边界单测，故本轮闭合。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `429bdf3`（第一百二十轮 worklog commit），工作树干净，无遗留 commit/改动，无需 rebase。
+- 任务清单优先级 1 的 5 项经上轮逐项 spot-check 已确认全部闭合（tenant-db raw 软审计 / alipay RSA2 真实验签 / files 路由走 TenantDb / sync-engine keep_both 不覆盖 / api-auth.test 匹配实现），本轮继续优先级 3（补测试）。
+- 评估候选：`document-qna.ts`（零覆盖、上轮明确点名的 TODO 桩区、仅一处 db 依赖）vs 其他 TODO 桩区（plugins/registry、monitoring/index 已有测试文件）。选前者。
+- 本次为纯测试新增，不改 source，零行为风险。
+
+**test — `src/__tests__/lib/ai-document-qna.test.ts`（新增，+498 行，37 用例）**：
+
+状态隔离策略：模块持有 module-level `chatSessionsCache`（Map），每个用例前 `vi.resetModules()` + `await import('@/lib/ai/document-qna')` 重新求值模块得到全新缓存，避免用例间串扰；配合 `vi.useFakeTimers()` + `vi.setSystemTime(NOW)` 固定时刻，使 `createdAt`/`updatedAt`/排序顺序可断言。`@/lib/db` 经 `vi.hoisted` + `vi.mock` 替换，仅 `db.file.findMany` 可控（`createChatSession` 标题生成与 `retrieveRelevantDocuments` 两处调用点 where 形状不同，按 `mock.calls[0][0]` 分别断言）。
+
+覆盖维度（按 describe 分组，对应 8 个公开函数）：
+- **createChatSession**（7 用例）：title 透传时不查 db；无 title 无 fileIds 时标题 "新对话" 且不查 db；无 title 有 fileIds 且 db 命中时标题为文件名逗号拼接（断言 where `{id:{in},tenantId,userId}`+`select:{fileName:true}`+`take:3`）；db 未命中回退 "新对话"；创建后落入缓存可经 getChatSession 取回同一对象；返回 session.id 为非空字符串；**锁定 latent 死分支**——`if (files.length > 3)` 因 db `take:3` 恒假，` 等${fileIds.length}个文件` 后缀永不追加（fileIds>3 时仍仅拼接 3 名，断言 `not.toContain('等')`）。
+- **getChatSessions**（5 用例）：空缓存返回 `[]`；按 userId+tenantId 过滤并以 updatedAt 倒序；跨用户隔离；跨租户隔离；limit 截断（默认 20、自定义 2 生效，断言倒序后取最近 2 条）。
+- **getChatSession**（4 用例）：双匹配命中返回会话；未找到/userId 不匹配/tenantId 不匹配均返回 null。
+- **addChatMessage**（5 用例）：双匹配生成 id+timestamp 并 push 到 messages、updatedAt 推进（断言 messages 长度+id 回连+updatedAt 增大）；支持带 citations 的 assistant 消息；未找到/userId 不匹配/tenantId 不匹配均返回 null。
+- **deleteChatSession**（4 用例）：双匹配从缓存删除返回 true 且后续 getChatSession 为 null；未找到/userId 不匹配/tenantId 不匹配返回 false 且会话仍在。
+- **askQuestion**（10 用例）：默认选项契约（model="default"/confidence=0.85/answer 含文档名/tokensUsed 正整数/citations 含 fileId+fileName+snippet+score）；includeCitations=false 时 citations 空但 answer 仍含文档名；无文档时 answer 以 "抱歉" 起始且 citations 空；fileIds 非空时 where.id={in}+tenantId+userId+isDeleted=false+take=10；citations 截断前 3（db 返 5 条）且 score 递减 1/0.9/0.8；snippet 优先 summary 缺省回退 `这是 {name} 中的相关内容片段...`；关键词构造（7 词过滤 len<=1 的 a/b 后 slice 5 得 cc/ddd/eee/fff/ggg，每子句 `{fileName:{contains,mode:'insensitive'}}`）；单关键词 OR=1；全短词 OR=[]。
+- **checkAiQnAQuota（桩）**（1 用例）：返回固定 `{available:true,remaining:100,limit:100}`。
+- **recordAiQnAUsage（桩）**（2 用例）：console.log 记录 userId/tenantId/tokens 并返回 undefined；不同 tokens 值透传日志。
+
+**latent 观察（未改 source，已补断言锁定当前行为）**：
+- `createChatSession` 标题拼接 `if (files.length > 3)` 死分支（db `take:3` 致 files.length≤3 恒不大于 3），` 等${fileIds.length}个文件` 后缀永不追加。已补用例锁定，留待后续修复为 `fileIds.length > 3`（见下一轮候选）。
+- `checkAiQnAQuota`/`recordAiQnAUsage` 为 TODO 桩（固定 mock 配额 / 仅 console.log），已补用例锁定，留待接入真实配额与用量记录时升级。
+
+37 用例分布：createChatSession 7 / getChatSessions 5 / getChatSession 4 / addChatMessage 5 / deleteChatSession 4 / askQuestion 10 / checkAiQnAQuota 1 / recordAiQnAUsage 1 = 37（含 1 latent 死分支锁定 + 2 桩锁定）。
+
+无 source 改动，故仅 1 个 test commit（与第一百一十六~一百二十轮同型——纯测试新增，无 fix）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/ai-document-qna.test.ts`：**37/37 通过**（49ms）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量 **4282/4282 通过**（159 文件，135.35s），零回归。测试数较上轮 4245 增加 37（新增 37 用例），文件数 158→159（新增 1 文件）。
+
+环境备注：沙箱无 node_modules，仓库 lockfile 为 `package-lock.json`（npm，无 pnpm-lock.yaml），故 `npm ci` 安装后 `npx prisma generate`，再跑测试；未触碰 lockfile（`npm ci` 冻结安装），`git status` 仅新增本测试文件。
+
+### 改动量
+
+1 文件：
+- `src/__tests__/lib/ai-document-qna.test.ts`（新增，+498/-0）— vi.hoisted+vi.mock @/lib/db / resetModules+动态 import 隔离缓存 / 37 用例（createChatSession / getChatSessions / getChatSession / addChatMessage / deleteChatSession / askQuestion / checkAiQnAQuota / recordAiQnAUsage）
+
+1 test commit（纯测试新增，无 source 改动）。
+
+### Commit
+
+- `c87852d` test(lib): ai/document-qna 补 37 用例覆盖会话缓存与问答检索全路径
+
+### 推送
+
+- origin (Gitee)：`429bdf3..c87852d` 推送（含本轮 1 test commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **ai/document-qna 已闭合**（本轮 37 用例覆盖 8 公开函数全路径，零覆盖模块清零；createChatSession 死分支与 quota/usage 桩的 latent 行为已记观察）。
+- **优先级 1 新增候选（小修 fix）**：`src/lib/ai/document-qna.ts` createChatSession 标题拼接 `if (files.length > 3)` 死分支 → 应改为 `fileIds.length > 3`（意图：用户选 >3 文件时仅显 3 名 + "等N个文件"）。本轮已锁定当前行为，下轮可做单行 fix 并同步更新该用例断言（`expect(title).toContain('等5个文件')`）。
+- **lib 域零覆盖纯模块延续**：document-qna 已闭合，可继续扫其他零覆盖纯模块（如 `src/lib/ai/recommendation.ts`、`src/lib/ai/knowledge-graph-enhanced.ts`、`src/lib/ai/face-detection.ts` 等尚未见对应测试文件的模块）。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
+- **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
