@@ -14314,3 +14314,61 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **lib 域零覆盖纯模块延续**：knowledge-graph-enhanced 已闭合，可继续扫其他零覆盖纯模块（如 `src/lib/ai/recommendation.ts`——db 依赖较重需 mock、`src/lib/ai/face-detection.ts`——依赖 z-ai-web-dev-sdk 需 mock SDK）。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
 - **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
+
+## 2026-07-08 05:11 自动迭代
+
+### 第一百二十四轮（修复 ai/knowledge-graph-enhanced findPath maxDepth off-by-one）
+
+**背景**：上轮 worklog「下一轮候选」将本轮锁定的 2 处 `knowledge-graph-enhanced.ts` latent 行为列为 **优先级 1 新增候选（latent 修复，小修 fix）**，建议「择一下轮做单行/小范围 fix 并同步更新用例断言」。本轮择其中语义最清晰、修复最确定的 `findPath` maxDepth off-by-one 做单行 fix，并同步更新 2 个原 latent 用例断言。`extractGraphFromFiles` textContent 未用一项留待后续。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `7bcc365`（第一百二十三轮 worklog commit），工作树干净，无遗留 commit/改动，无需 rebase。
+- 任务清单优先级 1 的原 5 项（tenant-db raw / alipay RSA2 / files 路由 TenantDb / sync-engine keep_both / api-auth.test 匹配）经多轮确认已闭合；上轮新增的优先级 1（findPath off-by-one / textContent 未用）本轮择一修复。
+- `grep findPath` 全仓确认：`findPath` 仅在自身测试文件中被引用，**无生产调用方**，故 maxDepth 语义变更无外溢风险，仅需同步更新测试断言。
+- 本次为 1 行源码 fix + 配套测试断言更新（1 commit），不铺大摊子。
+
+**fix — `src/lib/ai/knowledge-graph-enhanced.ts` findPath 入队条件修正**：
+
+`findPath` 采用 BFS + 前驱表重建路径。原入队条件 `if (depth < maxDepth)`，其中 `depth` 由从 neighbor 沿前驱链回溯到 source 计算得到，**值为路径节点数（含两端 = 边数 + 1）**，即 neighbor 距 source 图距离为 d 时 depth = d+1。故 `depth < maxDepth` ⟺ d+1 < maxDepth ⟺ d ≤ maxDepth−2 才入队展开，导致 maxDepth=N 实际仅可命中 N−1 边路径（目标作为某已展开节点邻居被发现即返回，不受 depth 限制；可展开节点的最大距离 = maxDepth−2，其邻居最大距离 = maxDepth−1）。例：3 边路径需 maxDepth≥4 才能命中。
+
+改为 `if (depth <= maxDepth)`：d+1 ≤ maxDepth ⟺ d ≤ maxDepth−1 入队展开，其邻居最大距离 = maxDepth 可被发现，**使 maxDepth=N 精确命中 N 边路径**。同时为该条件补充注释说明 depth 计算语义与边界含义，避免后续再次误读。
+
+**test — `src/__tests__/lib/ai-knowledge-graph-enhanced.test.ts` 同步更新断言**：
+
+- 原 latent 用例 1「maxDepth=3 无法命中 3 边路径（off-by-one，需 maxDepth≥4）」→ 改为「maxDepth=3 命中 3 边路径；maxDepth=2 无法命中（边界精确）」：断言 `findPath('A','D',rels,3)` 返回 `['A','B','C','D']`，`findPath('A','D',rels,2)` 返回 null。
+- 原 latent 用例 2「maxDepth=5 可命中 4 边路径，但无法命中 5 边路径」→ 改为「maxDepth=5 命中 5 边路径；maxDepth=4 无法命中（边界精确）」：断言 `findPath('A','F',rels,5)` 返回 `['A','B','C','D','E','F']`，`findPath('A','F',rels,4)` 返回 null；并补充回归断言 `findPath('A','E',rels,5)` 仍命中 4 边路径（更短路径在更大 maxDepth 下不受影响）。
+- 测试文件头 docblock：将 findPath latent 记录从「latent 观察」段移除，迁至新增「历史修复」段（`depth < maxDepth` → `depth <= maxDepth`，maxDepth=N 现可命中 N 边路径）；findPath 函数描述补充「（maxDepth=N 可命中 N 边路径）」；保留 textContent 未用 latent 记录（本轮未修）。文件仍为 35 用例（2 个原 latent 用例原地改写，未增删用例数）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/ai-knowledge-graph-enhanced.test.ts`：**35/35 通过**（25ms）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量 **4320/4320 通过**（160 文件，189.51s），零回归。测试数与上轮持平（4320），文件数 160 不变（2 个 latent 用例原地改写，未增删用例/文件）。
+
+环境备注：沙箱无 node_modules，仓库 lockfile 为 `package-lock.json`（npm，无 pnpm-lock.yaml），故 `npm ci`（975 包，45s）安装后 `npx prisma generate`，再跑测试；未触碰 lockfile（`npm ci` 冻结安装），`git status` 仅本轮 2 文件改动。
+
+### 改动量
+
+2 文件，+16/−12：
+- `src/lib/ai/knowledge-graph-enhanced.ts`（+3/−2）— findPath 入队条件 `depth < maxDepth` → `depth <= maxDepth` + 注释
+- `src/__tests__/lib/ai-knowledge-graph-enhanced.test.ts`（+13/−10）— 2 个 latent 用例断言改写为修复后边界行为 + 头注释迁移
+
+1 fix commit（源码 fix + 配套测试更新合并提交，保证每次提交后测试不破）。
+
+### Commit
+
+- `5e16f23` fix(lib): 修复 ai/knowledge-graph-enhanced findPath maxDepth off-by-one
+
+### 推送
+
+- origin (Gitee)：`7bcc365..5e16f23` 推送（含本轮 1 fix commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **findPath maxDepth off-by-one 已闭合**（本轮 1 行 fix + 2 用例断言改写 + 1 回归断言，latent 语义 bug 消除，maxDepth=N 精确命中 N 边路径）。
+- **优先级 1 候选（剩余 latent，小修 fix）**：`extractGraphFromFiles` 的 select 含 textContent 但 extractEntities 未使用（仅分析 fileName/summary/keyPoints/tags）——上轮锁定、本轮未修。可择一下轮做：①将 textContent 纳入 textToAnalyze 分析（补全正文实体提取，但改变实体提取行为需评估对生产图谱的影响，现有测试 textContent 默认 null 不受影响）；②从 select 移除 textContent（纯查询裁剪低风险，消除无效字段查询，需同步更新 select 形状断言用例）。
+- **lib 域零覆盖纯模块延续**：knowledge-graph-enhanced 已闭合，可继续扫其他零覆盖纯模块（如 `src/lib/ai/recommendation.ts`——db 依赖较重需 mock、`src/lib/ai/face-detection.ts`——依赖 z-ai-web-dev-sdk 需 mock SDK）。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
+- **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
