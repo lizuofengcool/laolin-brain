@@ -107,7 +107,8 @@ export async function extractGraphFromFiles(
       summary: true,
       keyPoints: true,
       tags: true,
-      textContent: true,
+      // textContent 不参与实体提取（extractEntities 仅分析 fileName/summary/keyPoints/tags），
+      // 不在 select 中查询以避免拉取潜在较大的无效字段
     },
   });
 

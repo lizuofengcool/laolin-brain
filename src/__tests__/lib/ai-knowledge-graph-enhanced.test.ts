@@ -15,11 +15,10 @@
  * @/lib/db 经 vi.hoisted + vi.mock 替换 file.findMany（extractGraphFromFiles 唯一 DB 调用点），
  * 其余 5 个图算法函数为纯函数，不依赖 db。
  *
- * latent 观察（留待后续判断是否修复，无生产调用方）：
- * - extractGraphFromFiles 的 select 含 textContent 字段，但 extractEntities 仅分析
- *   fileName/summary/keyPoints/tags，textContent 被查询但未参与实体提取（潜在浪费 + 遗漏正文分析）。
- *
  * 历史修复：
+ * - extractGraphFromFiles 的 select 曾含 textContent，但 extractEntities 仅分析
+ *   fileName/summary/keyPoints/tags，textContent 被查询但未参与实体提取（无效字段查询）；
+ *   已从 select 移除 textContent，避免拉取潜在较大的无效字段。
  * - findPath 的 maxDepth 曾存在 off-by-one（入队条件 `depth < maxDepth` 导致 maxDepth=N 仅可
  *   命中 N-1 边路径）；已改为 `depth <= maxDepth`，maxDepth=N 现可命中 N 边路径。
  */
@@ -75,14 +74,13 @@ function makeRelation(
   };
 }
 
-// 构造 extractGraphFromFiles 的 file 行（select 字段）
+// 构造 extractGraphFromFiles 的 file 行（select 字段；textContent 已从 select 移除）
 function makeFileRow(opts: {
   id: string;
   fileName?: string;
   summary?: string | null;
   keyPoints?: string | null;
   tags?: string | null;
-  textContent?: string | null;
 }) {
   return {
     id: opts.id,
@@ -91,7 +89,6 @@ function makeFileRow(opts: {
     summary: opts.summary ?? null,
     keyPoints: opts.keyPoints ?? null,
     tags: opts.tags ?? null,
-    textContent: opts.textContent ?? null,
   };
 }
 
@@ -447,7 +444,7 @@ describe('extractGraphFromFiles', () => {
     expect(graph.relations).toHaveLength(1);
   });
 
-  it('db.file.findMany 按 fileIds/tenantId/userId 过滤且 select 含 textContent', async () => {
+  it('db.file.findMany 按 fileIds/tenantId/userId 过滤且 select 不含 textContent', async () => {
     mockFileFindMany.mockResolvedValue([]);
     await extractGraphFromFiles(['f1', 'f2'], 'u1', 't1');
     expect(mockFileFindMany).toHaveBeenCalledTimes(1);
@@ -458,13 +455,14 @@ describe('extractGraphFromFiles', () => {
       isDeleted: false,
       id: { in: ['f1', 'f2'] },
     });
-    // latent: textContent 被 select 但 extractEntities 未使用
+    // textContent 不参与实体提取（extractEntities 仅分析 fileName/summary/keyPoints/tags），
+    // 已从 select 移除以避免拉取无效字段
     expect(arg.select).toMatchObject({
-      textContent: true,
       fileName: true,
       summary: true,
       keyPoints: true,
       tags: true,
     });
+    expect(arg.select).not.toHaveProperty('textContent');
   });
 });
