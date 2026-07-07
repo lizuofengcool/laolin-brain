@@ -14190,3 +14190,66 @@ fix commit 仅 source 修复；test commit 含文件头控制流注释新增 `co
 - **lib 域零覆盖纯模块延续**：document-qna 已闭合，可继续扫其他零覆盖纯模块（如 `src/lib/ai/recommendation.ts`、`src/lib/ai/knowledge-graph-enhanced.ts`、`src/lib/ai/face-detection.ts` 等尚未见对应测试文件的模块）。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
 - **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
+
+## 2026-07-08 03:10 自动迭代
+
+### 第一百二十二轮（修复 ai/document-qna createChatSession "等N个文件" 死分支）
+
+**背景**：上轮 worklog「下一轮候选」将 `src/lib/ai/document-qna.ts` createChatSession 标题拼接 `if (files.length > 3)` 死分支列为**优先级 1 新增候选（小修 fix）**——上轮已用 latent 用例锁定该死分支行为（后缀永不追加），本轮做单行 fix 并同步更新用例断言。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `426fe93`（第一百二十一轮 worklog commit），工作树干净，无遗留 commit/改动，无需 rebase。
+- 任务清单优先级 1 的原 5 项（tenant-db raw / alipay RSA2 / files 路由 TenantDb / sync-engine keep_both / api-auth.test 匹配）经多轮逐项 spot-check 已确认全部闭合；本轮接续上轮 worklog 新增的优先级 1 候选（document-qna 死分支 fix）。
+- 本次为 1 处源码单行 fix + 配套测试更新，单一文件域，零行为外溢风险。
+
+**fix — `src/lib/ai/document-qna.ts`（+3/-1 行注释 + 1 行条件修改）**：
+
+createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany({ take: 3 })` 查得最多 3 条文件名拼成标题，随后判断 `if (files.length > 3)` 决定是否追加 ` 等${fileIds.length}个文件` 后缀。因 `take: 3` 致 `files.length` 恒 ≤ 3，该条件永假，后缀永不追加——即便用户选了 5 个文件，标题也只显 3 个文件名而无"等N个文件"提示，与意图不符。
+
+修复为 `if (fileIds.length > 3)`：以用户选中的文件数判断阈值，超过 3 时在标题后追加 ` 等${fileIds.length}个文件`（N = fileIds.length）。补充注释说明 take:3 与 fileIds.length 判断的关系，避免后续误改。
+
+**test — `src/__tests__/lib/ai-document-qna.test.ts`（同步更新，+46/-8 行）**：
+
+- 移除原 latent 用例 `latent: fileIds>3 但 db take:3，"等N个文件" 后缀永不追加（死分支）`（锁定的是死分支旧行为）。
+- 新增 4 用例覆盖修复后行为与边界：
+  - `fileIds>3 时追加 "等N个文件" 后缀（修复死分支）`：5 个 fileIds + db 命中 3 → 标题 `'a.pdf, b.pdf, c.pdf 等5个文件'`，含 `等5个文件`。
+  - `fileIds.length 恰好为 3（边界）：不追加后缀`：3 个 fileIds + db 命中 3 → `'a.pdf, b.pdf, c.pdf'`，不含 `等`。
+  - `fileIds.length 恰好为 4（边界）：追加 "等4个文件"`：4 个 fileIds + db 命中 3 → `'a.pdf, b.pdf, c.pdf 等4个文件'`。
+  - `fileIds>3 但 db 命中数少于 fileIds：后缀仍按 fileIds.length 追加`：5 个 fileIds + db 命中 2 → `'a.pdf, b.pdf 等5个文件'`（验证后缀 N 取自 fileIds.length 而非 db 命中数）。
+- 同步更新文件头 docstring：`createChatSession` 行为描述追加"fileIds.length>3 时追加 等N个文件 后缀"；latent 观察段从"已补断言锁定当前行为"改为"已修复"，并说明修复内容。
+
+用例数：37 → 40（移除 1 latent + 新增 4 = 净 +3）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/ai-document-qna.test.ts`：**40/40 通过**（45ms）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量 **4285/4285 通过**（159 文件，189.44s），零回归。测试数较上轮 4282 增加 3（净 +3：移除 1 latent 用例、新增 4 修复后用例），文件数 159 不变。
+
+环境备注：沙箱无 node_modules，仓库 lockfile 为 `package-lock.json`（npm，无 pnpm-lock.yaml），故 `npm ci` 安装（975 包，29s）后 `npx prisma generate`，再跑测试；未触碰 lockfile（`npm ci` 冻结安装），`git status` 仅本轮 2 文件改动。
+
+### 改动量
+
+2 文件：
+- `src/lib/ai/document-qna.ts`（+4/-1）— `if (files.length > 3)` → `if (fileIds.length > 3)` + 注释说明
+- `src/__tests__/lib/ai-document-qna.test.ts`（+46/-8）— 移除 latent 用例、新增 4 修复后用例、更新 docstring
+
+1 fix commit（源码 fix + 配套测试更新合并提交，保证每次提交后测试不破）。
+
+### Commit
+
+- `8165fb9` fix(lib): 修复 ai/document-qna createChatSession 标题"等N个文件"死分支
+
+### 推送
+
+- origin (Gitee)：`426fe93..8165fb9` 推送（含本轮 1 fix commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **document-qna 死分支已修复闭合**（本轮 1 行 fix + 4 用例覆盖修复后行为与边界，latent 死分支消除）。
+- **checkAiQnAQuota / recordAiQnAUsage 仍为 TODO 桩**（固定 mock 配额 / 仅 console.log），上轮已锁定桩行为，留待接入真实配额与用量记录时升级——可作下轮优先级 2 候选。
+- **lib 域零覆盖纯模块延续**：document-qna 已闭合，可继续扫其他零覆盖纯模块（如 `src/lib/ai/recommendation.ts`、`src/lib/ai/knowledge-graph-enhanced.ts`、`src/lib/ai/face-detection.ts` 等尚未见对应测试文件的模块）。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
+- **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
