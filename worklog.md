@@ -13987,3 +13987,68 @@ fix commit 仅 source 修复；test commit 含文件头控制流注释新增 `co
   - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，且多为返回常量的 TODO 桩，测试价值较低，待接入真实 SDK 后再覆盖；可先对 getAuthUrl URL 拼装、initialize/testConnection 守卫、handleAuthCallback 返回结构做薄边界单测）
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
 - **TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处「TODO: 实际实现」）、`src/lib/ai/model-manager.ts`（4 处「TODO: 实际调用模型API」）、`src/lib/ai/document-qna.ts`（配额检查/AI 调用/使用记录桩）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖
+
+## 2026-07-08 01:00 自动迭代
+
+### 第一百一十九轮（integrations 补 41 用例覆盖 feishu/github/wecom 三个 Provider 边界）
+
+**背景**：上轮 worklog「下一轮候选」将 `src/lib/integrations/feishu.ts` / `github.ts` / `wecom.ts` 三个内置 Provider 列为候选——此前零覆盖（既有 `integration-manager.test.ts` 覆盖的是 `./integration-manager` 的 meta 版管理器，而非这三个实现 `./index` 接口的 Provider 类）。上轮备注「依赖真实 OAuth/网络，测试价值较低」，但复核源码确认三者均为纯内存/字符串逻辑、无任何网络调用，可对 getAuthUrl URL 拼装、initialize/testConnection 守卫、handleAuthCallback 返回结构做完整薄边界单测，故本轮闭合。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `37089c8`（第一百一十八轮 worklog commit），工作树干净，无遗留 commit/改动，无需 rebase。
+- 复核任务清单优先级 1 的 5 项均已在历史轮次闭合（与上轮同，spot-check 确认 tenant-db 软审计 / alipay 真实验签 / sync-engine keep_both / api/files 走 TenantDb / api-auth.test 匹配实现）——本轮继续优先级 3（补测试）。
+- 评估候选：`integrations/feishu|github|wecom.ts`（纯字符串/守卫逻辑，零行为风险，且为上轮明确点名候选）vs TODO 桩集中区（plugins/registry、ai/model-manager 等需 mock 外部 API，单测成本更高）。选三个 Provider。
+- 本次为纯测试新增，不改 source，零行为风险。
+
+**test — `src/__tests__/lib/integrations/integration-providers.test.ts`（新增，+354 行，41 用例）**：
+
+覆盖 `FeishuIntegration` / `GitHubIntegration` / `WeComIntegration` 三个类（实现 `./index` 的 `IntegrationProvider` 接口，非 `./integration-manager` 的 meta 版）。每个用例 `new` 全新实例避免私有 `config`/`initialized` 状态污染；`sendMessage` 的 `console.log` 以 `vi.spyOn(console,'log').mockImplementation(()=>{})` 抑制噪声并断言调用参数，`beforeEach`/`afterEach` 装/卸 spy。
+
+覆盖维度：
+- **静态元数据与 capabilities**（3 用例，每 Provider 1）：type/name/description/capabilities。feishu/wecom 四能力位全 true；github `message:false` 且无 `sendMessage` 方法（补断言验证二者一致）。
+- **testConnection 守卫**（feishu 5 / github 4 / wecom 5 = 14 用例）：未初始化抛 `Integration not initialized`；缺每个关键字段返回 false（feishu: appId/appSecret；github: clientId/clientSecret；wecom: corpId/agentId/secret 三者逐一缺）；空配置返回 false；齐备返回 true。
+- **getAuthUrl URL 拼装**（feishu 2 / github 2 / wecom 2 = 6 用例）：base 域名（`open.feishu.cn/open-apis/authen/v1/index` / `github.com/login/oauth/authorize` / `open.work.weixin.qq.com/wwopen/sso/qrConnect`）+ 关键 query（`app_id`/`client_id`/`appid`+`agentid`）+ `redirect_uri` 经 `encodeURIComponent` 编码（用 `encodeURIComponent(redirectUri)` 复算期望避免硬编码 brittle）+ `state`；github 额外断言 `scope=read:user user:email repo` 经编码。另补未初始化分支（字段为 `undefined`，URL 仍生成）——记录此 latent 行为留待后续若需强守卫时处理。
+- **handleAuthCallback 返回结构**（3 用例）：回显 code/state + 桩 userId/name/avatar；github 额外含 `login`。用 `toEqual` 严格匹配整个对象。
+- **sendMessage**（feishu 2 / wecom 2 = 4 用例）：未初始化抛 `Integration not initialized`；已初始化解析并以 `[Feishu]`/`[WeCom]` 前缀打印日志（spy 断言三参数）。
+- **syncData 返回结构**（3 用例）：feishu/wecom 空 `users`/`departments` + `syncedAt: Date`；github 空 `repositories` + `syncedAt: Date`。
+- **handleWebhook 返回结构**（3 用例）：feishu/wecom 回显 `event` + `handled:true`；github 额外回显 `action`。
+- **跨实现契约一致性**（3 用例）：必需字段（type/name/description/capabilities 形状）、type 取值互异（feishu/github/wecom）、四方法（getAuthUrl/handleAuthCallback/syncData/handleWebhook）在所有实现上存在且为函数。
+
+**latent 观察（未改 source）**：
+- `getAuthUrl` 未初始化时不抛错而是生成 `app_id=undefined` 等字段（feishu/github/wecom 均如此）。已补断言锁定当前行为；若后续需「未初始化禁止生成授权 URL」的强守卫，可在此处加 throw 并同步更新测试。
+- 三个 Provider 的 `handleAuthCallback`/`syncData`/`handleWebhook` 仍为返回常量的 TODO 桩（wecom 源码含显式 `// TODO` 注释），待接入真实 SDK 后将本测试由「结构断言」升级为「mock fetch 断言」。
+
+41 用例分布：FeishuIntegration 14 / GitHubIntegration 11 / WeComIntegration 13 / 跨实现契约 3。
+
+无 source 改动，故仅 1 个 test commit（与第一百一十六/十七/十八轮同型——纯测试新增，无 fix）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/integrations/integration-providers.test.ts`：**41/41 通过**（17ms）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量 **4211/4211 通过**（157 文件，186.31s），零回归。测试数较上轮 4170 增加 41（新增 41 用例），文件数 156→157（新增 1 文件）。
+
+### 改动量
+
+1 文件：
+- `src/__tests__/lib/integrations/integration-providers.test.ts`（新增，+354/-0）— console.log spy + 41 用例（3 Provider × 守卫/URL/回调/消息/同步/webhook + 跨实现契约）
+
+1 test commit（纯测试新增，无 source 改动）。
+
+### Commit
+
+- `3eaab3f` test(lib): integrations 补 41 用例覆盖 feishu/github/wecom 三个 Provider 边界
+
+### 推送
+
+- origin (Gitee)：`37089c8..3eaab3f` 推送（含本轮 1 test commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **integrations 三个 Provider 已闭合**（本轮 41 用例覆盖守卫/URL/回调/消息/同步/webhook 全路径，零覆盖模块清零；getAuthUrl 未初始化不抛错的 latent 行为与 TODO 桩已记观察，留待接入真实 SDK 时升级）。
+- **lib 域零覆盖纯模块延续**：
+  - `src/lib/integrations/index.ts` 的 `IntegrationManager` 类（registerProvider/getAvailableTypes/addIntegration/getIntegrationsByTenant/getEnabledIntegrations/testIntegration/sendMessageToAll）——纯内存 Map 逻辑，可仿 integration-manager.test.ts 注入 fake Provider 做边界单测（注意与 integration-manager.ts 的同名类区分，二者接口不同）。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
+- **TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处「TODO: 实际实现」）、`src/lib/ai/model-manager.ts`（4 处「TODO: 实际调用模型API」）、`src/lib/ai/document-qna.ts`（配额检查/AI 调用/使用记录桩）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖
