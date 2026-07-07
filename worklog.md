@@ -14372,3 +14372,60 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **lib 域零覆盖纯模块延续**：knowledge-graph-enhanced 已闭合，可继续扫其他零覆盖纯模块（如 `src/lib/ai/recommendation.ts`——db 依赖较重需 mock、`src/lib/ai/face-detection.ts`——依赖 z-ai-web-dev-sdk 需 mock SDK）。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
 - **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
+
+## 2026-07-08 06:00 自动迭代
+
+### 第一百二十五轮（移除 knowledge-graph-enhanced extractGraphFromFiles select 中未使用的 textContent）
+
+**背景**：上轮 worklog「下一轮候选」将 `extractGraphFromFiles` 的 select 含 textContent 但 extractEntities 未使用，列为 **优先级 1 候选（剩余 latent，小修 fix）**，并给出两个选项——①将 textContent 纳入 textToAnalyze 分析（改变实体提取行为需评估）；②从 select 移除 textContent（纯查询裁剪低风险，消除无效字段查询）。本轮择其中风险最低、与函数文档化意图一致的 **选项②**：函数内注释明确「从文件名、标签、摘要中提取实体」（line 115），extractEntities 仅分析 fileName/summary/keyPoints/tags，textContent 从未被纳入 textToAnalyze，故移除该 select 字段为纯查询裁剪，不改变任何可观察输出行为。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `c1dff5d`（第一百二十四轮 worklog commit），工作树干净，无遗留 commit/改动，无需 rebase。
+- 任务清单优先级 1 的原 5 项（tenant-db raw / alipay RSA2 / files 路由 TenantDb / sync-engine keep_both / api-auth.test 匹配）经多轮确认已闭合；上轮新增的 findPath off-by-one 已修复；本轮闭合最后一项剩余 latent（textContent 未用）。
+- `grep extractGraphFromFiles` 全仓确认：仅自身定义 + 测试文件引用，**无生产调用方**，故 select 字段裁剪无外溢风险。
+- `grep textContent` 模块内确认：仅 line 110 select 一处引用，移除后模块零 textContent 残留。prisma schema File 模型含 `textContent String?`，移除 select 仅表示不拉取该字段（字段本身保留）。
+- 本次为 1 行源码裁剪 + 配套测试更新（1 commit），不铺大摊子。
+
+**refactor — `src/lib/ai/knowledge-graph-enhanced.ts` extractGraphFromFiles select 裁剪**：
+
+`db.file.findMany` 的 `select` 原含 `textContent: true`，但 `extractEntities` 的 `textToAnalyze` 仅由 `[fileName, summary, keyPoints, tags]` 拼接（textContent 从未参与）。移除 `textContent: true`，并补充注释说明「textContent 不参与实体提取（extractEntities 仅分析 fileName/summary/keyPoints/tags），不在 select 中查询以避免拉取潜在较大的无效字段」。实体提取行为、关系构建、stats 聚合均不变。
+
+**test — `src/__tests__/lib/ai-knowledge-graph-enhanced.test.ts` 同步更新**：
+
+- select 形状断言用例：原标题「按 fileIds/tenantId/userId 过滤且 select 含 textContent」→ 改为「select 不含 textContent」；原 `expect(arg.select).toMatchObject({ textContent: true, ... })` → 改为 `toMatchObject({ fileName, summary, keyPoints, tags })` + 显式 `expect(arg.select).not.toHaveProperty('textContent')`，注释由 latent 标记改为「已从 select 移除」。
+- `makeFileRow` 工厂：移除 `textContent` 入参与默认值（工厂注释明确「构造 select 字段」，textContent 已不在 select 内，保持工厂与 select 对齐），工厂其余字段不变。
+- 文件头 docblock：将 textContent 一项从「latent 观察」段移至「历史修复」段（textContent 曾被 select 但未参与实体提取，已移除）；「latent 观察」段清空后整段删除（该段仅此一项）。findPath 历史修复记录保留不变。文件仍为 35 用例（1 个断言用例原地改写，未增删用例数）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/ai-knowledge-graph-enhanced.test.ts`：**35/35 通过**（18ms）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量 **4320/4320 通过**（160 文件，180.14s），零回归。测试数与上轮持平（4320），文件数 160 不变（1 个断言用例原地改写，未增删用例/文件）。
+
+环境备注：沙箱无 node_modules，仓库 lockfile 为 `package-lock.json`（npm，无 pnpm-lock.yaml），故 `npm ci`（975 包，29s）安装后 `npx prisma generate`，再跑测试；未触碰 lockfile（`npm ci` 冻结安装），`git status` 仅本轮 2 文件改动。
+
+### 改动量
+
+2 文件，+10/−11：
+- `src/lib/ai/knowledge-graph-enhanced.ts`（+2/−1）— select 移除 textContent + 注释
+- `src/__tests__/lib/ai-knowledge-graph-enhanced.test.ts`（+8/−10）— select 断言改写 + makeFileRow 移除 textContent + 头注释迁移
+
+1 refactor commit（源码裁剪 + 配套测试更新合并提交，保证每次提交后测试不破）。
+
+### Commit
+
+- `3fccd2b` refactor(lib): 移除 knowledge-graph-enhanced select 中未使用的 textContent
+
+### 推送
+
+- origin (Gitee)：`c1dff5d..3fccd2b` 推送（含本轮 1 refactor commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **extractGraphFromFiles textContent 未用已闭合**（本轮 1 行 select 裁剪 + 1 断言用例改写 + 工厂/注释对齐，knowledge-graph-enhanced 模块 2 处 latent 全部清零）。
+- **同型 latent（相邻观察，可选小修）**：extractGraphFromFiles 的 select 仍含 `fileType`，但 textToAnalyze 同样不使用 fileType（仅 fileName/summary/keyPoints/tags）。与 textContent 同类问题，但 fileType 为短字符串字段、查询成本可忽略，是否裁剪视后续是否愿统一 select 为「仅实际使用字段」而定；若裁剪需同步更新 select 形状断言（当前断言仅 toMatchObject 不强制 fileType 存在，移除后断言无需改）。
+- **lib 域零覆盖纯模块延续**：knowledge-graph-enhanced 已完全闭合，可继续扫其他零覆盖纯模块（如 `src/lib/ai/recommendation.ts`——db 依赖较重需 mock、`src/lib/ai/face-detection.ts`——依赖 z-ai-web-dev-sdk 需 mock SDK）。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
+- **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
