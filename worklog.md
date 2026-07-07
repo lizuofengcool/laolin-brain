@@ -13708,3 +13708,80 @@ fix commit 仅 source 修复；test commit 含文件头控制流注释更新（`
   - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）—— 下一轮 Top 1 候选
   - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
+
+## 2026-07-07 08:00 自动迭代
+
+### 第一百一十五轮（collaboration-manager compareVersions 接入 LCS 行级 diff + 12 用例补全）
+
+**背景**：上轮 worklog「下一轮候选」标注 collaboration-manager.ts 残留最后 1 处 latent gap——`compareVersions` 为桩实现（永远返回空 `changes` 与零 `stats`，注释「这里可以实现真正的diff算法」），需真正 diff 算法。本轮将其接入 LCS（最长公共子序列）行级 diff，闭合该 gap。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `9af48dc`，工作树干净，无遗留 commit/改动。
+- 复核任务清单优先级 1 的 5 项均已在历史轮次闭合（tenant-db.ts raw 审计 / alipay+wechat 已改为「配置真实密钥但未接 SDK 时返回明确错误而非静默 mock」 / api/files 走 TenantDb / sync-engine keep_both 已实现「本地重命名为冲突副本 + 云端版本作为新文件落地」+ 前置租户归属校验 / api-auth.test 已匹配实现），本轮转入优先级 2/3。
+- `compareVersions` 全仓仅被自身与单测引用，无任何生产消费方（API 路由未调用），扩展签名/语义安全。
+- 沙箱无 node_modules，按规范执行 `npm ci`（项目用 package-lock.json，无 pnpm-lock.yaml，不混用 lockfile）+ `npx prisma generate` 后环境完整。
+
+**fix — `src/lib/collaboration/collaboration-manager.ts`（compareVersions 接入 LCS 行级 diff）**：
+
+`compareVersions(fileId, version1, version2)` 原实现：直接返回 `changes: []` 与 `stats: {0,0,0}`，无任何 diff 计算。问题在于方法签名仅收版本标识（字符串），无版本文本内容来源，无法 diff。
+
+设计：新增 `recordVersionSnapshot(fileId, version, content)` 记录版本文本快照（按 `fileId → (version → content)` 嵌套 Map 存储，同 version 重复记录覆盖旧值）。`compareVersions` 取两版本快照后做 LCS 行级 diff：
+1. 自底向上构建 LCS 长度 DP 表 `dp[i][j] = oldLines[i:] 与 newLines[j:] 的 LCS 长度`；
+2. 回溯生成 `equal`/`delete`/`add` 操作序列（`oldLines[i]===newLines[j]` 走 equal；否则按 `dp[i+1][j] >= dp[i][j+1]` 决定走 delete 还是 add）；
+3. 将连续非 equal 操作归为变更区间，区间内 `delete` 与 `add` 按出现顺序配对为 `modification`（旧行改写为新行，附 `oldContent`/`newContent`），剩余未配对的 `delete` 记为 `deletion`、未配对的 `add` 记为 `addition`；
+4. `stats` 按 type 计数累加。
+
+`lineNumber` 语义：`deletion`/`modification` 指旧版本行号（1-based），`addition` 指新版本行号；`modification.content` 取新行内容。
+
+**向后兼容**：任一版本未记录快照时无法 diff，回退为空 `changes` + 零 `stats`（保持历史调用方契约不变）。既有「无快照调用」零行为变化。
+
+**test — `src/__tests__/lib/collaboration/collaboration-manager.test.ts`（+141/-1 行，146→158 用例）**：
+
+fix commit 仅 source 修复；test commit 含文件头控制流注释新增 `compareVersions` 条目（桩实现→LCS 行级 diff + recordVersionSnapshot 快照）+ 12 新用例。既有 `compareVersions` 用例仅改描述为「未记录快照时返回结构（零变更，向后兼容）」，断言不变。新增 describe「版本对比（compareVersions / recordVersionSnapshot）」12 用例：
+- 两版本完全相同：零变更
+- 纯新增行：addition，lineNumber 指新版本行号
+- 纯删除行：deletion，lineNumber 指旧版本行号
+- 行修改：同区间 delete+add 配对为 modification，含 oldContent/newContent
+- 混合变更：多区间 addition/deletion/modification 共存，stats 正确累加（b→B 修改 / d 删除 / f 新增）
+- 连续多行新增：全部 addition（无配对 deletion）
+- 连续多行删除：全部 deletion（无配对 addition）
+- 仅旧版本记录快照：返回零变更（无法 diff）
+- 仅新版本记录快照：返回零变更（无法 diff）
+- 快照按 fileId 隔离：不同 fileId 互不影响
+- recordVersionSnapshot 同 version 重复记录覆盖旧快照
+- 空内容对比：`''` 与 `'x'` 差异（`'' → 'x'` 记为 modification）
+
+**2 dev commit 拆分**：与第一百零六/八/九/十/十一/十二/十三/十四轮 todo/comment/knowledge-base/collaboration/note-manager fix/test 拆分同型。fix commit 仅 source 修复；test commit 含文件头注释更新 + 12 新用例。两 commit 各自绿。
+
+### 验证
+
+- `npx tsc --noEmit`：**0 错误**（npm ci + prisma generate 后环境完整，全量 0 错误）。
+- `npx vitest run src/__tests__/lib/collaboration/collaboration-manager.test.ts`：**158/158 通过**（107ms tests）。
+- `npx vitest run` 全量 **4092/4092 通过**（153 文件，183.83s），零回归。测试数较上轮 4080 增加 12（新增 12 用例），文件数 153 不变。
+
+### 改动量
+
+2 文件：
+- `src/lib/collaboration/collaboration-manager.ts`（修改，+129/-6）— 新增 versionSnapshots Map + recordVersionSnapshot 方法 + compareVersions 接入 LCS diff + 私有 computeLineDiff 辅助
+- `src/__tests__/lib/collaboration/collaboration-manager.test.ts`（修改，+141/-1）— 文件头注释更新 + 12 新用例
+
+2 dev commit（fix / test 拆分：fix commit 含 source 修复；test commit 含文件头注释更新 + 12 新用例）。
+
+### Commit
+
+- `046067b` fix(lib): collaboration-manager compareVersions 接入 LCS 行级 diff
+- `ba353ee` test(lib): collaboration-manager 补 12 用例覆盖 compareVersions LCS 行级 diff
+
+### 推送
+
+- origin (Gitee)：`9af48dc..ba353ee` 推送（含本轮 2 dev commit；worklog commit 待本次追加后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **collaboration-manager.ts 已闭合**（本轮 compareVersions LCS diff + 12 用例补全，桩实现 latent gap 全部清零）。
+- **lib 域零覆盖纯模块延续**（同型内存 Map 单例 manager，可仿 todo/calendar/note/comment/knowledge-base/collaboration-manager 模式）：
+  - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）—— 下一轮 Top 1 候选
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
