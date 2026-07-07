@@ -73,7 +73,9 @@ export async function createChatSession(
     });
     if (files.length > 0) {
       sessionTitle = files.map((f) => f.fileName).join(", ");
-      if (files.length > 3) {
+      // db.file.findMany take:3 致 files.length ≤ 3，这里以 fileIds.length 判断
+      // 用户选中的文件数是否超过展示阈值，超过则在标题后追加 "等N个文件"
+      if (fileIds.length > 3) {
         sessionTitle += ` 等${fileIds.length}个文件`;
       }
     }

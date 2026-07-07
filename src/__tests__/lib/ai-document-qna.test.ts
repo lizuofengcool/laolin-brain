@@ -4,7 +4,8 @@
  * 覆盖目标：src/lib/ai/document-qna.ts。该模块以内存 Map（chatSessionsCache）作为
  * 对话会话的临时存储，并提供文档问答检索能力，含以下关键控制流：
  * - createChatSession：title 优先透传；无 title 且 fileIds 非空时，查 db.file.findMany
- *   （take:3）拼接文件名作为标题；无 title 无 fileIds 时标题为 "新对话"；落库到内存缓存
+ *   （take:3）拼接文件名作为标题，fileIds.length>3 时追加 "等N个文件" 后缀；
+ *   无 title 无 fileIds 时标题为 "新对话"；落库到内存缓存
  * - getChatSessions：按 userId+tenantId 过滤，updatedAt 倒序，slice(limit)，默认 limit=20
  * - getChatSession：命中且 userId/tenantId 双匹配返回会话，否则 null（跨用户/租户隔离）
  * - addChatMessage：双匹配时生成 id+timestamp 并 push 到 messages、更新 updatedAt；否则 null
@@ -22,10 +23,10 @@
  * @/lib/db 经 vi.hoisted + vi.mock 替换，仅 db.file.findMany 可控（createChatSession 标题生成
  * 与 retrieveRelevantDocuments 两处调用点形状不同，按 mock.calls[0][0] 分别断言）。
  *
- * latent 观察（未改 source，已补断言锁定当前行为）：
- * - createChatSession 标题拼接中 `if (files.length > 3)` 永假（db.file.findMany take:3，
- *   files.length ≤ 3），故 ` 等${fileIds.length}个文件` 后缀永不追加。已补用例锁定该死分支，
- *   留待后续修复为 `fileIds.length > 3`（见 worklog 下一轮候选）。
+ * latent 观察（已修复）：
+ * - createChatSession 标题拼接原 `if (files.length > 3)` 因 db.file.findMany take:3
+ *   恒假（死分支），` 等${fileIds.length}个文件` 后缀永不追加。已修复为
+ *   `if (fileIds.length > 3)`：当用户选中的文件数 > 3 时，标题拼接前 3 名 + "等N个文件"。
  * - checkAiQnAQuota / recordAiQnAUsage 为 TODO 桩（返回固定 mock 数据 / 仅 console.log），
  *   已补用例锁定当前桩行为，留待接入真实配额与用量记录时升级。
  */
@@ -145,8 +146,9 @@ describe('ai/document-qna', () => {
       expect(mockFileFindMany).toHaveBeenCalledTimes(1);
     });
 
-    it('latent: fileIds>3 但 db take:3，"等N个文件" 后缀永不追加（死分支）', async () => {
-      // db.file.findMany take:3 → files.length ≤ 3，源码 `if (files.length > 3)` 恒假
+    it('fileIds>3 时追加 "等N个文件" 后缀（修复死分支）', async () => {
+      // 修复前：源码 `if (files.length > 3)` 因 db take:3 恒假，后缀永不追加
+      // 修复后：`if (fileIds.length > 3)`，用户选 >3 文件时追加后缀
       mockFileFindMany.mockResolvedValue([
         { fileName: 'a.pdf' },
         { fileName: 'b.pdf' },
@@ -155,9 +157,45 @@ describe('ai/document-qna', () => {
 
       const session = await createChatSession('u1', 't1', ['f1', 'f2', 'f3', 'f4', 'f5']);
 
-      // 仅拼接 3 个文件名，无 " 等5个文件" 后缀（锁定当前死分支行为）
+      expect(session.title).toBe('a.pdf, b.pdf, c.pdf 等5个文件');
+      expect(session.title).toContain('等5个文件');
+    });
+
+    it('fileIds.length 恰好为 3（边界）：不追加后缀', async () => {
+      mockFileFindMany.mockResolvedValue([
+        { fileName: 'a.pdf' },
+        { fileName: 'b.pdf' },
+        { fileName: 'c.pdf' },
+      ]);
+
+      const session = await createChatSession('u1', 't1', ['f1', 'f2', 'f3']);
+
       expect(session.title).toBe('a.pdf, b.pdf, c.pdf');
       expect(session.title).not.toContain('等');
+    });
+
+    it('fileIds.length 恰好为 4（边界）：追加 "等4个文件"', async () => {
+      mockFileFindMany.mockResolvedValue([
+        { fileName: 'a.pdf' },
+        { fileName: 'b.pdf' },
+        { fileName: 'c.pdf' },
+      ]);
+
+      const session = await createChatSession('u1', 't1', ['f1', 'f2', 'f3', 'f4']);
+
+      expect(session.title).toBe('a.pdf, b.pdf, c.pdf 等4个文件');
+    });
+
+    it('fileIds>3 但 db 命中数少于 fileIds：后缀仍按 fileIds.length 追加', async () => {
+      // fileIds 5 个但 db 只命中 2 个，fileIds.length>3 仍成立 → 后缀按 5 追加
+      mockFileFindMany.mockResolvedValue([
+        { fileName: 'a.pdf' },
+        { fileName: 'b.pdf' },
+      ]);
+
+      const session = await createChatSession('u1', 't1', ['f1', 'f2', 'f3', 'f4', 'f5']);
+
+      expect(session.title).toBe('a.pdf, b.pdf 等5个文件');
     });
 
     it('创建后落入缓存：可经 getChatSession 取回同一对象', async () => {
