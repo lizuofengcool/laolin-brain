@@ -14253,3 +14253,64 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **lib 域零覆盖纯模块延续**：document-qna 已闭合，可继续扫其他零覆盖纯模块（如 `src/lib/ai/recommendation.ts`、`src/lib/ai/knowledge-graph-enhanced.ts`、`src/lib/ai/face-detection.ts` 等尚未见对应测试文件的模块）。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
 - **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
+
+## 2026-07-08 04:14 自动迭代
+
+### 第一百二十三轮（补 ai/knowledge-graph-enhanced 图算法与实体提取单测）
+
+**背景**：上轮 worklog「下一轮候选」将 `src/lib/ai/knowledge-graph-enhanced.ts` 列为 **lib 域零覆盖纯模块延续**候选。该模块导出 6 个图算法纯函数 + 1 个 db 依赖的 `extractGraphFromFiles`，此前无对应测试文件（`src/__tests__/lib/` 下仅 `knowledge-base/` 目录，非本模块）。本轮补单测覆盖全路径，并在过程中锁定 2 处 latent 行为。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `bce6585`（第一百二十二轮 worklog commit），工作树干净，无遗留 commit/改动，无需 rebase。
+- 任务清单优先级 1 的原 5 项（tenant-db raw / alipay RSA2 / files 路由 TenantDb / sync-engine keep_both / api-auth.test 匹配）经多轮确认已闭合；上轮新增的优先级 1（document-qna 死分支）已修复。本轮接续「lib 域零覆盖纯模块」优先级 3 候选。
+- 本次为纯新增测试文件（1 commit），零源码改动，零行为外溢风险。
+
+**test — 新增 `src/__tests__/lib/ai-knowledge-graph-enhanced.test.ts`（+467 行，35 用例）**：
+
+`@/lib/db` 经 `vi.hoisted + vi.mock` 替换 `file.findMany`（`extractGraphFromFiles` 唯一 DB 调用点），其余 5 个图算法函数为纯函数不依赖 db。覆盖矩阵：
+
+- `getEntityColor` / `getEntityIcon`（各 2 用例）：9 种 `EntityType` 取值循环断言 + 未知类型回退 `other`。
+- `findNeighbors`（6 用例）：depth=1 默认、depth=2/3 链式、depth=0 返回空、孤立 entityId、自环关系不把自身算作邻居。
+- `findPath`（7 用例）：source===target 返回 `[source]`、直接/多跳/反向路径、不连通返回 null、**latent maxDepth off-by-one**（maxDepth=3 无法命中 3 边路径需 ≥4；maxDepth=5 可命中 4 边但无法命中 5 边）。
+- `detectCommunities`（5 用例）：空实体、单实体、两连通合并为一社区、两不连通分两社区、occurrenceCount 最高命名（并列时 BFS 首个实体命名）。
+- `forceDirectedLayout`（5 用例）：空实体、id 全覆盖 + 长度一致、默认边界 [20,780]×[20,580]、自定义 100×100 边界 [20,80]×[20,80]、关系引用幽灵实体不抛错。
+- `extractGraphFromFiles`（8 用例，db mock）：空图谱、【标签】实体（concept）、同文件两标签共现关系 weight 0.5、跨两文件 occurrenceCount/weight/fileIds 聚合、技术术语 API→technology、专有名词 Acme Inc→organization（guessEntityType org 分支）、混合 concept+technology stats 聚合、`db.file.findMany` where 按 fileIds/tenantId/userId 过滤 + select 含 textContent 形状断言。
+
+**latent 观察（本轮锁定当前行为，二者均无生产调用方，留待后续判断是否修复）**：
+- `findPath` 的 `maxDepth` off-by-one：节点距 source 图距离为 d 时，depth 计算 = d+1，入队条件 `depth < maxDepth` 即 d < maxDepth-1；目标作为某已探索节点邻居被发现即返回（不受 depth 限制），故 maxDepth=N 实际可发现距 source 距离 ≤ N-1 的目标（3 边路径需 maxDepth≥4）。语义存疑（maxDepth 名义为"最大深度"），已补 2 用例锁定。
+- `extractGraphFromFiles` 的 `select` 含 `textContent` 字段，但 `extractEntities` 仅分析 fileName/summary/keyPoints/tags，textContent 被查询但未参与实体提取（潜在浪费 + 遗漏正文分析）。已补 select 形状断言锁定。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/ai-knowledge-graph-enhanced.test.ts`：**35/35 通过**（26ms）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量 **4320/4320 通过**（160 文件，193.42s），零回归。测试数较上轮 4285 增加 35（净 +35），文件数 159 → 160（+1）。
+
+环境备注：沙箱无 node_modules，仓库 lockfile 为 `package-lock.json`（npm，无 pnpm-lock.yaml），故 `npm ci` 安装后 `npx prisma generate`，再跑测试；未触碰 lockfile（`npm ci` 冻结安装），`git status` 仅本轮 1 文件新增。
+
+### 改动量
+
+1 文件：
+- `src/__tests__/lib/ai-knowledge-graph-enhanced.test.ts`（+467）— 新增，覆盖 6 纯函数 + extractGraphFromFiles 全路径，锁定 2 处 latent 行为
+
+1 test commit（纯新增测试，零源码改动）。
+
+### Commit
+
+- `c997509` test(lib): ai/knowledge-graph-enhanced 补 35 用例覆盖图算法与实体提取全路径
+
+### 推送
+
+- origin (Gitee)：`bce6585..c997509` 推送（含本轮 1 test commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **knowledge-graph-enhanced 已闭合**（本轮 35 用例覆盖 6 纯函数 + extractGraphFromFiles 全路径，零覆盖模块清零）。
+- **优先级 1 新增候选（latent 修复，小修 fix）**：本轮锁定的 2 处 latent 行为可择一下轮做单行/小范围 fix 并同步更新用例断言——
+  · `findPath` maxDepth off-by-one：将入队条件 `depth < maxDepth` 改为 `depth <= maxDepth`（或改 depth 计算语义），使 maxDepth=N 可命中 N 边路径；需同步更新本轮 2 个 latent 用例断言。
+  · `extractGraphFromFiles` textContent 未用：将 textContent 纳入 textToAnalyze 分析（或从 select 移除以避免无效查询）；前者改变实体提取行为需评估，后者为纯查询裁剪低风险。
+- **lib 域零覆盖纯模块延续**：knowledge-graph-enhanced 已闭合，可继续扫其他零覆盖纯模块（如 `src/lib/ai/recommendation.ts`——db 依赖较重需 mock、`src/lib/ai/face-detection.ts`——依赖 z-ai-web-dev-sdk 需 mock SDK）。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
+- **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
