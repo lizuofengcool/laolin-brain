@@ -14429,3 +14429,60 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **lib 域零覆盖纯模块延续**：knowledge-graph-enhanced 已完全闭合，可继续扫其他零覆盖纯模块（如 `src/lib/ai/recommendation.ts`——db 依赖较重需 mock、`src/lib/ai/face-detection.ts`——依赖 z-ai-web-dev-sdk 需 mock SDK）。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
 - **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
+
+## 2026-07-08 07:00 自动迭代
+
+### 第一百二十六轮（ai/recommendation 补 37 用例覆盖混合推荐全路径）
+
+**背景**：上轮 worklog「下一轮候选」将「lib 域零覆盖纯模块延续」列为候选，点名 `src/lib/ai/recommendation.ts`（db 依赖较重需 mock）与 `src/lib/ai/face-detection.ts`（依赖 z-ai-web-dev-sdk 需 mock SDK）。本轮择 `recommendation.ts`：其为纯逻辑 + db 调用模块，无外部 SDK 依赖，db 可经 `vi.hoisted + vi.mock('@/lib/db')` 替换，与第 121/123 轮（document-qna / knowledge-graph-enhanced 补测）同型，单测价值高、风险低。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `6b4eac3`（第一百二十五轮 worklog commit），工作树干净，无遗留 commit/改动，无需 rebase。
+- 任务清单优先级 1 的原 5 项（tenant-db raw / alipay RSA2 / files 路由 TenantDb / sync-engine keep_both / api-auth.test 匹配）经多轮确认已闭合；上轮 knowledge-graph-enhanced 模块 2 处 latent 全部清零。
+- `grep recommendation` 全仓确认：仅自身定义 + 无测试文件（`ai-recommendation.test.ts` 不存在），为零覆盖纯模块。`src/__tests__/lib/` 现有 160 测试文件，本轮新增第 161 个。
+- prisma schema 确认 File / AccessHistory（`@@unique([tenantId,userId,fileId,accessType])`，对应 upsert where 复合键 `tenantId_userId_fileId_accessType`）/ ActivityLog 字段形状，工厂与断言与之对齐。
+- 本次为纯新增测试文件（1 commit），不改生产代码，零回归风险。
+
+**test — 新增 `src/__tests__/lib/ai-recommendation.test.ts`（37 用例）**：
+
+`@/lib/db` 经 `vi.hoisted + vi.mock` 替换 `file.findMany` / `file.findFirst` / `accessHistory.findMany` / `accessHistory.upsert` / `activityLog.create`，`beforeEach` 设空结果安全默认值。覆盖 recommendation.ts 全部 6 个公开函数 + 3 个私有函数（经 getHomeRecommendations 间接覆盖）：
+
+- **getRelatedRecommendations（9 用例）**：源文件缺失短路不查候选、无候选空数组、标签相似度计分（`commonTags/max(src,cand)*5` + 「有 N 个相同标签」理由）、同类型 +2、同文件夹 +1.5、时间接近（<30 天 `(30-daysDiff)/30` 不加理由）、score=0 过滤、降序截断 limit、查询 where 排除源 id（`id:{not}` + take=limit*3）、空 tags sourceTags 回退。
+- **getSearchRecommendations（7 用例）**：空查询/长度<2 门槛不查库、文件名匹配「文件名匹配」、标签匹配「标签匹配」、双匹配两理由、大小写不敏感（toLowerCase）、where OR+contains+take 形状。
+- **getDailyRecommendations（5 用例）**：无文件空数组、无访问返回前 limit（理由「每日精选/近期上传」algorithm history-based）、优先未访问（candidates=unaccessed）、全访问回退全部文件、limit>候选数返回全部。`Math.random` 经 `vi.spyOn` 固定 0.5（比较器恒 0，稳定排序保持原序）以确定性断言顺序。
+- **recordUserAction（6 用例）**：view 走 upsert（where 复合键 accessType=view + update accessCount increment + create）+ 活动日志、非 view（download/favorite/comment）仅活动日志不 upsert、details 序列化 JSON、details undefined、upsert 抛错被 try/catch 吞掉（活动日志不写、console.error 打印）。
+- **getUserInterestTags（4 用例）**：标签频次统计降序截断、空文件空数组、空 tags 字符串不贡献、select 仅 tags + take 200 形状。
+- **getHomeRecommendations（6 用例，合并逻辑）**：历史(0.6)+内容(0.4) 加权去重合并——重叠文件（f1）合并分数 `hist*0.6+cont*0.4` 与理由并集、仅历史（f3）`hist*0.6`、仅内容（f2）`cont*0.4`，降序排列；空历史仅内容（权重 0.4，algorithm 统一 hybrid）；截断 limit；均空空数组；类型匹配「符合你的文件类型偏好」+「最近上传」理由。`file.findMany` 在 getHome 中被调 3 次（历史文件 where.id.in / 内容用户偏好 select / 内容全部文件），mock 按参数形状分支区分。访问历史评分含 `Date.now()`，用例以 `new Date()` 构造「当前」时间点 + `toBeCloseTo` 容忍微秒级误差。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/ai-recommendation.test.ts`：**37/37 通过**（18ms）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量 **4357/4357 通过**（161 文件，183.06s），零回归。测试数较上轮 4320 → 4357（+37），文件数 160 → 161（+1，纯新增）。
+
+环境备注：沙箱无 node_modules，仓库 lockfile 为 `package-lock.json`（npm，无 pnpm-lock.yaml），故 `npm ci` 安装后 `npx prisma generate`，再跑测试；未触碰 lockfile（`npm ci` 冻结安装），`git status` 仅本轮 1 个新增测试文件。
+
+### 改动量
+
+1 文件，+753：
+- `src/__tests__/lib/ai-recommendation.test.ts`（新增）— 37 用例覆盖 recommendation.ts 6 公开 + 3 私有函数全路径
+
+1 test commit（纯新增测试，不改生产代码，保证每次提交后测试不破、零回归）。
+
+### Commit
+
+- `50cd016` test(lib): ai/recommendation 补 37 用例覆盖混合推荐全路径
+
+### 推送
+
+- origin (Gitee)：`6b4eac3..50cd016` 推送（含本轮 1 test commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **ai/recommendation 已补测闭合**（37 用例，6 公开 + 3 私有函数全路径覆盖，零覆盖纯模块清零）。
+- **lib 域零覆盖纯模块延续**：recommendation 已闭合，可继续 `src/lib/ai/face-detection.ts`（依赖 z-ai-web-dev-sdk，可 `vi.mock('z-ai-web-dev-sdk')` 覆盖 detectFaces 的 JSON 解析/超时/数组过滤/字段强制/AbortError 路径，与 ai-vision.test.ts 同型 mock 模式）。
+- **同型 latent（可选小修）**：knowledge-graph-enhanced 的 extractGraphFromFiles select 仍含 `fileType`（textToAnalyze 不使用），与上轮 textContent 同类，但 fileType 短字符串查询成本可忽略，是否裁剪视是否统一 select 为「仅实际使用字段」而定。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
+- **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
