@@ -13851,3 +13851,68 @@ fix commit 仅 source 修复；test commit 含文件头控制流注释新增 `co
   - `src/lib/mobile/mobile-manager.ts`（含 offlineQueue 内部数组 + processOfflineQueue，可仿本轮 mock fetch 做单测）
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
 - **TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处「TODO: 实际实现」）、`src/lib/ai/model-manager.ts`（4 处「TODO: 实际调用模型API」）、`src/lib/ai/document-qna.ts`（配额检查/AI 调用/使用记录桩）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖
+
+## 2026-07-07 23:00 自动迭代
+
+### 第一百一十七轮（mobile-manager 补 31 用例覆盖设备/断点/离线队列/设置/手势）
+
+**背景**：上轮 worklog「下一轮候选」将 `src/lib/mobile/mobile-manager.ts` 列为 Top 1 候选（此前零覆盖，约 715 行，含设备信息/断点/手势识别/离线队列/设置持久化）。本轮闭合该模块测试覆盖。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `b6867e2`（第一百一十六轮 worklog commit），工作树干净，无遗留 commit/改动。
+- 复核任务清单优先级 1 的 5 项均已在历史轮次闭合：tenant-db.ts raw getter 已带调用堆栈软审计（`[TenantDb.raw] ... 越过租户隔离层访问原始 PrismaClient，调用方: ${caller}`）；alipay.ts/wechat.ts 已改为「配置真实密钥但未接 SDK 时返回明确错误」并实现真实 RSA2/V3 验签（verifyRSA2Sign/verifyWechatSign）；api/files 走 TenantDb、sync-engine keep_both 已实现、api-auth.test 已匹配实现——本轮继续优先级 3（补测试）。
+- 评估候选：`mobile-manager.ts`（715 行，rich reachable 逻辑）vs `wecom.ts`（104 行，多为返回常量的 TODO 桩，测试价值低）。选 mobile-manager。
+- `src/lib/mobile/mobile-manager.ts` 全仓仅以单例 `mobileManager` 导出，被前端 hook/组件消费；本次为纯测试新增，不改 source，零行为风险。
+
+**test — `src/__tests__/lib/mobile/mobile-manager.test.ts`（新增，+708 行，31 用例）**：
+
+该模块为前端单例 manager，依赖 window/navigator/localStorage/Date.now/setTimeout。jsdom 提供前三者；navigator 的 vibrate/connection/share/maxTouchPoints/userAgent 在所需分支不存在或需定制，故以 `Object.defineProperty` 临时挂桩并在 afterEach 还原。手势分支依赖 TouchEvent，jsdom 不内置，故构造 `new Event('touchstart'|'touchmove'|'touchend')` 并 defineProperty 注入 touches 数组（clientX/clientY/identifier）后 dispatchEvent 触发 addEventListener 回调。
+
+计时策略：非手势用例用真实定时器（processOfflineQueue 内 setTimeout(100) 自然推进）；手势 describe 启用 `vi.useFakeTimers({ now: 1_000_000 })`（固定大值，保证首次 tap 的 lastTapTime(0) 与 now 差值 > doubleTapDelay 从而判定为 tap 而非 doubleTap），afterEach 还原。每用例 `new MobileManager()` 独立实例，避免单例状态串扰。
+
+31 用例分布：
+- 设备信息（3）：init 前 getDeviceInfo null + 类型/方向/OS getter null + isMobile/isTablet/isDesktop/isTouchDevice false；init 后据 userAgent 填充（Chrome/Android Mobile→mobile/android/chrome 触屏；iPad→tablet/ios）
+- 断点（1）：getBreakpoints 默认拷贝；setBreakpoints 抬高 lg 阈值使 1024 落入 md → 重算 currentBreakpoint + 触发 onBreakpointChange('md')；退订后不再触发
+- 离线状态（3）：默认 online；offline/online 事件切换状态 + 通知 onOfflineStatusChange；退订移除监听
+- 离线队列（8）：addToOfflineQueue（离线态）形状（id 前缀 offline_ / pending / retryCount 0 / createdAt Date / 字段保留）；getOfflineQueue 浅拷贝隔离；clearOfflineQueue；processOfflineQueue 离线 guard（项保持 pending）；在线 pending→success + syncing→online 状态流转；success 项过滤跳过（二次处理无变化）；add 在线自动触发 process；handleOnline（autoSync 默认 true）online 事件自动同步
+- 设置（4）：getSettings 浅拷贝；updateSettings 浅合并 + localStorage(mobile_settings) 持久化；loadSettings 以 DEFAULT_MOBILE_SETTINGS 为底合并已存 JSON；saveSettings 吞 setItem 抛错（console.error 不外抛，内部 settings 仍更新）
+- 工具方法（5）：hapticFeedback 三档 vibrate([10]/[20]/[30]) + settings 关闭/无 vibrate no-op；isWifiNetwork 各 effectiveType（无 connection 默认 true / 4g / wifi true，3g false）；canShare；share（canShare false→false / resolve→true / reject catch→false）
+- 手势（7）：tap；doubleTap（连续两次第二次 doubleTap）；swipe 四方向（panEnabled:false 隔离，touchmove 更新末点后 touchend 判定 right/left/up/down）；pan（touchmove 位移超 tapThreshold）；longPress（fake timers 推进 longPressDelay）；unbind 移除监听；enabled=false 不触发
+
+**关键发现（latent gap，未改 source）**：`processOfflineQueue` 的 catch/retry/failed 分支为死代码——「模拟处理」`await new Promise(resolve => setTimeout(resolve, 100))` 恒不抛错，故 retryCount 永不递增、status 永不达 'failed'。本文件仅覆盖可达的 pending→success 路径与 pending/failed 过滤（仅 'pending' 分支可达）。注：上轮 worklog 称该模块「可仿本轮 mock fetch 做单测」，但实际 processOfflineQueue 并不调 fetch（纯 setTimeout 模拟），故无 fetch 边界可 mock。此死分支留待后续若接入真实同步处理器时再覆盖。
+
+**修复的一处测试断言**：初版 hapticFeedback 用例误断言 `vibrate.mock.calls === [[10],[20],[30]]`，实际源码以 `navigator.vibrate(patterns[type])` 调用、patterns[type] 为数组 `[10]`，故单次调用参数为 `[10]`（mock.calls[0]=[[10]]）。改为 `toHaveBeenNthCalledWith(1, [10])` 等更清晰的 nth 调用匹配。
+
+无 source 改动，故仅 1 个 test commit（与第一百一十六轮同型——纯测试新增，无 fix）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/mobile/mobile-manager.test.ts`：**31/31 通过**（831ms tests）。
+- `npx tsc --noEmit`：**0 错误**（npm ci + prisma generate 后环境完整，全量 0 错误）。
+- `npx vitest run` 全量 **4141/4141 通过**（155 文件，131.35s），零回归。测试数较上轮 4110 增加 31（新增 31 用例），文件数 154→155（新增 1 文件）。
+
+### 改动量
+
+1 文件：
+- `src/__tests__/lib/mobile/mobile-manager.test.ts`（新增，+708/-0）— navigator 挂桩工具 + TouchEvent 构造辅助 + 31 用例
+
+1 test commit（纯测试新增，无 source 改动）。
+
+### Commit
+
+- `b677417` test(lib): mobile-manager 补 31 用例覆盖设备/断点/离线队列/设置/手势
+
+### 推送
+
+- origin (Gitee)：`b6867e2..b677417` 推送（含本轮 1 test commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **mobile-manager.ts 已闭合**（本轮 31 用例覆盖设备/断点/离线队列/设置/手势，零覆盖模块清零；processOfflineQueue 死分支 catch/retry/failed 留待接入真实同步处理器后覆盖）。
+- **lib 域零覆盖纯模块延续**：
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，且多为返回常量的 TODO 桩，测试价值较低，待接入真实 SDK 后再覆盖；可先对 getAuthUrl URL 拼装、initialize/testConnection 守卫、handleAuthCallback 返回结构做薄边界单测）
+  - `src/lib/mobile/types.ts` 纯工具函数（formatFileSizeMobile / formatTimeMobile / getCurrentBreakpoint / getDeviceType / getOS）可补纯函数单测
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
+- **TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处「TODO: 实际实现」）、`src/lib/ai/model-manager.ts`（4 处「TODO: 实际调用模型API」）、`src/lib/ai/document-qna.ts`（配额检查/AI 调用/使用记录桩）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖
