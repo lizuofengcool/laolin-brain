@@ -32,6 +32,10 @@
  * - sendNotification（本轮修复 1）：notification.type 为 snake_case，NotificationSettings key 为
  *   camelCase；此前 typeKey in settings 永远 false 致开关形同虚设；现经显式映射尊重用户设置
  * - 通知设置 / 标记已读 / 未读计数 / 权限检查 / 显示名称 等
+ * - compareVersions（本轮实现）：此前为桩实现（零 changes/stats）。现新增 recordVersionSnapshot
+ *   记录版本文本快照，compareVersions 基于快照做 LCS 行级 diff——纯新增→addition（lineNumber 指新
+ *   版本）、纯删除→deletion（lineNumber 指旧版本）、同区间 delete+add 配对→modification
+ *   （含 oldContent/newContent）；任一版本未记录快照时回退零变更（向后兼容历史契约）
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -677,13 +681,149 @@ describe('编辑历史与版本对比', () => {
     expect(manager.getEditHistory('nope')).toEqual([]);
   });
 
-  it('compareVersions：返回结构（简化实现，零变更）', () => {
+  it('compareVersions：未记录快照时返回结构（零变更，向后兼容）', () => {
     const diff = manager.compareVersions('file-1', 'v1', 'v2');
     expect(diff.fileId).toBe('file-1');
     expect(diff.version1).toBe('v1');
     expect(diff.version2).toBe('v2');
     expect(diff.changes).toEqual([]);
     expect(diff.stats).toEqual({ additions: 0, deletions: 0, modifications: 0 });
+  });
+});
+
+// ==================== 版本对比（LCS 行级 diff） ====================
+
+describe('版本对比（compareVersions / recordVersionSnapshot）', () => {
+  it('两版本内容完全相同：零变更', () => {
+    manager.recordVersionSnapshot('file-1', 'v1', 'line1\nline2\nline3');
+    manager.recordVersionSnapshot('file-1', 'v2', 'line1\nline2\nline3');
+    const diff = manager.compareVersions('file-1', 'v1', 'v2');
+    expect(diff.changes).toEqual([]);
+    expect(diff.stats).toEqual({ additions: 0, deletions: 0, modifications: 0 });
+  });
+
+  it('纯新增行：记为 addition，lineNumber 指向新版本行号', () => {
+    manager.recordVersionSnapshot('file-1', 'v1', 'line1\nline3');
+    manager.recordVersionSnapshot('file-1', 'v2', 'line1\nline2\nline3');
+    const diff = manager.compareVersions('file-1', 'v1', 'v2');
+    expect(diff.stats).toEqual({ additions: 1, deletions: 0, modifications: 0 });
+    expect(diff.changes).toHaveLength(1);
+    expect(diff.changes[0]).toEqual({
+      type: 'addition',
+      lineNumber: 2,
+      content: 'line2',
+    });
+  });
+
+  it('纯删除行：记为 deletion，lineNumber 指向旧版本行号', () => {
+    manager.recordVersionSnapshot('file-1', 'v1', 'line1\nline2\nline3');
+    manager.recordVersionSnapshot('file-1', 'v2', 'line1\nline3');
+    const diff = manager.compareVersions('file-1', 'v1', 'v2');
+    expect(diff.stats).toEqual({ additions: 0, deletions: 1, modifications: 0 });
+    expect(diff.changes).toHaveLength(1);
+    expect(diff.changes[0]).toEqual({
+      type: 'deletion',
+      lineNumber: 2,
+      content: 'line2',
+    });
+  });
+
+  it('行修改：同区间 delete+add 配对为 modification，含 oldContent/newContent', () => {
+    manager.recordVersionSnapshot('file-1', 'v1', 'line1\nold\nline3');
+    manager.recordVersionSnapshot('file-1', 'v2', 'line1\nnew\nline3');
+    const diff = manager.compareVersions('file-1', 'v1', 'v2');
+    expect(diff.stats).toEqual({ additions: 0, deletions: 0, modifications: 1 });
+    expect(diff.changes).toHaveLength(1);
+    expect(diff.changes[0]).toEqual({
+      type: 'modification',
+      lineNumber: 2,
+      content: 'new',
+      oldContent: 'old',
+      newContent: 'new',
+    });
+  });
+
+  it('混合变更：多区间 addition/deletion/modification 共存，stats 正确累加', () => {
+    // 旧：a\nb\nc\nd\ne
+    // 新：a\nB\nc\ne\nf   （b→B 修改，d 删除，f 新增）
+    manager.recordVersionSnapshot('file-1', 'v1', 'a\nb\nc\nd\ne');
+    manager.recordVersionSnapshot('file-1', 'v2', 'a\nB\nc\ne\nf');
+    const diff = manager.compareVersions('file-1', 'v1', 'v2');
+    expect(diff.stats).toEqual({ additions: 1, deletions: 1, modifications: 1 });
+    const byType = {
+      addition: diff.changes.find(c => c.type === 'addition'),
+      deletion: diff.changes.find(c => c.type === 'deletion'),
+      modification: diff.changes.find(c => c.type === 'modification'),
+    };
+    expect(byType.addition).toMatchObject({ content: 'f' });
+    expect(byType.deletion).toMatchObject({ content: 'd' });
+    expect(byType.modification).toMatchObject({
+      oldContent: 'b',
+      newContent: 'B',
+    });
+  });
+
+  it('连续多行新增全部记为 addition（无配对 deletion）', () => {
+    manager.recordVersionSnapshot('file-1', 'v1', 'a\nd');
+    manager.recordVersionSnapshot('file-1', 'v2', 'a\nb\nc\nd');
+    const diff = manager.compareVersions('file-1', 'v1', 'v2');
+    expect(diff.stats).toEqual({ additions: 2, deletions: 0, modifications: 0 });
+    expect(diff.changes.map(c => c.content)).toEqual(['b', 'c']);
+  });
+
+  it('连续多行删除全部记为 deletion（无配对 addition）', () => {
+    manager.recordVersionSnapshot('file-1', 'v1', 'a\nb\nc\nd');
+    manager.recordVersionSnapshot('file-1', 'v2', 'a\nd');
+    const diff = manager.compareVersions('file-1', 'v1', 'v2');
+    expect(diff.stats).toEqual({ additions: 0, deletions: 2, modifications: 0 });
+    expect(diff.changes.map(c => c.content)).toEqual(['b', 'c']);
+  });
+
+  it('仅旧版本记录快照：返回零变更（无法 diff）', () => {
+    manager.recordVersionSnapshot('file-1', 'v1', 'a\nb');
+    const diff = manager.compareVersions('file-1', 'v1', 'v2');
+    expect(diff.changes).toEqual([]);
+    expect(diff.stats).toEqual({ additions: 0, deletions: 0, modifications: 0 });
+  });
+
+  it('仅新版本记录快照：返回零变更（无法 diff）', () => {
+    manager.recordVersionSnapshot('file-1', 'v2', 'a\nb');
+    const diff = manager.compareVersions('file-1', 'v1', 'v2');
+    expect(diff.changes).toEqual([]);
+    expect(diff.stats).toEqual({ additions: 0, deletions: 0, modifications: 0 });
+  });
+
+  it('快照按 fileId 隔离：不同 fileId 互不影响', () => {
+    manager.recordVersionSnapshot('file-1', 'v1', 'a\nb');
+    manager.recordVersionSnapshot('file-1', 'v2', 'a\nb\nc');
+    manager.recordVersionSnapshot('file-2', 'v1', 'a\nb');
+    manager.recordVersionSnapshot('file-2', 'v2', 'a\nb\nc');
+    const diff1 = manager.compareVersions('file-1', 'v1', 'v2');
+    const diff2 = manager.compareVersions('file-2', 'v1', 'v2');
+    expect(diff1.stats.additions).toBe(1);
+    expect(diff2.stats.additions).toBe(1);
+    expect(diff1.changes[0].content).toBe('c');
+    expect(diff2.changes[0].content).toBe('c');
+  });
+
+  it('recordVersionSnapshot 同 version 重复记录覆盖旧快照', () => {
+    manager.recordVersionSnapshot('file-1', 'v1', 'a\nb');
+    manager.recordVersionSnapshot('file-1', 'v2', 'a\nX');
+    // 重新记录 v2，使两版本一致 → 零变更
+    manager.recordVersionSnapshot('file-1', 'v2', 'a\nb');
+    const diff = manager.compareVersions('file-1', 'v1', 'v2');
+    expect(diff.changes).toEqual([]);
+    expect(diff.stats).toEqual({ additions: 0, deletions: 0, modifications: 0 });
+  });
+
+  it('空内容对比：空字符串与单空行差异', () => {
+    // '' split('\n') → ['']（1 个空行）；'x' split('\n') → ['x']
+    manager.recordVersionSnapshot('file-1', 'v1', '');
+    manager.recordVersionSnapshot('file-1', 'v2', 'x');
+    const diff = manager.compareVersions('file-1', 'v1', 'v2');
+    // 旧 [''] 与 新 ['x']：'' 改为 'x' → modification
+    expect(diff.stats).toEqual({ additions: 0, deletions: 0, modifications: 1 });
+    expect(diff.changes[0]).toMatchObject({ oldContent: '', newContent: 'x' });
   });
 });
 
