@@ -13785,3 +13785,69 @@ fix commit 仅 source 修复；test commit 含文件头控制流注释新增 `co
   - `src/lib/offline-queue.ts`（依赖 IndexedDB/localStorage/fetch，需 fake-indexeddb，成本较高，择机）—— 下一轮 Top 1 候选
   - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备）
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
+
+## 2026-07-07 21:00 自动迭代
+
+### 第一百一十六轮（offline-queue 补 18 用例覆盖 IndexedDB 持久化与 fetch 回放）
+
+**背景**：上轮 worklog「下一轮候选」标注 `src/lib/offline-queue.ts` 为 Top 1 候选——此前零覆盖，依赖全局 indexedDB（request-based 原生 API，非 idb 库）/ localStorage(kb_token) / fetch，jsdom 不提供 indexedDB，故标注「需 fake-indexeddb，成本较高，择机」。本轮通过自建行为等价的 FakeIDB（不引入新依赖）闭合该模块测试覆盖。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `dc9e585`，工作树干净，无遗留 commit/改动。
+- 复核任务清单优先级 1 的 5 项均已在历史轮次闭合（tenant-db.ts raw 审计 / alipay+wechat 改为「配置真实密钥但未接 SDK 时返回明确错误而非静默 mock」 / api/files 走 TenantDb / sync-engine keep_both 已实现「本地重命名为冲突副本 + 云端版本作为新文件落地」+ 前置租户归属校验 / api-auth.test 已匹配实现），本轮继续优先级 3（补测试）。
+- `src/lib/offline-queue.ts` 全仓仅被 `src/hooks/use-offline-queue.ts` 消费（getOfflineQueueCount / processOfflineQueue），无 API 路由直接引用；本次为纯测试新增，不改 source，零行为风险。
+- 沙箱无 node_modules，按规范执行 `npm ci`（项目用 package-lock.json，无 pnpm-lock.yaml，不混用 lockfile）+ `npx prisma generate` 后环境完整。
+
+**test — `src/__tests__/lib/offline-queue.test.ts`（新增，+445 行，18 用例）**：
+
+该模块以全局 `indexedDB.open()` 持久化离线操作（addToOfflineQueue/getOfflineQueue/removeFromOfflineQueue/clearOfflineQueue），processOfflineQueue 通过 `fetch('/api/files/:fileId')` + `localStorage.getItem('kb_token')` 回放。jsdom 不提供 indexedDB，故本文件内置 FakeIDB：
+
+- `FakeRequest`（result/error/onsuccess/onerror + fireSuccess/fireError）
+- `FakeStore`（内存 Map + put/delete/getAll/clear，操作同步落 Map 后 queueMicrotask 派发 request.onsuccess）
+- `FakeTransaction`（objectStore/oncomplete/onerror，queueMicrotask 派发 oncomplete）
+- `FakeDB`（stores Map + objectStoreNames.contains + createObjectStore + transaction）
+- `FakeIDBFactory`（按名缓存库实例；open 时 isNew 或版本变更触发 onupgradeneeded，再 onsuccess）
+
+事件时序关键：open()/transaction()/store-op 均通过 `queueMicrotask` 延后派发事件，保证调用方在 `await` 前（同步块内）完成 handler 挂载，与原生 IDB 异步语义一致；put/delete/clear 同步修改 Map 后再延后派发，故事务 oncomplete 触发时数据已落库。localStorage 与 fetch 各以内存 Map mock / `vi.fn()` stubGlobal 覆盖。
+
+18 用例分布：
+- addToOfflineQueue（3）：id=`op_${ts}_${rand7}` 前缀 + ISO createdAt 校验、连续多条 id 唯一、5 种 type 取值与 payload 结构保留
+- getOfflineQueue / getOfflineQueueCount（2）：空数组返回 [] / count=0、count 随 add 增长
+- removeFromOfflineQueue（2）：按 id 删指定条目保留其余、删不存在 id 不抛错 no-op
+- clearOfflineQueue（1）：清空全部
+- processOfflineQueue（8）：空队列 {0,0} 不调 fetch；非 delete 用 PATCH + JSON body 请求 `/api/files/:fileId` 成功后移除；delete 用 DELETE 无 body；response.ok=false 计 failed 保留；fetch 抛错 catch 计 failed 保留；有 kb_token 附 `Authorization: Bearer`；无 token 不附 Authorization 但仍附 Content-Type；混合成功/失败仅成功移除；URL 按 fileId 拼装
+- getDB 初始化（1）：首次 add 触发 onupgradeneeded 建 offline_queue store，二次 add 复用同库数据累加（间接验证 upgrade 路径与库缓存）
+
+无 source 改动，故仅 1 个 test commit（与第一百零六轮以降的 fix/test 拆分不同型——本轮无 fix）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/offline-queue.test.ts`：**18/18 通过**（17ms tests）。
+- `npx tsc --noEmit`：**0 错误**（npm ci + prisma generate 后环境完整，全量 0 错误）。
+- `npx vitest run` 全量 **4110/4110 通过**（154 文件，131.56s），零回归。测试数较上轮 4092 增加 18（新增 18 用例），文件数 153→154（新增 1 文件）。
+
+### 改动量
+
+1 文件：
+- `src/__tests__/lib/offline-queue.test.ts`（新增，+445/-0）— 内置 FakeIDB + localStorage/fetch mock + 18 用例
+
+1 test commit（纯测试新增，无 source 改动）。
+
+### Commit
+
+- `2f5369a` test(lib): offline-queue 补 18 用例覆盖 IndexedDB 持久化与 fetch 回放
+
+### 推送
+
+- origin (Gitee)：`dc9e585..2f5369a` 推送（含本轮 1 test commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **offline-queue.ts 已闭合**（本轮 18 用例覆盖 IndexedDB 持久化与 fetch 回放，零覆盖模块清零）。
+- **lib 域零覆盖纯模块延续**（同型内存 Map 单例 manager，可仿 todo/calendar/note/comment/knowledge-base/collaboration-manager 模式）：
+  - `src/lib/integrations/` 配套的 `feishu.ts` / `github.ts` / `wecom.ts`（依赖真实外部 OAuth/网络，待条件具备；可仿本轮对 wecom.ts 的「连接测试/获取用户/发消息/同步/Webhook」5 个 TODO 桩做 mock 边界单测）
+  - `src/lib/mobile/mobile-manager.ts`（含 offlineQueue 内部数组 + processOfflineQueue，可仿本轮 mock fetch 做单测）
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等
+- **TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处「TODO: 实际实现」）、`src/lib/ai/model-manager.ts`（4 处「TODO: 实际调用模型API」）、`src/lib/ai/document-qna.ts`（配额检查/AI 调用/使用记录桩）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖
