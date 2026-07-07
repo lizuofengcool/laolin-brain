@@ -490,7 +490,8 @@ export function findPath(
         return path;
       }
 
-      // 检查深度
+      // 检查深度（depth 计算为从 source 到 neighbor 的节点数，含两端 = 边数 + 1；
+      // 入队条件 depth <= maxDepth 使 maxDepth=N 可命中 N 边路径）
       let depth = 0;
       let n: string | null = neighbor;
       while (n) {
@@ -498,7 +499,7 @@ export function findPath(
         n = visited.get(n) || null;
       }
 
-      if (depth < maxDepth) {
+      if (depth <= maxDepth) {
         queue.push(neighbor);
       }
     }

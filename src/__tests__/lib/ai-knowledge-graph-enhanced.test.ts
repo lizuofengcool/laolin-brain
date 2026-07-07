@@ -6,6 +6,7 @@
  * - getEntityColor / getEntityIcon：按 EntityType 返回颜色/图标，未知类型回退 other
  * - findNeighbors：BFS 查找邻居，depth 限制（depth=N 含距 source 距离 ≤N 的节点），不含自身
  * - findPath：BFS 查找两点最短路径并重建；source===target 返回 [source]；maxDepth 限制探索深度
+ *   （maxDepth=N 可命中 N 边路径）
  * - detectCommunities：连通分量社区发现，以社区内 occurrenceCount 最高的实体命名
  * - forceDirectedLayout：力导向布局，含斥力/引力/中心引力/阻尼/边界裁剪，返回 NodePosition[]
  * - extractGraphFromFiles：经 db.file.findMany 取文件，从 fileName/summary/keyPoints/tags
@@ -14,13 +15,13 @@
  * @/lib/db 经 vi.hoisted + vi.mock 替换 file.findMany（extractGraphFromFiles 唯一 DB 调用点），
  * 其余 5 个图算法函数为纯函数，不依赖 db。
  *
- * latent 观察（本轮锁定当前行为，留待后续判断是否修复，二者均无生产调用方）：
- * - findPath 的 maxDepth 存在 off-by-one：节点距 source 的图距离为 d 时，depth 计算 = d+1，
- *   入队条件 `depth < maxDepth` 即 d < maxDepth-1；目标一旦作为某已探索节点的邻居被发现即
- *   返回（不受 depth 限制），故 maxDepth=N 实际可发现距 source 距离 ≤ N-1 的目标
- *   （例：3 边路径需 maxDepth≥4 才能命中）。语义存疑（maxDepth 名义为"最大深度"）。
+ * latent 观察（留待后续判断是否修复，无生产调用方）：
  * - extractGraphFromFiles 的 select 含 textContent 字段，但 extractEntities 仅分析
  *   fileName/summary/keyPoints/tags，textContent 被查询但未参与实体提取（潜在浪费 + 遗漏正文分析）。
+ *
+ * 历史修复：
+ * - findPath 的 maxDepth 曾存在 off-by-one（入队条件 `depth < maxDepth` 导致 maxDepth=N 仅可
+ *   命中 N-1 边路径）；已改为 `depth <= maxDepth`，maxDepth=N 现可命中 N 边路径。
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -219,18 +220,18 @@ describe('findPath', () => {
     expect(findPath('A', 'D', rels)).toBeNull();
   });
 
-  it('latent: maxDepth=3 无法命中 3 边路径（off-by-one，需 maxDepth≥4）', () => {
+  it('maxDepth=3 命中 3 边路径；maxDepth=2 无法命中（边界精确）', () => {
     // 链 A-B-C-D（3 边）
     const rels = [
       makeRelation('A', 'B'),
       makeRelation('B', 'C'),
       makeRelation('C', 'D'),
     ];
-    expect(findPath('A', 'D', rels, 3)).toBeNull();
-    expect(findPath('A', 'D', rels, 4)).toEqual(['A', 'B', 'C', 'D']);
+    expect(findPath('A', 'D', rels, 3)).toEqual(['A', 'B', 'C', 'D']);
+    expect(findPath('A', 'D', rels, 2)).toBeNull();
   });
 
-  it('latent: maxDepth=5 可命中 4 边路径，但无法命中 5 边路径', () => {
+  it('maxDepth=5 命中 5 边路径；maxDepth=4 无法命中（边界精确）', () => {
     // 链 A-B-C-D-E-F（5 边）
     const rels = [
       makeRelation('A', 'B'),
@@ -239,8 +240,10 @@ describe('findPath', () => {
       makeRelation('D', 'E'),
       makeRelation('E', 'F'),
     ];
+    expect(findPath('A', 'F', rels, 5)).toEqual(['A', 'B', 'C', 'D', 'E', 'F']);
+    expect(findPath('A', 'F', rels, 4)).toBeNull();
+    // maxDepth=5 同时可命中更短的 4 边路径
     expect(findPath('A', 'E', rels, 5)).toEqual(['A', 'B', 'C', 'D', 'E']);
-    expect(findPath('A', 'F', rels, 5)).toBeNull();
   });
 });
 
