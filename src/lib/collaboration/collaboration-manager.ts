@@ -60,6 +60,8 @@ export class CollaborationManager {
   private notifications: Map<string, CollaborationNotification[]> = new Map();
   private notificationSettings: Map<string, NotificationSettings> = new Map();
   private annotations: Map<string, Annotation[]> = new Map();
+  // 版本快照：fileId → (version → 文本内容)，供 compareVersions 计算行级 diff
+  private versionSnapshots: Map<string, Map<string, string>> = new Map();
   private config: CollaborationSessionConfig = DEFAULT_COLLABORATION_CONFIG;
 
   constructor() {
@@ -565,24 +567,145 @@ export class CollaborationManager {
   }
 
   /**
+   * 记录某版本的文本快照，供 compareVersions 计算行级 diff。
+   * 同一 fileId 下相同 version 重复记录会覆盖旧快照。
+   */
+  recordVersionSnapshot(fileId: string, version: string, content: string): void {
+    const fileVersions = this.versionSnapshots.get(fileId) || new Map();
+    fileVersions.set(version, content);
+    this.versionSnapshots.set(fileId, fileVersions);
+  }
+
+  /**
    * 对比版本
+   *
+   * 基于记录的版本快照（recordVersionSnapshot）计算行级 diff。采用 LCS（最长公共子序列）
+   * 算法对两版本按行对齐：未在 LCS 中的旧行记为 deletion、未在 LCS 中的新行记为 addition；
+   * 同一变更区间内若同时存在删除与新增，则按出现顺序配对为 modification（旧行改写为新行），
+   * 剩余无法配对的仍记为纯 addition/deletion。
+   *
+   * 若任一版本未记录快照，则无法 diff，返回零变更（向后兼容：历史调用方期望空 diff）。
    */
   compareVersions(fileId: string, version1: string, version2: string): VersionDiff {
-    // 简化的版本对比实现
-    const changes: DiffChange[] = [];
+    const fileVersions = this.versionSnapshots.get(fileId);
+    const content1 = fileVersions?.get(version1);
+    const content2 = fileVersions?.get(version2);
 
-    // 这里可以实现真正的diff算法
+    const emptyStats = { additions: 0, deletions: 0, modifications: 0 };
+
+    if (content1 === undefined || content2 === undefined) {
+      // 未记录快照：无法 diff，返回零变更（保持历史契约）
+      return {
+        fileId,
+        version1,
+        version2,
+        changes: [],
+        stats: emptyStats,
+      };
+    }
+
+    const oldLines = content1.split('\n');
+    const newLines = content2.split('\n');
+    const changes = this.computeLineDiff(oldLines, newLines);
+
     return {
       fileId,
       version1,
       version2,
       changes,
       stats: {
-        additions: 0,
-        deletions: 0,
-        modifications: 0,
+        additions: changes.filter(c => c.type === 'addition').length,
+        deletions: changes.filter(c => c.type === 'deletion').length,
+        modifications: changes.filter(c => c.type === 'modification').length,
       },
     };
+  }
+
+  /**
+   * LCS 行级 diff：返回两段文本（按行拆分）的差异。
+   * deletion.lineNumber 指旧版本行号（1-based），addition.lineNumber 指新版本行号，
+   * modification.lineNumber 指旧版本行号，并附带 oldContent/newContent。
+   */
+  private computeLineDiff(oldLines: string[], newLines: string[]): DiffChange[] {
+    const m = oldLines.length;
+    const n = newLines.length;
+
+    // LCS 长度 DP 表（自底向上），dp[i][j] = oldLines[i:] 与 newLines[j:] 的 LCS 长度
+    const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
+    for (let i = m - 1; i >= 0; i--) {
+      for (let j = n - 1; j >= 0; j--) {
+        if (oldLines[i] === newLines[j]) {
+          dp[i][j] = dp[i + 1][j + 1] + 1;
+        } else {
+          dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+      }
+    }
+
+    // 回溯生成原始操作序列：equal / delete / add
+    type RawOp = { kind: 'equal' | 'delete' | 'add'; oldLine?: number; newLine?: number; content: string };
+    const ops: RawOp[] = [];
+    let i = 0;
+    let j = 0;
+    while (i < m && j < n) {
+      if (oldLines[i] === newLines[j]) {
+        ops.push({ kind: 'equal', oldLine: i + 1, newLine: j + 1, content: oldLines[i] });
+        i++;
+        j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+        ops.push({ kind: 'delete', oldLine: i + 1, content: oldLines[i] });
+        i++;
+      } else {
+        ops.push({ kind: 'add', newLine: j + 1, content: newLines[j] });
+        j++;
+      }
+    }
+    while (i < m) {
+      ops.push({ kind: 'delete', oldLine: i + 1, content: oldLines[i] });
+      i++;
+    }
+    while (j < n) {
+      ops.push({ kind: 'add', newLine: j + 1, content: newLines[j] });
+      j++;
+    }
+
+    // 将连续的非 equal 操作归为一个变更区间，区间内 delete 与 add 配对为 modification，
+    // 剩余未配对的 delete 记为 deletion、未配对的 add 记为 addition。
+    const changes: DiffChange[] = [];
+    let k = 0;
+    while (k < ops.length) {
+      if (ops[k].kind === 'equal') {
+        k++;
+        continue;
+      }
+      const runStart = k;
+      while (k < ops.length && ops[k].kind !== 'equal') {
+        k++;
+      }
+      const run = ops.slice(runStart, k);
+      const deletes = run.filter(o => o.kind === 'delete');
+      const adds = run.filter(o => o.kind === 'add');
+      const pairs = Math.min(deletes.length, adds.length);
+      for (let p = 0; p < pairs; p++) {
+        const d = deletes[p];
+        const a = adds[p];
+        changes.push({
+          type: 'modification',
+          lineNumber: d.oldLine!,
+          content: a.content,
+          oldContent: d.content,
+          newContent: a.content,
+        });
+      }
+      for (let p = pairs; p < deletes.length; p++) {
+        changes.push({ type: 'deletion', lineNumber: deletes[p].oldLine!, content: deletes[p].content });
+      }
+      for (let p = pairs; p < adds.length; p++) {
+        changes.push({ type: 'addition', lineNumber: adds[p].newLine!, content: adds[p].content });
+      }
+    }
+
+    return changes;
   }
 
   // ==================== 任务管理 ====================
