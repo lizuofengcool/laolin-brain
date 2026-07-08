@@ -15288,3 +15288,60 @@ subject = subject.replace(regex, () => value);
 - **剩余 TODO 桩集中区**（延续）：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
 - **i18n 域延伸**（可选）：`src/lib/i18n/index.tsx`（React Provider/hooks 层）可做 @testing-library/react 组件测试。
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 的 createPayment/queryPayment/refund 在已配置密钥时仍返回「未接入 SDK」失败提示，verifyCallback 验签已真实实现，但下单/查询/退款链路未接 alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口，mock 模式仅供开发）。
+
+## 2026-07-09 20:00 自动迭代
+
+### 第一百三十九轮（test backup-tool 零覆盖模块 8 函数全控制流补测）
+
+**背景**：上轮 worklog「下一轮候选」将「带依赖模块补测（需 vi.mock 边界）」列为延续项，点名 `src/lib/backup/backup-tool.ts` 与 `src/lib/migrations/index.ts` 仍为零覆盖。复核确认：既有 `src/__tests__/lib/backup-checksum.test.ts` 实测的是 `@/lib/checksum`（simpleHash/verifyChecksum），与 `backup-tool.ts` 无任何导入关系——该模块确为零覆盖。两候选对比：`migrations/index.ts` 重度依赖 `db.$queryRaw`（tagged template）+ `db.$transaction`（回调 tx），mock 边界复杂；`backup-tool.ts` 仅用标准 prisma 模型方法（`file/folder/setting/fileShare/backup` 各 findMany/findUnique/update/create/count/updateMany），mock 边界清晰，故取 `backup-tool.ts` 为本轮目标。规模 1 test commit，符合单轮 1-3 commit 约束，无生产代码改动，零回归风险。
+
+前置确认：
+- 沙箱再次重置无 laolin-brain 目录，`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后本地 / origin/main / github/main 三方对齐于 `e5f30c6`（第一百三十八轮 worklog commit），无远端更新、无遗留未提交改动、工作树干净，直接开始新开发。
+- 任务清单优先级 1 原 5 项延续第一百三十八轮结论均闭合（本轮未再逐项重读源码，聚焦测试补覆盖）。
+
+**test — `src/__tests__/lib/backup-tool.test.ts`（+701 行，40 用例，8 函数全覆盖）**：
+
+`vi.mock("@/lib/db")` 暴露 `file/folder/setting/fileShare/backup` 五模型（仅模块用到的方法），按 8 个导出函数组织 describe 块，逐分支锁定行为契约：
+
+- **createFullBackup（8 用例）**：默认全量组装 files/folders/tags/settings/shares + tenantId 过滤透传 + size/checksum 计算 + Backup 表落库字段校验；`includeFiles=false` 不查 file；无 tenantId 时 where 为空对象；`setting.findMany`/`fileShare.findMany`/`backup.create` 抛错（表缺失）均静默 catch 仍返回 completed；`file.findMany` 抛错 → status=failed + rethrow + console.error；encrypted/compressed 选项透传。
+- **createIncrementalBackup（5 用例）**：找到基准 → where 含 tenantId + `updatedAt.gte(sinceDate)`；基准不存在 → 仅 tenantId；`backup.findUnique` 抛错降级无 sinceDate；无 tenantId 无基准 → where 空；`file.findMany` 抛错 rethrow。
+- **restoreBackup（8 用例）**：skip/overwrite/rename 三策略 × folders+files，rename 断言新 id 正则 `^id_restored_\d+$` 与「(已恢复)」后缀名；不存在 → create；默认策略 skip；`includeFiles=false`/`includeFolders=false` 分别跳过对应恢复；单项抛错收集到 errors 不中断其余项。
+- **validateBackup（7 用例）**：完整数据 valid=true；缺版本/数据为空/校验和不匹配/文件数量不一致各对应检查项失败；校验和匹配用例用同算法 sha256(JSON.stringify) 计算 expected；不传 expectedChecksum 时该项检查不出现。
+- **getBackupList（3 用例）**：分页 skip/take + where 过滤 + total；默认 page=1/pageSize=20；异常降级空列表。
+- **deleteBackup（3 用例）**：tenantId 透传 where；无 tenantId 仅 id；update 抛错 false + log。
+- **cleanExpiredBackups（3 用例）**：where 含 `expiresAt.lt` + `status.not deleted` + tenantId，freedSpace 聚合；无 tenantId；findMany 抛错 {0,0}。
+- **getBackupStats（3 用例）**：`Promise.all` 三次 count（mockResolvedValueOnce 顺序 total/full/incremental）+ findMany 聚合 totalSize/首末时间；全零空数据；异常降级全零。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/backup-tool.test.ts`：**40/40 通过**（28ms），首轮即绿。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**（test 文件被 tsconfig exclude，mock db 类型与 prisma 模型方法签名兼容）。
+- `npx vitest run` 全量 **4873/4873 通过**（171 文件，143.16s），零回归。测试数较上轮 4833 → 4873（+40），文件数 170 → 171（+1）。改动仅新增一个测试文件，未触碰任何生产代码，不可能影响其他测试。
+
+环境备注：沙箱无 node_modules，lockfile 为 `package-lock.json`（npm），`npm ci` 安装（975 包，33s）后 `npx prisma generate`，再跑测试；未触碰 lockfile，`git status` 仅本轮 1 个新增测试文件。
+
+### 改动量
+
+1 文件，+701/-0：
+- `src/__tests__/lib/backup-tool.test.ts`（test，新增）— 8 函数 40 用例全控制流覆盖（+701/-0）
+
+1 dev commit（纯测试补覆盖，无生产改动）。
+
+### Commit
+
+- `168d8be` test(backup): 补 backup-tool 模块 40 用例覆盖 8 函数全控制流
+
+### 推送
+
+- origin (Gitee)：`e5f30c6..` 推送（含本轮 test 1 commit + 本 worklog commit）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **backup-tool 零覆盖已闭合**（8 函数 40 用例守护全控制流：组装/过滤/落库/降级/冲突策略/校验/聚合）。
+- **带依赖模块补测（需 vi.mock 边界）**（延续）：`src/lib/migrations/index.ts` 仍为零覆盖，重度依赖 `db.$queryRaw`（tagged template）/ `$transaction`（回调 tx），需预探 mock 边界（$queryRaw 须 mock 为返回数组的 tagged template 函数，$transaction 须 mock 为接收 async 回调并传入 tx 代理）——可参考既有 db mock 范式扩展。难度高于 backup-tool，可单独立轮。
+- **同型「inline 模拟」测试文件清理**（延续）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等——可改用统一 mock 工厂减少重复。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
+- **i18n 域延伸**（可选）：`src/lib/i18n/index.tsx`（React Provider/hooks 层）可做 @testing-library/react 组件测试。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 的 createPayment/queryPayment/refund 在已配置密钥时仍返回「未接入 SDK」失败提示，verifyCallback 验签已真实实现，但下单/查询/退款链路未接 alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口，mock 模式仅供开发）。
