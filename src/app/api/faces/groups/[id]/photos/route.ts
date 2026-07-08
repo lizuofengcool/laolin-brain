@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateRequest } from '@/lib/api-auth';
-import { db } from '@/lib/db';
+import { createTenantDb } from '@/lib/db';
 import { safeJsonParseArray } from '@/lib/safe-json-parse';
 
 export async function GET(
@@ -25,14 +25,20 @@ export async function GET(
       return NextResponse.json({ error: 'limit 必须在 1-100 之间' }, { status: 400 });
     }
 
-    // Verify group belongs to user
-    const group = await db.faceGroup.findUnique({ where: { id } });
+    // 走 TenantDb 租户隔离层：faceGroup/faceInstance/file 访问器自动注入 tenantId，
+    // 防止跨租户按 id 越权读取他租户分组照片（原 db.* 仅按 userId 过滤，多租户用户
+    // 知道 groupId 即可枚举他租户人脸实例与文件）
+    const tenantDb = createTenantDb(tenantId);
+
+    // Verify group belongs to user (and active tenant)
+    const group = await tenantDb.faceGroup.findFirst({ where: { id } });
     if (!group || group.userId !== userId) {
       return NextResponse.json({ error: "分组不存在" }, { status: 404 });
     }
 
     // Get face instances in this group (limit to prevent unbounded reads)
-    const faceInstances = await db.faceInstance.findMany({
+    // tenantDb.faceInstance.findMany 经 faceGroup.tenantId 关联过滤，仅返回当前租户实例
+    const faceInstances = await tenantDb.faceInstance.findMany({
       where: { groupId: id },
       select: { fileId: true },
       take: 5000,
@@ -41,8 +47,9 @@ export async function GET(
     // Deduplicate file IDs
     const uniqueFileIds = [...new Set(faceInstances.map((f) => f.fileId))];
 
-    // Get files with pagination (include userId check to prevent cross-user access)
-    const files = await db.file.findMany({
+    // Get files with pagination — tenantDb.file.findMany 自动注入 tenantId
+    // （原 db.file.findMany 仅按 userId 过滤，跨租户用户可读取他租户文件）
+    const files = await tenantDb.file.findMany({
       where: {
         id: { in: uniqueFileIds },
         userId: auth.userId,
