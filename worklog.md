@@ -14943,3 +14943,81 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **lib 域零覆盖纯模块延续**（上轮候选延续）：`i18n/i18n-manager.ts`（452 行，import zh-CN/en-US JSON + types，需确认 JSON 依赖可测）、`shares/share-manager.ts`（719 行内存态分享）。本轮已对 share-manager 做可测性预探：模块级单例（构造器 public，可 `new ShareManager()` per-test 隔离）、6 个纯内存 Map、运行时依赖仅同级 `./types`（纯常量/纯函数，零 db/crypto/fetch），评级 EASY，适合 mock 边界单测（仅过期相关用例需 `vi.useFakeTimers`）。i18n-manager 待确认 JSON import 可测性。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
 - **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
+
+## 2026-07-08 23:00 自动迭代
+
+### 第一百三十四轮（share-manager 零覆盖纯内存模块补 124 用例）
+
+**背景**：上轮 worklog「下一轮候选」首条即 `shares/share-manager.ts`（719 行内存态分享），且上轮已做可测性预探并评级 EASY（构造器 public 可 `new ShareManager()` per-test 隔离、6 个纯内存 Map、运行时依赖仅同级 `./types` 纯常量+纯函数、零 db/crypto/fetch、无需 vi.mock）。本轮取该 EASY 项为目标：补单测守护零覆盖模块，属优先级 3（补测试）。规模 1 test commit，符合单轮 1-3 commit 约束。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境再次重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后本地 / origin/main / github/main 三方对齐于 `5dc1790`（第一百三十三轮 worklog commit），无远端更新、无遗留未提交改动、工作树干净，直接开始新开发。
+- 任务清单优先级 1 原 5 项经多轮闭合，本轮再次复核仍闭合：`tenant-db.ts` raw getter 带调用堆栈软审计 + rawDb 无审计导出已移除（988 行注释确认）；`payment/alipay.ts` verifyCallback 走 `verifyRSA2Sign`（crypto.createVerify）真实验签（126 行），mock 仅未配置时触发；`api/files/route.ts` findFirst/findMany 走 `createTenantDb` 租户隔离层（272/472 行）；`cloud-sync/sync-engine.ts` keep_both 已改为重命名本地副本 `[冲突副本] xxx` + 新建云端文件（698 行）；`api-auth.test.ts` 已与实现对齐（4 字段 userId/email/tenantId/role + async + 不读 query，67-77 行）。无新增优先级 1 介入，聚焦 share-manager 补覆盖。
+
+**根因复核（人工读码确认）**：
+- `src/lib/shares/share-manager.ts`（719 行）为纯内存态分享管理器，6 个 Map（shares/tokenToShare/customUrlToShare/accessLogs/settings/userShares），唯一外部依赖同级 `./types`（DEFAULT_SHARE_SETTINGS/SHARE_TEMPLATES 常量 + generateShareToken/isShareExpired/hasSharePermission 纯函数），无 db/crypto/fetch/import 副作用。
+- 全仓库 grep `share-manager` 于 `src/__tests__/` 无任何引用——确认零覆盖。
+- 构造器 public（40 行），可 `new ShareManager()` per-test 取全新实例，完全避免单例共享状态污染（比 report-manager 的 private constructor + resetModules 更简洁）。
+- 关键行为细节：createShare 返回的是 Map 内同一引用（非副本），updateShare/recordAccess/verifyShareAccess 会就地 mutate 该对象——单测中比较「更新前后 updatedAt」需先快照时间戳，否则后读 handle 已被覆盖。
+
+**test — `src/__tests__/lib/shares/share-manager.test.ts`（新增）**：
+
+124 用例覆盖全控制流，分 17 个 describe 块：
+- 构造与导出（2）：独立实例 Maps 互不污染 + 默认创建成功。
+- createShare 设置门禁（6）：enabled/allowPublicShares/allowCustomUrls/requirePassword 各违反分支 + 通过分支。
+- createShare 字段回退与过期算术（17）：permissions `||` 回退、allowComment/allowDownload/allowEdit/watermark `??` 回退（含显式 false 不被覆盖）、notifyOnAccess/notifyOnDownload `?? false`、previewMode `|| 'full'`、defaultExpiryDays(30) 兜底、maxExpiryDays 截断、显式 expiresAt/maxAccessCount/title/description 透传、createdAt/updatedAt 当前时刻。
+- createShare 映射注册（3）：token/customUrl/userShares(unshift 最新在前)。
+- createShareFromTemplate（7）：未知模板→null、5 内置模板(public_view/password_protected[shareMethod=password 但模板 password 为 boolean 标记不注入实际密码]/view_only/collaboration/expiring_link[+24h])、模板受设置门禁约束。
+- 单条查询（7）：getShare 命中/未命中/跨租户、getShareByToken、getShareByCustomUrl。
+- queryShares 过滤（13）：tenantId 隔离、targetId/targetType/status(单值+数组)/shareMethod(单值+数组)/createdBy/search(title/description/targetId 大小写不敏感)。
+- queryShares 日期过滤（2）：dateFrom/dateTo。
+- queryShares 排序与分页（10）：sortBy(createdAt/accessCount/downloadCount/expiresAt) × sortOrder(asc/desc)、分页默认(page=1/pageSize=20/totalPages/hasMore) + pageSize=2 跨页。
+- updateShare（7）：未命中/跨租户/非创建者→null、逐字段更新(13 字段)、undefined 不覆盖、updatedAt 刷新(快照比较)。
+- revokeShare/restoreShare（4）：命中 true + 未命中/非创建者 false。
+- verifyShareAccess（7）：token 不存在/已失效/过期(自动置 expired)/需密码 requiresPassword/密码错/密码对/无密码 valid。
+- recordAccess（9）：未命中 no-op、view/download/comment/edit 计数、maxAccessCount 达限 expired、日志 unshift + 1000 条截断(getAccessLogs 默认 pageSize=20 需放大观测) + 字段透传 + updatedAt 刷新。
+- getStats（4）：空租户全零、分类计数 + topShares(前 5 按 accessCount 降序) + recentAccesses(每 share 前 2 合并按 accessedAt desc 取前 10) + 跨租户不计入。
+- getAccessLogs（4）：未命中/跨租户空 + action 过滤 + 分页。
+- 设置（3）：DEFAULT_SHARE_SETTINGS 副本(修改不影响内部) + 浅合并。
+- 模板（4）：getTemplates 全量 + getTemplate 命中/未命中 + 同一引用。
+- batchRevokeShares（2）：部分成功 success/failed/failedIds + 跨租户 failed。
+- batchDeleteShares（4）：映射全清理(share/token/customUrl/accessLogs/userShares) + 跨租户/非创建者/未命中 failed。
+- canEditShare（4）：创建者/非创建者/未命中/跨租户。
+- isCustomUrlAvailable（2）：未占用/已占用。
+- getUserShares（3）：本租户列表 + 跨租户不计入 + 空数组。
+- cleanExpiredShares（4）：仅清理 active+过期(revoked 不重复清理) + 跨租户不清理 + 无过期返回 0。
+- DEFAULT_SHARE_SETTINGS 完整性（1）。
+
+时间敏感用例统一 `vi.useFakeTimers` + `vi.setSystemTime(new Date('2026-07-15T10:00:00Z'))`（月中避免跨月边界），beforeEach 设、afterEach 还原。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/shares/share-manager.test.ts`：首轮 5 用例失败（均为断言 bug 非模块 bug）：① dateTo 断言 targetId 误写 'f1'（实为默认 'file-1'，改用显式 'f1'）；②③ updateShare/recordAccess「updatedAt 刷新」比较了被就地 mutate 的同一引用（改快照 tsBefore 比较）；④ 访问日志 1000 截断观测误用 getAccessLogs 默认 pageSize=20（改 pageSize=2000 + 断言 total=1000）；⑤ topShares 循环 `j<=i` 致 accessCount 1..6（改 `j<i` 致 0..5，top5=5,4,3,2,1）。修复后 **124/124 通过**（48ms）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量 **4706/4706 通过**（167 文件，128.89s），零回归。测试数较上轮 4582 → 4706（+124），文件数 166 → 167（+1，纯新增 share-manager.test.ts）。
+
+环境备注：沙箱无 node_modules，lockfile 为 `package-lock.json`（npm），`npm ci` 安装（975 包）后 `npx prisma generate`，再跑测试；未触碰 lockfile，`git status` 仅本轮 1 个新增文件。
+
+### 改动量
+
+1 文件，+1111：
+- `src/__tests__/lib/shares/share-manager.test.ts`（新增）— 124 用例覆盖 share-manager 全控制流
+
+1 commit（纯 test，无生产代码改动，每 commit 单独 green）。
+
+### Commit
+
+- `502f530` test(shares): 补 share-manager 单例 124 用例覆盖 创建/查询/更新/访问/统计/批量/设置
+
+### 推送
+
+- origin (Gitee)：`5dc1790..502f530` 推送（含本轮 test 1 commit + 本 worklog commit）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **share-manager 补覆盖已闭合**（719 行零覆盖模块现 124 用例守护，纯内存态全控制流覆盖）。
+- **lib 域零覆盖纯模块延续**（上轮候选延续）：`i18n/i18n-manager.ts`（452 行，import zh-CN/en-US JSON + types，需确认 JSON 依赖可测性）——share-manager 已闭合，i18n-manager 为 lib 域最后一个标注的零覆盖纯模块候选，需先做可测性预探（JSON import 在 vitest jsdom 下是否可直读、模块级单例是否可隔离）。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
+- **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
