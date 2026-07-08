@@ -15021,3 +15021,77 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **lib 域零覆盖纯模块延续**（上轮候选延续）：`i18n/i18n-manager.ts`（452 行，import zh-CN/en-US JSON + types，需确认 JSON 依赖可测性）——share-manager 已闭合，i18n-manager 为 lib 域最后一个标注的零覆盖纯模块候选，需先做可测性预探（JSON import 在 vitest jsdom 下是否可直读、模块级单例是否可隔离）。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
 - **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
+
+## 2026-07-09 00:00 自动迭代
+
+### 第一百三十五轮（i18n-manager 零覆盖模块补 85 用例 + detectBrowserLanguage 空值崩溃修复）
+
+**背景**：上轮 worklog「下一轮候选」首条即 `i18n/i18n-manager.ts`（452 行，import zh-CN/en-US JSON + types，标注为 lib 域最后一个零覆盖纯模块候选，需先做可测性预探）。本轮取该候选为目标：补单测守护零覆盖模块，属优先级 3（补测试）；过程中单测暴露 `detectBrowserLanguage` 在 navigator.language 为空/缺失时 `.split` 崩溃的逻辑缺陷，遂顺带修复（属优先级 1「已知逻辑问题」范畴，最小一行守卫）。规模 1 fix + 1 test 共 2 dev commit，符合单轮 1-3 commit 约束。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境再次重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后本地 / origin/main / github/main 三方对齐于 `98b5897`（第一百三十四轮 worklog commit），`git rev-list --left-right --count origin/main...github/main` = `0  0`，无远端更新、无遗留未提交改动、工作树干净，直接开始新开发。
+- 任务清单优先级 1 原 5 项再次复核均闭合：① `tenant-db.ts` raw getter 带调用堆栈软审计（`new Error().stack` 第 3 帧）+ rawDb 无审计导出已移除（988 行注释确认）；② `payment/alipay.ts` verifyCallback 走 `verifyRSA2Sign`（crypto.createVerify RSA-SHA256 真实验签，126 行）、`wechat.ts` verifyCallback 走 `verifyWechatSign` + AES-256-GCM `decryptResource`（resource 解密失败拒绝回调），mock 仅 `!isPaymentConfigured` 时触发；③ `api/files/route.ts` findFirst/findMany 走 `createTenantDb`（272/472 行）；④ `cloud-sync/sync-engine.ts` keep_both 已重命名本地副本 `[冲突副本] xxx` + 新建云端文件（698 行）；⑤ `api-auth.test.ts` 已与实现对齐（4 字段 userId/email/tenantId/role + async，67-77 行）。无新增优先级 1 介入，聚焦 i18n-manager 补覆盖。
+
+**可测性预探（人工读码确认）**：
+- `src/lib/i18n/i18n-manager.ts`（452 行）依赖同级 `./types`（纯常量 DEFAULT_I18N_SETTINGS/DEFAULT_LANGUAGE/SUPPORTED_LANGUAGES + 纯函数 detectBrowserLanguage/formatDate/…）+ 静态 JSON import `./locales/zh-CN.json`、`./locales/en-US.json`。vitest 配置 `environment: 'jsdom'` → window/document/localStorage/navigator 均可用，JSON import 直读，无需 vi.mock。
+- 构造器 public（50 行），每用例 `new I18nManager()` 取全新实例（fresh settings/currentLanguage/translations/missingKeys/listeners），完全避免单例共享状态污染。
+- **唯一陷阱**：模块级 `TRANSLATIONS` 常量被 `addTranslations` 原地 mutate（共享全局）。对策：addTranslations 用例统一以 `'ja-JP'`（已支持但无 JSON 文件 → TRANSLATIONS['ja-JP'] 初值 {}）作沙箱语言、且每用例使用唯一 key，不污染 zh-CN/en-US 的只读断言；其余用例仅读 TRANSLATIONS 不写，跨用例隔离成立。localStorage 经 saveSettings/loadSettings 读写，beforeEach 统一 `localStorage.clear()` 防泄漏；document.documentElement lang/dir 与 navigator.language 在 beforeEach 还原。
+- 翻译加载入口：构造器为空，`loadTranslations` 仅由 init/setLanguage/resetToDefault/importSettings/addTranslations(当前语言) 调用；默认 currentLanguage='zh-CN'，`setLanguage('zh-CN')` 同语言早返回不重载，故翻译测试用 `resetToDefault()` 触发 zh-CN 加载。
+
+**fix — `src/lib/i18n/types.ts`（修改）**：
+
+`detectBrowserLanguage` 原实现 `const browserLang = navigator.language || (navigator as any).userLanguage;` 后直接 `browserLang.split('-')`。当 navigator.language 为空字符串（falsy）且 userLanguage 为 undefined 时，`'' || undefined` = undefined → `undefined.split('-')` 抛 `TypeError: Cannot read properties of undefined (reading 'split')`；且若 browserLang 恰为空串，前缀 `''` 会误命中（所有 code 均 `startsWith('')` → 返回首个 zh-CN）。新增非空字符串守卫 `if (!browserLang || typeof browserLang !== 'string') return DEFAULT_LANGUAGE;`，置于精确/前缀匹配之前，既防崩溃又防空串误命中，对正常 navigator.language（非空字符串）行为无影响。
+
+**test — `src/__tests__/lib/i18n/i18n-manager.test.ts`（新增，85 用例）**：
+
+85 用例覆盖全控制流，分 14 个 describe 块：
+- 构造与初始状态（8）：默认语言/设置深等/浅拷贝/missingKeys 空/未加载翻译/getSupportedLanguages 同引用/SUPPORTED_LANGUAGES 5 种/DEFAULT_I18N_SETTINGS 字段完整性。
+- init 初始化（9）：autoDetect=false 保持 zh-CN、autoDetect=true 检测 en-US/zh-CN/前缀 zh/未支持 fr-FR 回退、persist 写 localStorage、loadSettings 恢复、loadSettings 损坏 JSON 容错（不改写 localStorage 前提下置 navigator zh-CN 使 autoDetect 不改语言）、saveSettings setItem 抛错容错。
+- 设置管理（4）：浅合并/触发 settingsChange/传 language 触发 setLanguage/persist=false 不写。
+- 语言管理（7）：setLanguage 切换+重载+监听器/同语言早返回/同步 settings.language/持久化/document lang+dir=ltr/ltr 分支锁定/isLanguageSupported。
+- 翻译 t（19）：命中/嵌套/切语言/缺失返 key/缺失+warning 记录+console.warn/缺失+no-warning 静默/去重/回退 en-US/双缺失返 key/插值单/多占位符/占位符缺失保留/无 params/数组 join/非字符串 String(value)/null 视缺失/getNestedValue 中途 null 中止/空 key 返空串/has 当前或回退/getTranslations 拷贝。
+- addTranslations 与 deepMerge（5）：非当前语言建条目不重载/当前语言立即重载/嵌套对象合并非替换/数组值整体替换/多次累积。
+- missingKeys 管理（2）：数组形式/clear 清空。
+- 格式化方法（13）：formatNumber 分组/不分组、formatFileSize 0B/1024KB/decimals、formatDuration h:mm:ss/m:ss、pluralize 单复数、formatDate 含年份/自定义 options、formatRelativeTime 过去/未来（fake timers）。
+- 事件监听（4）：onLanguageChange 取消订阅/onSettingsChange 取消订阅/多监听器/destroy 清空全部+missingKeys。
+- resetToDefault（3）：恢复默认设置语言/重载 zh-CN/触发两类监听器。
+- exportSettings/importSettings（5）：导出 JSON/合法导入切语言/触发监听器/损坏 JSON 返 false 保持现状/持久化。
+- 单例导出 i18n/t（2）：i18n 为实例/t 未 init 缺失键返 key。
+- detectBrowserLanguage 纯函数（4）：精确匹配/前缀匹配/未支持回退/空串回退（覆盖本轮 fix）。
+
+时间敏感用例统一 `vi.useFakeTimers` + `vi.setSystemTime(new Date('2026-07-15T10:00:00Z'))`，afterEach `vi.useRealTimers` + `vi.restoreAllMocks`。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/i18n/i18n-manager.test.ts`：首轮 84/85 通过、1 失败（detectBrowserLanguage 空串用例触发 `.split` 崩溃 → 据此发现并修复 types.ts 守卫）。修复后 **85/85 通过**（60ms）。失败为模块 bug 非断言 bug，故先 fix 再 test。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**（守卫不改变正常路径类型推断；test 中 `as any` 注入 number/boolean/null 覆盖 String(value)/null 分支，TranslationObject 索引签名兼容 any 值）。
+- `npx vitest run` 全量 **4791/4791 通过**（168 文件，192.24s），零回归。测试数较上轮 4706 → 4791（+85），文件数 167 → 168（+1，纯新增 i18n-manager.test.ts）。detectBrowserLanguage 守卫未破坏任何既有用例（无既有用例依赖其抛错/空串误命中行为）。
+
+环境备注：沙箱无 node_modules，lockfile 为 `package-lock.json`（npm），`npm ci` 安装（975 包，38s）后 `npx prisma generate`，再跑测试；未触碰 lockfile，`git status` 仅本轮 2 个改动文件（1 改 1 新增）。
+
+### 改动量
+
+2 文件，+788 / -0：
+- `src/lib/i18n/types.ts`（修改）— detectBrowserLanguage 新增非空字符串守卫（+7/-0）
+- `src/__tests__/lib/i18n/i18n-manager.test.ts`（新增）— 85 用例覆盖 i18n-manager 全控制流（+781/-0）
+
+2 dev commit（fix 在前保证每 commit 单独 green：fix 后既有 4706 用例全过——无任何用例依赖 detectBrowserLanguage 抛错/空串误命中；test 在后 +85 用例全过，其中空串用例依赖 fix）。
+
+### Commit
+
+- `8c9c1d2` fix(i18n): detectBrowserLanguage 对 undefined/空 browserLang 回退默认
+- `e2596d9` test(i18n): 补 i18n-manager 单例 85 用例覆盖 初始化/设置/语言/翻译/格式化/事件/导入导出
+
+### 推送
+
+- origin (Gitee)：`98b5897..e2596d9` 推送（含本轮 fix + test 2 commit + 本 worklog commit）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **i18n-manager 补覆盖已闭合**（452 行零覆盖模块现 85 用例守护，全控制流覆盖；附带修复 detectBrowserLanguage 空值崩溃）。
+- **lib 域零覆盖纯模块候选池趋尽**：i18n-manager 为 worklog 历史标注的最后一个 lib 域零覆盖纯模块候选，现已闭合。后续零覆盖补测需转向带依赖的模块（需 vi.mock 边界）。
+- **同型「inline 模拟」测试文件清理**（延续）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等——可改用统一 mock 工厂减少重复。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
+- **i18n 域延伸**（可选）：`src/lib/i18n/index.tsx`（React Provider/hooks 层）可做 @testing-library/react 组件测试，但属前端组件测试范畴，优先级低于纯逻辑模块。
