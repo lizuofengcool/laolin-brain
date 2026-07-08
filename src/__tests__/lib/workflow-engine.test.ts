@@ -779,6 +779,36 @@ describe("evaluateCondition 运算符与变量替换", () => {
     expect(await conditionResult("{{x}} < 5", { x: 5 })).toBe(false);
   });
 
+  // ------------------------------------------------------------------
+  // >= / <= 回归：原正则交替 (==|!=|>|<|>=|<=) 中 > / < 排在 >= / <= 之前，
+  // 在 ">=" 位置会先匹配单字符 ">"，把 ">=" 拆成 ">" + "= 右值"，
+  // 右值 parseValue 失败回退为字符串，数值比较退化为字符串比较恒为 false。
+  // 修正后交替改为 (==|!=|>=|<=|>|<)，>= / <= 优先匹配。
+  // ------------------------------------------------------------------
+  it(">= 大于等于为真", async () => {
+    expect(await conditionResult("{{x}} >= 5", { x: 5 })).toBe(true);
+  });
+
+  it(">= 严格大于为真", async () => {
+    expect(await conditionResult("{{x}} >= 5", { x: 6 })).toBe(true);
+  });
+
+  it(">= 小于为假", async () => {
+    expect(await conditionResult("{{x}} >= 5", { x: 4 })).toBe(false);
+  });
+
+  it("<= 小于等于为真", async () => {
+    expect(await conditionResult("{{x}} <= 5", { x: 5 })).toBe(true);
+  });
+
+  it("<= 严格小于为真", async () => {
+    expect(await conditionResult("{{x}} <= 5", { x: 4 })).toBe(true);
+  });
+
+  it("<= 大于为假", async () => {
+    expect(await conditionResult("{{x}} <= 5", { x: 6 })).toBe(false);
+  });
+
   it("字符串相等比较（引号包裹）为真", async () => {
     expect(await conditionResult('{{name}} == "alice"', { name: "alice" })).toBe(true);
   });
