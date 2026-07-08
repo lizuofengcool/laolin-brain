@@ -15095,3 +15095,62 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **同型「inline 模拟」测试文件清理**（延续）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等——可改用统一 mock 工厂减少重复。
 - **剩余 TODO 桩集中区**（延续）：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
 - **i18n 域延伸**（可选）：`src/lib/i18n/index.tsx`（React Provider/hooks 层）可做 @testing-library/react 组件测试，但属前端组件测试范畴，优先级低于纯逻辑模块。
+
+## 2026-07-09 01:00 自动迭代
+
+### 第一百三十六轮（activity-log 模块补 16 用例覆盖 落库/IP/UA/常量）
+
+**背景**：上轮 worklog「下一轮候选」标注「lib 域零覆盖纯模块候选池趋尽，后续零覆盖补测需转向带依赖的模块（需 vi.mock 边界）」。复核 src/lib 顶层模块与测试目录映射时发现 `src/lib/activity-log.ts`（107 行）此前仅有路由级集成测试（`src/__tests__/api/activity-logs-route.test.ts` 锁定 GET 路由安全/分页契约），无模块级单测守护其自身契约（logActivity 落库形状、getIpAddress/getUserAgent 解析、ActionType/ResourceType 常量）。本轮取该模块为目标补单测，属优先级 3（补测试）。规模 1 test commit，符合单轮 1-3 commit 约束。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境再次重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后本地 / origin/main / github/main 三方对齐于 `c9a30b0`（第一百三十五轮 worklog commit），`git rev-list --left-right --count origin/main...github/main` = `0  0`，无远端更新、无遗留未提交改动、工作树干净，直接开始新开发。
+- 任务清单优先级 1 原 5 项再次复核均闭合（与上轮一致）：① `tenant-db.ts` raw getter 带 `new Error().stack` 第 3 帧软审计 + rawDb 无审计导出已移除；② `payment/alipay.ts` verifyCallback 走 verifyRSA2Sign、`wechat.ts` 走 verifyWechatSign + AES-256-GCM decryptResource，mock 仅 `!isPaymentConfigured` 触发；③ `api/files/route.ts` findFirst/findMany 走 createTenantDb；④ `cloud-sync/sync-engine.ts` keep_both 已重命名本地副本 `[冲突副本]` + 新建云端文件；⑤ `api-auth.test.ts` 已与实现对齐（4 字段 + async）。无新增优先级 1 介入，聚焦 activity-log 补覆盖。
+
+**可测性分析（人工读码确认）**：
+- `src/lib/activity-log.ts`（107 行）依赖 `@/lib/db`（仅用 `db.activityLog.create`）+ Node 全局 `setImmediate`。vitest 配置 `environment: 'jsdom'`，但 Node 全局 `setImmediate` 在 vitest 下仍可用（与 monitoring-index 用 setInterval 同理）。
+- `logActivity` 设计为「异步记录不阻塞主流程」：外层 try 调 `setImmediate(async () => { try { await db.activityLog.create(...) } catch { console.error } })`，函数本身不 await 落库、立即 resolve。测试需在调用后 `await flushImmediate()`（再排一个 setImmediate 宏任务）等待落库回调执行完毕再断言；db.create 的 Promise.resolve/reject 续体以微任务在 flushImmediate 宏任务前 drain，断言时落库已发生。
+- `getIpAddress` / `getUserAgent` 为纯函数（仅读 `request.headers.get(...)`），用 `new Request(url, { headers })` 构造入参即可，无需 mock。
+- 隔离策略：`vi.mock('@/lib/db')` 仅暴露 `activityLog.create`，复用 `vi.hoisted` 范式（与 activity-logs-route.test.ts 一致），各测试文件模块注册表独立，不影响其他测试。
+
+**test — `src/__tests__/lib/activity-log.test.ts`（新增，16 用例）**：
+
+16 用例覆盖全控制流，分 5 个 describe 块：
+- logActivity（7）：完整字段透传 + details 经 JSON.stringify、resourceId 缺省→undefined 透传、details 缺省→null（三元 falsy 分支）、ipAddress/userAgent 缺省→undefined 透传、db.create reject 走内层 catch `console.error('Failed to log activity:', err)` 不外抛、db.create 成功不报错、setImmediate 异步落库不阻塞（flushImmediate 前未触达 db、立即 resolve undefined）。
+- getIpAddress（5）：x-forwarded-for 单 IP 原样返回、多 IP 取首个并 trim（`', '` 分隔）、无 x-forwarded-for 有 x-real-ip 兜底、x-forwarded-for 优先于 x-real-ip、两者均无→'unknown'。
+- getUserAgent（2）：user-agent header 存在原样返回、缺省→'unknown'。
+- ActionType（1）：12 键值锁定（CREATE/UPDATE/DELETE/DOWNLOAD/UPLOAD/SHARE/LOGIN/LOGOUT/VIEW/SEARCH/EXPORT/IMPORT）。
+- ResourceType（1）：7 键值锁定（FILE/FOLDER/USER/TENANT/SETTING/SHARE/TAG）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/activity-log.test.ts`：**16/16 通过**（19ms），首轮即绿（模块行为与读码预期一致，未发现 bug）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**（test 中 `vi.fn()`/`mockResolvedValue`/`mockRejectedValue` 类型推断正常，`ActivityLogData` import 仅作类型用）。
+- `npx vitest run` 全量 **4807/4807 通过**（169 文件，204.01s），零回归。测试数较上轮 4791 → 4807（+16），文件数 168 → 169（+1，纯新增 activity-log.test.ts）。db mock 模块隔离成立，未影响 activity-logs-route 等既有测试。
+
+环境备注：沙箱无 node_modules，lockfile 为 `package-lock.json`（npm），`npm ci` 安装（975 包，52s）后 `npx prisma generate`，再跑测试；未触碰 lockfile，`git status` 仅本轮 1 个新增文件。
+
+### 改动量
+
+1 文件，+245 / -0：
+- `src/__tests__/lib/activity-log.test.ts`（新增）— 16 用例覆盖 activity-log 全控制流（+245/-0）
+
+1 dev commit（纯新增测试，无源码改动，无 fix 介入）。
+
+### Commit
+
+- `d0a92c0` test(activity-log): 补 activity-log 模块 16 用例覆盖 落库/IP/UA/常量
+
+### 推送
+
+- origin (Gitee)：`c9a30b0..d0a92c0` 推送（含本轮 test 1 commit + 本 worklog commit）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **activity-log 补覆盖已闭合**（107 行模块现 16 用例守护，全控制流覆盖；logActivity 异步落库经 flushImmediate 验证）。
+- **lib 顶层零覆盖模块候选池进一步趋尽**：activity-log 为本轮新发现并闭合的顶层 lib 零覆盖模块。经复核 src/lib 顶层 20 个 .ts 文件均已对应测试（rbac/markdown/face-cluster/theme/api-cache/chunk-upload/auth/api-auth/offline-queue/activity-log/ai-usage/sanitize/rate-limit/file-helpers/view-routes/file-hash/file-type/checksum→backup-checksum/math-utils/safe-json-parse），顶层无残留零覆盖纯模块。
+- **带依赖模块补测（需 vi.mock 边界）**（延续）：转向子目录带 db/next 依赖的模块，如 `src/lib/email/`、`src/lib/backup/`、`src/lib/migrations/` 等下零覆盖模块，需逐模块做可测性预探。
+- **同型「inline 模拟」测试文件清理**（延续）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等——可改用统一 mock 工厂减少重复。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
+- **i18n 域延伸**（可选）：`src/lib/i18n/index.tsx`（React Provider/hooks 层）可做 @testing-library/react 组件测试。
