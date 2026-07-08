@@ -19,6 +19,8 @@
  * - extractGraphFromFiles 的 select 曾含 textContent，但 extractEntities 仅分析
  *   fileName/summary/keyPoints/tags，textContent 被查询但未参与实体提取（无效字段查询）；
  *   已从 select 移除 textContent，避免拉取潜在较大的无效字段。
+ * - extractGraphFromFiles 的 select 曾含 fileType，属同类死字段（仅查询未被消费，
+ *   textToAnalyze 仅用 fileName/summary/keyPoints/tags）；已从 select 移除 fileType。
  * - findPath 的 maxDepth 曾存在 off-by-one（入队条件 `depth < maxDepth` 导致 maxDepth=N 仅可
  *   命中 N-1 边路径）；已改为 `depth <= maxDepth`，maxDepth=N 现可命中 N 边路径。
  */
@@ -74,7 +76,7 @@ function makeRelation(
   };
 }
 
-// 构造 extractGraphFromFiles 的 file 行（select 字段；textContent 已从 select 移除）
+// 构造 extractGraphFromFiles 的 file 行（select 字段；textContent/fileType 已从 select 移除）
 function makeFileRow(opts: {
   id: string;
   fileName?: string;
@@ -85,7 +87,6 @@ function makeFileRow(opts: {
   return {
     id: opts.id,
     fileName: opts.fileName ?? `${opts.id}.txt`,
-    fileType: 'text/plain',
     summary: opts.summary ?? null,
     keyPoints: opts.keyPoints ?? null,
     tags: opts.tags ?? null,
@@ -444,7 +445,7 @@ describe('extractGraphFromFiles', () => {
     expect(graph.relations).toHaveLength(1);
   });
 
-  it('db.file.findMany 按 fileIds/tenantId/userId 过滤且 select 不含 textContent', async () => {
+  it('db.file.findMany 按 fileIds/tenantId/userId 过滤且 select 不含 textContent/fileType', async () => {
     mockFileFindMany.mockResolvedValue([]);
     await extractGraphFromFiles(['f1', 'f2'], 'u1', 't1');
     expect(mockFileFindMany).toHaveBeenCalledTimes(1);
@@ -455,8 +456,8 @@ describe('extractGraphFromFiles', () => {
       isDeleted: false,
       id: { in: ['f1', 'f2'] },
     });
-    // textContent 不参与实体提取（extractEntities 仅分析 fileName/summary/keyPoints/tags），
-    // 已从 select 移除以避免拉取无效字段
+    // extractEntities 仅分析 fileName/summary/keyPoints/tags，textContent/fileType 均不参与
+    // 实体提取（死字段），已从 select 移除以避免拉取无效字段。
     expect(arg.select).toMatchObject({
       fileName: true,
       summary: true,
@@ -464,5 +465,17 @@ describe('extractGraphFromFiles', () => {
       tags: true,
     });
     expect(arg.select).not.toHaveProperty('textContent');
+    expect(arg.select).not.toHaveProperty('fileType');
+  });
+
+  it('extractGraphFromFiles 不依赖 fileType：行不含 fileType 字段仍正常提取实体', async () => {
+    // 锁定 fileType 死字段移除的回归：返回行完全不带 fileType（模拟真实 select 后的查询结果），
+    // 函数仍应正常构建图谱，证明其从不读取 file.fileType。
+    mockFileFindMany.mockResolvedValue([
+      { id: 'f1', fileName: 'f1.txt', summary: '【概念甲】', keyPoints: null, tags: null },
+    ]);
+    const graph = await extractGraphFromFiles(['f1'], 'u1', 't1');
+    expect(graph.entities).toHaveLength(1);
+    expect(graph.entities[0]).toMatchObject({ name: '概念甲', type: 'concept' });
   });
 });
