@@ -15345,3 +15345,58 @@ subject = subject.replace(regex, () => value);
 - **剩余 TODO 桩集中区**（延续）：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
 - **i18n 域延伸**（可选）：`src/lib/i18n/index.tsx`（React Provider/hooks 层）可做 @testing-library/react 组件测试。
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 的 createPayment/queryPayment/refund 在已配置密钥时仍返回「未接入 SDK」失败提示，verifyCallback 验签已真实实现，但下单/查询/退款链路未接 alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口，mock 模式仅供开发）。
+
+## 2026-07-09 21:00 自动迭代
+
+### 第一百四十轮（test migrations 零覆盖模块 5 函数全控制流补测）
+
+**背景**：上轮 worklog「下一轮候选」将「带依赖模块补测（需 vi.mock 边界）」列为延续项，并明确点名 `src/lib/migrations/index.ts` 仍为零覆盖，重度依赖 `db.$queryRaw`（tagged template）/ `$transaction`（回调 tx），mock 边界复杂、难度高于 backup-tool，可单独立轮。本轮即取该候选为目标，闭合「带依赖模块补测」最后一项。规模 1 test commit，符合单轮 1-3 commit 约束，无生产代码改动，零回归风险。
+
+前置确认：
+- 沙箱再次重置无 laolin-brain 目录，`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后本地 / origin/main / github/main 三方对齐于 `169c366`（第一百三十九轮 worklog commit），无远端更新、无遗留未提交改动、工作树干净，直接开始新开发。
+- 任务清单优先级 1 原 5 项延续前若干轮结论均闭合（本轮未再逐项重读源码，聚焦测试补覆盖）。
+
+**test — `src/__tests__/lib/migrations.test.ts`（+518 行，22 用例，5 函数全覆盖）**：
+
+mock 边界预探：`$queryRaw`/`$executeRaw` 在源码中以 tagged template 形式调用（`` db.$queryRaw`SELECT ...` ``），故 mock 为普通 `vi.fn()` 即可被当作 tagged template 标签函数调用并返回 Promise；`$transaction` 接收 async 回调并把 tx 作为参数传入，故用 `mockDb.$transaction.mockImplementation(async (fn) => fn(mockDb))` 透传 mockDb 作为 tx。`vi.hoisted` 创建 mockDb 单例（含 tenant.count/create、user.findUnique/create/findMany、tenantUser.create/findFirst、file.updateMany、folder.updateMany、$queryRaw、$executeRaw、$transaction），`vi.mock("@/lib/db", () => ({ db: mockDb }))` 替换。注意 `afterEach` 的 `restoreAllMocks` 会清掉 `$transaction.mockImplementation`，故在 `beforeEach` 重建而非在 hoisted 工厂中一次性设置。
+
+按 5 个导出函数组织 describe 块，逐分支锁定行为契约：
+
+- **checkMigrationStatus（7 用例）**：$queryRaw 三段调用顺序（迁移表存在性 → 遗留文件计数 → 版本查询）；迁移表不存在 → currentVersion=null；遗留文件存在 → hasLegacyData=true；版本查询返回数组 → currentVersion 取首项 version；版本查询异常 → currentVersion=null；tenant.count>0 → hasTenantData=true；外层 catch 兜底全 false。
+- **migrateToMultiTenant（5 用例）**：已迁移（isMigrated=true）早返回 tenantCreated=0；无用户 → 事务返回全零；正常建租户（free 计划/5GB/storageQuota BigInt/aiQuota=200）+ tenantUser(owner) + file/folder updateMany count 聚合；用户已有 tenantUser 跳过；事务抛错 → catch 兜底 success=false + message 含错误信息。
+- **initializeDefaultTenant（3 用例）**：已有租户（count>0）早返回 tenantId=null；无租户 → create 默认工作空间（free/5GB）返回 tenantId；create 抛错 → catch 兜底 success=false。
+- **initializeDefaultAdmin（4 用例）**：已存在管理员（findUnique 命中）早返回 userId；不存在 → create 系统管理员（email/password 来自 env 或默认 admin@example.com/admin123456）+ enterprise 租户（100GB）+ tenantUser(owner)；env 覆盖 ADMIN_EMAIL/ADMIN_PASSWORD 透传；create 抛错 → catch 兜底 success=false。
+- **runAllMigrations（3 用例）**：`INIT_DEFAULT_ADMIN !== 'true'` 时仅 2 步（迁移 + 默认租户）；`=== 'true'` 时 3 步；某步 success=false 时 allSuccess=false 且 steps 聚合保留各步 message。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/migrations.test.ts`：**22/22 通过**（首轮即绿）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**（test 文件被 tsconfig exclude，mock db 类型与 prisma 模型方法签名兼容，$queryRaw 作为 tagged template 标签函数无类型冲突）。
+- `npx vitest run` 全量 **4895/4895 通过**（172 文件），零回归。测试数较上轮 4873 → 4895（+22），文件数 171 → 172（+1）。改动仅新增一个测试文件，未触碰任何生产代码，不可能影响其他测试。
+
+环境备注：沙箱无 node_modules，lockfile 为 `package-lock.json`（npm），`npm ci` 安装（975 包）后 `npx prisma generate`（v6.19.3 客户端），再跑测试；未触碰 lockfile，`git status` 仅本轮 1 个新增测试文件。
+
+### 改动量
+
+1 文件，+518/-0：
+- `src/__tests__/lib/migrations.test.ts`（test，新增）— 5 函数 22 用例全控制流覆盖（+518/-0）
+
+1 dev commit（纯测试补覆盖，无生产改动）。
+
+### Commit
+
+- `dcd439f` test(migrations): 补 migrations 模块 22 用例覆盖 5 函数全控制流
+
+### 推送
+
+- origin (Gitee)：`169c366..` 推送（含本轮 test 1 commit + 本 worklog commit）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **migrations 零覆盖已闭合**（5 函数 22 用例守护全控制流：状态检查/多租户迁移/默认租户/默认管理员/编排门控）。至此「带依赖模块补测（需 vi.mock 边界）」延续项完全闭合（backup-tool + migrations 两零覆盖模块均已补测）。
+- **同型「inline 模拟」测试文件清理**（延续）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等——可改用统一 mock 工厂减少重复。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
+- **i18n 域延伸**（可选）：`src/lib/i18n/index.tsx`（React Provider/hooks 层）可做 @testing-library/react 组件测试。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 的 createPayment/queryPayment/refund 在已配置密钥时仍返回「未接入 SDK」失败提示，verifyCallback 验签已真实实现，但下单/查询/退款链路未接 alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口，mock 模式仅供开发）。
