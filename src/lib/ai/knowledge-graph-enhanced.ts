@@ -103,12 +103,12 @@ export async function extractGraphFromFiles(
     select: {
       id: true,
       fileName: true,
-      fileType: true,
       summary: true,
       keyPoints: true,
       tags: true,
-      // textContent 不参与实体提取（extractEntities 仅分析 fileName/summary/keyPoints/tags），
-      // 不在 select 中查询以避免拉取潜在较大的无效字段
+      // extractEntities 仅分析 fileName/summary/keyPoints/tags，其余字段（textContent/fileType）
+      // 均不参与实体提取，不在 select 中查询以避免拉取无效字段。
+      // textContent 因体积较大先行移除；fileType 为同类死字段（仅查询未被消费），一并移除。
     },
   });
 
