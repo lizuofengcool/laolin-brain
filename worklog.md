@@ -15220,3 +15220,71 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **同型「inline 模拟」测试文件清理**（延续）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等——可改用统一 mock 工厂减少重复。
 - **剩余 TODO 桩集中区**（延续）：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
 - **i18n 域延伸**（可选）：`src/lib/i18n/index.tsx`（React Provider/hooks 层）可做 @testing-library/react 组件测试。
+
+## 2026-07-09 03:00 自动迭代
+
+### 第一百三十八轮（fix email renderTemplate 变量值含 $ 反向引用渲染异常）
+
+**背景**：上轮 worklog「下一轮候选」新发现并标注「renderTemplate 变量替换 `$` 语义隐患」为优先级 3 小修。本轮即取该候选为目标——`src/lib/email/index.ts` 的 `renderTemplate` 用 `html.replace(regex, value)` 替换 `{{占位}}`，当 `value` 含 `$&` / `$$` / `$1` / `` $` `` / `$'` 时会被 `String.prototype.replace` 解释为反向引用（如 `value="$&"` 会回填匹配文本 `{{userName}}` 而非字面 `$&`），导致占位符未被真正替换、渲染异常。属变量值注入的潜在渲染 bug。规模 1 fix commit（含回归测试），符合单轮 1-3 commit 约束。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境再次重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后本地 / origin/main / github/main 三方对齐于 `4cccecc`（第一百三十七轮 worklog commit），无远端更新、无遗留未提交改动、工作树干净，直接开始新开发。
+- 任务清单优先级 1 原 5 项本轮**逐一直读源码复核**（非仅信 worklog），均确认仍闭合（与第一百三十七轮结论一致）：
+  ① `tenant-db.ts` raw getter 与 transaction 均带 stack 软审计 console.warn，rawDb 无审计导出已移除；
+  ② `payment/alipay.ts` verifyCallback 走 `verifyRSA2Sign`（RSA-SHA256 + PEM 规整）、`wechat.ts` 走 `verifyWechatSign` + `decryptResource`（AES-256-GCM），mock 仅 `!isPaymentConfigured` 触发，已配置密钥时各端点显式失败；
+  ③ `api/files/route.ts` POST 去重 findFirst 与 GET findMany 均走 `createTenantDb(tenantId)`（quota 的 `db.$queryRaw` 为聚合 SQL，WHERE 已含 tenantId，非隔离绕过）；
+  ④ `cloud-sync/sync-engine.ts` keep_both 分支重命名本地副本为 `[冲突副本]` + 新建云端文件（新 id），不再直接覆盖；
+  ⑤ `api-auth.test.ts` 已与实现对齐（4 字段 userId/email/tenantId/role + async + 不读 query param）。无新增优先级 1 介入，聚焦本轮 `$` 渲染修复。
+
+**fix — `src/lib/email/index.ts` renderTemplate（+5/-2 行）**：
+
+将变量替换由直接传 value 改为替换函数：
+```ts
+// 旧：html = html.replace(regex, value);  subject = subject.replace(regex, value);
+// 新：
+html = html.replace(regex, () => value);
+subject = subject.replace(regex, () => value);
+```
+替换函数 `() => value` 忽略所有反向引用语义，按字面量返回 value。`$&` 不再展开为匹配文本、`$$` 不再折叠为单 `$`、`$1`（无捕获组）不再变空串、`` $` `` / `$'` 不再插入匹配前/后文本。subject 与 html 同理。变量值多为用户名/URL/金额，含 `$` 概率低但属变量值注入隐患，修复后行为确定。
+
+**test — `src/__tests__/lib/email.test.ts`（+3 用例，renderTemplate 块 6→9）**：
+
+补 3 个回归用例锁定字面量替换：
+- `$&` 不展开为匹配文本 `{{userName}}`：welcome 模板 `userName="$&"` → html/text 含 `你好，$&！`、不含 `{{userName}}`（旧实现此用例会失败：html 仍含 `{{userName}}`）。
+- `$$` / `$1` / `` $` `` / `$'` 组合串原样输出：`userName="$$,$1,$`,$'"` → html 含 `你好，$$,$1,$`,$'！`（旧实现 `$$`→`$`、`$1`→空、`` $` ``→匹配前文本，结果失真）。
+- subject 中 `$&` 字面替换：system-announcement 模板 subject 本身是 `{{title}}`，`title="$&"` → subject 严格等于 `$&`、html 含 `>$&<`（旧实现 subject 会回填 `{{title}}`）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/email.test.ts`：**26/26 通过**（21ms），首轮即绿。用例数 23 → 26（+3），3 个新用例均能复现旧实现 bug（手动反推：旧 `replace(regex, value)` 下 `$&` 用例断言 `not.toContain('{{userName}}')` 必失败）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**（替换函数 `() => value` 与 `String.replace` replacer 签名兼容，test 文件被 tsconfig exclude）。
+- `npx vitest run` 全量 **4833/4833 通过**（170 文件，142.69s），零回归。测试数较上轮 4830 → 4833（+3），文件数不变（170）。改动仅限 email 模块渲染逻辑，且只影响含 `$` 的变量值（既有用例无此场景），未波及其他测试。
+
+环境备注：沙箱无 node_modules，lockfile 为 `package-lock.json`（npm），`npm ci` 安装（975 包，33s）后 `npx prisma generate`，再跑测试；未触碰 lockfile，`git status` 仅本轮 2 个改动文件。
+
+### 改动量
+
+2 文件，+42 / -2：
+- `src/lib/email/index.ts`（fix）— renderTemplate 改用替换函数 `() => value` 按字面量替换，subject/html 同理（+5/-2）
+- `src/__tests__/lib/email.test.ts`（test）— 补 3 个 `$` 反向引用回归用例（+37/-0）
+
+1 dev commit（fix + 同包回归测试）。
+
+### Commit
+
+- `1fff2f7` fix(email): renderTemplate 变量值含 $ 时按字面量替换
+
+### 推送
+
+- origin (Gitee)：`4cccecc..` 推送（含本轮 fix 1 commit + 本 worklog commit）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **renderTemplate `$` 语义隐患已闭合**（替换函数字面量替换 + 3 回归用例守护 `$&`/`$$`/`$1`/`` $` ``/`$'`）。
+- **带依赖模块补测（需 vi.mock 边界）**（延续）：`src/lib/backup/backup-tool.ts`、`src/lib/migrations/index.ts` 仍为零覆盖，均重度依赖 `db.$queryRaw`（tagged template）/`$transaction`（回调 tx），需预探 mock 边界（可参考既有 `cloud-sync-engine-tenant.test.ts` 的 db mock 范式）。
+- **同型「inline 模拟」测试文件清理**（延续）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等——可改用统一 mock 工厂减少重复。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
+- **i18n 域延伸**（可选）：`src/lib/i18n/index.tsx`（React Provider/hooks 层）可做 @testing-library/react 组件测试。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 的 createPayment/queryPayment/refund 在已配置密钥时仍返回「未接入 SDK」失败提示，verifyCallback 验签已真实实现，但下单/查询/退款链路未接 alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口，mock 模式仅供开发）。
