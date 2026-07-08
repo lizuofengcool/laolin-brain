@@ -14548,3 +14548,61 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **同型 latent（可选小修）**：knowledge-graph-enhanced 的 extractGraphFromFiles select 仍含 `fileType`（textToAnalyze 不使用），与上轮 textContent 同类，但 fileType 短字符串查询成本可忽略，是否裁剪视是否统一 select 为「仅实际使用字段」而定。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
 - **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
+
+## 2026-07-08 14:00 自动迭代
+
+### 第一百二十八轮（payment/config 补 30 用例覆盖 env 解析全路径）
+
+**背景**：上轮 worklog「下一轮候选」将「lib 域零覆盖纯模块延续」列为首选，点名 `src/lib/ai/model-manager.ts` 与 `src/lib/ai/embeddings.ts`。本轮复核发现**该候选已失效**——两者均已有测试文件（`ai-model-manager.test.ts` 691 行 50+ 用例、`embeddings.test.ts`），且 model-manager 的 4 处 `// TODO: 实际调用模型API` 为刻意保留的模拟实现（testModel/generateText/generateEmbedding/sendChatMessage 均已被现有测试锁定为模拟行为），非 latent bug。故对 `src/lib` 全量纯模块重做零覆盖扫描，择定 `src/lib/payment/config.ts`（45 行）：其为支付安全链路（alipay/wechat 的 `isPaymentConfigured` 闸门、`getNotifyUrl` 回调地址）的配置层，而既有 `payment-alipay.test.ts` / `payment-wechat.test.ts` / `payment-index.test.ts` 均以 `vi.mock('@/lib/payment/config')` 将其整体替换，**真实 env 解析逻辑此前零覆盖**。该模块为纯 env 解析（仅 import 类型），单测价值高、风险低。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后 origin/main 与本地对齐于 `0fa8222`，但 **github/main 落后 2 个 commit**（停于 `01b21be`，缺 `9d70b5f` Tauri 白屏修复 + `0fa8222` 进度文档）——为上次任务遗留的「已提交未推送 GitHub」commit（仓库 owner 直接提交、已在 Gitee）。按执行流程先清理：`git push github main`（`01b21be..0fa8222`）对齐双端后再开始新开发。
+- 任务清单优先级 1 的原 5 项经本轮**独立逐文件复核确认已闭合**（不依赖上轮 worklog 结论）：
+  · `tenant-db.ts` raw getter（line 56-62）与 transaction（line 41-47）均带 `console.warn` + 调用堆栈软审计，文件注释说明 rawDb 不再无审计导出；
+  · `alipay.ts` verifyRSA2Sign 已用 `crypto.createVerify('RSA-SHA256')` + `normalizePublicKey`（PEM 规整）真实验签（line 191-213），不再「非空即通过」；createPayment/queryPayment 在已配置真实密钥但未接 SDK 时显式返回 failure（line 39-42 / 83-87），不静默返回 mock；
+  · `wechat.ts` verifyWechatSign 已用 `createHmac('sha256', apiKey)` + `timingSafeEqual` 恒定时间比较（line 221-242），注释「不再非空即通过」；
+  · `api-auth.test.ts` 已匹配实现：期望 4 字段（userId/email/tenantId/role）、async、仅读 Authorization 头拒绝 query param、自动建租户用 free plan（line 67/86/106/147）。
+- `grep` 全仓确认：无 `payment-config.test.ts`，且无任何测试文件 `from '@/lib/payment/config'` 真实导入（仅 vi.mock 引用），为零覆盖纯模块。`src/__tests__/lib/` 现有 162 测试文件，本轮新增第 163 个。
+- 本次为纯新增测试文件（1 commit），不改生产代码，零回归风险。
+
+**test — 新增 `src/__tests__/lib/payment-config.test.ts`（30 用例）**：
+
+`process.env` 经 `beforeEach` 快照全部 11 个相关 key（ALIPAY_*/WECHAT_*/NEXT_PUBLIC_BASE_URL）并清空、`afterEach` 恢复，避免用例间污染；`setEnv` 辅助显式设值。覆盖 config.ts 全部 3 个导出函数：
+
+- **getPaymentConfig（9 用例）**：空环境 alipay 全 '' 且 gateway 默认值、wechat 全 '' 且 certPath 为 undefined；alipay 全字段设置（含自定义 gateway）反映到 config；ALIPAY_GATEWAY 未设置→默认 `https://openapi.alipay.com/gateway.do`；ALIPAY_GATEWAY 设为空串→回退默认（`'' || default`）；wechat 全字段设置（含 certPath）反映；WECHAT_CERT_PATH 未设置→certPath 为 undefined（**无 `|| ''` 回退**，与其它字段不同）；WECHAT_CERT_PATH 设为空串→certPath 为 ''（空串而非 undefined）；不缓存每次读取最新 env；每次返回全新对象（两次 `!==` 同引用、内层 alipay/wechat 对象亦独立、但值相等）。
+- **isPaymentConfigured（13 用例）**：alipay 三件套（appId/privateKey/publicKey）齐全→true、缺任一→false、全缺→false、仅 notifyUrl/gateway 齐全但缺三件套→false（证明只看三件套）、三件套显式空串→false（'' falsy）；wechat 三件套（appId/mchId/apiKey）齐全→true、缺任一→false、全缺→false、仅 notifyUrl/certPath 齐全但缺三件套→false。
+- **getNotifyUrl（8 用例）**：alipay ALIPAY_NOTIFY_URL 设置→直接返回、未设置但 NEXT_PUBLIC_BASE_URL 设置→`${base}/api/payment/callback/alipay`、两者均未设置→`/api/payment/callback/alipay`、notifyUrl 设为空串→回退 base 路径（`'' || fallback`）；wechat 同型 3 用例；env 变更即时反映（不缓存）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/payment-config.test.ts`：**30/30 通过**（39ms）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量 **4416/4416 通过**（163 文件，196.29s），零回归。测试数较上轮 4386 → 4416（+30），文件数 162 → 163（+1，纯新增）。
+
+环境备注：沙箱无 node_modules，仓库 lockfile 为 `package-lock.json`（npm，无 pnpm-lock.yaml），故 `npm ci`（975 包，49s）安装后 `npx prisma generate`，再跑测试；未触碰 lockfile（`npm ci` 冻结安装），`git status` 仅本轮 1 个新增测试文件。
+
+### 改动量
+
+1 文件，+290：
+- `src/__tests__/lib/payment-config.test.ts`（新增）— 30 用例覆盖 config.ts 3 导出函数全路径（getPaymentConfig env 解析/默认值/不缓存/新对象、isPaymentConfigured 三件套闸门、getNotifyUrl 优先级回退）
+
+1 test commit（纯新增测试，不改生产代码，保证每次提交后测试不破、零回归）。
+
+### Commit
+
+- `6cc3a0d` test(lib): payment/config 补 30 用例覆盖 env 解析全路径
+
+### 推送
+
+- 先清理遗留：`git push github main`（`01b21be..0fa8222`，同步上轮 2 个遗留 commit 至 GitHub，对齐双端）。
+- origin (Gitee)：`0fa8222..6cc3a0d` 推送（含本轮 1 test commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **payment/config 已补测闭合**（30 用例，3 导出函数全路径覆盖，零覆盖纯模块清零；支付安全链路配置层现在有真实单测守护）。
+- **lib 域零覆盖纯模块延续**：经本轮全量扫描，`src/lib` 剩余零覆盖纯模块（仅 import 类型、无 db/SDK/server 依赖）排序——`ai/tools/definitions.ts`（313 行纯数据 AI 工具定义，结构断言最易）、`automation/automation-engine.ts`（435 行内存态规则引擎）、`workflow/workflow-engine.ts`（472 行内存态工作流引擎）、`i18n/i18n-manager.ts`（452 行翻译/格式化）、`reports/report-manager.ts`（456 行内存态报表）、`shares/share-manager.ts`（719 行内存态分享）。注意：上轮 worklog 点名的 `model-manager.ts`/`embeddings.ts` **均已有测试**（候选已失效，勿再取）。
+- **同型 latent（可选小修）**：knowledge-graph-enhanced 的 extractGraphFromFiles select 仍含 `fileType`（textToAnalyze 不使用），与上轮 textContent 同类，但 fileType 短字符串查询成本可忽略，是否裁剪视是否统一 select 为「仅实际使用字段」而定。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
+- **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
