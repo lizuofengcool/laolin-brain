@@ -367,7 +367,8 @@ export class WorkflowEngine {
     context: WorkflowExecutionContext,
     config: any
   ): Promise<Record<string, any>> {
-    const delayMs = config.duration || 1000;
+    // 用 ?? 而非 ||：duration 为 0（零延迟）是合法值，不应回退到默认 1000ms
+    const delayMs = config.duration ?? 1000;
     console.log("等待:", delayMs, "毫秒");
     await new Promise((resolve) => setTimeout(resolve, delayMs));
     return { delayed: true, duration: delayMs };
