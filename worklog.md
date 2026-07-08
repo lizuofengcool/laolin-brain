@@ -15154,3 +15154,69 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **同型「inline 模拟」测试文件清理**（延续）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等——可改用统一 mock 工厂减少重复。
 - **剩余 TODO 桩集中区**（延续）：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
 - **i18n 域延伸**（可选）：`src/lib/i18n/index.tsx`（React Provider/hooks 层）可做 @testing-library/react 组件测试。
+
+## 2026-07-09 18:00 自动迭代
+
+### 第一百三十七轮（email 模块补 23 用例覆盖 模板渲染/队列/sendTestEmail/env初始化）
+
+**背景**：上轮 worklog「下一轮候选」标注「带依赖模块补测（需 vi.mock 边界）：转向子目录带 db/next 依赖的模块，如 `src/lib/email/`、`src/lib/backup/`、`src/lib/migrations/`」。复核三候选模块可测性后，取 `src/lib/email/index.ts`（461 行）为本轮目标——该模块仅依赖 `nodemailer`（无 db 依赖），mock 边界单一清晰，且含丰富纯逻辑（renderTemplate 变量替换）与状态机（processQueue 队列排干/重入守卫/isProcessing 复位）。`src/lib/backup/backup-tool.ts`、`src/lib/migrations/index.ts` 均重度依赖 `db.$queryRaw`/`$transaction`（tagged template + 事务回调 tx），mock 边界复杂度更高，留待后续轮次。本轮属优先级 3（补测试），规模 1 test commit，符合单轮 1-3 commit 约束。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境再次重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后本地 / origin/main / github/main 三方对齐于 `90feeed`（第一百三十六轮 worklog commit），无远端更新、无遗留未提交改动、工作树干净，直接开始新开发。
+- 任务清单优先级 1 原 5 项本轮**逐一直读源码复核**（非仅信 worklog），均确认闭合：
+  ① `tenant-db.ts` raw getter 与 transaction 均带 `new Error().stack` 第 3 帧软审计 console.warn，rawDb 无审计导出已移除；
+  ② `payment/alipay.ts` verifyCallback 走 `verifyRSA2Sign`（RSA-SHA256 + PEM 规整）、`wechat.ts` 走 `verifyWechatSign` + `decryptResource`（AES-256-GCM），mock 仅 `!isPaymentConfigured` 触发，已配置密钥时 createPayment/queryPayment/refund 显式失败而非静默 mock；
+  ③ `api/files/route.ts` POST 去重 findFirst 与 GET findMany 均走 `createTenantDb(tenantId)`；
+  ④ `cloud-sync/sync-engine.ts` keep_both 分支重命名本地副本为 `[冲突副本]` + 新建云端文件（新 id），不再直接覆盖；
+  ⑤ `api-auth.test.ts` 已与实现对齐（4 字段 userId/email/tenantId/role + async + 不读 query param）。无新增优先级 1 介入，聚焦 email 补覆盖。
+
+**可测性分析（人工读码确认）**：
+- `src/lib/email/index.ts` 仅 `import nodemailer from "nodemailer"`（package.json 已声明 `nodemailer ^9.0.1` + `@types/nodemailer`），无 db/next 依赖，mock 边界单一。
+- `EmailService` 为类，可 `new EmailService()` 取独立实例，避免单例 `emailService` 状态跨用例泄漏；模块级 `emailService` 单例仅在 `initEmailServiceFromEnv` 用例中经 `vi.spyOn(emailService, 'init').mockImplementation(() => undefined)` 拦截，不实际写入 transporter。
+- `sendEmail` 内 `this.processQueue()` 为 fire-and-forget（无 await），processQueue 首个 await 在 `transporter.sendMail`；与 activity-log 同构，每用例后 `await flushQueue()`（排一个 setImmediate 宏任务）等待 sendMail 微任务 drain 与队列排干后再断言。
+- `renderTemplate` 为纯函数（模板变量替换 + HTML→text），无需 mock；`processQueue` 的 `isProcessing` 重入守卫经「连发两封后单次 flush 排干、断言顺序」间接覆盖。
+- vitest 配置 `environment: 'jsdom'`，Node 全局 `setImmediate` 仍可用（与 activity-log/monitoring-index 一致）。
+
+**test — `src/__tests__/lib/email.test.ts`（新增，23 用例）**：
+
+23 用例覆盖全控制流，分 6 个 describe 块：
+- 模板注册（3）：构造注册 7 个默认模板（id 集合锁定 welcome/password-reset/payment-success/storage-warning/share-notification/comment-notification/system-announcement）、getTemplate 已知 id 返回（name/subject/variables 锁定）、未知 id 返回 undefined。
+- init/isConfigured（2）：新实例 false、init 后 true 且 createTransport 收到 `{host,port,secure,auth:{user,pass}}`。
+- renderTemplate（6）：未知 id 返回 null、welcome 替换 {{userName}}（subject 无占位不变/html 含替换/不含残留占位）、未提供变量保留 {{占位}}（password-reset 缺 resetUrl）、多余变量忽略不报错、system-announcement subject 本身是 {{title}} 被替换、text 去 HTML 标签折叠空白（无 '<' 且首尾无空白）。
+- sendEmail/processQueue（5）：fire-and-forget 立即返回 true（sendMail reject 也不外抛）、配置后 sendMail 收到 from/to/subject/html/text、多封按入队顺序发送（重入守卫单循环排干）、未配置时清空队列 console.warn 不调用 sendMail、sendMail reject 后 isProcessing 复位后续可继续发送（console.error 'Failed to send email to ...'）。
+- sendTestEmail（3）：未配置抛 'Email service not configured'、配置且 resolve 返回 true（welcome 模板 + 测试变量）、reject 返回 false（console.error 'Failed to send test email:'）。
+- initEmailServiceFromEnv（4）：env 齐全 → init 收到解析配置（端口数字 2525、secure 布尔 true）、env 缺失（无 SMTP_HOST）→ 不调用 init 打印 not configured、SMTP_FROM 缺失回退 SMTP_USER、SMTP_PORT/SECURE/FROM_NAME 缺失用默认值（587/false/个人私有第二大脑）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/email.test.ts`：**23/23 通过**（20ms），首轮即绿（模块行为与读码预期一致，未发现 bug）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**（test 文件被 tsconfig exclude，仅源码受检；本轮无源码改动）。
+- `npx vitest run` 全量 **4830/4830 通过**（170 文件，144.45s），零回归。测试数较上轮 4807 → 4830（+23），文件数 169 → 170（+1，纯新增 email.test.ts）。nodemailer mock 经 vi.mock 仅在本文件注册表生效，未影响其他测试。
+
+环境备注：沙箱无 node_modules，lockfile 为 `package-lock.json`（npm），`npm ci` 安装（975 包，34s）后 `npx prisma generate`，再跑测试；未触碰 lockfile，`git status` 仅本轮 1 个新增文件。
+
+### 改动量
+
+1 文件，+420 / -0：
+- `src/__tests__/lib/email.test.ts`（新增）— 23 用例覆盖 email 全控制流（+420/-0）
+
+1 dev commit（纯新增测试，无源码改动，无 fix 介入）。
+
+### Commit
+
+- `03f4dfc` test(email): 补 email 模块 23 用例覆盖 模板渲染/队列/sendTestEmail/env初始化
+
+### 推送
+
+- origin (Gitee)：`90feeed..` 推送（含本轮 test 1 commit + 本 worklog commit）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **email 补覆盖已闭合**（461 行模块现 23 用例守护，全控制流覆盖；renderTemplate 纯逻辑、processQueue 队列状态机、sendTestEmail、env 初始化均经 mock 边界验证）。
+- **renderTemplate 变量替换 `$` 语义隐患**（新发现，优先级 3 小修）：`html.replace(regex, value)` 当 `value` 含 `$&`/`$1` 等特殊串时会被 String.replace 解释为反向引用（如 `value='$&'` 会插入匹配文本），属变量值注入的潜在渲染异常。修复方案：改用替换函数 `html.replace(regex, () => value)`（1 行，subject 同理），并补 1-2 个 `$` 用例锁定。低危（邮件变量多为用户名/URL，含 `$` 概率低），可单独一轮 fix+test。
+- **带依赖模块补测（需 vi.mock 边界）**（延续）：`src/lib/backup/backup-tool.ts`、`src/lib/migrations/index.ts` 仍为零覆盖，均重度依赖 `db.$queryRaw`（tagged template）/`$transaction`（回调 tx），需预探 mock 边界（可参考既有 `cloud-sync-engine-tenant.test.ts` 的 db mock 范式）。
+- **同型「inline 模拟」测试文件清理**（延续）：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等——可改用统一 mock 工厂减少重复。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
+- **i18n 域延伸**（可选）：`src/lib/i18n/index.tsx`（React Provider/hooks 层）可做 @testing-library/react 组件测试。
