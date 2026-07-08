@@ -14666,3 +14666,72 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **同型 latent（可选小修）**：knowledge-graph-enhanced 的 extractGraphFromFiles select 仍含 `fileType`（textToAnalyze 不使用），与上轮 textContent 同类，但 fileType 短字符串查询成本可忽略，是否裁剪视是否统一 select 为「仅实际使用字段」而定。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
 - **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
+
+
+## 2026-07-08 18:00 自动迭代
+
+### 第一百三十轮（workflow-engine 补 61 用例 + 顺手修 handleDelay `||`→`??` 零延迟 bug）
+
+**背景**：上轮 worklog「下一轮候选」将「lib 域零覆盖纯模块延续」列为首选，点名 `src/lib/workflow/workflow-engine.ts`（472 行内存态工作流引擎）。本轮独立复核确认其为真零覆盖纯模块：仅 `import { ... } from "./types"`（types.ts 230 行、零 import、纯类型 + 常量声明），全仓无任何测试文件真实导入本模块。该模块为工作流执行内核（节点调度/条件分支/动作分发/定义校验），结构错配或调度回归会直接导致工作流跑飞，单测守护价值高。本轮在写测试过程中**发现并修复一处 latent 逻辑 bug**（见下），故为 2 commit（fix + test），非纯 test 轮。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后本地 / origin/main / github/main 三方对齐于 `0f9fdc4`，无远端更新、无遗留未推送 commit、工作树干净，直接开始新开发。
+- 任务清单优先级 1 的原 5 项经本轮**独立逐文件复核确认仍闭合**（不依赖上轮 worklog 结论）：tenant-db raw/transaction 带 console.warn 软审计；alipay verifyRSA2Sign 用 crypto.createVerify 真实验签；wechat verifyWechatSign 用 createHmac + timingSafeEqual；api-auth.test.ts 匹配 4 字段/async/拒绝 query 实现；cloud-sync keep_both 分支已修复（fetchCloudFileData + 重命名本地为冲突副本 + 新建云端版本，不再直接覆盖）。
+- `grep` 全仓确认：无任何测试文件 `from '@/lib/workflow/workflow-engine'` 真实导入，为零覆盖纯模块。`src/__tests__/lib/` 上轮 164 文件，本轮新增第 165 个。
+
+**fix — `src/lib/workflow/workflow-engine.ts` handleDelay `||`→`??`（line 370）**：
+
+写「delay(duration:0) → duration:0」用例时失败，定位到 `handleDelay` 原实现 `const delayMs = config.duration || 1000`：`||` 把 `duration: 0`（合法零延迟）当 falsy 回退到 1000ms，导致零延迟不可达、且 `delayed.duration` 返回 1000 而非 0。改为 `config.duration ?? 1000`：仅在 `null`/`undefined` 时回退默认值，`0` 作为合法值被保留。
+
+回归风险评估：`grep` 全仓 `handleDelay` / `actionType: "delay"` / `"delay"`，运行时引用仅 types.ts 的 BUILTIN_ACTIONS 声明（line 176，纯数据），无任何调用方依赖原 falsy 回退行为；`??` 与 `||` 行为差异仅在 `duration` 为 `0`/`null`/`""` 等 falsy 值时显现，而 duration 字段语义为数值，`0` 是唯一合理 falsy 值且正是 bug 场景。零回归。
+
+**test — 新增 `src/__tests__/lib/workflow-engine.test.ts`（61 用例）**：
+
+纯内存执行（构造 WorkflowDefinition + startWorkflow），无 mock；仅 delay 用 duration:0 避免慢测。覆盖 workflow-engine.ts 全部 2 导出（`WorkflowEngine` 类 + `workflowEngine` 单例）：
+
+- **模块导出（3 用例）**：WorkflowEngine 是可实例化类；workflowEngine 是单例实例；两个实例处理器集合相互独立（registerActionHandler 不串扰）。
+- **默认处理器 getSupportedActionTypes（4 用例）**：返回数组；默认 7 个 actionType；集合 = {send_notification, call_webhook, delay, ai_summarize, ai_generate_tags, move_file, http_request}；**BUILTIN_ACTIONS 声明的 create_file 未被引擎注册**（8 声明 vs 7 实现 的差异锁定）。
+- **registerActionHandler（3 用例）**：注册新类型后出现且数量 +1；覆盖已存在类型数量不变；自定义 handler 执行时被调用并接收 context（含 instance.id/variables）+ node.config。
+- **validateWorkflow（8 用例）**：合法 → {valid:true, errors:[]}；缺开始节点；多个开始节点；缺结束节点；重复节点 ID；边源节点不存在；边目标节点不存在；多问题错误累积（≥3 条）。
+- **startWorkflow 生命周期（10 用例）**：实例 id 以 `wf-instance-` 前缀；拷贝 tenantId/workflowId/workflowVersion；拷贝 startedBy；startedAt/completedAt 为 Date 且 completedAt≥startedAt；正常 completed；initialVariables 合并；defaultValue 在 initialVariables 未提供时生效；initialVariables 优先于 defaultValue；defaultValue 为 undefined 不写入；action 输出合并进 variables。
+- **错误路径（5 用例）**：无开始节点 → failed + "工作流没有开始节点"；动作节点缺 actionType → "动作节点缺少actionType配置"；未知 actionType → "未知的动作类型: X"；未知节点类型 → "未知的节点类型: X"；边指向不存在节点 → "节点不存在: X"。
+- **节点类型分发（4 用例）**：wait/parallel/subflow 简化通过；无出边的非结束节点 → 视为 completed（getNextNodeId 返回 undefined 退出循环）。
+- **内置 handler 输出（8 用例）**：send_notification→{notificationSent:true}、call_webhook→{webhookCalled:true}、ai_summarize→{summarized:true}、ai_generate_tags→{tagsGenerated:true}、move_file→{moved:true}、http_request→{requestSent:true}、delay(duration:0)→{delayed:true,duration:0}（回归 ?? 修复）。
+- **条件分支 getNextNodeId（5 用例）**：条件 A 满足走 A；条件 B 满足走 B；无匹配回退第一条出边；条件节点无边带 condition 直接取首条；非条件节点多出边取首条。
+- **evaluateCondition 运算符/变量替换（11 用例）**：经条件分支间接验证（第一条边永假、第二条边待测，可区分真假）；{{var}} 替换 + == 真假；!= 真假；> 真假；< 真假；字符串引号相等真假；无法解析为比较表达式 → false；变量未提供模板不替换 → false。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/workflow-engine.test.ts`：**61/61 通过**（31ms）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量 **4530/4530 通过**（165 文件，199.52s），零回归。测试数较上轮 4469 → 4530（+61），文件数 164 → 165（+1，纯新增）。
+
+环境备注：沙箱无 node_modules，仓库 lockfile 为 `package-lock.json`（npm，无 pnpm-lock.yaml），故 `npm ci` 安装后 `npx prisma generate`，再跑测试；未触碰 lockfile（`npm ci` 冻结安装），`git status` 仅本轮 2 个改动文件（1 修改 + 1 新增）。
+
+### 改动量
+
+2 文件，+799 / -1：
+- `src/lib/workflow/workflow-engine.ts`（修改）— handleDelay `||`→`??`，零延迟 bug 修复（+2/-1）
+- `src/__tests__/lib/workflow-engine.test.ts`（新增）— 61 用例覆盖引擎 2 导出全路径（+797）
+
+2 commit（fix 在前保证每 commit 单独 green：fix 后现有 4469 用例仍全过；test 在后 +61 用例全过）。
+
+### Commit
+
+- `073404f` fix(lib): workflow handleDelay 用 ?? 保留 duration:0 零延迟
+- `5f411da` test(lib): workflow/workflow-engine 补 61 用例覆盖引擎全路径
+
+### 推送
+
+- origin (Gitee)：`0f9fdc4..5f411da` 推送（含本轮 fix + test 2 commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **workflow/workflow-engine 已补测闭合**（61 用例，2 导出全路径覆盖，零覆盖纯模块清零；并顺手修复 handleDelay 零延迟 `||`→`??` 逻辑 bug。工作流执行内核现在有调度/分支/校验/动作分发单测守护）。
+- **lib 域零覆盖纯模块延续**：经本轮复核，`src/lib` 剩余零覆盖纯模块（仅 import 类型、无 db/SDK/server 依赖）排序——`i18n/i18n-manager.ts`（452 行翻译/格式化，但 import 了 zh-CN/en-US JSON + types 运行时值，需确认 JSON 依赖可测）、`reports/report-manager.ts`（456 行内存态报表）、`shares/share-manager.ts`（719 行内存态分享）。注意：上轮点名的 `automation/automation-engine.ts` 已有 automation.test.ts（候选已失效，勿再取）。
+- **evaluateCondition `>=`/`<=` latent bug（可选）**：本轮在写条件测试时观察到 evaluateCondition 的正则 `/(.+)\s*(==|!=|>|<|>=|<=)\s*(.+)/` 因 `.+` 贪婪 + `>`/`<` 在 `>=`/`<=` 之前匹配，`>=`/`<=` 表达式实际被拆成 `左 > "= 右"` → 数值与字符串比较 → 恒 false。`==`/`!=`/`>`/`<` 工作正常。本轮测试已锁定 `>`/`<` 正确路径；是否修 `>=`/`<=`（改正则为非贪婪或调整分支顺序）视是否有调用方依赖而定。
+- **同型 latent（可选小修）**：knowledge-graph-enhanced 的 extractGraphFromFiles select 仍含 `fileType`（textToAnalyze 不使用）。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
+- **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
