@@ -14606,3 +14606,63 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **同型 latent（可选小修）**：knowledge-graph-enhanced 的 extractGraphFromFiles select 仍含 `fileType`（textToAnalyze 不使用），与上轮 textContent 同类，但 fileType 短字符串查询成本可忽略，是否裁剪视是否统一 select 为「仅实际使用字段」而定。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
 - **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
+
+## 2026-07-08 16:00 自动迭代
+
+### 第一百二十九轮（ai/tools/definitions 补 53 用例覆盖 15 个工具结构全路径）
+
+**背景**：上轮 worklog「下一轮候选」将「lib 域零覆盖纯模块延续」列为首选，点名 `src/lib/ai/tools/definitions.ts`（313 行纯数据 AI 工具定义，结构断言最易）。本轮独立复核确认其为真零覆盖纯模块：仅 `import type { ToolDefinition }`（类型 only，无运行时依赖），全仓唯一运行时引用为 `src/app/api/chat/route.ts:9`（作为 tools 参数透传模型提供商），无任何测试文件真实导入（chat-route 测试以 vi.mock 隔离）。该模块为 AI Function Calling 的工具契约层（15 个工具的 name/description/parameters/required/enum），结构错配会直接导致模型调用参数解析失败，单测守护价值高、风险低。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后本地 / origin/main / github/main 三方对齐于 `1fe1303`，无远端更新、无遗留未推送 commit、工作树干净，直接开始新开发。
+- 任务清单优先级 1 的原 5 项经本轮**独立逐文件复核确认已闭合**（不依赖上轮 worklog 结论）：
+  · `tenant-db.ts` raw getter（line 56-62）与 transaction（line 41-47）均带 `console.warn` + 调用堆栈软审计；
+  · `alipay.ts` verifyRSA2Sign 已用 `crypto.createVerify('RSA-SHA256')` + `normalizePublicKey`（PEM 规整）真实验签（line 191-213），不再「非空即通过」；
+  · `wechat.ts` verifyWechatSign 已用 `createHmac('sha256', apiKey)` + `timingSafeEqual` 恒定时间比较（line 221-242）；
+  · `api-auth.test.ts` 已匹配实现：期望 4 字段（userId/email/tenantId/role）、async、仅读 Authorization 头拒绝 query param、自动建租户用 free plan；
+  · **`cloud-sync/sync-engine.ts` keep_both 分支**（line 687-728）已修复：先 `fetchCloudFileData` 取云端数据（写库前），再将本地文件重命名为 `[冲突副本] xxx` 并标记 SYNCED（保留本地版本），最后以新 cuid 创建云端版本为新文件记录（line 706-725），不再「直接覆盖丢本地版本」。注释 line 694 明确「之前直接覆盖会丢失本地版本」。函数入口 line 669 有 `findUnique({where:{id,tenantId}})` 前置归属校验防跨租户。
+- `grep` 全仓确认：无任何测试文件 `from '@/lib/ai/tools/definitions'` 真实导入，为零覆盖纯模块。`src/__tests__/lib/` 上轮 163 文件，本轮新增第 164 个。
+- 本次为纯新增测试文件（1 commit），不改生产代码，零回归风险。
+
+**test — 新增 `src/__tests__/lib/ai-tools-definitions.test.ts`（53 用例）**：
+
+纯结构断言 + JSON Schema 不变量校验，无副作用、无 mock。覆盖 definitions.ts 全部 2 个导出（`AI_TOOLS` 数组 + `AiToolName` 类型）：
+
+- **数组级结构（14 用例）**：是数组；含 15 个工具；每个 type='function'；每个有 function 对象；命名唯一（无重复）；名集合与期望 15 名一致；每个 name 非空字符串；每个 description 非空字符串；每个 parameters.type='object'；每个 properties 为对象；每个 required 为数组；**JSON Schema 不变量 required ⊆ properties**（每个 required 字段都存在于 properties 键）；每个属性 type 非空字符串；每个属性 description 非空字符串；required 无重复字段。
+- **逐工具断言（15 用例）**：每个工具各自的 name/required/properties 键集合——search_files(required=[query], props={query,fileType,limit})、list_files(required=[], props={fileType,favoriteOnly,tag,sortBy,limit})、add_tags(required=[fileId,tags])、toggle_favorite(required=[fileId,favorite])、delete_file(required=[fileId])、get_file_info(required=[fileId])、**get_analytics(required=[], props={} 空参数无参工具边界)**、summarize_file(required=[fileId])、create_folder(required=[name], props={name,parentId})、list_folders(required=[], props={parentId})、move_file(required=[fileId,folderId])、rename_file(required=[fileId,newName])、batch_tag(required=[fileIds,tags])、batch_delete(required=[fileIds])、get_recent_files(required=[], props={limit})。
+- **枚举字段（6 用例）**：search_files.fileType 枚举为 7 值 [image,document,video,audio,archive,code,other]；list_files.fileType 同；仅 search_files 与 list_files 含 fileType 枚举（其余工具不含）；list_files.sortBy 枚举为 6 值 [dateDesc,dateAsc,nameAsc,nameDesc,sizeDesc,sizeAsc]；仅 list_files 含 sortBy 枚举；fileType/sortBy 之外无其它属性携带 enum。
+- **属性类型映射（14 用例）**：query=string（search_files）；limit=number（search_files/list_files/get_recent_files）；fileType=string（search_files/list_files）；favoriteOnly=boolean（list_files）；tag=string（list_files）；sortBy=string（list_files）；fileId=string（7 工具：add_tags/toggle_favorite/delete_file/get_file_info/summarize_file/move_file/rename_file）；tags=string（add_tags）；favorite=boolean（toggle_favorite）；name=string（create_folder）；parentId=string（create_folder/list_folders）；folderId=string（move_file）；newName=string（rename_file）；fileIds=string（batch_tag/batch_delete）。
+- **AiToolName 类型（3 用例）**：编译期每个期望名可赋值给 AiToolName（`const _check: AiToolName[] = [...EXPECTED_NAMES]`，错则编译失败）；运行时 AiToolName 名集合（源自 `(typeof AI_TOOLS)[number]['function']['name']`）与 AI_TOOLS 运行时名一致；联合大小为 15（与工具数一致）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/ai-tools-definitions.test.ts`：**53/53 通过**（27ms）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量 **4469/4469 通过**（164 文件，197.21s），零回归。测试数较上轮 4416 → 4469（+53），文件数 163 → 164（+1，纯新增）。
+
+环境备注：沙箱无 node_modules，仓库 lockfile 为 `package-lock.json`（npm，无 pnpm-lock.yaml），故 `npm ci`（975 包，1m）安装后 `npx prisma generate`，再跑测试；未触碰 lockfile（`npm ci` 冻结安装），`git status` 仅本轮 1 个新增测试文件。
+
+### 改动量
+
+1 文件，+465：
+- `src/__tests__/lib/ai-tools-definitions.test.ts`（新增）— 53 用例覆盖 definitions.ts 2 导出全路径（AI_TOOLS 数组级结构/JSON Schema 不变量/15 工具逐项/枚举字段/属性类型映射/AiToolName 类型）
+
+1 test commit（纯新增测试，不改生产代码，保证每次提交后测试不破、零回归）。
+
+### Commit
+
+- `68b1284` test(lib): ai/tools/definitions 补 53 用例覆盖 15 个工具结构全路径
+
+### 推送
+
+- origin (Gitee)：`1fe1303..68b1284` 推送（含本轮 1 test commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **ai/tools/definitions 已补测闭合**（53 用例，15 工具结构全路径覆盖，零覆盖纯模块清零；AI Function Calling 工具契约层现在有结构断言守护，名集合/required/枚举/类型错配会被测试捕获）。
+- **lib 域零覆盖纯模块延续**：经本轮复核，`src/lib` 剩余零覆盖纯模块（仅 import 类型、无 db/SDK/server 依赖）排序——`workflow/workflow-engine.ts`（472 行内存态工作流引擎）、`i18n/i18n-manager.ts`（452 行翻译/格式化）、`reports/report-manager.ts`（456 行内存态报表）、`shares/share-manager.ts`（719 行内存态分享）。注意：上轮点名的 `automation/automation-engine.ts` **已有 automation.test.ts**（候选已失效，勿再取）。
+- **同型 latent（可选小修）**：knowledge-graph-enhanced 的 extractGraphFromFiles select 仍含 `fileType`（textToAnalyze 不使用），与上轮 textContent 同类，但 fileType 短字符串查询成本可忽略，是否裁剪视是否统一 select 为「仅实际使用字段」而定。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
+- **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
