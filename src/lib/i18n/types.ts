@@ -222,6 +222,13 @@ export function detectBrowserLanguage(): LanguageCode {
 
   const browserLang = navigator.language || (navigator as any).userLanguage;
 
+  // navigator.language 可能为空字符串，且 (navigator as any).userLanguage 可能 undefined，
+  // 此时 browserLang 为 undefined/'' —— 直接回退默认语言，避免对 undefined 调用 .split 抛
+  // TypeError，也避免空字符串前缀 '' 误命中（所有 code 均 startsWith('')）。
+  if (!browserLang || typeof browserLang !== 'string') {
+    return DEFAULT_LANGUAGE;
+  }
+
   // 精确匹配
   if (SUPPORTED_LANGUAGES.some(l => l.code === browserLang)) {
     return browserLang as LanguageCode;
