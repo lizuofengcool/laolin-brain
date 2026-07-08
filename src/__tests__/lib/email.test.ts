@@ -184,6 +184,43 @@ describe("EmailService renderTemplate", () => {
     // 折叠空白后首尾无空白
     expect(rendered!.text).toBe(rendered!.text.trim());
   });
+
+  it("变量值含 $ 反向引用串时按字面量替换（$& 不展开为匹配文本 {{userName}}）", () => {
+    // 旧实现 html.replace(regex, value) 会把 $& 解释为"匹配到的子串"即 {{userName}}，
+    // 导致渲染出 "你好，{{userName}}！"（占位符未被替换）。修复后应输出字面 "$&"。
+    const rendered = service.renderTemplate("welcome", {
+      userName: "$&",
+      appUrl: "https://x",
+    });
+    expect(rendered).not.toBeNull();
+    expect(rendered!.html).toContain("你好，$&！");
+    expect(rendered!.html).not.toContain("{{userName}}");
+    expect(rendered!.text).toContain("你好，$&！");
+  });
+
+  it("变量值含 $$ / $1 / $` / $' 时均按字面量原样输出", () => {
+    // $$ 旧实现会折叠为单个 $；$1（无捕获组）旧实现会变为空串；
+    // $` / $' 旧实现会插入匹配前/后的文本。修复后全部字面输出。
+    const rendered = service.renderTemplate("welcome", {
+      userName: "$$,$1,$`,$'",
+      appUrl: "https://x",
+    });
+    expect(rendered).not.toBeNull();
+    expect(rendered!.html).toContain("你好，$$,$1,$`,$'！");
+    expect(rendered!.html).not.toContain("{{userName}}");
+  });
+
+  it("subject 中变量值含 $& 时按字面量替换（system-announcement subject={{title}}）", () => {
+    const rendered = service.renderTemplate("system-announcement", {
+      userName: "Bob",
+      title: "$&",
+      content: "正文",
+    });
+    expect(rendered).not.toBeNull();
+    // subject 整体就是 {{title}}，旧实现会回填匹配文本 {{title}}，修复后为字面 $&
+    expect(rendered!.subject).toBe("$&");
+    expect(rendered!.html).toContain(">$&<");
+  });
 });
 
 describe("EmailService sendEmail / processQueue", () => {

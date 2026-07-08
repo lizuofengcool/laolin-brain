@@ -360,10 +360,13 @@ export class EmailService {
     let subject = template.subject;
 
     // 替换变量
+    // 使用替换函数 () => value 而非直接传 value：String.replace 会把 value 中的
+    // $& / $$ / $` / $' / $n 当作反向引用解释（如 value="$&" 会插入匹配文本 "{{key}}"
+    // 而非字面 "$&"）。变量值多为用户名/URL/金额，含 $ 时会引发渲染异常，故按字面量替换。
     Object.entries(variables).forEach(([key, value]) => {
       const regex = new RegExp(`{{${key}}}`, "g");
-      html = html.replace(regex, value);
-      subject = subject.replace(regex, value);
+      html = html.replace(regex, () => value);
+      subject = subject.replace(regex, () => value);
     });
 
     // 生成纯文本版本（简单去除HTML标签）
