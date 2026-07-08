@@ -301,7 +301,9 @@ export class WorkflowEngine {
 
       // 安全评估（简化版，实际应该使用更安全的方式）
       // 这里只支持简单的比较表达式
-      const match = expr.match(/(.+)\s*(==|!=|>|<|>=|<=)\s*(.+)/);
+      // 注意：交替中 >= / <= 必须排在 > / < 之前，否则在 ">=" 位置会先匹配单字符 ">"
+      // 导致 ">=" 被拆成 ">" + "= 右值"，右值 parseValue 失败回退为字符串，比较恒为 false。
+      const match = expr.match(/(.+)\s*(==|!=|>=|<=|>|<)\s*(.+)/);
 
       if (match) {
         const left = this.parseValue(match[1].trim());
