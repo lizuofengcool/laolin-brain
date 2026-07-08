@@ -14883,3 +14883,63 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **同型 latent（可选小修）**：knowledge-graph-enhanced 的 extractGraphFromFiles select 仍含 `fileType`（textToAnalyze 不使用）——删一行 select 字段即可，零回归。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
 - **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
+
+## 2026-07-08 22:00 自动迭代
+
+### 第一百三十三轮（knowledge-graph-enhanced fileType 死字段移除 + 回归锁定）
+
+**背景**：上轮 worklog「下一轮候选」列出「同型 latent（可选小修）」——`knowledge-graph-enhanced` 的 `extractGraphFromFiles` select 仍含 `fileType`（textToAnalyze 不使用），"删一行 select 字段即可，零回归"。本轮取该项为目标：与该模块此前已修复的 `textContent` 死字段属完全相同模式（被 Prisma 查询拉取但下游从不消费），属优先级 2/3（latent 清理 + 回归守护）。规模 1 fix + 1 test，2 commit，符合单轮 1-3 commit 约束。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境再次重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后本地 / origin/main / github/main 三方对齐于 `29fd97b`（第一百三十二轮 worklog commit），无远端更新、无遗留未提交改动、工作树干净，直接开始新开发。
+- 任务清单优先级 1 原 5 项经多轮闭合，本轮抽查复核仍闭合：`tenant-db.ts` raw/transaction 带调用堆栈软审计 + rawDb 导出已移除；`payment/alipay.ts` & `wechat.ts` 已接入 RSA2 / V3 HMAC-SHA256 真实验签（mock 仅未配置时触发，已配置未接 SDK 时显式失败）；`api/files/route.ts` findFirst/findMany 走 TenantDb；`cloud-sync/sync-engine.ts` keep_both 已改为重命名本地副本 `[冲突副本] xxx` + 新建云端文件并存 + 前置租户归属校验；`api-auth.test.ts` 已与实现对齐（4 字段 / async / 不读 query）。无新增优先级 1 介入，聚焦 fileType latent。
+
+**根因复核（subagent 全文搜索 + 人工读码确认）**：
+- `extractGraphFromFiles`（src/lib/ai/knowledge-graph-enhanced.ts:87-191）的 `db.file.findMany` select（103-112 行）曾含 `fileType: true`（原 106 行）。
+- 查询结果 `files` 在 `for (const file of files)` 循环（115 行）中迭代为 `file`，构建 `textToAnalyze`（117-122 行）仅用 `file.fileName / file.summary / file.keyPoints / file.tags`，**全文 `fileType` 仅在 select 出现一次**，函数体及文件其余位置均无 `file.fileType` 访问——确认为死字段（与已修复的 `textContent` 同类，唯 `textContent` 因体积较大先行剔除，`fileType` 被遗漏）。
+- 现有测试 `src/__tests__/lib/ai-knowledge-graph-enhanced.test.ts` 的 `makeFileRow` 工厂仍返回 `fileType: 'text/plain'`（仅令 mock 行结构与旧 select 一致），且已有 select 断言用例仅守护 `textContent` 不被查询，未覆盖 `fileType`——即测试未捕获该 latent。
+
+**fix — `src/lib/ai/knowledge-graph-enhanced.ts`（修改）**：
+
+`extractGraphFromFiles` 的 select 移除 `fileType: true`，并重写注释说明 `extractEntities` 仅分析 `fileName/summary/keyPoints/tags`，`textContent`（体积较大）与 `fileType`（同类死字段，仅查询未被消费）均不参与实体提取、已一并从 select 剔除，避免后续维护者误以为该字段被使用。
+
+**test — `src/__tests__/lib/ai-knowledge-graph-enhanced.test.ts`（修改）**：
+
+- `makeFileRow` 工厂移除 `fileType: 'text/plain'` 字段，与 select 移除后的真实查询结果对齐（注释同步更新为「textContent/fileType 已从 select 移除」）。
+- 扩展现有 select 断言用例：用例名由「select 不含 textContent」改为「select 不含 textContent/fileType」，新增 `expect(arg.select).not.toHaveProperty('fileType')`，与既有 `not.toHaveProperty('textContent')` 同护，双重锁定死字段不被重新加回。
+- 新增行为回归用例「extractGraphFromFiles 不依赖 fileType：行不含 fileType 字段仍正常提取实体」：返回行完全不带 `fileType`（模拟真实 select 后的查询结果），函数仍正常构建图谱（1 个 concept 实体 `概念甲`），证明其从不读取 `file.fileType`，从行为层面锁定 fileType 死字段移除。
+- 更新模块 docstring「历史修复」段，记录 `fileType` 死字段移除（与 `textContent` / `findPath maxDepth` 并列）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/ai-knowledge-graph-enhanced.test.ts`：**36/36 通过**（18ms），含扩展后的 select 断言用例 + 新增行为回归用例。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**（select 移除 fileType 后，Prisma 推断类型不再含 fileType，因函数体从不访问 `file.fileType`，无类型破坏）。
+- `npx vitest run` 全量 **4582/4582 通过**（166 文件，191.18s），零回归。测试数较上轮 4581 → 4582（+1，纯追加 1 个行为回归用例；另 1 个 select 断言用例为重命名+扩断言，净增 0），文件数 166 不变。
+
+环境备注：沙箱无 node_modules，lockfile 为 `package-lock.json`（npm），`npm ci` 安装后 `npx prisma generate`，再跑测试；未触碰 lockfile，`git status` 仅本轮 2 个改动文件（均修改）。
+
+### 改动量
+
+2 文件，+21 / -8：
+- `src/lib/ai/knowledge-graph-enhanced.ts`（修改）— extractGraphFromFiles select 移除 fileType + 注释重写（+3/-3）
+- `src/__tests__/lib/ai-knowledge-graph-enhanced.test.ts`（修改）— makeFileRow 去 fileType + select 断言扩展 + 新增行为回归用例 + docstring 历史修复段（+18/-5）
+
+2 commit（fix 在前保证每 commit 单独 green：fix 后现有 4581 用例仍全过——无任何用例断言 select 含 fileType 的"broken"行为；test 在后 +1 用例全过）。
+
+### Commit
+
+- `efa7304` fix(ai): knowledge-graph-enhanced extractGraphFromFiles 移除死字段 fileType
+- `2cc4cdc` test(ai): knowledge-graph-enhanced 锁定 fileType 死字段移除回归
+
+### 推送
+
+- origin (Gitee)：`29fd97b..2cc4cdc` 推送（含本轮 fix + test 2 commit）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **knowledge-graph-enhanced fileType 死字段已闭合**（select 剔除 + 双重断言守护 + 行为回归用例）。
+- **lib 域零覆盖纯模块延续**（上轮候选延续）：`i18n/i18n-manager.ts`（452 行，import zh-CN/en-US JSON + types，需确认 JSON 依赖可测）、`shares/share-manager.ts`（719 行内存态分享）。本轮已对 share-manager 做可测性预探：模块级单例（构造器 public，可 `new ShareManager()` per-test 隔离）、6 个纯内存 Map、运行时依赖仅同级 `./types`（纯常量/纯函数，零 db/crypto/fetch），评级 EASY，适合 mock 边界单测（仅过期相关用例需 `vi.useFakeTimers`）。i18n-manager 待确认 JSON import 可测性。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
+- **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
