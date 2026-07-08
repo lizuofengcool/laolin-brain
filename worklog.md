@@ -14735,3 +14735,84 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **同型 latent（可选小修）**：knowledge-graph-enhanced 的 extractGraphFromFiles select 仍含 `fileType`（textToAnalyze 不使用）。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
 - **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
+
+## 2026-07-08 20:00 自动迭代
+
+### 第一百三十一轮（workflow evaluateCondition `>=`/`<=` 正则交替顺序修复 + 6 用例回归）
+
+**背景**：上轮 worklog「下一轮候选」明确列出一处 latent 逻辑 bug——`src/lib/workflow/workflow-engine.ts` 的 `evaluateCondition` 正则 `/(.+)\s*(==|!=|>|<|>=|<=)\s*(.+)/` 因交替中 `>`/`<` 排在 `>=`/`<=` 之前，`>=`/`<=` 表达式被错拆，比较恒为 false。上轮标注「可选，视是否有调用方依赖而定」。本轮独立复核后**确认无任何调用方依赖该 broken 行为**（见下），属真实逻辑 bug 且修复零回归，故取为本轮目标。属优先级 1（已知逻辑问题）范畴。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境再次重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后本地 / origin/main / github/main 三方对齐于 `44b2d6e`，无远端更新、无遗留未推送 commit、工作树干净，直接开始新开发。
+- 任务清单优先级 1 原 5 项经上轮逐文件复核闭合，本轮未再重复复核（无新提交介入），聚焦 evaluateCondition latent bug。
+- 调用方依赖核查：`grep "condition:\s*[\"'\`]"` 全仓，所有 `condition:` 字段命中均为 `monitoring`/`bi` 模块的自有 condition 枚举（`gt`/`gte`/`>`/`>=` 等，由各自引擎解析），**无任何 workflow `WorkflowEdge.condition` 字符串使用 `>=`/`<=`**；现有 `workflow-engine.test.ts` 11 个 evaluateCondition 用例仅覆盖 `==`/`!=`/`>`/`<`，未断言 `>=`/`<=` 的 broken 行为。修复安全。
+
+**fix — `src/lib/workflow/workflow-engine.ts` evaluateCondition 正则交替顺序（line 304）**：
+
+原 `/(.+)\s*(==|!=|>|<|>=|<=)\s*(.+)/`：正则交替按书写顺序尝试，在 `>=` 的 `>` 位置 `>`（单字符）先于 `>=` 匹配成功，导致 `>=` 被拆成 `>` + `= 右值`，右值 `parseValue("= 90")` 的 `JSON.parse` 失败回退为字符串 `"= 90"`，数值比较退化为字符串比较 `"score" > "= 90"` → 恒 false。`<=` 同理。
+
+改为 `/(.+)\s*(==|!=|>=|<=|>|<)\s*(.+)/`：长运算符 `>=`/`<=` 排在 `>`/`<` 之前优先匹配。
+
+**零回归证明**（关键）：正则交替重排只改变「同一位置上哪个 alternative 胜出」，不改变 group1 贪婪回溯后「哪些位置可匹配」。任何 `>=`/`<=` 新匹配的位置，其前缀 `>`/`<` 在旧交替中已可匹配（故该位置旧实现也成立，只是取了短运算符）。因此：
+1. 纯 `>`/`<` 位置（后不跟 `=`）：新旧均取 `>`/`<`，行为不变；
+2. `>=`/`<=` 位置：旧取 `>`/`<`（broken），新取 `>=`/`<=`（正确）——仅此处行为改变，正是 bug 场景；
+3. `==`/`!=` 位置：新旧均首匹配，不变。
+
+**独立 repro 验证**（node -e，旧/新正则同逻辑对照）：
+
+| 表达式 | 旧正则 | 新正则 | 期望 |
+|---|---|---|---|
+| `5 >= 5` | false ❌ | true ✅ | true |
+| `6 >= 5` | false ❌ | true ✅ | true |
+| `4 >= 5` | false | false | false |
+| `5 <= 5` | false ❌ | true ✅ | true |
+| `4 <= 5` | false ❌ | true ✅ | true |
+| `6 <= 5` | false | false | false |
+| `5 > 3`  | true | true | true |
+| `5 < 9`  | true | true | true |
+
+旧正则下所有 `>=`/`<=` 真值用例恒为 false，假值用例巧合一致；新正则全部正确；`>`/`<` 新旧一致（零回归）。
+
+**test — `src/__tests__/lib/workflow-engine.test.ts` 补 6 用例（evaluateCondition 运算符块，61 → 67）**：
+
+复用既有 `conditionResult` 辅助（第一条边永假 `{{__never__}} == __sentinel__`、第二条边待测，走 yes 为真、回退 no 为假，可区分真假）。新增：
+- `>=` 大于等于为真（`{{x}} >= 5`, x:5）；`>=` 严格大于为真（x:6）；`>=` 小于为假（x:4）。
+- `<=` 小于等于为真（`{{x}} <= 5`, x:5）；`<=` 严格小于为真（x:4）；`<=` 大于为假（x:6）。
+
+覆盖 `>=`/`<=` 真假全分支，锁定修复。注释说明原 bug 根因（交替顺序）与修法。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/workflow-engine.test.ts`：**67/67 通过**（29ms），含 6 个新 `>=`/`<=` 用例。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量 **4536/4536 通过**（165 文件，139.48s），零回归。测试数较上轮 4530 → 4536（+6），文件数 165 不变（纯追加用例）。
+
+环境备注：沙箱无 node_modules，lockfile 为 `package-lock.json`（npm），`npm ci` 安装 975 包（46s）后 `npx prisma generate`，再跑测试；未触碰 lockfile，`git status` 仅本轮 2 个改动文件（均修改）。
+
+### 改动量
+
+2 文件，+33 / -1：
+- `src/lib/workflow/workflow-engine.ts`（修改）— evaluateCondition 正则交替 `>|<` → `>=|<=` 优先（+3/-1）
+- `src/__tests__/lib/workflow-engine.test.ts`（修改）— evaluateCondition 块 +6 用例覆盖 `>=`/`<=`（+30）
+
+2 commit（fix 在前保证每 commit 单独 green：fix 后现有 4530 用例仍全过——无任何用例断言 `>=`/`<=` 的 broken 行为；test 在后 +6 用例全过）。
+
+### Commit
+
+- `3420529` fix(lib): workflow evaluateCondition >= / <= 正则交替顺序修复
+- `73a4ab6` test(lib): workflow evaluateCondition 补 6 用例覆盖 >= / <= 回归
+
+### 推送
+
+- origin (Gitee)：`44b2d6e..73a4ab6` 推送（含本轮 fix + test 2 commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **evaluateCondition `>=`/`<=` latent bug 已闭合**（正则交替重排 + 6 用例回归守护，工作流条件分支六种比较运算符现在全部正确）。
+- **evaluateCondition 复合表达式（可选，低优先）**：group1 仍为贪婪 `.+`，对多运算符复合表达式（如 `a > b == c`）会取最右运算符拆分，结果不可预期。但模块 docstring 明示「简化版，只支持简单比较表达式」，且无调用方使用复合条件，out of scope；如需硬化可改 `(.+?)` 非贪婪 + 显式拒绝多运算符。
+- **lib 域零覆盖纯模块延续**（上轮候选延续）：`i18n/i18n-manager.ts`（452 行，import zh-CN/en-US JSON + types，需确认 JSON 依赖可测）、`reports/report-manager.ts`（456 行内存态报表）、`shares/share-manager.ts`（719 行内存态分享）。均为纯内存模块，适合 mock 边界单测。
+- **同型 latent（可选小修）**：knowledge-graph-enhanced 的 extractGraphFromFiles select 仍含 `fileType`（textToAnalyze 不使用）。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
+- **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
