@@ -14816,3 +14816,70 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **同型 latent（可选小修）**：knowledge-graph-enhanced 的 extractGraphFromFiles select 仍含 `fileType`（textToAnalyze 不使用）。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
 - **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
+
+## 2026-07-08 21:00 自动迭代
+
+### 第一百三十二轮（report-manager 单例 45 用例补覆盖）
+
+**背景**：上轮 worklog「下一轮候选」列出 lib 域零覆盖纯模块延续项——`i18n/i18n-manager.ts`（452 行）、`reports/report-manager.ts`（456 行内存态报表）、`shares/share-manager.ts`（719 行）。本轮取 `report-manager.ts` 为目标：纯内存态单例（reports / subscriptions 两个 Map），唯一外部依赖 `../visualization` 的 `exportUtils.downloadFile`（仅 `exportReport` 调用），适合 mock 边界单测。属优先级 3（补测试）。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境再次重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后本地 / origin/main / github/main 三方对齐于 `d8c82dc`（第一百三十一轮 worklog commit），无远端更新、无遗留未提交改动、工作树干净，直接开始新开发。
+- 任务清单优先级 1 原 5 项经多轮闭合，本轮抽查复核仍闭合：`tenant-db.ts` raw/transaction 带调用堆栈软审计 + rawDb 导出已移除；`payment/alipay.ts` & `wechat.ts` 已接入 RSA2 / V3 HMAC-SHA256 真实验签（mock 仅未配置时触发）；`api/files/route.ts` findFirst/findMany 走 TenantDb；`cloud-sync/sync-engine.ts` keep_both 已改为重命名本地副本 + 新建云端文件并存；`api-auth.test.ts` 已与实现对齐（4 字段 / async / 不读 query）。无新增优先级 1 介入，聚焦 report-manager 补覆盖。
+
+**test — `src/__tests__/lib/reports/report-manager.test.ts`（新建，45 用例）**：
+
+覆盖控制流：
+- **单例**：`reportManager` 为 `ReportManager` 实例；`getInstance` 多次同一引用。
+- **createReport**：空入参全默认值（name='未命名报表'/type='data'/status='draft'/permission='private'/category='custom'/tags=[]/layout={type:grid,columns:24,gap:16,widgets:[]}/parameters=[]/version=1/viewCount=0/isFavorite=false/lastViewedAt=undefined）；显式入参覆盖（含 dataConfig/coverImage 透传）；两次创建 id 不同（`report_${ts}_${rand}`）。
+- **getReport**：命中 +1 viewCount + 刷新 lastViewedAt（连续调用累加）；未命中 → null；跨租户 → null。
+- **updateReport**：命中浅合并 + version+1 + updatedAt 刷新 + updatedBy 覆盖 + id/tenantId 保留；未命中 / 跨租户 → null。
+- **deleteReport**：命中 true 后 getReport null；未命中 false；跨租户 false（不删他租户，原租户仍可访问）。
+- **queryReports**：租户隔离；search 命中 name/description/tags（大小写不敏感，seed 各字段取值互不交叉以精确区分命中源）；type/category/status/isFavorite 过滤；sortBy=name 大小写不敏感 asc/desc；sortBy=viewCount desc（getReport 自增后排序）；分页 page/pageSize/totalPages 向上取整；默认 page=1/pageSize=20/sortBy=updatedAt/sortOrder=desc。
+- **toggleFavorite**：翻转返回新值 + 刷新 updatedAt；未命中 / 跨租户 → false。
+- **模板**：getTemplates() 返回全部 4 内置（isRecommended 优先）；getTemplates(category) 过滤；getTemplate(id) 命中/未命中。
+- **createFromTemplate**：name 加 `(副本)`，复制 description/type/category/layout；customData 覆盖；未知模板 → null。（内置模板均未定义 parameters，透传 undefined 经 createReport 兜底为 []，断言 toEqual([]) 而非 toBe(tpl.parameters)。）
+- **订阅**：createSubscription 默认值（frequency='weekly'/format='pdf'/channels=['email']/isEnabled=true）+ 报表租户校验（report.tenantId !== 入参 tenantId → null）；getSubscriptions 按 userId+tenantId 过滤（t2 订阅需先建 t2 报表，因 createSubscription 校验 report 租户）；updateSubscription 浅合并 + frequency 变更重算 nextSendAt + 跨用户/租户 → null；deleteSubscription 命中/未命中/跨。
+- **calculateNextSend**（fake timers 固定 NOW=2026-07-15T10:00:00Z，选月中避免任何时区下日期算术跨月边界）：daily=次日 09:00 本地、weekly=周日（getDay()===0）、monthly=次月 1 日 09:00 本地；断言本地时间分量（getHours/getDay/getDate/getMonth）避免时区敏感。
+- **exportReport**（`@/lib/visualization` 的 exportUtils.downloadFile 经 vi.hoisted+vi.mock 替换为稳定 vi.fn）：json 格式调 downloadFile 传 JSON 内容 + `.json` 文件名 + `application/json` mime（解析内容断言含 report id/name）；自定义 filename 生效；csv 含 table widget 调 downloadFile（`.csv`/`text/csv`）；csv 无 table widget 不调（仍 success）；未知格式 success 不调；downloadFile 抛错 → success:false + error。
+- **processReportData / generatePreviewData**：当前直通实现，原样返回 report（toBe 引用相等）。
+
+状态策略：`ReportManager` 构造器私有无法 new；每用例前 `vi.resetModules()` + `await import` 取全新单例（fresh class → fresh instance → fresh reports/subscriptions Maps）；`exportUtils.downloadFile` 经 `vi.hoisted` 捕获稳定 fn，beforeEach `mockClear`，`resetModules` 重取模块时仍引用同一 fn 实例。
+
+首轮 3 用例失败为测试断言 bug（非实现 bug），已修正：
+1. search `'alpha'` seed 中 Gamma 描述原为 `'alpha 相关'` 与 Alpha 名称撞匹配 → 改 Gamma 描述为 `'gamma备注'`，各字段取值互不交叉。
+2. `createFromTemplate parameters` 断言 `toBe(tpl.parameters)` —— 内置模板无 parameters 字段（undefined），createReport 兜底为 [] → 改 `toEqual([])`。
+3. `getSubscriptions` t2 用例原对 t1 报表建 t2 订阅 —— createSubscription 校验 report 租户返回 null → 补建 t2 报表再订阅。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/reports/report-manager.test.ts`：**45/45 通过**（98ms）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量 **4581/4581 通过**（166 文件，200.43s），零回归。测试数较上轮 4536 → 4581（+45），文件数 165 → 166（+1 新文件）。
+
+环境备注：沙箱无 node_modules，lockfile 为 `package-lock.json`（npm），`npm ci` 安装 975 包（1m）后 `npx prisma generate`，再跑测试；未触碰 lockfile，`git status` 仅本轮 1 个新增文件。
+
+### 改动量
+
+1 文件，+604：
+- `src/__tests__/lib/reports/report-manager.test.ts`（新增）— 45 用例覆盖 report-manager 全控制流（+604）
+
+1 commit。
+
+### Commit
+
+- `2b30269` test(reports): 补 report-manager 单例 45 用例覆盖 CRUD/查询/订阅/导出
+
+### 推送
+
+- origin (Gitee)：`d8c82dc..2b30269` 推送
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **report-manager 补覆盖已闭合**（456 行零覆盖模块现 45 用例守护）。
+- **lib 域零覆盖纯模块延续**：`i18n/i18n-manager.ts`（452 行，import zh-CN/en-US JSON + types，需确认 JSON 依赖可测）、`shares/share-manager.ts`（719 行内存态分享）。均为纯内存模块，适合 mock 边界单测。
+- **同型 latent（可选小修）**：knowledge-graph-enhanced 的 extractGraphFromFiles select 仍含 `fileType`（textToAnalyze 不使用）——删一行 select 字段即可，零回归。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
+- **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`、`src/lib/saas/billing.service.ts:290`、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩——可逐模块做 mock 边界单测补覆盖。
