@@ -14486,3 +14486,65 @@ createChatSession 在无 title 且 fileIds 非空时，先经 `db.file.findMany(
 - **同型 latent（可选小修）**：knowledge-graph-enhanced 的 extractGraphFromFiles select 仍含 `fileType`（textToAnalyze 不使用），与上轮 textContent 同类，但 fileType 短字符串查询成本可忽略，是否裁剪视是否统一 select 为「仅实际使用字段」而定。
 - **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
 - **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
+
+## 2026-07-08 08:00 自动迭代
+
+### 第一百二十七轮（ai/face-detection 补 29 用例覆盖 detectFaces 全路径）
+
+**背景**：上轮 worklog「下一轮候选」将「lib 域零覆盖纯模块延续」列为首选，点名 `src/lib/ai/face-detection.ts`（依赖 z-ai-web-dev-sdk，可 `vi.mock('z-ai-web-dev-sdk')` 覆盖 detectFaces 的 JSON 解析/超时/数组过滤/字段强制/AbortError 路径，与 ai-vision.test.ts 同型 mock 模式）。本轮即取该模块：其为单文件纯逻辑 + SDK 依赖（无 db 依赖），SDK 可经 `vi.hoisted + vi.mock` 替换，与第 121/123/126 轮（document-qna / knowledge-graph-enhanced / recommendation 补测）同型，单测价值高、零回归风险。
+
+前置确认：
+- 沙箱无 laolin-brain 目录（环境重置），`git clone` 自 Gitee origin 后补加 github remote，`git config user.email/name` 已设。
+- 双端 fetch 后 origin/main 与 github/main 均对齐于 `a3d07fc`（第一百二十六轮 worklog commit），工作树干净，无遗留 commit/改动，无需 rebase。
+- 任务清单优先级 1 的原 5 项经本轮逐文件复核确认已闭合：
+  · `tenant-db.ts` raw getter 与 transaction 均带调用堆栈 `console.warn` 软审计（line 41-47 / 56-62），文件末尾注释说明 rawDb 不再无审计导出；
+  · `alipay.ts` verifyRSA2Sign 已用 `crypto.createVerify('RSA-SHA256')` + PEM 规整（normalizePublicKey 补头尾/64 字符换行）真实验签，已配置但未接 SDK 时 createPayment/queryPayment 显式失败而非 mock（line 39-42 / 83-87）；`wechat.ts` 同型闭合（line 219 注释「不再非空即通过」）；
+  · `api/files/route.ts` 列表（line 486 tenantDb.file.findMany）与去重（line 273）走 TenantDb，`$queryRaw` 配额查询 SQL 内已显式带 `tenantId`（line 143/343）；
+  · `cloud-sync/sync-engine.ts` keep_both 分支已重命名本地为 `[冲突副本]` + 云端版本以新 id create（line 687-728），并加跨租户 fileId 归属前置校验（line 664-672）；line 897「简化处理不自动删除本地文件」为防数据丢失的刻意设计，非 bug；
+  · `api-auth.test.ts` 已匹配实现：期望 4 字段（userId/email/tenantId/role）、async、仅读 Authorization 头拒绝 query param、自动建租户用 free plan（line 67/86/106/147）。
+- `grep face-detection` 全仓确认：仅 `src/lib/ai/face-detection.ts` 自身定义，无 `ai-face-detection.test.ts`，为零覆盖纯模块。`src/__tests__/lib/` 现有 161 测试文件，本轮新增第 162 个。
+- `ai-vision.test.ts` 既有 `vi.mock('z-ai-web-dev-sdk')` 范式可复用（default.create 经 mockCreate 暴露）；`invitations-route.test.ts` 既有 `crypto.randomUUID` 不 mock + UUID 正则断言范式可复用（避免内置 crypto 模块 mock 风险）。
+- 本次为纯新增测试文件（1 commit），不改生产代码，零回归风险。
+
+**test — 新增 `src/__tests__/lib/ai-face-detection.test.ts`（29 用例）**：
+
+`z-ai-web-dev-sdk` 经 `vi.hoisted + vi.mock` 替换（`default.create` → mockCreate），每例 `beforeEach vi.resetModules()` 重置模块级单例 `zaiInstance=null`。`makeZai` 工厂注入 `chat.completions.create` 桩，`makeFace` 工厂构造单人脸原始对象。覆盖 detectFaces 全分支：
+
+- **成功路径（3 用例）**：单人脸全字段有效映射（id 用 UUID 正则断言形状、x/y/width/height 取整、description/embedding 透传）、多人脸各自分配互异 UUID id、浮点坐标 Math.round 取整（10.6→11 / 20.4→20 / 33.5→34 / 41.5→42）。
+- **JSON 提取（7 用例）**：markdown 包裹（```json ... ```）正则提取、JSON 前后有说明文字正则仍提取 [..] 片段、空数组 `[]` 映射为空、content 缺失（message 无 content 字段）回退 `'[]'`、choices 数组为空回退 `'[]'`、JSON 解析为对象/数字（非数组）返回 []、纯文本无数组 `JSON.parse` 抛错捕获返回 []（并断言打印 failed 日志）。
+- **字段容错（5 用例）**：x/y/width/height 非数字（'a'/null/true/undefined）回退 0（width=0 命中过滤）、description 非字符串（123）回退 ''、embedding 非数组（'nope'）回退 []、embedding 含非数字元素（'x'/null/true）filter 仅留 number、embedding 超 32 个数字 slice(0,32) 截断。
+- **过滤（4 用例）**：width=0 剔除、height=0 剔除、width 负数剔除（width>0 守卫）、有效无效混合（4 张含 2 张 width/height=0）仅留 2 张有效。
+- **异常（4 用例）**：AbortError(DOMException name=AbortError) 走超时分支打印「timed out after 60 seconds」、AbortError(普通 Error 对象 name=AbortError) 同走超时分支、通用 Error 走失败分支打印「failed:」、ZAI.create() 抛错走失败分支（断言未打印超时日志）。
+- **调用形状 / 单例 / 超时 / 资源（6 用例）**：请求携带 system + user 两条消息且 user 消息含 `data:image/jpeg;base64,${imageBase64}`、signal 字段为 AbortSignal 实例、同一模块加载内连续两次调用仅触发一次 ZAI.create（单例缓存，mockCompletionCreate 仍调 2 次）、`vi.useFakeTimers` 验证 60s 边界（59.999s 不超时未打印超时日志 / +1ms 触发 controller.abort → create promise reject AbortError → 超时分支，try/finally 保证 vi.useRealTimers 不泄漏）、JSON.parse 抛错时 finally 仍调用 clearTimeout 清理定时器（vi.spyOn(globalThis,'clearTimeout') 断言）。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/ai-face-detection.test.ts`：**29/29 通过**（38ms）。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量 **4386/4386 通过**（162 文件，139.11s），零回归。测试数较上轮 4357 → 4386（+29），文件数 161 → 162（+1，纯新增）。
+
+环境备注：沙箱无 node_modules，仓库 lockfile 为 `package-lock.json`（npm，无 pnpm-lock.yaml），故 `npm ci` 安装后 `npx prisma generate`，再跑测试；未触碰 lockfile（`npm ci` 冻结安装），`git status` 仅本轮 1 个新增测试文件。
+
+### 改动量
+
+1 文件，+481：
+- `src/__tests__/lib/ai-face-detection.test.ts`（新增）— 29 用例覆盖 detectFaces 全路径（成功/JSON 提取/字段容错/过滤/异常/调用形状/单例/超时/资源清理）
+
+1 test commit（纯新增测试，不改生产代码，保证每次提交后测试不破、零回归）。
+
+### Commit
+
+- `c94ee04` test(lib): ai/face-detection 补 29 用例覆盖 detectFaces 全路径
+
+### 推送
+
+- origin (Gitee)：`a3d07fc..c94ee04` 推送（含本轮 1 test commit；worklog commit 随后另推）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **ai/face-detection 已补测闭合**（29 用例，detectFaces 全路径覆盖，零覆盖纯模块清零）。
+- **lib 域零覆盖纯模块延续**：face-detection 已闭合，ai/ 目录下 document-qna / knowledge-graph-enhanced / recommendation / face-detection 均已补测，可继续扫其他零覆盖纯模块（如 `src/lib/ai/model-manager.ts`——含 4 处 TODO 桩「实际调用模型 API」，可 mock SDK 覆盖 testConnection/chat/embedding 的桩边界与配置校验；或 `src/lib/ai/embeddings.ts`）。
+- **同型 latent（可选小修）**：knowledge-graph-enhanced 的 extractGraphFromFiles select 仍含 `fileType`（textToAnalyze 不使用），与上轮 textContent 同类，但 fileType 短字符串查询成本可忽略，是否裁剪视是否统一 select 为「仅实际使用字段」而定。
+- **同型「inline 模拟」测试文件清理**：`tenant-security.test.ts`、`src/lib/utils/__tests__/security.test.ts` 等。
+- **剩余 TODO 桩集中区**：`src/lib/plugins/registry.ts`（10+ 处，已有 plugins-registry.test.ts 可补强 API 桩边界）、`src/lib/saas/billing.service.ts:290`（支付宝/微信支付对接 TODO）、`src/lib/monitoring/index.ts` sendToChannel 各渠道桩（已有 monitoring-index.test.ts）——可逐模块做 mock 边界单测补覆盖。
