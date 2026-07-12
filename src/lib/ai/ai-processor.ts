@@ -78,7 +78,7 @@ export async function checkAiQuotaAndTenant(userId: string, tenantId: string) {
 /**
  * 记录租户AI使用量
  * @param tenantId 租户ID
- * @param operation AI 操作类型（summary/ocr/describe/tags），用于按类型拆分统计
+ * @param operation AI 操作类型（summary/ocr/describe/tags/qna），用于按类型拆分统计
  * @param userId 触发调用的用户ID，落 AiUsageLog 以备审计
  *
  * 在单个事务内同时自增 Tenant.aiUsed 与写入 AiUsageLog 明细，保证配额计数与
@@ -86,7 +86,7 @@ export async function checkAiQuotaAndTenant(userId: string, tenantId: string) {
  */
 export async function incrementTenantAiUsage(
   tenantId: string,
-  operation: 'summary' | 'ocr' | 'describe' | 'tags',
+  operation: 'summary' | 'ocr' | 'describe' | 'tags' | 'qna',
   userId: string,
 ) {
   try {

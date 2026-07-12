@@ -4,6 +4,7 @@
  */
 
 import { db } from "@/lib/db";
+import { incrementTenantAiUsage } from "./ai-processor";
 
 // 对话消息类型
 export interface ChatMessage {
@@ -199,8 +200,13 @@ export async function askQuestion(
     model = "default",
   } = options;
 
-  // 检查AI配额
-  // TODO: 实现配额检查
+  // 检查AI配额：复用租户级配额机制（Tenant.aiUsed/aiQuota/aiResetDate），
+  // 与 summarize/ocr/describe/generate-tags 四类 AI 路由同口径。配额耗尽时抛错，
+  // 由调用方（路由层）捕获并返回 429。checkAiQnAQuota 在窗口过期时负责重置 aiUsed。
+  const quota = await checkAiQnAQuota(userId, tenantId);
+  if (!quota.available) {
+    throw new Error("AI配额已用完，请明天再试或升级套餐");
+  }
 
   // 检索相关文档片段
   const relevantDocs = await retrieveRelevantDocuments(
@@ -215,8 +221,8 @@ export async function askQuestion(
   const prompt = buildPrompt(question, context);
 
   // 调用AI模型
-  // TODO: 实际调用AI模型
-  // 这里返回模拟结果
+  // TODO: 实际调用AI模型（需接入外部模型 API，属功能完整性缺口，待模型 SDK 接入后落地）
+  // 当前返回基于检索文档的模拟结果，配额校验与用量记录已真实生效
   const answer = generateMockAnswer(question, relevantDocs);
 
   // 构建引用
@@ -229,12 +235,19 @@ export async function askQuestion(
       }))
     : [];
 
+  const tokensUsed = estimateTokens(question + answer + context);
+
+  // 记录AI问答使用：原子自增 Tenant.aiUsed + 写 AiUsageLog(operation='qna') 明细，
+  // 与四类 AI 路由的 incrementTenantAiUsage 同机制，保证租户配额计数与审计日志一致。
+  // tokensUsed 当前仅计次（AiUsageLog schema 无 tokens 字段），待 schema 扩展后落库。
+  await recordAiQnAUsage(userId, tenantId, tokensUsed);
+
   return {
     answer,
     citations,
     confidence: 0.85, // 模拟置信度
     model,
-    tokensUsed: estimateTokens(question + answer + context),
+    tokensUsed,
   };
 }
 
@@ -357,28 +370,68 @@ function generateId(): string {
 
 /**
  * 检查AI配额
+ *
+ * 复用租户级 AI 配额机制（Tenant.aiQuota / aiUsed / aiResetDate），与
+ * checkAiQuotaAndTenant 同口径：窗口（aiResetDate）过期或未设置时重置 aiUsed=0
+ * 并把 aiResetDate 推进 24h，保证过期窗口不会让配额永久卡死；随后按
+ * aiUsed >= aiQuota 判定是否可用。
+ *
+ * 注意：本函数为租户级配额校验（与 summarize/ocr/describe/tags 四类 AI 路由一致），
+ * userId 仅用于日志上下文保留入参语义，不参与用户级配额判定。
+ *
+ * @returns available 是否还可调用；remaining 剩余次数；limit 租户配额上限
  */
 export async function checkAiQnAQuota(
   userId: string,
   tenantId: string
 ): Promise<{ available: boolean; remaining: number; limit: number }> {
-  // TODO: 实现配额检查
-  // 这里返回模拟数据
-  return {
-    available: true,
-    remaining: 100,
-    limit: 100,
-  };
+  // userId 当前仅用于审计上下文保留，租户级配额不按用户拆分
+  void userId;
+
+  const tenant = await db.tenant.findUnique({
+    where: { id: tenantId },
+    select: { aiQuota: true, aiUsed: true, aiResetDate: true, status: true },
+  });
+
+  // 租户不存在或已停用：不可用，配额上限按 0 报告
+  if (!tenant || tenant.status !== "active") {
+    return { available: false, remaining: 0, limit: 0 };
+  }
+
+  const limit = tenant.aiQuota;
+  const now = new Date();
+
+  // 窗口过期或未设置：重置 aiUsed 并把 aiResetDate 推进 24h（与 checkAiQuotaAndTenant 一致），
+  // 避免过期窗口残留的 aiUsed 永久卡死配额。重置后按 aiUsed=0 口径计算剩余。
+  if (!tenant.aiResetDate || tenant.aiResetDate < now) {
+    await db.tenant.update({
+      where: { id: tenantId },
+      data: {
+        aiUsed: 0,
+        aiResetDate: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+      },
+    });
+    return { available: limit > 0, remaining: limit, limit };
+  }
+
+  const remaining = Math.max(0, limit - tenant.aiUsed);
+  return { available: remaining > 0, remaining, limit };
 }
 
 /**
  * 记录AI问答使用
+ *
+ * 经 incrementTenantAiUsage 在单个事务内原子自增 Tenant.aiUsed 并写 AiUsageLog
+ * 明细（operation='qna'），与四类 AI 路由同机制，保证配额计数与审计日志一致。
+ * tokensUsed 当前仅计次（AiUsageLog schema 无 tokens 字段），保留入参语义待
+ * schema 扩展后落库。
  */
 export async function recordAiQnAUsage(
   userId: string,
   tenantId: string,
   tokensUsed: number
 ): Promise<void> {
-  // TODO: 实现使用记录
-  console.log(`AI QnA usage: ${userId}, ${tenantId}, ${tokensUsed} tokens`);
+  // tokensUsed 当前未落库（schema 无 tokens 字段），保留入参待 schema 扩展
+  void tokensUsed;
+  await incrementTenantAiUsage(tenantId, "qna", userId);
 }

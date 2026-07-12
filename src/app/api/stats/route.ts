@@ -320,8 +320,9 @@ async function getActivityStats(tenantId: string, dateFrom?: string | null, date
 // ─── 获取AI使用统计 ─────────────
 async function getAiStats(tenantId: string) {
   // 读取租户 AI 配额。Tenant.aiUsed / aiQuota 由 checkAiQuotaAndTenant 在每次 AI 调用时
-  // 维护：summarize / ocr / describe / generate-tags 四类 AI 路由均经 incrementTenantAiUsage
-  // 计入租户用量，故 aiUsed 反映当前配额窗口内的全部 AI 调用。
+  // 维护：summarize / ocr / describe / generate-tags 四类 AI 路由 + 文档问答 askQuestion
+  // （经 recordAiQnAUsage）均经 incrementTenantAiUsage 计入租户用量，故 aiUsed 反映
+  // 当前配额窗口内的全部 AI 调用。
   const tenant = await db.tenant.findUnique({
     where: { id: tenantId },
     select: { aiQuota: true, aiUsed: true, aiResetDate: true },
@@ -335,13 +336,14 @@ async function getAiStats(tenantId: string) {
   const quotaUsed = windowActive ? tenant?.aiUsed ?? 0 : 0;
   const quotaPercent = quotaTotal > 0 ? Math.round((quotaUsed / quotaTotal) * 100) : 0;
 
-  // 按类型(summary/ocr/describe/tags)拆分：聚合当前配额窗口内的 AiUsageLog。
+  // 按类型(summary/ocr/describe/tags/qna)拆分：聚合当前配额窗口内的 AiUsageLog。
   // 窗口起点 = aiResetDate - 24h（与 checkAiQuotaAndTenant 的 24h 重置口径一致），
   // 窗口未激活时不查询，各类型计次随 quotaUsed 一并按 0 报告，保持口径一致。
   let summaryCalls = 0;
   let ocrCalls = 0;
   let describeCalls = 0;
   let tagCalls = 0;
+  let qnaCalls = 0;
   if (windowActive && tenant?.aiResetDate) {
     const windowStart = new Date(tenant.aiResetDate.getTime() - 24 * 60 * 60 * 1000);
     const groups = await db.aiUsageLog.groupBy({
@@ -364,18 +366,22 @@ async function getAiStats(tenantId: string) {
         case 'tags':
           tagCalls = count;
           break;
+        case 'qna':
+          qnaCalls = count;
+          break;
       }
     }
   }
 
   return {
-    // 今日 AI 调用总次数（= 当前配额窗口内已用计次，四类 AI 路由统一计入 Tenant.aiUsed）
+    // 今日 AI 调用总次数（= 当前配额窗口内已用计次，五类 AI 路由统一计入 Tenant.aiUsed）
     totalCalls: quotaUsed,
     // 按类型拆分：聚合 AiUsageLog 当前窗口内的明细
     summaryCalls,
     ocrCalls,
     describeCalls,
     tagCalls,
+    qnaCalls,
     quotaUsed,
     quotaTotal,
     quotaPercent,
