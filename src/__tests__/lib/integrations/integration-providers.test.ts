@@ -1,15 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // integrations/feishu.ts & github.ts & wecom.ts：三个内置 IntegrationProvider 实现（实现 ./index 的接口，
-// 非 ./integration-manager 的 meta 版）。均为同步/纯内存逻辑：
+// 非 ./integration-manager 的 meta 版）。
 //   · initialize(config) 写入私有 config + 置 initialized=true
-//   · testConnection() 未初始化抛错；缺关键字段返回 false；齐备返回 true
+//   · testConnection() 未初始化抛错；缺关键字段返回 false；齐备时行为分实现：
+//       - feishu/github 仅做内存校验（齐备直接返回 true）
+//       - wecom 真实调用企业微信 gettoken（需 mock fetch，覆盖见 wecom-real-api.test.ts）
 //   · getAuthUrl(redirectUri, state) 纯字符串拼装（redirect_uri 经 encodeURIComponent）
-//   · handleAuthCallback(code, state) 返回固定结构（含回显 code/state + 桩 userId/name）
-//   · sendMessage(to, msg)（feishu/wecom）未初始化抛错；已初始化仅 console.log
+//   · handleAuthCallback(code, state)（feishu/github 返回桩结构；wecom 真实 API 调用见 wecom-real-api.test.ts）
+//   · sendMessage(to, msg)（feishu/wecom）未初始化抛错；feishu 已初始化仅 console.log；
+//     wecom 真实 API 调用见 wecom-real-api.test.ts
 //   · syncData() 返回 {users|repositories, departments?, syncedAt: Date}
-//   · handleWebhook(payload, signature) 返回 {event, ...handled:true}
-// 无任何网络/OAuth 调用，可全量边界单测。GitHub capabilities.message=false 且无 sendMessage 方法。
+//   · handleWebhook(payload, signature)（feishu/github 直接回显 handled:true；
+//     wecom 真实签名校验见 wecom-real-api.test.ts）
+// 本文件仅覆盖 feishu/github 的全量边界单测 + 三实现的内存/契约一致性；
+// wecom 的网络路径单独在 wecom-real-api.test.ts 中以 mock fetch 覆盖。
 import { FeishuIntegration } from '@/lib/integrations/feishu';
 import { GitHubIntegration } from '@/lib/integrations/github';
 import { WeComIntegration } from '@/lib/integrations/wecom';
@@ -252,11 +257,8 @@ describe('WeComIntegration', () => {
     await expect(p.testConnection()).resolves.toBe(false);
   });
 
-  it('testConnection corpId/agentId/secret 三者齐备返回 true', async () => {
-    const p = make();
-    await p.initialize({ corpId: 'corp', agentId: '1000001', secret: 'sec' });
-    await expect(p.testConnection()).resolves.toBe(true);
-  });
+  // testConnection 齐备 → 真实调用企业微信 gettoken，需 mock fetch，
+  // 见 wecom-real-api.test.ts
 
   it('getAuthUrl 拼装企业微信扫码授权地址（appid=corpId / agentid / redirect_uri 编码 / state）', () => {
     const p = make();
@@ -277,17 +279,8 @@ describe('WeComIntegration', () => {
     expect(url).toContain('agentid=undefined');
   });
 
-  it('handleAuthCallback 回显 code/state 并返回桩用户结构', async () => {
-    const p = make();
-    const res = await p.handleAuthCallback('c2', 's2');
-    expect(res).toEqual({
-      code: 'c2',
-      state: 's2',
-      userId: 'wecom_user_id',
-      name: '企业微信用户',
-      avatar: '',
-    });
-  });
+  // handleAuthCallback 真实调用 auth/getuserinfo + auth/getuserdetail，需 mock fetch，
+  // 见 wecom-real-api.test.ts
 
   it('sendMessage 未初始化抛 "Integration not initialized"', async () => {
     await expect(make().sendMessage('u', { text: 'x' })).rejects.toThrow(
@@ -295,12 +288,8 @@ describe('WeComIntegration', () => {
     );
   });
 
-  it('sendMessage 已初始化解析并以 [WeCom] 前缀打印日志', async () => {
-    const p = make();
-    await p.initialize({ corpId: 'corp', agentId: '1000001', secret: 'sec' });
-    await p.sendMessage('u', { text: 'x' });
-    expect(logSpy).toHaveBeenCalledWith('[WeCom] Sending message to', 'u', { text: 'x' });
-  });
+  // sendMessage 已初始化 → 真实调用 message/send，需 mock fetch，
+  // 见 wecom-real-api.test.ts
 
   it('syncData 返回空 users/departments + syncedAt Date', async () => {
     const p = make();
@@ -310,11 +299,8 @@ describe('WeComIntegration', () => {
     expect(res.syncedAt).toBeInstanceOf(Date);
   });
 
-  it('handleWebhook 回显 payload.event 并标记 handled:true', async () => {
-    const p = make();
-    const res = await p.handleWebhook({ event: 'msg' }, 'sig');
-    expect(res).toEqual({ event: 'msg', handled: true });
-  });
+  // handleWebhook 真实做 SHA1 签名校验，需 mock fetch 或测试签名构造，
+  // 见 wecom-real-api.test.ts
 });
 
 // ============================ 跨实现契约一致性 ============================
