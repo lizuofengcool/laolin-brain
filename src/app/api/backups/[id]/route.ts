@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import path from "path";
+import { unlink } from "fs/promises";
 import { db } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 
@@ -111,12 +113,33 @@ export async function DELETE(
       );
     }
 
-    // 删除备份
+    // 路径遍历防护：若 filePath 越界（不在 ./backups 目录下）则拒绝整个删除操作，
+    // 避免删除 DB 记录后被用于清理任意磁盘文件。与 files/[id] DELETE 的 upload 目录
+    // 前缀校验同范式（defense-in-depth，前置阻断优于事后清理）。
+    if (existingBackup.filePath) {
+      const backupDir = path.resolve('./backups');
+      const resolvedPath = path.resolve(existingBackup.filePath);
+      if (!resolvedPath.startsWith(backupDir)) {
+        return NextResponse.json(
+          { error: 'Invalid file path' },
+          { status: 400 }
+        );
+      }
+    }
+
+    // 删除备份记录
     await db.backup.delete({
       where: { id: backupId },
     });
 
-    // TODO: 删除物理备份文件
+    // 删除物理备份文件（best-effort：DB 记录已删除，文件缺失不应阻断响应）
+    if (existingBackup.filePath) {
+      try {
+        await unlink(existingBackup.filePath);
+      } catch {
+        // 文件可能已不存在（手动清理 / 未实际生成），忽略
+      }
+    }
 
     return NextResponse.json({
       success: true,
