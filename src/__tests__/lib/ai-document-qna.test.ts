@@ -10,30 +10,45 @@
  * - getChatSession：命中且 userId/tenantId 双匹配返回会话，否则 null（跨用户/租户隔离）
  * - addChatMessage：双匹配时生成 id+timestamp 并 push 到 messages、更新 updatedAt；否则 null
  * - deleteChatSession：双匹配时从缓存删除返回 true；否则 false
- * - askQuestion：默认 fileIds=[]/includeCitations=true/model="default"；经 retrieveRelevantDocuments
+ * - askQuestion：先经 checkAiQnAQuota 校验租户配额（耗尽抛 "AI配额已用完..."）；
+ *   默认 fileIds=[]/includeCitations=true/model="default"；经 retrieveRelevantDocuments
  *   关键词检索（split /\s+/、过滤 len>1、slice 5、OR fileName contains insensitive、take 10）；
  *   citations 取前 3 条；score=1-index*0.1 递减；snippet 取 summary 否则回退；无文档时返回
- *   "抱歉..." 文案；confidence 固定 0.85；tokensUsed=estimateTokens(question+answer+context)
- * - checkAiQnAQuota：返回 mock 配额 {available:true,remaining:100,limit:100}
- * - recordAiQnAUsage：console.log 记录，返回 void
+ *   "抱歉..." 文案；confidence 固定 0.85；tokensUsed=estimateTokens(question+answer+context)；
+ *   末尾经 recordAiQnAUsage 原子自增 Tenant.aiUsed + 写 AiUsageLog(operation='qna')
+ * - checkAiQnAQuota：复用租户级配额机制（Tenant.aiQuota/aiUsed/aiResetDate/status）；
+ *   窗口过期/未设置时重置 aiUsed=0 + aiResetDate=now+24h；返回 {available,remaining,limit}
+ * - recordAiQnAUsage：经 incrementTenantAiUsage('qna') 原子自增 aiUsed + 写 AiUsageLog 明细
  *
  * 状态策略：模块持有 module-level 的 chatSessionsCache（Map）。每个用例前 vi.resetModules()
  * + await import() 重新求值模块，得到全新 chatSessionsCache，避免用例间缓存串扰；配合
  * vi.useFakeTimers() + vi.setSystemTime() 固定 now，使 createdAt/updatedAt/sort 顺序可断言。
- * @/lib/db 经 vi.hoisted + vi.mock 替换，仅 db.file.findMany 可控（createChatSession 标题生成
- * 与 retrieveRelevantDocuments 两处调用点形状不同，按 mock.calls[0][0] 分别断言）。
+ * @/lib/db 经 vi.hoisted + vi.mock 替换：file.findMany（检索/标题生成）、tenant.findUnique/
+ * update（配额校验/重置）、aiUsageLog.create + $transaction（用量记录）可控。askQuestion 默认
+ * 走 beforeEach 注入的可用配额租户（aiQuota 1000 / aiUsed 0 / 窗口激活），个别用例按需覆盖。
  *
  * latent 观察（已修复）：
  * - createChatSession 标题拼接原 `if (files.length > 3)` 因 db.file.findMany take:3
  *   恒假（死分支），` 等${fileIds.length}个文件` 后缀永不追加。已修复为
  *   `if (fileIds.length > 3)`：当用户选中的文件数 > 3 时，标题拼接前 3 名 + "等N个文件"。
- * - checkAiQnAQuota / recordAiQnAUsage 为 TODO 桩（返回固定 mock 数据 / 仅 console.log），
- *   已补用例锁定当前桩行为，留待接入真实配额与用量记录时升级。
+ * - checkAiQnAQuota / recordAiQnAUsage 原为 TODO 桩（固定 mock 数据 / 仅 console.log），
+ *   已接入租户级配额机制（Tenant.aiUsed/aiQuota/aiResetDate + AiUsageLog(operation='qna')），
+ *   askQuestion 同步启用配额校验（耗尽抛错）与用量记录。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const { mockFileFindMany } = vi.hoisted(() => ({
+const {
+  mockFileFindMany,
+  mockTenantFindUnique,
+  mockTenantUpdate,
+  mockAiUsageLogCreate,
+  mockTransaction,
+} = vi.hoisted(() => ({
   mockFileFindMany: vi.fn(),
+  mockTenantFindUnique: vi.fn(),
+  mockTenantUpdate: vi.fn(),
+  mockAiUsageLogCreate: vi.fn(),
+  mockTransaction: vi.fn(),
 }));
 
 vi.mock('@/lib/db', () => ({
@@ -41,6 +56,14 @@ vi.mock('@/lib/db', () => ({
     file: {
       findMany: mockFileFindMany,
     },
+    tenant: {
+      findUnique: mockTenantFindUnique,
+      update: mockTenantUpdate,
+    },
+    aiUsageLog: {
+      create: mockAiUsageLogCreate,
+    },
+    $transaction: mockTransaction,
   },
 }));
 
@@ -66,7 +89,7 @@ describe('ai/document-qna', () => {
   let askQuestion: AskQuestion;
   let checkAiQnAQuota: CheckAiQnAQuota;
   let recordAiQnAUsage: RecordAiQnAUsage;
-  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
     vi.useFakeTimers();
@@ -75,6 +98,25 @@ describe('ai/document-qna', () => {
     mockFileFindMany.mockReset();
     // 默认返回空数组，个别用例按需覆盖
     mockFileFindMany.mockResolvedValue([]);
+
+    // 默认租户：配额窗口激活（aiResetDate 在未来 1h）+ 配额可用（aiUsed 0 / aiQuota 1000），
+    // 使 askQuestion 内的 checkAiQnAQuota 校验通过、不触达重置分支；个别用例按需覆盖。
+    mockTenantFindUnique.mockReset();
+    mockTenantUpdate.mockReset();
+    mockAiUsageLogCreate.mockReset();
+    mockTransaction.mockReset();
+    mockTenantFindUnique.mockResolvedValue({
+      aiQuota: 1000,
+      aiUsed: 0,
+      aiResetDate: new Date(NOW.getTime() + 60 * 60 * 1000),
+      status: 'active',
+    });
+    mockTenantUpdate.mockResolvedValue({});
+    mockAiUsageLogCreate.mockResolvedValue({});
+    // $transaction 接收 promise 数组（Prisma 数组事务语义），顺序执行并返回结果。
+    mockTransaction.mockImplementation(async (args: unknown[]) =>
+      Promise.all(args as Promise<unknown>[])
+    );
 
     const mod = await import('@/lib/ai/document-qna');
     createChatSession = mod.createChatSession;
@@ -86,12 +128,13 @@ describe('ai/document-qna', () => {
     checkAiQnAQuota = mod.checkAiQnAQuota;
     recordAiQnAUsage = mod.recordAiQnAUsage;
 
-    logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    // incrementTenantAiUsage 在 $transaction 抛错时走 console.error 兜底，静默预期错误日志
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
   });
 
   afterEach(() => {
     vi.useRealTimers();
-    logSpy.mockRestore();
+    errorSpy.mockRestore();
   });
 
   // ─── createChatSession ──────────────────────────────────
@@ -505,32 +548,207 @@ describe('ai/document-qna', () => {
       const arg = mockFileFindMany.mock.calls[0][0];
       expect(arg.where.OR).toEqual([]);
     });
+
+    it('配额耗尽：抛错 "AI配额已用完..." 且不触达检索/记录', async () => {
+      // 窗口激活但 aiUsed >= aiQuota → available:false
+      mockTenantFindUnique.mockResolvedValue({
+        aiQuota: 5,
+        aiUsed: 5,
+        aiResetDate: new Date(NOW.getTime() + 60 * 60 * 1000),
+        status: 'active',
+      });
+      mockFileFindMany.mockResolvedValue([
+        { id: 'f1', fileName: 'a.pdf', summary: 's1' },
+      ]);
+
+      await expect(askQuestion('问题', 'u1', 't1')).rejects.toThrow(/AI配额已用完/);
+
+      // 配额校验失败：不应触达检索与用量记录
+      expect(mockFileFindMany).not.toHaveBeenCalled();
+      expect(mockTransaction).not.toHaveBeenCalled();
+    });
+
+    it('配额可用：成功返回并经 recordAiQnAUsage 记录一次 qna 用量', async () => {
+      mockFileFindMany.mockResolvedValue([
+        { id: 'f1', fileName: 'a.pdf', summary: 's1' },
+      ]);
+
+      const result = await askQuestion('问题', 'u1', 't1');
+
+      expect(result.answer).toContain('a.pdf');
+      // recordAiQnAUsage → incrementTenantAiUsage → $transaction 调用一次
+      expect(mockTransaction).toHaveBeenCalledTimes(1);
+      // aiUsageLog.create 以 operation='qna' 写入明细
+      expect(mockAiUsageLogCreate).toHaveBeenCalledWith({
+        data: { tenantId: 't1', userId: 'u1', operation: 'qna' },
+      });
+      // tenant.update 自增 aiUsed
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 't1' },
+        data: { aiUsed: { increment: 1 } },
+      });
+    });
   });
 
-  // ─── checkAiQnAQuota / recordAiQnAUsage（TODO 桩）──────
+  // ─── checkAiQnAQuota / recordAiQnAUsage（租户配额机制）──
 
-  describe('checkAiQnAQuota（桩）', () => {
-    it('返回固定 mock 配额 {available:true,remaining:100,limit:100}', async () => {
+  describe('checkAiQnAQuota', () => {
+    it('窗口激活 + aiUsed < aiQuota：available true，remaining = aiQuota - aiUsed，不重置', async () => {
+      mockTenantFindUnique.mockResolvedValue({
+        aiQuota: 200,
+        aiUsed: 5,
+        aiResetDate: new Date(NOW.getTime() + 60 * 60 * 1000),
+        status: 'active',
+      });
+
       const quota = await checkAiQnAQuota('u1', 't1');
-      expect(quota).toEqual({ available: true, remaining: 100, limit: 100 });
+
+      expect(quota).toEqual({ available: true, remaining: 195, limit: 200 });
+      // 窗口激活 → 不触达重置
+      expect(mockTenantUpdate).not.toHaveBeenCalled();
+    });
+
+    it('窗口激活 + aiUsed >= aiQuota：available false，remaining 0', async () => {
+      mockTenantFindUnique.mockResolvedValue({
+        aiQuota: 100,
+        aiUsed: 100,
+        aiResetDate: new Date(NOW.getTime() + 60 * 60 * 1000),
+        status: 'active',
+      });
+
+      const quota = await checkAiQnAQuota('u1', 't1');
+
+      expect(quota).toEqual({ available: false, remaining: 0, limit: 100 });
+      expect(mockTenantUpdate).not.toHaveBeenCalled();
+    });
+
+    it('aiQuota=0：available false（即使窗口激活），remaining 0', async () => {
+      mockTenantFindUnique.mockResolvedValue({
+        aiQuota: 0,
+        aiUsed: 0,
+        aiResetDate: new Date(NOW.getTime() + 60 * 60 * 1000),
+        status: 'active',
+      });
+
+      const quota = await checkAiQnAQuota('u1', 't1');
+
+      expect(quota).toEqual({ available: false, remaining: 0, limit: 0 });
+    });
+
+    it('窗口过期：重置 aiUsed=0 + aiResetDate=now+24h，available true，remaining = aiQuota', async () => {
+      mockTenantFindUnique.mockResolvedValue({
+        aiQuota: 200,
+        aiUsed: 200, // 历史残留已耗尽，但窗口过期 → 重置后恢复满额
+        aiResetDate: new Date(NOW.getTime() - 60 * 60 * 1000), // 1h 前过期
+        status: 'active',
+      });
+
+      const quota = await checkAiQnAQuota('u1', 't1');
+
+      expect(quota).toEqual({ available: true, remaining: 200, limit: 200 });
+      // 重置：aiUsed=0，aiResetDate = NOW + 24h
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 't1' },
+        data: {
+          aiUsed: 0,
+          aiResetDate: new Date(NOW.getTime() + 24 * 60 * 60 * 1000),
+        },
+      });
+    });
+
+    it('aiResetDate 未设置（null）：等同窗口过期，触发重置', async () => {
+      mockTenantFindUnique.mockResolvedValue({
+        aiQuota: 50,
+        aiUsed: 50,
+        aiResetDate: null,
+        status: 'active',
+      });
+
+      const quota = await checkAiQnAQuota('u1', 't1');
+
+      expect(quota).toEqual({ available: true, remaining: 50, limit: 50 });
+      expect(mockTenantUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    it('租户不存在：available false，remaining/limit 0，不触达重置', async () => {
+      mockTenantFindUnique.mockResolvedValue(null);
+
+      const quota = await checkAiQnAQuota('u1', 't1');
+
+      expect(quota).toEqual({ available: false, remaining: 0, limit: 0 });
+      expect(mockTenantUpdate).not.toHaveBeenCalled();
+    });
+
+    it('租户已停用（status !== active）：available false', async () => {
+      mockTenantFindUnique.mockResolvedValue({
+        aiQuota: 200,
+        aiUsed: 0,
+        aiResetDate: new Date(NOW.getTime() + 60 * 60 * 1000),
+        status: 'suspended',
+      });
+
+      const quota = await checkAiQnAQuota('u1', 't1');
+
+      expect(quota).toEqual({ available: false, remaining: 0, limit: 0 });
+      expect(mockTenantUpdate).not.toHaveBeenCalled();
+    });
+
+    it('findUnique 以 tenantId 查询 aiQuota/aiUsed/aiResetDate/status', async () => {
+      mockTenantFindUnique.mockResolvedValue({
+        aiQuota: 10,
+        aiUsed: 0,
+        aiResetDate: new Date(NOW.getTime() + 60 * 60 * 1000),
+        status: 'active',
+      });
+
+      await checkAiQnAQuota('u1', 't1');
+
+      expect(mockTenantFindUnique).toHaveBeenCalledWith({
+        where: { id: 't1' },
+        select: { aiQuota: true, aiUsed: true, aiResetDate: true, status: true },
+      });
     });
   });
 
-  describe('recordAiQnAUsage（桩）', () => {
-    it('调用 console.log 记录用量并返回 undefined', async () => {
+  describe('recordAiQnAUsage', () => {
+    it('经 incrementTenantAiUsage 原子自增 aiUsed + 写 AiUsageLog(operation=qna)，返回 undefined', async () => {
       const ret = await recordAiQnAUsage('u1', 't1', 250);
+
       expect(ret).toBeUndefined();
-      expect(logSpy).toHaveBeenCalled();
-      const logged = logSpy.mock.calls[0][0] as string;
-      expect(logged).toContain('u1');
-      expect(logged).toContain('t1');
-      expect(logged).toContain('250');
+      // $transaction 接收 [tenant.update, aiUsageLog.create] 数组
+      expect(mockTransaction).toHaveBeenCalledTimes(1);
+      const txArg = mockTransaction.mock.calls[0][0] as unknown[];
+      expect(Array.isArray(txArg)).toBe(true);
+      expect(txArg).toHaveLength(2);
+      // aiUsageLog 明细：tenantId/userId/operation='qna'
+      expect(mockAiUsageLogCreate).toHaveBeenCalledWith({
+        data: { tenantId: 't1', userId: 'u1', operation: 'qna' },
+      });
+      // tenant.aiUsed 原子自增 1
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 't1' },
+        data: { aiUsed: { increment: 1 } },
+      });
     });
 
-    it('不同 tokens 值均透传到日志', async () => {
-      await recordAiQnAUsage('u2', 't2', 0);
-      const logged = logSpy.mock.calls[logSpy.mock.calls.length - 1][0] as string;
-      expect(logged).toContain('0');
+    it('$transaction 抛错时不向上抛（incrementTenantAiUsage 内部兜底）', async () => {
+      mockTransaction.mockRejectedValue(new Error('db down'));
+
+      // 不抛错：incrementTenantAiUsage try/catch 兜底，仅 console.error
+      await expect(recordAiQnAUsage('u1', 't1', 100)).resolves.toBeUndefined();
+      expect(errorSpy).toHaveBeenCalled();
+    });
+
+    it('不同 userId/tenantId 透传到 AiUsageLog 明细', async () => {
+      await recordAiQnAUsage('user-2', 'tenant-9', 0);
+
+      expect(mockAiUsageLogCreate).toHaveBeenCalledWith({
+        data: { tenantId: 'tenant-9', userId: 'user-2', operation: 'qna' },
+      });
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 'tenant-9' },
+        data: { aiUsed: { increment: 1 } },
+      });
     });
   });
 });
