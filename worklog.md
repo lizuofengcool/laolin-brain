@@ -16165,3 +16165,116 @@ sync-engine keep_both、api-auth.test 匹配实现——本轮无优先级 1 待
   src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
+
+
+## 2026-07-13 07:00 自动迭代
+
+第一百四十九轮。clone 仓库到沙箱后 fetch 双端，origin/github 与本地均无新提交
+（HEAD = 047c5e3），工作树干净，无遗留改动。优先级 1 复核全部闭合（同第一百四十八轮
+结论）：tenant-db raw 软审计、alipay/wechat RSA2 真实验签、files 路由走 TenantDb、
+sync-engine keep_both、api-auth.test 匹配实现——本轮无优先级 1 待修。
+
+### 决策
+
+承接 worklog 第一百四十八轮"下一轮候选"末尾新增项"backups POST 路由执行逻辑桩"。
+`src/app/api/backups/route.ts` POST 此前为 TODO 桩：create(pending) → update(running)
+后即返回 status:'running'，不生成物理备份文件、不写 filePath、不置 completed，
+message:'备份已开始执行，请稍后查看进度' 与实际行为不符。该桩与 backups/[id] DELETE
+（第一百四十八轮已补物理文件清理 + 路径遍历防护）形成配套缺口——DELETE 已为 filePath
+落 ./backups 做好前向准备，但 POST 从不写 filePath。本轮实现真实备份执行逻辑。
+
+### 改动
+
+**feat — `src/app/api/backups/route.ts`（+85/-16）**：
+
+- 新增 `import path from "path"` 与 `import { mkdir, writeFile } from "fs/promises"`。
+- POST 处理器在 create(pending) → update(running) 后插入**同步备份执行**：
+  - `Promise.all([db.file.findMany({ where: { tenantId } }), db.folder.findMany({ where: { tenantId } })])`
+    导出租户文件/文件夹元数据（仅元数据，不备份二进制文件内容）。
+  - 构建 BackupContent JSON（version/createdAt/type/tenantId/data/metadata）。
+  - `mkdir(path.resolve('./backups', tenantId), { recursive: true })` +
+    `writeFile(path.join(backupDir, backup.id + '.json'), jsonStr, 'utf8')`。
+  - `update(completed, size, fileCount, filePath, completedAt)` 写回记录。
+  - 响应改为 `{ success, data: { status: 'completed', size, fileCount, ... }, message: '备份已完成' }`。
+- **内层 catch**（备份执行失败）：`update(failed, error: errorMessage, completedAt)` best-effort
+  + `console.error` + 返回 500 `{ error: '备份执行失败' }`（不向客户端泄漏 detail）。
+  内层 update 失败也仅记日志（`console.error('Failed to mark backup as failed')`），
+  记录卡在 running 需人工介入，但不阻断 500 响应。
+- **外层 catch**（create/findFirst/JSON 解析失败）：500 `{ error: '创建备份失败' }`。
+- 顺序选择：create → update(running) → findMany → mkdir → writeFile → update(completed)。
+  findMany 在 mkdir/writeFile 之前（DB 查询失败时不留空目录）；writeFile 在 update(completed)
+  之前（文件落盘失败时记录标记 failed，不出现"记录 completed 但文件缺失"的幻影记录）。
+
+**chore — `.gitignore`（+1/-0）**：
+
+- 新增 `/backups/` 防止物理备份文件（./backups/{tenantId}/{backupId}.json）被误提交。
+  与既有 `/uploads/` 同范式（运行时生成的本地文件不进版本控制）。
+
+**test — `src/__tests__/api/backups-route-post.test.ts`（+368，新增）**：
+
+- 12 用例锁定 POST 全部分支：401 透传 / 403 member / 400 缺 name / 400 running 备份存在
+  / 成功（create→update(running)→findMany→mkdir+writeFile→update(completed)→200，断言
+  调用顺序与参数）/ type 默认 full / type=incremental 透传 / 空租户 fileCount=0 仍 completed
+  / writeFile 抛错 → failed + 500 / file.findMany 抛错 → failed + 500（mkdir/writeFile 不触达）
+  / 内层 update(failed) 也抛错 → best-effort 仍 500 / create 抛错 → 外层 catch 500。
+- 隔离 `next/server` / `@/lib/api-auth` / `@/lib/db`（backup.create/update/findFirst +
+  file.findMany + folder.findMany）/ `fs/promises`（mkdir + writeFile），复用 backups-route
+  GET 与 files-id DELETE 的 vi.hoisted mock 范式。fs/promises 同时提供 named + default
+  （ESM 互操作兜底，对齐 files-route-post 范式）。
+- 关键负向契约：writeFile 抛错时第二次 update 标记 failed（含 error: 'EACCES: permission
+  denied' + completedAt）；file.findMany 抛错时 mkdir/writeFile 均不触达（findMany 在其之前）。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules，pnpm 10.28.1，53.4s 完成）。
+- `npx prisma generate`（v6.19.3 客户端，build script 被 pnpm 忽略需手动 generate）。
+- `npx tsc --noEmit`：**0 错误**（延续第一百四十八轮的干净基线）。
+- `npx vitest run`：**178 文件 / 4996 用例全通过**（143.6s；较上轮 +1 文件 +12 用例，
+  即新增 backups-route-post.test.ts 12 用例；无回归）。
+
+环境备注：`pnpm-lock.yaml` 未提交（git add 仅含 route.ts + .gitignore + test 文件）；
+`git status` 干净。
+
+### 改动量
+
+3 文件，+454/-16：
+- `src/app/api/backups/route.ts`（feat，+85/-16）
+- `.gitignore`（chore，+1/-0）
+- `src/__tests__/api/backups-route-post.test.ts`（test，+368 新增）
+
+2 commit，符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `0a5ba45` feat(backups): POST 路由实现真实备份执行逻辑（生成 JSON 文件并落盘）
+- `2c572de` test(backups): 补 POST 路由 handler 级测试（此前零覆盖）
+
+### 推送
+
+- origin (Gitee)：推送成功（含本轮 2 commit + 本 worklog commit）
+- github (GitHub)：推送成功
+
+### 下一轮候选
+
+- **backups/[id] GET 路由零覆盖**（延续，可选）：第一百四十八轮补齐 DELETE 测试、本轮
+  补齐 POST 测试，GET 仍为零覆盖（404/403/成功返回 data 字段映射），可补 3-4 用例。
+- **backups POST 增量备份逻辑**（新增，可选）：本轮 POST 对 type='incremental' 仍执行
+  全量导出（type 字段仅存元数据）。可按 backup-tool.ts createIncrementalBackup 范式
+  基于 baseBackup.createdAt 过滤 updatedAt >= sinceDate 的文件。
+- **backups 恢复路由**（新增，可选）：schema 注释提及 POST /api/backups/[id]/restore，
+  但 route.ts 未实现 restore handler；backup-tool.ts restoreBackup 已有逻辑可接入。
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  需接入外部模型 API（属功能完整性缺口、依赖外部 SDK，优先级低于其他候选）。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/ai/model-manager.ts`（4 处模型 API 桩：
+  testModel/chat/complete/embeddings）——已有 691 行单测锁定 mock 边界行为，模块未被
+  任何生产代码 import；"实现真实逻辑"需外部模型 SDK。可考虑按 payment factory 模式将
+  mock 改为显式标记（apiKey 已配置时抛错 / 未配置时返回 [mock] 前缀文本），但收益较低。
+- **registry.ts 文件/搜索桩接入**（延续）：getFiles/getFile/createFile/search 仍为空返回，
+  需注入认证 token + fetch 适配器走 /api/files、/api/search；属外部集成范畴（已加注释说明）。
+- **stats 路由 qnaCalls 专项测试**（延续，可选）：stats-ai-route.test.ts 的"配额窗口激活"
+  用例 mock 仅含 summary/ocr/describe/tags 四组、经 toMatchObject 向后兼容未对 qnaCalls
+  加专项断言；可补一个含 qna group 的 mock 用例显式锁定 qnaCalls 聚合。
+- **同型「inline 模拟」测试文件清理**（延续）：tenant-security.test.ts、
+  src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
