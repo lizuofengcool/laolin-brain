@@ -15993,3 +15993,77 @@ SDK 返回明确错误"两层兜底，可直接委托。故本轮把 getPaymentP
 - **collapsible.tsx 缺失依赖**（新增，可选）：`@radix-ui/react-collapsible` 未在
   package.json dependencies 中，导致 tsc 报错；需确认是否应补依赖或改用其他实现。
 
+## 2026-07-13 05:00 自动迭代
+
+第一百四十七轮。clone 仓库到沙箱后 fetch 双端，origin/github 与本地均无新提交
+（HEAD = 27ca326），工作树干净，无遗留改动。优先级 1 复核全部闭合（同第一百四十六轮
+结论）：tenant-db raw 软审计、alipay/wechat RSA2 真实验签（crypto.createVerify）、
+files 路由走 TenantDb、sync-engine keep_both 重命名+新 id、api-auth.test 匹配实现——
+本轮无优先级 1 待修。
+
+### 决策
+
+承接 worklog 第一百四十六轮"下一轮候选"末尾新增项"collapsible.tsx 缺失依赖"。
+`src/components/ui/collapsible.tsx` 是标准 shadcn/ui primitive，import
+`@radix-ui/react-collapsible`，但该包未在 package.json dependencies 中。审计全部
+`src/components/ui/*.tsx` 引用的 27 个 `@radix-ui/*` 包，仅 `react-collapsible` 一项
+缺失（其余 26 个均已声明）。该缺失是多轮 worklog 反复记录的预存在 tsc 报错
+（`TS2307: Cannot find module '@radix-ui/react-collapsible'`），使每次 tsc 校验都无法
+得到 0 错误基线，干扰后续轮次对新错误的判断。本轮补齐该依赖声明。
+
+### 改动
+
+**fix — `package.json`（+1/-0）**：
+
+- 按字母序在 `@radix-ui/react-checkbox` 与 `@radix-ui/react-context-menu` 之间插入
+  `"@radix-ui/react-collapsible": "^1.1.16"`（当前 npm 最新稳定版，与项目 caret range
+  约定一致；其余 26 个 radix-ui primitive 均为 `^1.x` / `^2.x` caret）。
+- 未改动 `collapsible.tsx` 本身（标准 shadcn/ui primitive，无需修改）。
+- pnpm install 生成的 `pnpm-lock.yaml` 为安装副产物，沿用第一百四十六轮约定不提交
+  （仓库历史无 lockfile，避免引入需要持续维护的锁文件）。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules，pnpm 10.28.1，55.3s 完成）。
+- `npx prisma generate`（v6.19.3 客户端，Prisma build script 被 pnpm 忽略需手动 generate）。
+- `npx tsc --noEmit`：**0 错误**（此前唯一报错 `collapsible.tsx(3,39): TS2307` 消除，
+  首次得到完全干净的 tsc 基线）。
+- `npx vitest run`：**176 文件 / 4975 用例全通过**（154s）。collapsible.tsx 未被任何业务
+  代码 import（grep 全仓 0 命中），纯依赖声明补全，不影响运行时行为与测试。
+
+环境备注：`pnpm-lock.yaml` 未提交（git add 仅含 package.json）；`git status` 干净。
+
+### 改动量
+
+1 文件，+1/-0：
+- `package.json`（fix，+1/-0）
+
+1 commit，符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `62d3e16` fix(deps): 补 @radix-ui/react-collapsible 依赖消除唯一 tsc 报错
+
+### 推送
+
+- origin (Gitee)：`27ca326..62d3e16` 推送成功（含本轮 1 commit + 本 worklog commit）
+- github (GitHub)：`27ca326..62d3e16` 推送成功
+
+### 下一轮候选
+
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  需接入外部模型 API（属功能完整性缺口、依赖外部 SDK，优先级低于其他候选）。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/ai/model-manager.ts`（4 处模型 API 桩：
+  testModel/chat/complete/embeddings）——已有 691 行单测锁定 mock 边界行为，模块未被
+  任何生产代码 import；"实现真实逻辑"需外部模型 SDK。可考虑按 payment factory 模式将
+  mock 改为显式标记（apiKey 已配置时抛错 / 未配置时返回 [mock] 前缀文本），但收益较低。
+- **registry.ts 文件/搜索桩接入**（延续）：getFiles/getFile/createFile/search 仍为空返回，
+  需注入认证 token + fetch 适配器走 /api/files、/api/search；属外部集成范畴（已加注释说明）。
+- **stats 路由 qnaCalls 专项测试**（延续，可选）：stats-ai-route.test.ts 的"配额窗口激活"
+  用例 mock 仅含 summary/ocr/describe/tags 四组、经 toMatchObject 向后兼容未对 qnaCalls
+  加专项断言；可补一个含 qna group 的 mock 用例显式锁定 qnaCalls 聚合。
+- **同型「inline 模拟」测试文件清理**（延续）：tenant-security.test.ts、
+  src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
+
