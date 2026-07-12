@@ -384,25 +384,88 @@ describe('plugins/registry PluginRegistry', () => {
     });
   });
 
-  // ==================== createPluginAPI UI 注入桩 ====================
+  // ==================== createPluginAPI UI 注入 ====================
 
-  describe('createPluginAPI UI 注入桩', () => {
-    it('registerMenuItem 具权限时为 no-op（undefined 返回，不抛错）', () => {
+  describe('createPluginAPI UI 注入', () => {
+    it('registerMenuItem 记录入注册表并触发 ui:render 事件', () => {
       const { api } = registerWithApi(makeManifest({ permissions: ['ui:inject'] }));
-      expect(() => api.registerMenuItem({ id: 'm', label: 'M' })).not.toThrow();
-      expect(api.registerMenuItem({ id: 'm', label: 'M' })).toBeUndefined();
+      const listener = vi.fn();
+      pluginRegistry.on('ui:render', listener);
+      const item = { id: 'm', label: 'M' };
+
+      const ret = api.registerMenuItem(item);
+
+      expect(ret).toBeUndefined();
+      expect(listener).toHaveBeenCalledWith({ pluginId: 'test-plugin', type: 'menu', item });
+      expect(pluginRegistry.getMenuItems()).toEqual([
+        { ...item, pluginId: 'test-plugin' },
+      ]);
     });
 
-    it('registerSidebarPanel 具权限时为 no-op', () => {
+    it('registerSidebarPanel 记录入注册表并触发 ui:render', () => {
       const { api } = registerWithApi(makeManifest({ permissions: ['ui:inject'] }));
-      expect(api.registerSidebarPanel({ id: 's', title: 'S', component: null })).toBeUndefined();
+      const listener = vi.fn();
+      pluginRegistry.on('ui:render', listener);
+      const panel = { id: 's', title: 'S', component: null };
+
+      api.registerSidebarPanel(panel);
+
+      expect(listener).toHaveBeenCalledWith({ pluginId: 'test-plugin', type: 'sidebar', panel });
+      expect(pluginRegistry.getSidebarPanels()).toEqual([
+        { ...panel, pluginId: 'test-plugin' },
+      ]);
     });
 
-    it('registerFileAction 具权限时为 no-op', () => {
+    it('registerFileAction 记录入注册表并触发 ui:render', () => {
       const { api } = registerWithApi(makeManifest({ permissions: ['ui:inject'] }));
-      expect(
-        api.registerFileAction({ id: 'a', label: 'A', onClick: () => ({}) }),
-      ).toBeUndefined();
+      const listener = vi.fn();
+      pluginRegistry.on('ui:render', listener);
+      const action = { id: 'a', label: 'A', onClick: () => ({}) };
+
+      api.registerFileAction(action);
+
+      expect(listener).toHaveBeenCalledWith({ pluginId: 'test-plugin', type: 'fileAction', action });
+      expect(pluginRegistry.getFileActions()).toEqual([
+        { ...action, pluginId: 'test-plugin' },
+      ]);
+    });
+
+    it('同一插件多次注册菜单项全部保留并按序返回', () => {
+      const { api } = registerWithApi(makeManifest({ permissions: ['ui:inject'] }));
+      api.registerMenuItem({ id: 'm1', label: '1' });
+      api.registerMenuItem({ id: 'm2', label: '2' });
+
+      const items = pluginRegistry.getMenuItems();
+      expect(items.map((i) => i.id)).toEqual(['m1', 'm2']);
+      expect(items.every((i) => i.pluginId === 'test-plugin')).toBe(true);
+    });
+
+    it('多插件 UI 项扁平化返回，各自带 pluginId 溯源', () => {
+      // 在各自 factory 内直接注册 UI 项（factory 接收 api 参数）
+      pluginRegistry.registerPlugin(
+        makeManifest({ id: 'p1', permissions: ['ui:inject'] }),
+        (api) => {
+          api.registerMenuItem({ id: 'x1', label: 'X1' });
+        },
+      );
+      pluginRegistry.registerPlugin(
+        makeManifest({ id: 'p2', permissions: ['ui:inject'] }),
+        (api) => {
+          api.registerMenuItem({ id: 'x2', label: 'X2' });
+        },
+      );
+
+      const items = pluginRegistry.getMenuItems();
+      const ids = items.map((i) => ({ id: i.id, pluginId: i.pluginId }));
+      expect(ids).toContainEqual({ id: 'x1', pluginId: 'p1' });
+      expect(ids).toContainEqual({ id: 'x2', pluginId: 'p2' });
+    });
+
+    it('getMenuItems/getSidebarPanels/getFileActions 无注册时返回 []', () => {
+      registerWithApi(makeManifest());
+      expect(pluginRegistry.getMenuItems()).toEqual([]);
+      expect(pluginRegistry.getSidebarPanels()).toEqual([]);
+      expect(pluginRegistry.getFileActions()).toEqual([]);
     });
   });
 
@@ -547,14 +610,15 @@ describe('plugins/registry PluginRegistry', () => {
       expect(errSpy).toHaveBeenCalledTimes(1);
     });
 
-    it('showNotification 输出 [Plugin id] Notification: 与通知对象', () => {
-      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    it('showNotification 通过事件总线派发 plugin:notification（含 pluginId + notification）', () => {
       const { api } = registerWithApi(makeManifest());
+      const listener = vi.fn();
+      pluginRegistry.on('plugin:notification', listener);
       const notif = { title: 'T', message: 'M' };
 
       api.showNotification(notif);
 
-      expect(logSpy).toHaveBeenCalledWith('[Plugin test-plugin] Notification:', notif);
+      expect(listener).toHaveBeenCalledWith({ pluginId: 'test-plugin', notification: notif });
     });
 
     it('getPluginInfo 返回 manifest 引用', () => {
@@ -687,6 +751,27 @@ describe('plugins/registry PluginRegistry', () => {
 
       // 已禁用，disablePlugin 不触发 plugin:disabled
       expect(disabledListener).not.toHaveBeenCalled();
+    });
+
+    it('卸载清理该插件的 UI 注入项与 installedAt', () => {
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { api } = registerWithApi(
+        makeManifest({ id: 'u1', permissions: ['ui:inject'] }),
+      );
+      api.registerMenuItem({ id: 'm', label: 'M' });
+      api.registerSidebarPanel({ id: 's', title: 'S', component: null });
+      api.registerFileAction({ id: 'a', label: 'A', onClick: () => ({}) });
+      expect(pluginRegistry.getMenuItems()).toHaveLength(1);
+
+      pluginRegistry.uninstallPlugin('u1');
+
+      // UI 注册表清空
+      expect(pluginRegistry.getMenuItems()).toEqual([]);
+      expect(pluginRegistry.getSidebarPanels()).toEqual([]);
+      expect(pluginRegistry.getFileActions()).toEqual([]);
+      // 卸载后 getPluginInfo 为 null（installedAtMap 已清，但查询优先 plugins.has）
+      expect(pluginRegistry.getPluginInfo('u1')).toBeNull();
     });
   });
 
@@ -899,7 +984,7 @@ describe('plugins/registry PluginRegistry', () => {
   // ==================== 查询方法 ====================
 
   describe('查询方法', () => {
-    it('getAllPlugins 返回数组，含 manifest/status/installedAt=""/settings', () => {
+    it('getAllPlugins 返回数组，含 manifest/status/installedAt(ISO)/settings', () => {
       const manifest = makeManifest({
         permissions: ['settings:read'],
         settings: [{ key: 'k', label: 'k', type: 'string', default: 'v' }],
@@ -909,12 +994,12 @@ describe('plugins/registry PluginRegistry', () => {
       const all = pluginRegistry.getAllPlugins();
 
       expect(all).toHaveLength(1);
-      expect(all[0]).toEqual({
-        manifest,
-        status: 'installed',
-        installedAt: '',
-        settings: { k: 'v' },
-      });
+      expect(all[0].manifest).toBe(manifest);
+      expect(all[0].status).toBe('installed');
+      expect(all[0].settings).toEqual({ k: 'v' });
+      // installedAt 为注册时间戳的 ISO 字符串
+      expect(all[0].installedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.*Z$/);
+      expect(new Date(all[0].installedAt).getTime()).toBeLessThanOrEqual(Date.now());
     });
 
     it('getAllPlugins 多插件全返回', () => {
@@ -940,11 +1025,11 @@ describe('plugins/registry PluginRegistry', () => {
       expect(pluginRegistry.getPluginInfo('nope')).toBeNull();
     });
 
-    it('getPluginInfo 已知 id 返回 PluginInfo，installedAt=""', () => {
+    it('getPluginInfo 已知 id 返回 PluginInfo，installedAt 为 ISO 字符串', () => {
       registerWithApi(makeManifest());
       const info = pluginRegistry.getPluginInfo('test-plugin');
       expect(info).not.toBeNull();
-      expect(info?.installedAt).toBe('');
+      expect(info?.installedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.*Z$/);
       expect(info?.status).toBe('installed');
     });
 
