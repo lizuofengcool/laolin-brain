@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
   try {
     const auth = await authenticateRequest(request);
     if (auth instanceof NextResponse) return auth;
-    const { tenantId } = auth;
+    const { tenantId, userId } = auth;
 
     const body = await request.json();
     const { plan, interval, quantity = 1 } = body;
@@ -96,8 +96,8 @@ export async function POST(request: NextRequest) {
     // 创建订单（tenantId 来自可信 auth，忽略请求体中的 tenantId）
     const order = await createOrder(tenantId, plan, interval, qty);
 
-    // 获取支付参数（预留支付宝/微信对接）
-    const paymentParams = await getPaymentParams(order.id, 'alipay');
+    // 获取支付参数（委托真实支付提供者创建支付订单）
+    const paymentParams = await getPaymentParams(order.id, 'alipay', userId);
 
     return NextResponse.json({
       order,

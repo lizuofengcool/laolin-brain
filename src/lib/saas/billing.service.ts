@@ -5,6 +5,7 @@
 
 import { PrismaClient, Order, Subscription } from '@prisma/client';
 import { PLAN_CONFIGS, PlanType, changePlan, getCurrentSubscription } from './tenant.service';
+import { createPayment, getNotifyUrl } from '@/lib/payment';
 
 const prisma = new PrismaClient();
 
@@ -271,11 +272,16 @@ export async function isSubscriptionExpiringSoon(tenantId: string): Promise<{
 }
 
 /**
- * 获取支付参数（模拟，实际需要对接支付宝/微信）
+ * 获取支付参数
+ *
+ * 委托真实支付提供者（alipay/wechat）创建支付订单，替代桩代码。
+ * 未配置支付密钥时提供者返回模拟支付链接（/api/payment/mock/*），
+ * 已配置但未接入 SDK 时返回明确错误（不静默返回伪造支付链接）。
  */
 export async function getPaymentParams(
   orderId: string,
-  payMethod: 'alipay' | 'wechat'
+  payMethod: 'alipay' | 'wechat',
+  userId: string
 ): Promise<{ success: boolean; payUrl?: string; qrCode?: string; error?: string }> {
   const order = await getOrder(orderId);
 
@@ -287,10 +293,20 @@ export async function getPaymentParams(
     return { success: false, error: '订单已支付' };
   }
 
-  // TODO: 实际对接支付宝/微信支付
-  // 这里返回模拟数据
+  const planName = PLAN_CONFIGS[order.plan as PlanType]?.name ?? order.plan;
+  const result = await createPayment(payMethod, {
+    orderNo: order.orderNo,
+    amount: Number(order.amount),
+    subject: `${planName} - ${order.interval === 'month' ? '月付' : '年付'}`,
+    notifyUrl: getNotifyUrl(payMethod),
+    tenantId: order.tenantId,
+    userId,
+  });
+
   return {
-    success: true,
-    payUrl: `https://pay.example.com/${payMethod}?orderNo=${order.orderNo}`,
+    success: result.success,
+    payUrl: result.payUrl,
+    qrCode: result.qrCode,
+    error: result.error,
   };
 }
