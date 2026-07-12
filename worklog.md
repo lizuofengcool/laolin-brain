@@ -15872,3 +15872,124 @@ document-qna 配额机制真接入 + askQuestion 启用校验/记录 + stats 路
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
 
+## 2026-07-13 20:15 自动迭代
+
+第一百四十六轮。fetch 双端无新提交（origin/github 与本地均 f253100），工作树仅含
+上一轮已实现但未提交的 4 文件改动（billing.service.ts / saas orders route / 两个测试
+文件）——上轮在 context 切换前未及 commit，本轮先验证再提交。优先级 1 复核全部闭合
+（同上轮）：tenant-db raw 软审计、alipay/wechat 真实验签、files 路由走 TenantDb、
+sync-engine keep_both 重命名+新 id、api-auth.test 匹配实现——本轮无优先级 1 待修。
+
+### 决策
+
+承接上轮已落地的改动：worklog 第一百四十五轮"下一轮候选"明确列出
+`src/lib/saas/billing.service.ts:290`（支付对接桩）。该桩返回伪造的
+`https://pay.example.com/{payMethod}?orderNo=...` 链接，存在静默伪造支付链接的风险
+（用户可能误以为已发起真实支付）。已有的 `@/lib/payment` 工厂（createPayment /
+getNotifyUrl）已具备 mock 模式（返回 /api/payment/mock/* 模拟链接）与"已配置但未接入
+SDK 返回明确错误"两层兜底，可直接委托。故本轮把 getPaymentParams 改为委托真实支付
+提供者，并补齐对应单测。
+
+### 改动
+
+**feat — `src/lib/saas/billing.service.ts`（+19/-5）**：
+
+- 新增 `import { createPayment, getNotifyUrl } from '@/lib/payment'`。
+- `getPaymentParams` 签名新增 `userId: string` 第三参（CreatePaymentParams 必填，
+  由调用方从可信 auth 透传，避免服务层伪造用户身份）。
+- 移除 `https://pay.example.com/...` 桩返回，改为：
+  - `planName = PLAN_CONFIGS[order.plan as PlanType]?.name ?? order.plan`（套餐名兜底）
+  - `amount: Number(order.amount)`（Prisma Decimal → number，decimal.js 的 valueOf
+    返回数字字符串，Number() 据此转换）
+  - `subject: \`${planName} - ${order.interval === 'month' ? '月付' : '年付'}\``
+  - `notifyUrl: getNotifyUrl(payMethod)`（取自支付配置）
+  - `tenantId: order.tenantId`、`userId` 透传
+- 返回 `{ success, payUrl, qrCode, error }` 全部从 createPayment 结果透传；未配置密钥
+  → 提供者返回 mock 链接（success/payUrl）；已配置未接入 SDK → 返回 success:false +
+  明确 error（不静默伪造支付链接）。
+
+**feat — `src/app/api/saas/orders/route.ts`（+2/-2）**：
+
+- POST handler 从 `auth` 解构新增 `userId`，透传给 `getPaymentParams(order.id, 'alipay', userId)`。
+- 注释由"预留支付宝/微信对接"改为"委托真实支付提供者创建支付订单"。
+
+**test — `src/__tests__/lib/saas-billing-service.test.ts`（+89/-15）**：
+
+- vi.hoisted 新增 `mockCreatePayment` / `mockGetNotifyUrl`；新增
+  `vi.mock('@/lib/payment', ...)` 隔离支付工厂。
+- 顶部注释第 6 项同步：getPaymentParams 由"桩返回 example.com"改为"委托 createPayment"。
+- 替换原 4 个 getPaymentParams 用例为 7 个新用例：
+  1. 订单不存在 → 不触达 createPayment
+  2. 订单已支付 → 不触达 createPayment
+  3. 待支付订单 → 委托 createPayment，透传 orderNo/amount/subject('专业版 - 月付')
+     /notifyUrl/tenantId/userId
+  4. 年付订单 subject 含"年付"，notifyUrl 取自 getNotifyUrl(wechat)
+  5. qrCode 字段透传（微信支付返回二维码）
+  6. createPayment 返回失败时透传 error
+  7. amount 为 Decimal 时经 Number() 转换为 number —— mock 以
+     `{ valueOf: () => '3900', toNumber: () => 3900 }` 模拟 decimal.js Decimal 语义
+     （valueOf 返回数字字符串，Number() 据此转换），验证实现里 `Number(order.amount)`
+     的转换路径
+
+**test — `src/__tests__/api/saas-orders-route.test.ts`（+4/-2）**：
+
+- 顶部注释同步：getPaymentParams 调用签名补 auth.userId 第三参。
+- 2 处 `expect(mockGetPaymentParams).toHaveBeenCalledWith(...)` 断言补 `'user-1'`。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules，仓库无 lockfile，
+  pnpm 10.28.1，60s 完成）→ `npx prisma generate`（v6.19.3 客户端）。
+- `npx vitest run src/__tests__/lib/saas-billing-service.test.ts
+  src/__tests__/api/saas-orders-route.test.ts`：**68/68 通过**（45+23）。
+  初次运行 67/68，唯一失败为 Decimal mock 用 `{ toNumber: () => 3900 }` 缺 valueOf
+  导致 Number() 返回 NaN——修正 mock 为 `{ valueOf: () => '3900', toNumber: () => 3900 }`
+  匹配 decimal.js Decimal 真实语义后通过（实现侧无需改动，production Decimal 的
+  valueOf 本就返回数字字符串）。
+- `npx tsc --noEmit`：**0 新错误**。唯一报错
+  `src/components/ui/collapsible.tsx(3,39): Cannot find module '@radix-ui/react-collapsible'`
+  为预存在问题（git stash 后 base commit f253100 上同样报错，未在本轮改动文件中）。
+
+环境备注：沙箱无 node_modules，`pnpm install --no-frozen-lockfile` 生成 pnpm-lock.yaml
+（仓库原本无 lockfile，刻意未提交该文件——仅为本轮安装副产物，git add 仅含 4 个源/测试
+文件）；`git status` 干净。
+
+### 改动量
+
+4 文件，+114/-24：
+- `src/lib/saas/billing.service.ts`（feat，+19/-5）
+- `src/app/api/saas/orders/route.ts`（feat，+2/-2）
+- `src/__tests__/lib/saas-billing-service.test.ts`（test，+89/-15）
+- `src/__tests__/api/saas-orders-route.test.ts`（test，+4/-2）
+
+2 commit（1 feat + 1 test），符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `827522e` feat(saas): getPaymentParams 委托真实支付提供者替代桩代码
+- `dbd6f4b` test(saas): 更新 billing/orders 测试匹配 getPaymentParams 新签名
+
+### 推送
+
+- origin (Gitee)：`f253100..dbd6f4b` 推送成功（含本轮 2 commit + 本 worklog commit）
+- github (GitHub)：`f253100..dbd6f4b` 推送成功
+
+### 下一轮候选
+
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  需接入外部模型 API（同支付 SDK，属功能完整性缺口、依赖外部 SDK，优先级低于其他候选）。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/ai/model-manager.ts`（4 处模型 API 桩：
+  testModel/chat/complete/embeddings）——与 document-qna 同型，可逐模块做 mock 边界
+  单测补覆盖或实现真实逻辑。
+- **registry.ts 文件/搜索桩接入**（延续）：getFiles/getFile/createFile/search 仍为空返回，
+  需注入认证 token + fetch 适配器走 /api/files、/api/search；属外部集成范畴。
+- **stats 路由 qnaCalls 专项测试**（延续，可选）：qna case 经 toMatchObject 向后兼容
+  未加专项断言，可补一个 qna group mock 用例显式锁定 qnaCalls 聚合。
+- **同型「inline 模拟」测试文件清理**（延续）：tenant-security.test.ts、
+  src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。本轮已把 SaaS 订单
+  流程接入 @/lib/payment 工厂，工厂内部 mock 模式可用；真接入需补 SDK 集成。
+- **collapsible.tsx 缺失依赖**（新增，可选）：`@radix-ui/react-collapsible` 未在
+  package.json dependencies 中，导致 tsc 报错；需确认是否应补依赖或改用其他实现。
+
