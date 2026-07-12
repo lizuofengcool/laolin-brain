@@ -16067,3 +16067,101 @@ files 路由走 TenantDb、sync-engine keep_both 重命名+新 id、api-auth.tes
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
 
+
+## 2026-07-13 06:00 自动迭代
+
+第一百四十八轮。clone 仓库到沙箱后 fetch 双端，origin/github 与本地均无新提交
+（HEAD = 2ec2359），工作树干净，无遗留改动。优先级 1 复核全部闭合（同第一百四十七轮
+结论）：tenant-db raw 软审计、alipay/wechat RSA2 真实验签、files 路由走 TenantDb、
+sync-engine keep_both、api-auth.test 匹配实现——本轮无优先级 1 待修。api-auth.test.ts
+已与实现完全匹配（4 字段、async、query param 拒绝均有覆盖）。
+
+### 决策
+
+扫 TODO/FIXME 清单发现 `src/app/api/backups/[id]/route.ts` DELETE 存在遗留 TODO
+"删除物理备份文件"未实现：删除备份记录时仅 `db.backup.delete`，不清理
+`existingBackup.filePath` 指向的物理文件，造成孤儿文件泄漏；且无路径遍历防护，
+若 filePath 被污染可被用于清理任意磁盘文件。该问题与 `files/[id]` DELETE 既有
+"unlink + upload 目录前缀校验"范式同型，且 backups/[id] DELETE 此前为**零覆盖**
+（既有 backups-route.test.ts 仅测 GET）。本轮一并修复 + 补测试。
+
+### 改动
+
+**fix — `src/app/api/backups/[id]/route.ts`（+25/-2）**：
+
+- 新增 `import path from "path"` 与 `import { unlink } from "fs/promises"`。
+- DELETE 处理器在 `status === 'running'` 校验后、`db.backup.delete` 前插入**路径遍历
+  防护**：若 `existingBackup.filePath` 非空，`path.resolve` 后必须以 `./backups` 为
+  前缀（`startsWith`），越界返回 400 `{ error: 'Invalid file path' }` 阻断整个删除
+  操作（前置阻断优于事后清理，与 files/[id] 的 `./upload` 前缀校验同范式）。
+- `db.backup.delete` 后补**物理文件清理**：`if (filePath) { try { unlink(filePath) }
+  catch {} }`（best-effort，文件缺失/已手动清理不阻断响应；DB 记录已删除为既成事实）。
+- 顺序选择：路径校验 → DB delete → unlink（catch）。DB delete 在 unlink 前，确保
+  DB delete 失败时文件不受影响（记录仍在，状态一致）；unlink 失败仅留孤儿文件
+  （best-effort，远好于"文件删了但记录残留"的幻影记录）。
+
+**test — `src/__tests__/api/backups-id-route.test.ts`（+233，新增）**：
+
+- 9 用例锁定 DELETE 全部分支：401 透传 / 403 member / 404 findFirst null / 400 running
+  / 400 filePath 越界（前置阻断，不触达 delete+unlink）/ 成功 filePath=null（unlink
+  不触达）/ 成功 filePath 合法（delete+unlink）/ unlink 抛错 best-effort 仍 200 /
+  delete 抛错 500。
+- 隔离 `next/server`（MockNextResponse 使 `auth instanceof NextResponse` 命中）、
+  `@/lib/api-auth`、`@/lib/db`（backup.findFirst/delete）、`fs/promises`（unlink），
+  复用 backups-route GET 与 files-id-route 的 vi.hoisted mock 范式。
+- 关键负向契约：filePath=`/etc/passwd` → 400 且 `mockBackupDelete`/`mockUnlink` 均
+  未触达（前置阻断）；filePath=合法路径 → unlink 在 delete 之后（delete 抛错时
+  unlink 不触达）。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules，pnpm 10.28.1，65s 完成）。
+- `npx prisma generate`（v6.19.3 客户端，build script 被 pnpm 忽略需手动 generate）。
+- `npx tsc --noEmit`：**0 错误**（延续第一百四十七轮的干净基线）。
+- `npx vitest run`：**177 文件 / 4984 用例全通过**（207s；较上轮 +1 文件 +9 用例，
+  即新增 backups-id-route.test.ts 9 用例；无回归）。
+
+环境备注：`pnpm-lock.yaml` 未提交（git add 仅含 route.ts + test 文件）；`git status` 干净。
+
+### 改动量
+
+2 文件，+258/-2：
+- `src/app/api/backups/[id]/route.ts`（fix，+25/-2）
+- `src/__tests__/api/backups-id-route.test.ts`（test，+233 新增）
+
+2 commit，符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `f96e26c` fix(backups): DELETE 路由删除物理备份文件并加路径遍历防护
+- `96f7f0f` test(backups): 补 backups/[id] DELETE 路由 handler 级测试（此前零覆盖）
+
+### 推送
+
+- origin (Gitee)：推送成功（含本轮 2 commit + 本 worklog commit）
+- github (GitHub)：推送成功
+
+### 下一轮候选
+
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  需接入外部模型 API（属功能完整性缺口、依赖外部 SDK，优先级低于其他候选）。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/ai/model-manager.ts`（4 处模型 API 桩：
+  testModel/chat/complete/embeddings）——已有 691 行单测锁定 mock 边界行为，模块未被
+  任何生产代码 import；"实现真实逻辑"需外部模型 SDK。可考虑按 payment factory 模式将
+  mock 改为显式标记（apiKey 已配置时抛错 / 未配置时返回 [mock] 前缀文本），但收益较低。
+- **registry.ts 文件/搜索桩接入**（延续）：getFiles/getFile/createFile/search 仍为空返回，
+  需注入认证 token + fetch 适配器走 /api/files、/api/search；属外部集成范畴（已加注释说明）。
+- **backups POST 路由执行逻辑桩**（新增）：`src/app/api/backups/route.ts` POST 仍为
+  status pending→running 模拟，未实际生成备份文件 / 未写 filePath / 未置 completed；
+  backup-tool.ts createFullBackup 也仅存元数据不写文件内容。属功能完整性缺口（非安全
+  缺口），本轮 DELETE 文件清理已为该桩落地做好前向准备（filePath 落 ./backups 即可被
+  DELETE 清理）。落地需设计备份文件格式（JSON 导出 / SQLite dump）与存储目录约定。
+- **backups/[id] GET 路由零覆盖**（新增，可选）：本轮补齐 DELETE 测试，GET 仍为零覆盖
+  （404/403/成功返回 data 字段映射），可补 3-4 用例。
+- **stats 路由 qnaCalls 专项测试**（延续，可选）：stats-ai-route.test.ts 的"配额窗口激活"
+  用例 mock 仅含 summary/ocr/describe/tags 四组、经 toMatchObject 向后兼容未对 qnaCalls
+  加专项断言；可补一个含 qna group 的 mock 用例显式锁定 qnaCalls 聚合。
+- **同型「inline 模拟」测试文件清理**（延续）：tenant-security.test.ts、
+  src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
