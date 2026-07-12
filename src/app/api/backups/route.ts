@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import path from "path";
+import { mkdir, writeFile } from "fs/promises";
 import { db } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 
 /**
  * 备份管理API
  * GET /api/backups - 获取备份列表
- * POST /api/backups - 创建备份
+ * POST /api/backups - 创建备份（同步导出租户文件/文件夹元数据为 JSON 落盘）
  */
 
 // ─── GET /api/backups — 获取备份列表 ─────────────
@@ -140,26 +142,92 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // 异步执行备份（这里先标记为pending，实际执行需要后台任务）
-    // TODO: 实现实际的备份执行逻辑
-
-    // 更新状态为running（模拟）
+    // 标记为 running（保持与既有状态机一致：pending → running → completed/failed）
     await db.backup.update({
       where: { id: backup.id },
       data: { status: 'running' },
     });
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        id: backup.id,
-        name: backup.name,
-        type: backup.type,
-        status: 'running',
-        createdAt: backup.createdAt,
-      },
-      message: '备份已开始执行，请稍后查看进度',
-    });
+    // 实际执行备份：导出租户文件/文件夹元数据为 JSON 文件落盘。
+    // 同步执行（SQLite 单服务器场景可接受；真正异步需 job queue，超出本轮范围）。
+    // 物理文件落 ./backups/{tenantId}/{backupId}.json，与 backups/[id] DELETE 的
+    // 路径遍历防护（path.resolve('./backups') 前缀校验）配套——DELETE 已为该桩
+    // 落地做好前向准备（filePath 落 ./backups 即可被清理）。
+    try {
+      const [files, folders] = await Promise.all([
+        db.file.findMany({ where: { tenantId } }),
+        db.folder.findMany({ where: { tenantId } }),
+      ]);
+
+      const backupContent = {
+        version: '1.0.0',
+        createdAt: new Date().toISOString(),
+        type,
+        tenantId,
+        data: { files, folders },
+        metadata: {
+          fileCount: files.length,
+          folderCount: folders.length,
+          totalSize: files.reduce((sum: number, f: any) => sum + (f.fileSize || 0), 0),
+          schemaVersion: '1.0.0',
+        },
+      };
+
+      const jsonStr = JSON.stringify(backupContent);
+      const size = Buffer.byteLength(jsonStr, 'utf8');
+
+      const backupDir = path.resolve('./backups', tenantId);
+      const filePath = path.join(backupDir, `${backup.id}.json`);
+      await mkdir(backupDir, { recursive: true });
+      await writeFile(filePath, jsonStr, 'utf8');
+
+      const completed = await db.backup.update({
+        where: { id: backup.id },
+        data: {
+          status: 'completed',
+          size,
+          fileCount: files.length,
+          filePath,
+          completedAt: new Date(),
+        },
+      });
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          id: completed.id,
+          name: completed.name,
+          type: completed.type,
+          status: 'completed',
+          size: completed.size,
+          fileCount: completed.fileCount,
+          createdAt: completed.createdAt,
+          completedAt: completed.completedAt,
+        },
+        message: '备份已完成',
+      });
+    } catch (backupError) {
+      // 备份执行失败：更新记录为 failed 并记录错误信息（best-effort，更新失败仅记日志）
+      const errorMessage =
+        backupError instanceof Error ? backupError.message : String(backupError);
+      try {
+        await db.backup.update({
+          where: { id: backup.id },
+          data: {
+            status: 'failed',
+            error: errorMessage,
+            completedAt: new Date(),
+          },
+        });
+      } catch (updateError) {
+        console.error('Failed to mark backup as failed:', updateError);
+      }
+      console.error('Backup execution failed:', backupError);
+      return NextResponse.json(
+        { error: '备份执行失败' },
+        { status: 500 }
+      );
+    }
   } catch (error) {
     console.error('Failed to create backup:', error);
     return NextResponse.json(

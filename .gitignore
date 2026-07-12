@@ -77,3 +77,4 @@ server.log
 # Backup files
 *.full
 *.backup
+/backups/
