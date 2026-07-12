@@ -5,6 +5,10 @@ import type {
   PluginInfo,
   PluginStatus,
   PluginPermission,
+  MenuItem,
+  SidebarPanel,
+  FileAction,
+  NotificationOptions,
 } from "./types";
 
 // ==================== 插件注册中心 ====================
@@ -15,6 +19,12 @@ class PluginRegistry {
   private pluginStatus: Map<string, PluginStatus> = new Map();
   private globalHooks: Map<string, Map<string, Function[]>> = new Map();
   private listeners: Map<string, Set<Function>> = new Map();
+  // UI 注入注册表：pluginId → 该插件注册的 UI 项数组
+  private menuItems: Map<string, MenuItem[]> = new Map();
+  private sidebarPanels: Map<string, SidebarPanel[]> = new Map();
+  private fileActions: Map<string, FileAction[]> = new Map();
+  // 插件注册时间戳（ms），用于 PluginInfo.installedAt
+  private installedAtMap: Map<string, number> = new Map();
 
   constructor() {
     this.initializeBuiltinHooks();
@@ -70,6 +80,7 @@ class PluginRegistry {
 
     this.plugins.set(manifest.id, instance);
     this.pluginStatus.set(manifest.id, "installed");
+    this.installedAtMap.set(manifest.id, Date.now());
 
     // 初始化默认设置
     const defaultSettings: Record<string, any> = {};
@@ -144,56 +155,62 @@ class PluginRegistry {
       },
 
       // 文件操作
+      // 注：registry 为客户端单例（依赖 localStorage），文件数据经 /api/files 等受租户
+      // 隔离保护的接口访问。接入需注入认证 token 与 fetch 适配器，属外部集成范畴，
+      // 暂保持空返回；权限网关已生效，待接入时仅需替换 return。
       getFiles: async (options?: any) => {
         checkPermission("files:read");
-        // TODO: 实际实现
         return [];
       },
 
       getFile: async (fileId: string) => {
         checkPermission("files:read");
-        // TODO: 实际实现
         return null;
       },
 
       createFile: async (data: any) => {
         checkPermission("files:write");
-        // TODO: 实际实现
         return null;
       },
 
       updateFile: async (fileId: string, data: any) => {
         checkPermission("files:write");
-        // TODO: 实际实现
         return null;
       },
 
       deleteFile: async (fileId: string) => {
         checkPermission("files:delete");
-        // TODO: 实际实现
       },
 
-      // 搜索
+      // 搜索（同上，待接入 /api/search）
       search: async (query: string, options?: any) => {
         checkPermission("search:read");
-        // TODO: 实际实现
         return [];
       },
 
       // UI注入
-      registerMenuItem: (item: any) => {
+      registerMenuItem: (item: MenuItem) => {
         checkPermission("ui:inject");
-        // TODO: 实际实现
+        const list = self.menuItems.get(pluginId) || [];
+        list.push(item);
+        self.menuItems.set(pluginId, list);
+        self.emit("ui:render", { pluginId, type: "menu", item });
       },
 
-      registerSidebarPanel: (panel: any) => {
+      registerSidebarPanel: (panel: SidebarPanel) => {
         checkPermission("ui:inject");
-        // TODO: 实际实现
+        const list = self.sidebarPanels.get(pluginId) || [];
+        list.push(panel);
+        self.sidebarPanels.set(pluginId, list);
+        self.emit("ui:render", { pluginId, type: "sidebar", panel });
       },
 
-      registerFileAction: (action: any) => {
+      registerFileAction: (action: FileAction) => {
         checkPermission("ui:inject");
-        // TODO: 实际实现
+        const list = self.fileActions.get(pluginId) || [];
+        list.push(action);
+        self.fileActions.set(pluginId, list);
+        self.emit("ui:render", { pluginId, type: "fileAction", action });
       },
 
       // 事件
@@ -237,9 +254,9 @@ class PluginRegistry {
       },
 
       // 通知
-      showNotification: (notification: any) => {
-        // TODO: 实际实现
-        console.log(`[Plugin ${pluginId}] Notification:`, notification);
+      showNotification: (notification: NotificationOptions) => {
+        // 通过事件总线派发通知，UI shell 监听 plugin:notification 渲染 toast。
+        self.emit("plugin:notification", { pluginId, notification });
       },
 
       // 日志
@@ -329,6 +346,10 @@ class PluginRegistry {
       this.plugins.delete(pluginId);
       this.pluginSettings.delete(pluginId);
       this.pluginStatus.delete(pluginId);
+      this.menuItems.delete(pluginId);
+      this.sidebarPanels.delete(pluginId);
+      this.fileActions.delete(pluginId);
+      this.installedAtMap.delete(pluginId);
 
       this.emit("plugin:uninstalled", { pluginId });
       console.log(`Plugin ${pluginId} uninstalled`);
@@ -428,6 +449,15 @@ class PluginRegistry {
   // ==================== 查询方法 ====================
 
   /**
+   * 将注册时间戳格式化为 ISO 字符串（PluginInfo.installedAt）。
+   * 未记录时回退空串以保持类型兼容（历史契约：string）。
+   */
+  private formatInstalledAt(pluginId: string): string {
+    const ts = this.installedAtMap.get(pluginId);
+    return ts ? new Date(ts).toISOString() : "";
+  }
+
+  /**
    * 获取所有插件
    */
   getAllPlugins(): PluginInfo[] {
@@ -437,7 +467,7 @@ class PluginRegistry {
       plugins.push({
         manifest: plugin.manifest,
         status: this.pluginStatus.get(id) || "installed",
-        installedAt: "", // TODO: 实际实现
+        installedAt: this.formatInstalledAt(id),
         settings: this.pluginSettings.get(id),
       });
     });
@@ -462,9 +492,48 @@ class PluginRegistry {
     return {
       manifest: plugin.manifest,
       status: this.pluginStatus.get(pluginId) || "installed",
-      installedAt: "",
+      installedAt: this.formatInstalledAt(pluginId),
       settings: this.pluginSettings.get(pluginId),
     };
+  }
+
+  /**
+   * 获取所有插件注册的菜单项（扁平化，每项附加 pluginId 便于溯源）
+   */
+  getMenuItems(): Array<MenuItem & { pluginId: string }> {
+    const result: Array<MenuItem & { pluginId: string }> = [];
+    this.menuItems.forEach((items, pluginId) => {
+      for (const item of items) {
+        result.push({ ...item, pluginId });
+      }
+    });
+    return result;
+  }
+
+  /**
+   * 获取所有插件注册的侧边栏面板（扁平化，每项附加 pluginId）
+   */
+  getSidebarPanels(): Array<SidebarPanel & { pluginId: string }> {
+    const result: Array<SidebarPanel & { pluginId: string }> = [];
+    this.sidebarPanels.forEach((panels, pluginId) => {
+      for (const panel of panels) {
+        result.push({ ...panel, pluginId });
+      }
+    });
+    return result;
+  }
+
+  /**
+   * 获取所有插件注册的文件操作（扁平化，每项附加 pluginId）
+   */
+  getFileActions(): Array<FileAction & { pluginId: string }> {
+    const result: Array<FileAction & { pluginId: string }> = [];
+    this.fileActions.forEach((actions, pluginId) => {
+      for (const action of actions) {
+        result.push({ ...action, pluginId });
+      }
+    });
+    return result;
   }
 
   /**
