@@ -15671,3 +15671,90 @@ URL 正则匹配返回响应，未命中抛错便于定位意外调用。
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
 
+## 2026-07-13 02:00 自动迭代
+
+第一百四十四轮。fetch 双端无新提交（origin/github 与本地均 0/0），工作树干净，
+无遗留改动。优先级 1 复核：tenant-db.ts raw getter 已带调用堆栈软审计；
+alipay/wechat verifyCallback 已真实实现（RSA2 / V3 HMAC + AES-256-GCM 解密），
+mock 仅在未配置密钥时启用；files/route.ts findMany/findFirst 已走 TenantDb，
+$queryRaw 配额查询含 userId+tenantId 双过滤；sync-engine keep_both 已改为
+本地重命名 + 云端新 id create 并存；api-auth.test.ts 已匹配 4 字段/async/不读 query
+实现——全部已闭合，本轮无优先级 1 待修。
+
+### 决策
+
+按优先级 2 转向 worklog 末尾候选「剩余 TODO 桩集中区」。registry.ts 是桩浓度
+最高且唯一无外部服务依赖的内存型模块（文件/搜索桩需 /api/* 集成属外部范畴，已
+多轮延期），故本轮聚焦 `src/lib/plugins/registry.ts` 的 5 处内存桩落地 + 测试同步。
+
+### 改动
+
+**refactor — `src/lib/plugins/registry.ts`（+87/-18）**：
+
+- `registerMenuItem`/`registerSidebarPanel`/`registerFileAction` 由 no-op 桩改为
+  写入内部 `menuItems`/`sidebarPanels`/`fileActions` Map（pluginId → 项数组），
+  并触发 `ui:render` 事件（含 pluginId/type/item）。新增 3 个扁平化查询接口
+  `getMenuItems()`/`getSidebarPanels()`/`getFileActions()`，每项附加 pluginId 便于
+  UI shell 溯源渲染。
+- `showNotification` 由 `console.log` 改为经事件总线派发 `plugin:notification`
+  事件（含 pluginId + notification），UI shell 可监听渲染 toast。
+- `installedAt` 由固定空串改为 `registerPlugin` 时记录 `Date.now()` 时间戳，
+  `getAllPlugins`/`getPluginInfo` 经 `formatInstalledAt` 格式化为 ISO 字符串读取。
+- `uninstallPlugin` 新增清理 menuItems/sidebarPanels/fileActions/installedAtMap，
+  避免卸载后残留。
+- 文件/搜索桩保留空返回但补注释说明：经 /api/files、/api/search 等受租户隔离接口
+  接入属外部集成范畴，权限网关 checkPermission 已生效，待接入仅需替换 return。
+- 11 处 `TODO: 实际实现` 全部移除（5 处落地实现 + 6 处文件/搜索桩改为说明性注释）。
+
+**test — `src/__tests__/lib/plugins-registry.test.ts`（+108/-23）**：
+
+- UI 注入 describe 由 3 个 no-op 断言用例改为 6 个用例：registerMenuItem/
+  registerSidebarPanel/registerFileAction 各自验证注册表写入 + ui:render 事件 +
+  getter 查询；新增同一插件多次注册保留顺序、多插件扁平化带 pluginId、空 getter
+  返回 [] 三个用例。
+- showNotification 用例改为断言 `plugin:notification` 事件派发（含 pluginId +
+  notification）。
+- installedAt 两处断言由 `''` 改为 ISO 字符串正则校验 + 时间戳 ≤ Date.now() 上界。
+- 新增 uninstallPlugin 清理 UI 注入项与 installedAt 的回归用例。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/plugins-registry.test.ts`：**99/99 通过**。
+- `npx tsc --noEmit`（prisma generate 后）：**0 错误**。
+- `npx vitest run` 全量：**4962/4962 通过**（176 文件），零回归。测试数较上轮
+  4958 → 4962（+4），文件数 176 不变，精确匹配本轮净增（UI 注入 +3、卸载清理 +1）。
+
+环境备注：沙箱无 node_modules，`npm ci` 安装（975 包，29s）后 `npx prisma generate`
+（v6.19.3 客户端），再跑测试；未触碰 lockfile，`git status` 仅本轮 2 个文件改动。
+
+### 改动量
+
+2 文件，+195/-41：
+- `src/lib/plugins/registry.ts`（refactor，+87/-18）
+- `src/__tests__/lib/plugins-registry.test.ts`（test，+108/-23）
+
+2 commit（1 refactor + 1 test），符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `3a8ed93` refactor(plugins): registry 实现 UI 注入/通知/installedAt 内存逻辑替代桩
+- `caa91b0` test(plugins): 更新 registry 测试匹配新行为 + 补 getter/卸载清理覆盖
+
+### 推送
+
+- origin (Gitee)：`189bd18..` 推送（含本轮 2 commit + 本 worklog commit）
+- github (GitHub)：同上
+
+### 下一轮候选
+
+- **registry.ts 文件/搜索桩接入**（延续）：getFiles/getFile/createFile/updateFile/
+  deleteFile/search 仍为空返回，需注入认证 token + fetch 适配器走 /api/files、
+  /api/search；属外部集成范畴，待客户端接入条件具备时落地。优先级低于其他候选。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/saas/billing.service.ts:290`（支付对接桩）、
+  `src/lib/ai/model-manager.ts`（4 处模型 API 桩）、`src/lib/ai/document-qna.ts`
+  （配额检查 + AI 调用桩）——可逐模块做 mock 边界单测补覆盖或实现真实逻辑。
+- **同型「inline 模拟」测试文件清理**（延续）：`tenant-security.test.ts`、
+  `src/lib/utils/__tests__/security.test.ts` 等——可改用统一 mock 工厂减少重复。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
+
