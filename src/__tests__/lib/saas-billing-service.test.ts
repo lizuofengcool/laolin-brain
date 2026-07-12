@@ -19,7 +19,7 @@
  *      months = year?12:1 × quantity；已支付幂等；订单不存在；事务抛错回退
  *   4. getOrder/getOrderByNo/getTenantOrders 透传与 limit/offset/total
  *   5. cancelSubscription/reactivateSubscription 无订阅→false、前置条件校验
- *   6. getPaymentParams 订单不存在/已支付/成功 payUrl 拼装
+ *   6. getPaymentParams 订单不存在/已支付/委托 createPayment 创建支付订单（参数拼装 + 结果映射）
  *
  * Mock 要点：
  *   - @prisma/client: PrismaClient 构造器返回 mockPrisma 单例；$transaction
@@ -30,7 +30,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const { mockPrisma, mockGetCurrentSubscription } = vi.hoisted(() => {
+const { mockPrisma, mockGetCurrentSubscription, mockCreatePayment, mockGetNotifyUrl } = vi.hoisted(() => {
   const mockPrisma = {
     order: {
       create: vi.fn(),
@@ -52,7 +52,9 @@ const { mockPrisma, mockGetCurrentSubscription } = vi.hoisted(() => {
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(mockPrisma)),
   };
   const mockGetCurrentSubscription = vi.fn();
-  return { mockPrisma, mockGetCurrentSubscription };
+  const mockCreatePayment = vi.fn();
+  const mockGetNotifyUrl = vi.fn();
+  return { mockPrisma, mockGetCurrentSubscription, mockCreatePayment, mockGetNotifyUrl };
 });
 
 vi.mock('@prisma/client', () => ({
@@ -72,6 +74,11 @@ vi.mock('@/lib/saas/tenant.service', () => ({
   },
   getCurrentSubscription: (...args: unknown[]) => mockGetCurrentSubscription(...(args as [string])),
   changePlan: vi.fn(),
+}));
+
+vi.mock('@/lib/payment', () => ({
+  createPayment: (...args: unknown[]) => mockCreatePayment(...args),
+  getNotifyUrl: (...args: unknown[]) => mockGetNotifyUrl(...args),
 }));
 
 import {
@@ -525,28 +532,102 @@ describe('saas/billing.service - cancelSubscription / reactivateSubscription', (
 });
 
 describe('saas/billing.service - getPaymentParams', () => {
-  it('订单不存在：返回 { success: false, error: "订单不存在" }', async () => {
+  const PENDING_ORDER = {
+    id: 'o1',
+    orderNo: 'KB-NO-9',
+    status: 'pending',
+    amount: 3900,
+    plan: 'pro',
+    interval: 'month',
+    tenantId: TENANT_ID,
+  };
+
+  beforeEach(() => {
+    mockGetNotifyUrl.mockReturnValue('http://localhost/api/payment/callback/alipay');
+  });
+
+  it('订单不存在：返回 { success: false, error: "订单不存在" }，不触达 createPayment', async () => {
     mockPrisma.order.findUnique.mockResolvedValue(null);
-    const res = await getPaymentParams('o1', 'alipay');
+    const res = await getPaymentParams('o1', 'alipay', 'user-1');
     expect(res).toEqual({ success: false, error: '订单不存在' });
+    expect(mockCreatePayment).not.toHaveBeenCalled();
   });
 
-  it('订单已支付：返回 { success: false, error: "订单已支付" }', async () => {
-    mockPrisma.order.findUnique.mockResolvedValue({ id: 'o1', orderNo: 'KB1', status: 'paid' });
-    const res = await getPaymentParams('o1', 'alipay');
+  it('订单已支付：返回 { success: false, error: "订单已支付" }，不触达 createPayment', async () => {
+    mockPrisma.order.findUnique.mockResolvedValue({ ...PENDING_ORDER, status: 'paid' });
+    const res = await getPaymentParams('o1', 'alipay', 'user-1');
     expect(res).toEqual({ success: false, error: '订单已支付' });
+    expect(mockCreatePayment).not.toHaveBeenCalled();
   });
 
-  it('待支付订单：返回 success=true 及拼装 payUrl（含 payMethod 与 orderNo）', async () => {
-    mockPrisma.order.findUnique.mockResolvedValue({ id: 'o1', orderNo: 'KB-NO-9', status: 'pending' });
-    const res = await getPaymentParams('o1', 'wechat');
+  it('待支付订单：委托 createPayment 创建支付订单，透传 orderNo/amount/tenantId/userId', async () => {
+    mockPrisma.order.findUnique.mockResolvedValue(PENDING_ORDER);
+    mockCreatePayment.mockResolvedValue({
+      success: true,
+      payUrl: '/api/payment/mock/alipay?orderNo=KB-NO-9',
+    });
+
+    const res = await getPaymentParams('o1', 'alipay', 'user-1');
+
+    expect(res).toEqual({ success: true, payUrl: '/api/payment/mock/alipay?orderNo=KB-NO-9' });
+    expect(mockCreatePayment).toHaveBeenCalledWith('alipay', {
+      orderNo: 'KB-NO-9',
+      amount: 3900,
+      subject: '专业版 - 月付',
+      notifyUrl: 'http://localhost/api/payment/callback/alipay',
+      tenantId: TENANT_ID,
+      userId: 'user-1',
+    });
+  });
+
+  it('年付订单 subject 含"年付"，notifyUrl 取自 getNotifyUrl(wechat)', async () => {
+    mockPrisma.order.findUnique.mockResolvedValue({ ...PENDING_ORDER, interval: 'year' });
+    mockGetNotifyUrl.mockReturnValue('http://localhost/api/payment/callback/wechat');
+    mockCreatePayment.mockResolvedValue({ success: true, payUrl: 'pay-url' });
+
+    await getPaymentParams('o1', 'wechat', 'user-1');
+
+    const callArgs = mockCreatePayment.mock.calls[0][1];
+    expect(callArgs.subject).toBe('专业版 - 年付');
+    expect(mockGetNotifyUrl).toHaveBeenCalledWith('wechat');
+  });
+
+  it('qrCode 字段透传（微信支付返回二维码）', async () => {
+    mockPrisma.order.findUnique.mockResolvedValue(PENDING_ORDER);
+    mockCreatePayment.mockResolvedValue({
+      success: true,
+      qrCode: 'data:image/svg+xml;base64,xxx',
+    });
+
+    const res = await getPaymentParams('o1', 'wechat', 'user-1');
+
     expect(res.success).toBe(true);
-    expect(res.payUrl).toBe('https://pay.example.com/wechat?orderNo=KB-NO-9');
+    expect(res.qrCode).toBe('data:image/svg+xml;base64,xxx');
   });
 
-  it('payMethod=alipay 时 payUrl 路径段为 alipay', async () => {
-    mockPrisma.order.findUnique.mockResolvedValue({ id: 'o1', orderNo: 'KB-NO-10', status: 'pending' });
-    const res = await getPaymentParams('o1', 'alipay');
-    expect(res.payUrl).toBe('https://pay.example.com/alipay?orderNo=KB-NO-10');
+  it('createPayment 返回失败时透传 error', async () => {
+    mockPrisma.order.findUnique.mockResolvedValue(PENDING_ORDER);
+    mockCreatePayment.mockResolvedValue({
+      success: false,
+      error: '支付宝真实支付尚未接入 SDK',
+    });
+
+    const res = await getPaymentParams('o1', 'alipay', 'user-1');
+
+    expect(res).toEqual({ success: false, error: '支付宝真实支付尚未接入 SDK' });
+  });
+
+  it('amount 为 Decimal 时经 Number() 转换为 number', async () => {
+    // Prisma Decimal（decimal.js）的 valueOf 返回数字字符串，Number() 据此转换为 number。
+    // 这里以同样语义构造 mock，验证实现里 `Number(order.amount)` 的转换路径。
+    mockPrisma.order.findUnique.mockResolvedValue({
+      ...PENDING_ORDER,
+      amount: { valueOf: () => '3900', toNumber: () => 3900 } as unknown as number,
+    });
+    mockCreatePayment.mockResolvedValue({ success: true });
+
+    await getPaymentParams('o1', 'alipay', 'user-1');
+
+    expect(mockCreatePayment.mock.calls[0][1].amount).toBe(3900);
   });
 });

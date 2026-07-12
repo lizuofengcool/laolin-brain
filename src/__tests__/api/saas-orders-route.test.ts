@@ -11,7 +11,7 @@
  *     必须为 1-100 的正整数，挡 0/负数/小数/超 100，避免透传金额计算与 setMonth 月份推进），
  *     四道校验任一失败均不触达 createOrder；通过后 createOrder(auth.tenantId, plan, interval, qty)
  *     （tenantId 取自可信 auth，忽略 body 中 tenantId；quantity 缺省=1，经 Number() 规整后透传）+
- *     getPaymentParams(order.id, 'alipay')，返回 { order, paymentParams, message }；
+ *     getPaymentParams(order.id, 'alipay', auth.userId)，返回 { order, paymentParams, message }；
  *     createOrder/getPaymentParams 抛错 → 500
  *
  * Mock 策略：authenticateRequest / billing.service / next/server 全部隔离，不触达真实数据库。
@@ -359,7 +359,7 @@ describe("saas/orders 路由", () => {
       });
       // createOrder 第一参为 auth.tenantId（忽略 body.tenantId），quantity 缺省=1
       expect(mockCreateOrder).toHaveBeenCalledWith("tenant-1", "pro", "month", 1);
-      expect(mockGetPaymentParams).toHaveBeenCalledWith("order-new", "alipay");
+      expect(mockGetPaymentParams).toHaveBeenCalledWith("order-new", "alipay", "user-1");
     });
 
     it("成功（带 quantity=5）→ createOrder 以 body 中的 quantity 调用", async () => {
@@ -384,7 +384,7 @@ describe("saas/orders 路由", () => {
 
       expect(res.status).toBe(200);
       expect(mockCreateOrder).toHaveBeenCalledWith("tenant-1", "enterprise", "year", 5);
-      expect(mockGetPaymentParams).toHaveBeenCalledWith("order-bulk", "alipay");
+      expect(mockGetPaymentParams).toHaveBeenCalledWith("order-bulk", "alipay", "user-1");
     });
 
     it("createOrder 抛错 → 500 创建订单失败，getPaymentParams 不触达", async () => {
