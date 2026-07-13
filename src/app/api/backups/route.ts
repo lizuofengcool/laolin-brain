@@ -99,7 +99,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { name, type = 'full' } = body;
+    const { name, type = 'full', baseBackupId } = body;
 
     if (!name) {
       return NextResponse.json(
@@ -114,6 +114,36 @@ export async function POST(request: NextRequest) {
         { error: '没有权限管理备份' },
         { status: 403 }
       );
+    }
+
+    // 增量备份需要基准备份：校验 baseBackupId 归属（租户隔离）与状态（须已完成），
+    // 据其 createdAt 过滤 updatedAt >= sinceDate 的新增/变更文件。
+    // 全量备份忽略 baseBackupId，sinceDate 保持 null（不过滤，与原全量行为一致）。
+    let sinceDate: Date | null = null;
+    if (type === 'incremental') {
+      if (!baseBackupId) {
+        return NextResponse.json(
+          { error: '增量备份需要 baseBackupId' },
+          { status: 400 }
+        );
+      }
+      // findFirst 按 { id, tenantId } 过滤，跨租户 baseBackupId 返回 null（等价于不存在）
+      const baseBackup = await db.backup.findFirst({
+        where: { id: baseBackupId, tenantId },
+      });
+      if (!baseBackup) {
+        return NextResponse.json(
+          { error: '基准备份不存在或不属于当前租户' },
+          { status: 400 }
+        );
+      }
+      if (baseBackup.status !== 'completed') {
+        return NextResponse.json(
+          { error: '基准备份未完成，无法用于增量备份' },
+          { status: 400 }
+        );
+      }
+      sinceDate = baseBackup.createdAt;
     }
 
     // 检查是否有正在运行的备份
@@ -154,9 +184,18 @@ export async function POST(request: NextRequest) {
     // 路径遍历防护（path.resolve('./backups') 前缀校验）配套——DELETE 已为该桩
     // 落地做好前向准备（filePath 落 ./backups 即可被清理）。
     try {
+      // 增量备份按 sinceDate 过滤 updatedAt >= sinceDate 的新增/变更记录；
+      // 全量备份 sinceDate 为 null，where 仅含 tenantId（与原全量行为一致）。
+      const fileWhere: { tenantId: string; updatedAt?: { gte: Date } } = { tenantId };
+      const folderWhere: { tenantId: string; updatedAt?: { gte: Date } } = { tenantId };
+      if (sinceDate) {
+        fileWhere.updatedAt = { gte: sinceDate };
+        folderWhere.updatedAt = { gte: sinceDate };
+      }
+
       const [files, folders] = await Promise.all([
-        db.file.findMany({ where: { tenantId } }),
-        db.folder.findMany({ where: { tenantId } }),
+        db.file.findMany({ where: fileWhere }),
+        db.folder.findMany({ where: folderWhere }),
       ]);
 
       const backupContent = {
@@ -170,6 +209,10 @@ export async function POST(request: NextRequest) {
           folderCount: folders.length,
           totalSize: files.reduce((sum: number, f: any) => sum + (f.fileSize || 0), 0),
           schemaVersion: '1.0.0',
+          // 增量备份溯源：记录基准备份 id 与过滤时间点，便于恢复/审计
+          ...(sinceDate
+            ? { baseBackupId, sinceDate: sinceDate.toISOString() }
+            : {}),
         },
       };
 
