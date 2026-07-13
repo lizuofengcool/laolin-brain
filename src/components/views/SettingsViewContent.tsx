@@ -9,6 +9,7 @@ import { BackupRestore } from "@/components/settings/BackupRestore";
 import { CloudSync } from "@/components/settings/CloudSync";
 import { ThemeCustomizer } from "@/components/settings/ThemeCustomizer";
 import { InvitationsManager } from "@/components/settings/InvitationsManager";
+import { TeamMembersManager } from "@/components/settings/TeamMembersManager";
 import { BillingCenter } from "@/components/billing/BillingCenter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -425,7 +426,7 @@ export function SettingsViewContent() {
           </motion.div>
         </TabsContent>
 
-        {/* ── Tab 5: 团队邀请 ── */}
+        {/* ── Tab 5: 团队 ── */}
         <TabsContent value="team">
           <motion.div
             className="space-y-6"
@@ -433,6 +434,7 @@ export function SettingsViewContent() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.2 }}
           >
+            <TeamMembersManager />
             <InvitationsManager />
           </motion.div>
         </TabsContent>
