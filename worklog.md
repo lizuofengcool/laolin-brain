@@ -16819,3 +16819,137 @@ flush 微任务后验证。
   src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
+
+
+## 2026-07-13 19:00 自动迭代
+
+### 背景
+
+clone 后双端 fetch（origin/github main），HEAD 与 origin/main、github/main 均一致
+（777a73f），无远端更新、无遗留未提交改动。工作树干净，直接进入开发。
+
+**优先级 1 复核**：5 项安全/逻辑问题历史轮次已闭环，本轮未发现新增安全/逻辑问题。
+
+本轮承接第一百五十四轮 worklog「下一轮候选」首条：monitoring email 渠道仍为 TODO
+（上轮已闭环 webhook/wecom/dingtalk/feishu 四类 HTTP 投递，email 因依赖 src/lib/email
+保留）。本轮接入 emailService.sendEmail 投递告警邮件，补齐
+NotificationChannelType 五渠道最后一环。
+
+### 本次开发
+
+**feat — `src/lib/email/index.ts`（+50）**：
+
+新增 `alert-notification` 默认模板（第 8 个，原 7 个不变）：
+
+- subject：`[告警] {{alertName}} {{statusText}}`
+- HTML：红色渐变头部（🚨）+ 告警名+级别+状态摘要条 + 详情表（消息/当前值/阈值/
+  规则ID/触发时间）+ 自动发送提示。
+- variables：`alertName / level / statusText / message / value / threshold /
+  ruleId / timestamp`（全 string，与 sendEmail 的 `Record<string,string>` 签名一致）。
+
+**feat — `src/lib/monitoring/index.ts`（+57/-4）**：
+
+- `import { emailService } from "@/lib/email"`（无循环依赖：email 仅依赖 nodemailer）。
+- `sendToChannel` 在 HTTP payload 逻辑前增加 `if (channel.type === "email")` 分支，
+  路由到新私有方法 `sendEmailAlert`，email 不再走 `buildNotificationPayload` / `fetch`。
+- `sendEmailAlert`：
+  · 收件人取 `channel.config.to`（string）；缺失/非 string → `console.warn` 跳过
+    （不抛错，保持 evaluateRules 的 fire-and-forget 语义）。
+  · 构造 8 个模板变量（value/threshold 经 `String()` 转字符串，timestamp 经
+    `new Date(alert.startedAt).toISOString()`）。
+  · `await emailService.sendEmail(to, "alert-notification", variables, "", "")`；
+    try/catch 吞异常 → `console.error` 记录不外抛（不中断主流程）。
+  · emailService 为队列式异步投递，未配置 SMTP 时内部 `console.warn` 后清空队列跳过，
+    调用方无感（生产环境配 SMTP 后自动生效，无需改 monitoring 代码）。
+- `buildNotificationPayload` 的 `email` case 改为说明性注释（已由上层 sendEmailAlert
+  处理），返回 null 作防御性 fallback。
+- `sendToChannel` / `buildNotificationPayload` 的 doc comment 同步更新反映 email 走
+  邮件服务而非 HTTP。
+
+**test — `src/__tests__/lib/monitoring-index.test.ts`（+98/-18）**：
+
+- 文件级 `vi.mock('@/lib/email', () => ({ emailService: { sendEmail: vi.fn(async () => true) } }))`
+  注入 mock（vi.mock 工厂被 vitest 自动提升到所有 import 之前执行，monitoring 模块
+  import 时即拿到 mock emailService）。
+- `beforeEach` 增加 `vi.mocked(emailService.sendEmail).mockClear()` 清跨用例累积调用
+  记录（mockClear 仅清 calls，不重置默认 `async () => true` 实现）。
+- 原「email payload=null 仅 console.log 不触达 fetch」用例重写为「email 调用
+  emailService.sendEmail 投递 alert-notification」，断言入参：
+  to='ops@example.com' / templateId='alert-notification' / 8 个 variables
+  （alertName='规则1' / level='warning' / statusText='触发' / message='规则1: 当前值
+  60，阈值 > 50' / value='60' / threshold='50' / ruleId='r1' / timestamp=
+  new Date(1000).toISOString()）/ tenantId='' / userId=''，且不触达 fetch。
+- 新增 4 用例：
+  1. config.to 缺失（{}）→ console.warn 记录「email 渠道 c1 缺 config.to」，不触达
+     sendEmail / fetch。
+  2. config.to 非 string（12345）→ 同上 console.warn 跳过。
+  3. resolved 状态：firing→resolved 两轮触发两次 sendEmail，第二轮 variables.statusText
+     ='恢复'、alertName='规则1'，且全程不触达 fetch。
+  4. sendEmail reject（mockRejectedValueOnce + 微任务 flush）→ console.error 捕获
+     异常消息「SMTP down」不外抛（不中断 evaluateRules）。
+- describe 重命名：`sendToChannel 渠道投递（webhook/wecom/dingtalk/feishu/email）`，
+  头部注释同步反映 email 经 vi.mock 注入 + emailService.sendEmail 断言策略。
+- 文件头注释更新：反映 email 渠道已实现 + vi.mock('@/lib/email') 注入机制。
+
+**test — `src/__tests__/lib/email.test.ts`（+30/-2）**：
+
+- 默认模板数 7→8，ids 列表补 `alert-notification`（头注释「7 个」→「8 个」同步）。
+- 新增 renderTemplate 用例：alert-notification 替换全部 8 变量（alertName='CPU 使用率
+  过高' / level='critical' / statusText='触发' / message / value='92' / threshold='80'
+  / ruleId / timestamp），subject='[告警] CPU 使用率过高 触发'，html 含各字段且无
+  `{{` 残留。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules、无 pnpm-lock；pnpm
+  10.28.1，66s 完成）。
+- `npx prisma generate`（@prisma/client build script 被 pnpm 忽略需手动生成）。
+- `npx tsc --noEmit`：**0 错误**（延续第一百五十四轮的干净基线）。
+- `npx vitest run src/__tests__/lib/monitoring-index.test.ts`：**84 用例全通过**
+  （原 80 用例 +4 新增 = 84）。
+- `npx vitest run src/__tests__/lib/email.test.ts`：**27 用例全通过**
+  （原 26 用例 +1 新增 = 27；模板数断言 7→8 已同步修正）。
+- `npx vitest run`：**179 文件 / 5037 用例全通过**（217s；较上轮 +5 用例，无回归）。
+
+环境备注：`pnpm-lock.yaml` 未提交（git add 仅含 4 个 src 文件）；`git status` 干净。
+
+### 改动量
+
+4 文件，+246/-18：
+- `src/lib/email/index.ts`（feat，+50）
+- `src/lib/monitoring/index.ts`（feat，+57/-4）
+- `src/__tests__/lib/monitoring-index.test.ts`（test，+98/-18）
+- `src/__tests__/lib/email.test.ts`（test，+30/-2）
+
+2 commit，符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `946c29b` feat(monitoring): 接入 email 渠道经 emailService 投递告警通知
+- `f1b800b` test(monitoring): 补 email 渠道 sendEmail 投递与 alert-notification 模板渲染用例（+5）
+
+### 推送
+
+- origin (Gitee)：待推送
+- github (GitHub)：待推送
+
+### 下一轮候选
+
+- **invitations 邀请邮件发送**（延续）：`src/app/api/invitations/route.ts:183` TODO
+  发送邀请邮件——邮件基础设施（src/lib/email）已存在且本轮新增 alert-notification
+  模板验证了 sendEmail 接入模式，可参照实现 invitation 模板 + 调 sendEmail。属可独立
+  推进的功能完整性缺口（无外部 SDK 依赖）。
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  需接入外部模型 API（属功能完整性缺口、依赖外部 SDK，优先级低于其他候选）。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/ai/model-manager.ts`（4 处模型 API 桩：
+  testModel/chat/complete/embeddings）——已有 691 行单测锁定 mock 边界行为，模块未被
+  任何生产代码 import；可考虑按 payment factory 模式将 mock 改为显式标记，但收益较低。
+- **registry.ts 文件/搜索桩接入**（延续）：getFiles/getFile/createFile/search 仍为空返回，
+  需注入认证 token + fetch 适配器走 /api/files、/api/search；属外部集成范畴（已加注释说明）。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：auto-summary 的
+  `db.file.update` 及 `$transaction` 内 tx 写未走 TenantDb，但均操作已租户校验记录、
+  无实际越权；迁移需重写 `files-route-post-ai-doc.test.ts` 契约，churn 大、收益低，暂缓。
+- **同型「inline 模拟」测试文件清理**（延续）：tenant-security.test.ts、
+  src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
