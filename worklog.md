@@ -16953,3 +16953,125 @@ NotificationChannelType 五渠道最后一环。
   src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
+
+---
+
+## 2026-07-13 13:00 自动迭代
+
+### 背景
+
+fetch origin/github main：双端均停在 cb3e1ac，与本地一致，无远端更新、无遗留未提交
+改动。评估优先级 1 已知问题清单：api-auth.test.ts 与实现已相符（4 字段/async/不读
+query，前轮已修）、tenant-db.ts raw getter 已加调用堆栈 console.warn 软审计、
+sync-engine.ts keep_both 已改为「重命名本地为冲突副本 + 云端版本 create 新 id 并存」
+（非直接覆盖）、alipay.ts RSA2 已走 createVerify('RSA-SHA256') 真验签 + PEM 规整、
+wechat.ts 已走 HMAC-SHA256 timingSafeEqual + AES-256-GCM resource 解密——均非占位。
+故本轮转向优先级 2：worklog「下一轮候选」首项 invitations 邀请邮件发送（route.ts:183
+TODO），邮件基础设施上轮已用 alert-notification 模板验证 sendEmail 接入模式。
+
+### 本次开发：落地 invitations 邀请邮件 TODO
+
+**feat — `src/lib/email/index.ts`（+49）**：
+
+- DEFAULT_TEMPLATES 末尾追加 `invitation` 模板（第 9 个）：
+  - subject: `邀请你加入{{tenantName}}`
+  - variables: `email / tenantName / role / inviteUrl / expiresAt`
+  - 复用既有渐变头部 + 卡片表格（邮箱/角色/有效期至）+ CTA「接受邀请」按钮 + 链接
+    兜底文案 + 失效提醒。
+
+**feat — `src/app/api/invitations/route.ts`（+60/-2）**：
+
+- 落地 `route.ts:183` TODO「发送邀请邮件」：`invitation.create` 成功后调用新增
+  `sendInvitationEmail` 经 `emailService.sendEmail` 投递 `invitation` 模板。
+- **fire-and-forget 语义**：投递异常 `console.error` 吞掉，不外抛、不中断主流程
+  （邀请记录已落库，邮件失败不应让 API 返回 500）。未配置 SMTP 时 emailService
+  内部 `console.warn` 清空队列跳过，调用方无感（与 monitoring sendEmailAlert 同构）。
+- 租户名取自 `db.tenant.findUnique({where:{id:tenantId}, select:{name:true}})`，
+  缺失回退产品默认名「个人私有第二大脑」，避免邮件出现空名。
+- `inviteUrl = ${baseUrl}/invite?token=${token}`，baseUrl 取自
+  `NEXT_PUBLIC_BASE_URL || APP_URL || 'http://localhost:3000'`（与 files/share 路由
+  同源约定）。
+- `ROLE_LABELS` 将 role 映射为中文（admin→管理员 / member→成员 / viewer→访客；
+  owner 不可经邀请产生，故不在此列）。
+
+**test — `src/__tests__/api/invitations-route.test.ts`（+113）**：
+
+- vi.hoisted 增 `mockTenantFindUnique` / `mockSendEmail`；vi.mock 增 `@/lib/email`
+  （emailService.sendEmail）与 db.tenant.findUnique；beforeEach 默认
+  `mockTenantFindUnique→{name:'测试租户'}`、`mockSendEmail→true`。
+- 新增 6 用例锁定投递契约：
+  1. 成功投递：`sendEmail` 入参全等（to='new@example.com' / templateId='invitation' /
+     variables={email,tenantName:'测试租户',role:'成员',
+     inviteUrl='http://localhost:3000/invite?token=<UUID>',
+     expiresAt=now+72h ISO} / tenantId='tenant-1' / userId='user-1'）。token 为
+     randomUUID 动态生成，从 `mockInvitationCreate` 调用回捞断言。
+  2. role='admin' → variables.role='管理员'，expiresAt=now+24h ISO。
+  3. tenant.findUnique 返回 null → tenantName 回退「个人私有第二大脑」，
+     role='viewer' → '访客'。
+  4. sendEmail reject（SMTP down）→ 不中断主流程，仍 200，console.error 记录
+     「Failed to send invitation email:」。
+  5. NEXT_PUBLIC_BASE_URL='https://brain.example.com' → inviteUrl 使用该前缀
+     （finally 恢复 env）。
+  6. 失败路径不触达 sendEmail：user.findFirst 抛错 / invitation.create 抛错 →
+     sendEmail 未调用（create 在前）。
+- 既有成功用例（owner/admin 全新邮箱、跨租户用户放行）因 mock 默认 resolve，
+  无需改动即通过；既有失败用例补 sendEmail 未调用断言。
+
+**test — `src/__tests__/lib/email.test.ts`（+26/-3）**：
+
+- 模板数 8→9，ids 列表补 `invitation`（头注释「8 个」→「9 个」同步）。
+- 新增 renderTemplate 用例：invitation 替换全部 5 变量（tenantName='知识团队' /
+  role='管理员' / email / inviteUrl / expiresAt），subject='邀请你加入知识团队'，
+  html 含各字段且无 `{{` 残留。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，59.5s）。
+- `npx prisma generate`（@prisma/client build script 被 pnpm 忽略需手动生成）。
+- `npx tsc --noEmit`：**0 错误**。
+- `npx vitest run src/__tests__/api/invitations-route.test.ts
+  src/__tests__/lib/email.test.ts`：**69 用例全通过**（41 + 28）。
+- `npx vitest run`：**179 文件 / 5043 用例全通过**（158s；较上轮 5037 +6 用例，
+  无回归）。
+
+环境备注：`pnpm-lock.yaml` 未提交（git add 仅含 4 个 src 文件）；`git status` 干净。
+
+### 改动量
+
+4 文件，+243/-5：
+- `src/lib/email/index.ts`（feat，+49）
+- `src/app/api/invitations/route.ts`（feat，+60/-2）
+- `src/__tests__/api/invitations-route.test.ts`（test，+113）
+- `src/__tests__/lib/email.test.ts`（test，+26/-3）
+
+2 commit，符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `6360971` feat(email): 新增 invitation 团队邀请邮件模板
+- `005241c` feat(invitations): 创建邀请后经 emailService 投递邀请邮件
+
+### 推送
+
+- origin (Gitee)：推送成功（cb3e1ac..005241c）
+- github (GitHub)：推送成功（cb3e1ac..005241c）
+
+### 下一轮候选
+
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  需接入外部模型 API（属功能完整性缺口、依赖外部 SDK，优先级低于其他候选）。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/ai/model-manager.ts`（4 处模型 API 桩：
+  testModel/chat/complete/embeddings）——已有 691 行单测锁定 mock 边界行为，模块未被
+  任何生产代码 import；可考虑按 payment factory 模式将 mock 改为显式标记，但收益较低。
+- **registry.ts 文件/搜索桩接入**（延续）：getFiles/getFile/createFile/search 仍为空返回，
+  需注入认证 token + fetch 适配器走 /api/files、/api/search；属外部集成范畴（已加注释说明）。
+- **invite 接受页前端**（新增）：本轮邮件 inviteUrl 指向 `${baseUrl}/invite?token=xxx`，
+  但 src/app 下尚无 /invite 页面消费 token 调用 accept 接口；属前端功能完整性缺口
+  （无外部依赖，可独立推进）。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：auto-summary 的
+  `db.file.update` 及 `$transaction` 内 tx 写未走 TenantDb，但均操作已租户校验记录、
+  无实际越权；迁移需重写 `files-route-post-ai-doc.test.ts` 契约，churn 大、收益低，暂缓。
+- **同型「inline 模拟」测试文件清理**（延续）：tenant-security.test.ts、
+  src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
