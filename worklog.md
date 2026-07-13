@@ -16692,3 +16692,130 @@ fetch origin/main + github/main：本地 / origin / github 三方均在 `928591f
   src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
+
+## 2026-07-13 17:00 自动迭代
+
+### 背景
+
+fetch origin/main + github/main：本地 / origin / github 三方均在 `296874f`，工作树
+干净，无遗留未提交改动。
+
+**优先级 1 复核**：5 项安全/逻辑问题历史轮次已闭环（tenant-db raw 审计、
+alipay/wechat RSA2 真实验签、files 路由 PARTIAL 可接受、sync-engine keep_both、
+api-auth.test 重写），本轮未发现新增安全/逻辑问题。
+
+本轮按 README「系统监控与告警」功能清单 + worklog 候选扫描，定位到
+`src/lib/monitoring/index.ts` 的 `sendToChannel` 仍为 TODO 桩（仅 `console.log`，
+L408 `// TODO: 实现各渠道的通知发送`）——告警规则匹配后通知层零投递，是监控系统
+功能性缺口（`NotificationChannelType` 声明 email/webhook/wecom/dingtalk/feishu
+五种渠道，但全部仅打日志）。其中 webhook/wecom/dingtalk/feishu 均为 HTTP POST
+机器人 webhook，无需外部 SDK，本轮接通；email 依赖邮件服务（src/lib/email）暂保留。
+
+### 本次开发
+
+**feat — `src/lib/monitoring/index.ts`（+100/-1）**：
+
+`sendToChannel` 由 TODO 桩升级为真实 HTTP POST 投递，新增 `buildNotificationPayload`
+按 `channel.type` 构造各渠道标准 payload：
+
+- **webhook**（通用）：结构化 alert 字段 body（alert/status/level/message/value/
+  threshold/ruleId/alertId/timestamp），透传 `channel.config.headers`（鉴权头等
+  自定义头，与默认 `Content-Type: application/json` 合并）。
+- **wecom**（企业微信群机器人）：`{ msgtype: "markdown", markdown: { content } }`。
+- **dingtalk**（钉钉群机器人）：`{ msgtype: "markdown", markdown: { title, text } }`，
+  title 取 alert.name。
+- **feishu**（飞书群机器人）：`{ msg_type: "text", content: { text } }`。
+- **email**：返回 null 跳过（依赖 src/lib/email 接入，保留 TODO 注释）。
+
+投递容错契约：
+- `channel.config.url` 缺失或非 string → `console.warn` 记录后 return（不抛错、
+  不触达 fetch），保证 evaluateRules 的 fire-and-forget 语义不被破坏。
+- `fetch` 非 2xx → `console.error` 记录 `投递失败：HTTP {status} {statusText}`。
+- `fetch` reject（网络错误等）→ `console.error` 记录 `投递异常：` + 异常消息，
+  catch 吞掉异常不外抛（不中断 evaluateRules 同步主流程）。
+- 沿用既有 `console.log("Sending ... alert to {type}: ...")` 首行日志（既有测试
+  契约依赖），其后追加真实投递逻辑。
+
+**test — `src/__tests__/lib/monitoring-index.test.ts`（+216/-5）**：
+
+新增 describe「sendToChannel HTTP 投递」10 用例（经 `vi.stubGlobal('fetch',
+mockFetch)` 隔离网络）：
+
+1. webhook 配置 url 成功：fetch POST + `Content-Type: application/json` + 结构化
+   body（alert/status/level/value/threshold/ruleId/timestamp 各字段断言，2xx 不
+   触发 console.error）。
+2. webhook 自定义 headers（Authorization/X-Source）合并到请求头，Content-Type
+   默认头保留。
+3. webhook `res.ok=false`（500）→ console.error 记录 `投递失败：HTTP 500`。
+4. webhook fetch reject（network unreachable）→ console.error 捕获异常消息，不抛出。
+5. wecom 渠道 payload `msgtype=markdown` + markdown.content 含 `[WARNING]` 标题
+   与 `当前值 60` 详情。
+6. dingtalk 渠道 payload `markdown.title=alert.name` + text 含详情。
+7. feishu 渠道 payload `msg_type=text` + content.text 含标题与 `阈值 > 50`。
+8. email 渠道 payload=null → 仅 console.log，fetch 不被调用。
+9. resolved 状态投递：firing→resolved 两轮触发两次 fetch，第二轮 body.status
+   ="resolved"。
+10. `config.url` 非 string（12345）→ console.warn 跳过，不触达 fetch。
+
+测试时序说明：evaluateRules 不 await sendNotification（fire-and-forget），但
+fetch 函数调用本身在同步阶段完成，`mockFetch.mock.calls` 在 evaluateRules 返回后
+立即可断言；res 处理（console.error）经 `await new Promise(r => setTimeout(r, 0))`
+flush 微任务后验证。
+
+替换原「sendToChannel 桩不抛错」用例为「webhook 缺 config.url → console.warn
+跳过不报错不触达 fetch」（mock fetch + 微任务 flush 断言异步分支无副作用）。
+更新文件头注释反映 sendToChannel 已实现、fetch 经 stubGlobal 注入。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules、无 pnpm-lock；pnpm
+  10.28.1，65s 完成）。
+- `npx prisma generate`（v6.19.3 客户端，@prisma/client build script 被 pnpm 忽略需
+  手动生成）。
+- `npx tsc --noEmit`：**0 错误**（延续第一百五十三轮的干净基线）。
+- `npx vitest run src/__tests__/lib/monitoring-index.test.ts`：**80 用例全通过**
+  （原 70 用例 +10 新增 = 80）。
+- `npx vitest run`：**179 文件 / 5032 用例全通过**（223s；较上轮 +10 用例，无回归）。
+
+环境备注：`pnpm-lock.yaml` 未提交（git add 仅含 monitoring + test 文件）；`git status`
+干净。
+
+### 改动量
+
+2 文件，+316/-6：
+- `src/lib/monitoring/index.ts`（feat，+100/-1）
+- `src/__tests__/lib/monitoring-index.test.ts`（test，+216/-5）
+
+2 commit，符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `981a351` feat(monitoring): 实现 sendToChannel webhook/wecom/dingtalk/feishu HTTP 投递
+- `79a009a` test(monitoring): 补 sendToChannel 各渠道 HTTP 投递用例（+10）
+
+### 推送
+
+- origin (Gitee)：推送成功（含本轮 2 commit + 本 worklog commit）
+- github (GitHub)：推送成功
+
+### 下一轮候选
+
+- **monitoring 通知渠道投递**：本轮已闭环 webhook/wecom/dingtalk/feishu 四类 HTTP
+  投递；email 渠道仍 TODO（依赖 src/lib/email 接入：构造邮件正文 + 调 sendEmail），
+  属可独立推进的功能完整性缺口。
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  需接入外部模型 API（属功能完整性缺口、依赖外部 SDK，优先级低于其他候选）。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/ai/model-manager.ts`（4 处模型 API 桩：
+  testModel/chat/complete/embeddings）——已有 691 行单测锁定 mock 边界行为，模块未被
+  任何生产代码 import；可考虑按 payment factory 模式将 mock 改为显式标记，但收益较低。
+- **registry.ts 文件/搜索桩接入**（延续）：getFiles/getFile/createFile/search 仍为空返回，
+  需注入认证 token + fetch 适配器走 /api/files、/api/search；属外部集成范畴（已加注释说明）。
+- **invitations 邮件发送**（新增候选）：`src/app/api/invitations/route.ts:183` TODO
+  发送邀请邮件——邮件基础设施（src/lib/email）已存在，可接入 sendEmail 实现。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：auto-summary 的
+  `db.file.update` 及 `$transaction` 内 tx 写未走 TenantDb，但均操作已租户校验记录、
+  无实际越权；迁移需重写 `files-route-post-ai-doc.test.ts` 契约，churn 大、收益低，暂缓。
+- **同型「inline 模拟」测试文件清理**（延续）：tenant-security.test.ts、
+  src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
