@@ -3,6 +3,8 @@
  * 收集系统指标、业务指标，支持告警
  */
 
+import { emailService } from "@/lib/email";
+
 // 指标类型
 export type MetricType = "counter" | "gauge" | "histogram" | "summary";
 
@@ -401,7 +403,7 @@ export class AlertEngine {
    * 发送到指定渠道
    *
    * webhook / wecom / dingtalk / feishu 走 HTTP POST 投递（url 取自 channel.config.url）；
-   * email 渠道依赖邮件服务（src/lib/email），尚未接入，仅记录日志后跳过。
+   * email 渠道经 sendEmailAlert 调用邮件服务（src/lib/email）投递，不经 HTTP 路径。
    */
   private async sendToChannel(
     channel: NotificationChannel,
@@ -410,9 +412,15 @@ export class AlertEngine {
   ): Promise<void> {
     console.log(`[Alert] Sending ${status} alert to ${channel.type}: ${alert.name}`);
 
+    // email 渠道走邮件服务（src/lib/email），不经 HTTP POST 路径
+    if (channel.type === "email") {
+      await this.sendEmailAlert(channel, alert, status);
+      return;
+    }
+
     const payload = this.buildNotificationPayload(channel, alert, status);
     if (!payload) {
-      // email / 未知类型：保持 TODO，不触达 fetch
+      // 未知类型：不触达 fetch
       return;
     }
 
@@ -447,7 +455,8 @@ export class AlertEngine {
   }
 
   /**
-   * 构造各渠道通知 payload。返回 null 表示该渠道类型暂不支持 HTTP 投递（email/未知）。
+   * 构造各渠道通知 payload。返回 null 表示该渠道类型不经 HTTP 投递
+   *（email 由 sendEmailAlert 处理；未知类型）。
    */
   private buildNotificationPayload(
     channel: NotificationChannel,
@@ -501,10 +510,54 @@ export class AlertEngine {
           },
         };
       case "email":
-        // TODO: email 渠道依赖邮件服务（src/lib/email）接入后落地
+        // email 经 sendToChannel 上层路由到 sendEmailAlert（邮件服务），不经 HTTP 路径
         return null;
       default:
         return null;
+    }
+  }
+
+  /**
+   * 通过邮件服务投递告警通知。
+   *
+   * 收件人取自 `channel.config.to`（string）；缺失或非 string 时 console.warn 跳过，
+   * 不抛错（保持 evaluateRules 的 fire-and-forget 语义）。投递异常 console.error 记录，
+   * 不外抛（不中断主流程）。模板 id 为 alert-notification（src/lib/email 中注册）。
+   * emailService.sendEmail 为队列式异步投递，未配置 SMTP 时内部 console.warn 后清空
+   * 队列跳过，调用方无感。
+   */
+  private async sendEmailAlert(
+    channel: NotificationChannel,
+    alert: AlertEvent,
+    status: "firing" | "resolved"
+  ): Promise<void> {
+    const to = channel.config?.to;
+    if (!to || typeof to !== "string") {
+      console.warn(
+        `[Alert] email 渠道 ${channel.id} 缺 config.to，跳过投递`
+      );
+      return;
+    }
+
+    const statusText = status === "firing" ? "触发" : "恢复";
+    const variables: Record<string, string> = {
+      alertName: alert.name,
+      level: alert.level,
+      statusText,
+      message: alert.message,
+      value: String(alert.value),
+      threshold: String(alert.threshold),
+      ruleId: alert.ruleId,
+      timestamp: new Date(alert.startedAt).toISOString(),
+    };
+
+    try {
+      await emailService.sendEmail(to, "alert-notification", variables, "", "");
+    } catch (err) {
+      console.error(
+        `[Alert] email 渠道 ${channel.id} 投递异常：`,
+        err instanceof Error ? err.message : err
+      );
     }
   }
 

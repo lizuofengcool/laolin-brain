@@ -295,6 +295,56 @@ const DEFAULT_TEMPLATES: EmailTemplate[] = [
     `,
     variables: ["userName", "title", "content"],
   },
+  {
+    id: "alert-notification",
+    name: "监控告警通知",
+    subject: "[告警] {{alertName}} {{statusText}}",
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%); padding: 40px; text-align: center; color: white; border-radius: 8px 8px 0 0;">
+          <div style="font-size: 48px;">🚨</div>
+          <h1 style="margin: 10px 0 0 0; font-size: 28px;">监控告警</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 40px; border-radius: 0 0 8px 8px;">
+          <div style="background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #ef4444;">
+            <h2 style="color: #111827; margin-top: 0; margin-bottom: 10px;">{{alertName}}</h2>
+            <p style="color: #6b7280; margin: 0; font-size: 14px;">
+              级别：<strong style="color: #ef4444; text-transform: uppercase;">{{level}}</strong> · 状态：<strong>{{statusText}}</strong>
+            </p>
+          </div>
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
+            <h3 style="color: #111827; margin-top: 0;">告警详情</h3>
+            <table style="width: 100%; border-collapse: collapse;">
+              <tr>
+                <td style="padding: 8px 0; color: #6b7280; width: 100px;">消息</td>
+                <td style="padding: 8px 0; color: #111827;">{{message}}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 0; color: #6b7280;">当前值</td>
+                <td style="padding: 8px 0; color: #ef4444; font-weight: bold;">{{value}}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 0; color: #6b7280;">阈值</td>
+                <td style="padding: 8px 0; color: #111827;">{{threshold}}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 0; color: #6b7280;">规则ID</td>
+                <td style="padding: 8px 0; color: #6b7280; font-family: monospace; font-size: 13px;">{{ruleId}}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 0; color: #6b7280;">触发时间</td>
+                <td style="padding: 8px 0; color: #6b7280; font-family: monospace; font-size: 13px;">{{timestamp}}</td>
+              </tr>
+            </table>
+          </div>
+          <p style="font-size: 14px; color: #6b7280; text-align: center; margin-top: 30px;">
+            此邮件由监控系统自动发送，请及时处理。
+          </p>
+        </div>
+      </div>
+    `,
+    variables: ["alertName", "level", "statusText", "message", "value", "threshold", "ruleId", "timestamp"],
+  },
 ];
 
 // 邮件服务类
