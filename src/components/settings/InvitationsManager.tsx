@@ -14,7 +14,8 @@ import { UserPlus, RefreshCw, Mail, Clock, X } from "lucide-react";
  * 邀请管理（团队 Tab）
  *
  * 消费后端邀请 API（均需 owner/admin 权限，由后端 403 兜底）：
- *   - GET    /api/invitations          列表（分页）
+ *   - GET    /api/invitations          列表（分页，支持 status 按状态筛选；
+ *                                        owner/admin 可调）
  *   - POST   /api/invitations          创建邀请（email + role，默认 72h 有效）
  *   - DELETE /api/invitations/[id]     撤销（仅 pending，软撤销 status='revoked'）
  *   - POST   /api/invitations/[id]/resend  重发（刷新有效期，复用原 token）
@@ -56,6 +57,19 @@ const STATUS_BADGE: Record<string, { label: string; className: string }> = {
   expired: { label: "已过期", className: "bg-red-100 text-red-800" },
 };
 
+// 状态筛选选项：消费后端 GET /api/invitations 的 status 查询参数（route.ts 行 24/51-53）。
+// 标签带「仅」前缀以区别于列表中状态徽章文案（避免 getByText 误匹配），并表达
+// 「只看该状态」的过滤语义。空值 = 全部。
+// 注：后端按存储的 status 字段过滤；行内「已过期」徽章在 pending 且过期时客户端计算，
+// 与 status=expired（后端已标记过期）同标签，但两者均可被 status=expired 命中。
+const STATUS_FILTER_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "全部状态" },
+  { value: "pending", label: "仅待接受" },
+  { value: "accepted", label: "仅已接受" },
+  { value: "revoked", label: "仅已撤销" },
+  { value: "expired", label: "仅已过期" },
+];
+
 const PAGE_SIZE = 10;
 
 export function InvitationsManager() {
@@ -78,6 +92,8 @@ export function InvitationsManager() {
   // 行级操作状态：记录正在处理的邀请 id，禁用按钮防止重复点击
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  // 状态筛选：空值 = 全部（不传 status 参数）
+  const [statusFilter, setStatusFilter] = useState("");
 
   const fetchList = useCallback(async (p: number) => {
     if (!token) return;
@@ -86,6 +102,7 @@ export function InvitationsManager() {
     setActionMsg(null);
     try {
       const params = new URLSearchParams({ page: String(p), pageSize: String(PAGE_SIZE) });
+      if (statusFilter) params.set("status", statusFilter);
       const res = await fetch(`/api/invitations?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -108,11 +125,20 @@ export function InvitationsManager() {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, statusFilter]);
 
   useEffect(() => {
     fetchList(page);
   }, [page, fetchList]);
+
+  // 状态筛选即时生效：切换后重置到第一页。setStatusFilter 改变 fetchList 标识，
+  // 触发 useEffect 重新拉取；若当前已在第一页，fetchList 变化仍会触发 refetch。
+  // 若在第二页切换筛选，setPage(1) 使其回到第一页（与 setRoleFilter 同批合并，
+  // 单次 re-render 单次 refetch，无 page=2&newStatus 中间态请求）。
+  const handleStatusFilterChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setStatusFilter(e.target.value);
+    if (page !== 1) setPage(1);
+  };
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -285,10 +311,24 @@ export function InvitationsManager() {
         {/* 列表 */}
         {!forbidden && (
           <>
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-muted-foreground">
-                共 {total} 条邀请
-              </p>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2">
+                <select
+                  aria-label="按状态筛选"
+                  className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                  value={statusFilter}
+                  onChange={handleStatusFilterChange}
+                >
+                  {STATUS_FILTER_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-sm text-muted-foreground">
+                  共 {total} 条邀请
+                </p>
+              </div>
               <Button
                 variant="outline"
                 size="sm"
