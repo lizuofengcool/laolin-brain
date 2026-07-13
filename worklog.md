@@ -17360,3 +17360,104 @@ import + 删除内联实现，行为不变。
   src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
+
+---
+
+## 2026-07-14 02:00 自动迭代
+
+### 评估
+
+fetch 双端（origin/github）均无新提交，本地与 `c36815b` 对齐，工作树干净。
+
+复核任务清单中"剩余优先级 1 问题"的当前实际状态（逐文件验证）：
+
+- `src/lib/db/tenant-db.ts` raw 后门：**已修复**。`raw` getter（行 56-62）与
+  `transaction`（行 41-47）均带 `console.warn` + 调用堆栈软审计；底部注释（行
+  988-992）说明 rawDb 不再无审计导出。
+- `src/lib/payment/alipay.ts` RSA2 验签：**已修复**。`verifyRSA2Sign`（行 191-207）
+  使用 `createVerify('RSA-SHA256')` + `RSA_PKCS1_PADDING` 真实验签，`normalizePublicKey`
+  （行 213-221）规整 PEM；已配置真实密钥时 createPayment/queryPayment/refund 显式失败
+  不再静默 mock。
+- `src/lib/payment/wechat.ts` 验签：**已修复**。`verifyWechatSign`（行 221-242）使用
+  HMAC-SHA256 + `timingSafeEqual` 恒定时间比较，`decryptResource`（行 255-291）实现
+  AES-256-GCM 解密；缺字段/缺密钥直接拒绝，不再"非空即通过"。
+- `src/app/api/files/route.ts` TenantDb 迁移：**部分完成（低优先级剩余）**。GET 与
+  POST 去重已走 `tenantDb.file`；仅事务内 `tx` 写与 auto-summary `db.file.update`
+  仍直连，但均操作已租户校验记录、无越权，churn 大收益低，暂缓。
+- `src/lib/cloud-sync/sync-engine.ts` keep_both：**已修复**。keep_both 分支（行 687-728）
+  先重命名本地为 `[冲突副本]` 再以云端数据 create 新文件，不再直接覆盖丢本地版本。
+- `src/__tests__/lib/api-auth.test.ts` 与实现不符：**已修复**。测试期望 4 字段、async、
+  拒绝 query param，与当前 `authenticateRequest` 实现一致。
+
+结论：任务描述中"剩余优先级 1"清单已全部在先前轮次解决，描述陈旧。本轮转向
+worklog 末尾"下一轮候选"中优先级最高的可落地项——**前端邀请管理入口接入**
+（第 158 轮补齐了 DELETE/resend 后端 API，但前端无消费方）。
+
+### 本次开发
+
+**feat — 设置页「团队」Tab + InvitationsManager 组件**：
+
+新增 `src/components/settings/InvitationsManager.tsx`（+412），消费第 158 轮的四个
+邀请 API，并在 `SettingsViewContent.tsx` 新增「团队」Tab（`grid-cols-5` → `grid-cols-6`）。
+
+- **列表**：`GET /api/invitations`（带 `Authorization: Bearer ${token}`）分页展示，
+  列：邮箱 / 角色（admin→管理员/member→成员/viewer→访客）/ 状态徽章 / 有效期 / 创建时间。
+  状态徽章 pending→待接受(黄)、accepted→已接受(绿)、revoked→已撤销(灰)、
+  expired→已过期(红)；逻辑过期（DB status=pending 但 expiresAt 已过）前端显示「已过期」。
+- **创建**：邮箱 + 角色 Select 表单，`POST /api/invitations` body `{email, role}`，
+  沿用后端默认 72h 有效；成功后回第一页刷新确保新邀请可见。
+- **撤销**：`window.confirm` 二次确认后 `DELETE /api/invitations/[id]`，软撤销。
+- **重发**：`POST /api/invitations/[id]/resend`（无 body，默认 72h），刷新有效期。
+- **权限**：前端 store 不持有当前用户角色（`UserInfo` 无 role/tenantId），故不做
+  客户端门控；GET 返回 403 时显示「没有权限管理邀请，仅租户所有者/管理员可操作」，
+  由后端作为权限唯一真源（与 GET/POST/DELETE/resend 的 owner/admin 门控一致）。
+- **防重复**：行级操作期间记录 `pendingAction` id，禁用该行两个按钮；410（已
+  accepted/revoked/expired）等错误经 `data.error` 内联显示。
+- **兜底**：无 token 时显示「请先登录」（设置页本身在鉴权后渲染，此为防御性兜底）。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，64.4s）。
+- `npx prisma generate`（v6.19.3 客户端）。
+- `npx tsc --noEmit`：**0 错误**（含新组件 + Tab 改动）。
+- `npx vitest run src/__tests__/api/invitations`：**3 文件 / 87 用例全通过**
+  （3.77s；后端契约未触动，确认前端消费的接口契约稳定）。
+- 前端组件测试未补：组件为纯 UI 消费已锁定后端契约，本轮聚焦接入；作为下一轮候选。
+
+环境备注：`pnpm-lock.yaml` 已在 .gitignore；`git status` 干净。
+
+### 改动量
+
+2 文件，+432/-3：
+- `src/components/settings/InvitationsManager.tsx`（feat，+412 新增）
+- `src/components/views/SettingsViewContent.tsx`（feat，+20/-3：import + 团队 Tab）
+
+1 commit，符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `ee20d92` feat(invitations): 设置页新增团队邀请管理（列表/创建/撤销/重发）
+
+### 推送
+
+- origin (Gitee)：`c36815b..ee20d92` 推送成功
+- github (GitHub)：`c36815b..ee20d92` 推送成功
+- 双端同步校验：`git rev-list --left-right --count origin/main...github/main` = `0 0`
+
+### 下一轮候选
+
+- **InvitationsManager 组件测试**（新增）：补 happy-dom/jsdom 组件测试，mock fetch
+  锁定列表渲染/创建/撤销/重发/403/410/分页契约，沿用 invitations-route.test.ts 的
+  `vi.hoisted` + 固定响应范式。
+- **前端团队成员列表**（新增，可选）：当前「团队」Tab 仅展示邀请，可补当前租户成员
+  列表（消费 `GET /api/tenant/users`）+ 角色变更/移除（对应 `[id]/route.ts`）。
+- **invite 页面登录后自动重定向**（延续，可选 UX）：当前未登录内嵌 LoginForm、登录后
+  原地拉预览（已可用）；如需「邮件链接 → 跳根路径登录 → 自动回 /invite」可在
+  LoginForm 成功后读 sessionStorage 的 invite_redirect 并 router.push。
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  需接入外部模型 API（依赖外部 SDK，优先级低）。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与
+  auto-summary `db.file.update` 仍直连，均操作已租户校验记录、无越权；迁移需重写
+  `files-route-post-ai-doc.test.ts` 契约，churn 大收益低，暂缓。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
