@@ -50,6 +50,8 @@ const {
   mockUserFindFirst,
   mockInvitationFindFirst,
   mockInvitationCreate,
+  mockTenantFindUnique,
+  mockSendEmail,
 } = vi.hoisted(() => {
   class MockNextResponse {
     body: unknown;
@@ -70,12 +72,19 @@ const {
     mockUserFindFirst: vi.fn(),
     mockInvitationFindFirst: vi.fn(),
     mockInvitationCreate: vi.fn(),
+    mockTenantFindUnique: vi.fn(),
+    mockSendEmail: vi.fn(),
   };
 });
 
 vi.mock("next/server", () => ({ NextResponse: MockNextResponse }));
 vi.mock("@/lib/api-auth", () => ({
   authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
+}));
+vi.mock("@/lib/email", () => ({
+  emailService: {
+    sendEmail: (...args: unknown[]) => mockSendEmail(...args),
+  },
 }));
 vi.mock("@/lib/db", () => ({
   db: {
@@ -87,6 +96,9 @@ vi.mock("@/lib/db", () => ({
     },
     user: {
       findFirst: (...args: unknown[]) => mockUserFindFirst(...args),
+    },
+    tenant: {
+      findUnique: (...args: unknown[]) => mockTenantFindUnique(...args),
     },
   },
 }));
@@ -111,6 +123,10 @@ beforeEach(() => {
   dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(FIXED_NOW);
   // 默认已认证为 owner
   mockAuthenticate.mockResolvedValue(ownerAuth);
+  // 默认租户查询返回固定名（sendInvitationEmail 取 tenant.name）
+  mockTenantFindUnique.mockResolvedValue({ name: "测试租户" });
+  // 默认邮件投递成功（fire-and-forget，sendEmail 立即 resolve true）
+  mockSendEmail.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -449,6 +465,98 @@ describe("POST /api/invitations", () => {
     expect(body).toEqual({ success: true, data: created, message: "邀请已发送" });
   });
 
+  // ── 邀请邮件投递（sendInvitationEmail 经 emailService.sendEmail 异步投递）──
+  // 邮件基础设施 src/lib/email 已存在 invitation 模板，POST 创建邀请后 fire-and-forget
+  // 调用 emailService.sendEmail：投递失败不中断主流程（邀请记录已落库）。token 取自
+  // invitation.create 的 data.token（randomUUID），inviteUrl 形如
+  // `${baseUrl}/invite?token=${token}`，baseUrl 默认回退 localhost:3000。
+  it("创建成功后调用 emailService.sendEmail 投递 invitation 邮件（to/templateId/variables/tenantId/userId 全等）", async () => {
+    mockUserFindFirst.mockResolvedValue(null);
+    mockInvitationFindFirst.mockResolvedValue(null);
+    mockInvitationCreate.mockResolvedValue({ id: "inv-new" });
+
+    await POST(makePostRequest({ email: "new@example.com", role: "member" }));
+
+    // 从 invitation.create 调用中提取 token（randomUUID 动态生成，需回捞断言）
+    const createCall = mockInvitationCreate.mock.calls[0][0] as { data: { token: string } };
+    const token = createCall.data.token;
+
+    expect(mockSendEmail).toHaveBeenCalledTimes(1);
+    expect(mockSendEmail).toHaveBeenCalledWith(
+      "new@example.com",
+      "invitation",
+      {
+        email: "new@example.com",
+        tenantName: "测试租户",
+        role: "成员",
+        inviteUrl: `http://localhost:3000/invite?token=${token}`,
+        expiresAt: new Date(FIXED_NOW + 72 * HOUR_MS).toISOString(),
+      },
+      "tenant-1",
+      "user-1"
+    );
+  });
+
+  it("role='admin' → 邮件 variables.role 为中文标签'管理员'", async () => {
+    mockUserFindFirst.mockResolvedValue(null);
+    mockInvitationFindFirst.mockResolvedValue(null);
+    mockInvitationCreate.mockResolvedValue({ id: "inv-2" });
+
+    await POST(makePostRequest({ email: "a@x.com", role: "admin", expiresInHours: 24 }));
+
+    const callArgs = mockSendEmail.mock.calls[0] as [string, string, Record<string, string>];
+    expect(callArgs[2].role).toBe("管理员");
+    expect(callArgs[2].expiresAt).toBe(new Date(FIXED_NOW + 24 * HOUR_MS).toISOString());
+  });
+
+  it("tenant.findUnique 返回 null → tenantName 回退到产品默认名'个人私有第二大脑'", async () => {
+    mockUserFindFirst.mockResolvedValue(null);
+    mockInvitationFindFirst.mockResolvedValue(null);
+    mockInvitationCreate.mockResolvedValue({ id: "inv-x" });
+    mockTenantFindUnique.mockResolvedValue(null);
+
+    await POST(makePostRequest({ email: "a@x.com", role: "viewer" }));
+
+    const callArgs = mockSendEmail.mock.calls[0] as [string, string, Record<string, string>];
+    expect(callArgs[2].tenantName).toBe("个人私有第二大脑");
+    expect(callArgs[2].role).toBe("访客");
+  });
+
+  it("emailService.sendEmail reject → 不中断主流程，仍返回 200 {success:true}（fire-and-forget）", async () => {
+    mockUserFindFirst.mockResolvedValue(null);
+    mockInvitationFindFirst.mockResolvedValue(null);
+    mockInvitationCreate.mockResolvedValue({ id: "inv-err" });
+    mockSendEmail.mockRejectedValue(new Error("SMTP down"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await POST(makePostRequest({ email: "a@x.com", role: "member" }));
+
+    expect(res.status).toBe(200);
+    expect(mockSendEmail).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledWith("Failed to send invitation email:", expect.any(Error));
+    errorSpy.mockRestore();
+  });
+
+  it("NEXT_PUBLIC_BASE_URL 设置 → inviteUrl 使用该 baseUrl 前缀", async () => {
+    mockUserFindFirst.mockResolvedValue(null);
+    mockInvitationFindFirst.mockResolvedValue(null);
+    mockInvitationCreate.mockResolvedValue({ id: "inv-url" });
+    const original = process.env.NEXT_PUBLIC_BASE_URL;
+    process.env.NEXT_PUBLIC_BASE_URL = "https://brain.example.com";
+
+    try {
+      await POST(makePostRequest({ email: "a@x.com", role: "member" }));
+      const createCall = mockInvitationCreate.mock.calls[0][0] as { data: { token: string } };
+      const callArgs = mockSendEmail.mock.calls[0] as [string, string, Record<string, string>];
+      expect(callArgs[2].inviteUrl).toBe(
+        `https://brain.example.com/invite?token=${createCall.data.token}`
+      );
+    } finally {
+      if (original === undefined) delete process.env.NEXT_PUBLIC_BASE_URL;
+      else process.env.NEXT_PUBLIC_BASE_URL = original;
+    }
+  });
+
   it("owner + role='admin' + expiresInHours=24 → create data role='admin', expiresAt=now+24h", async () => {
     mockUserFindFirst.mockResolvedValue(null);
     mockInvitationFindFirst.mockResolvedValue(null);
@@ -493,6 +601,9 @@ describe("POST /api/invitations", () => {
     expect((res as { body: { error: string } }).body.error).toBe("创建邀请失败");
     expect(mockInvitationFindFirst).not.toHaveBeenCalled();
     expect(mockInvitationCreate).not.toHaveBeenCalled();
+    // 邀请未落库 → 不应触达邮件投递
+    expect(mockSendEmail).not.toHaveBeenCalled();
+    expect(mockTenantFindUnique).not.toHaveBeenCalled();
   });
 
   it("invitation.create 抛错 → 500 {error:'创建邀请失败'}", async () => {
@@ -504,6 +615,8 @@ describe("POST /api/invitations", () => {
 
     expect(res.status).toBe(500);
     expect((res as { body: { error: string } }).body.error).toBe("创建邀请失败");
+    // create 失败 → 邮件投递在 create 之后，不应触达
+    expect(mockSendEmail).not.toHaveBeenCalled();
   });
 
   // ── expiresInHours 值域校验：非数字 / 非正整数 / 超上限 → 400，不触达 DB ──
