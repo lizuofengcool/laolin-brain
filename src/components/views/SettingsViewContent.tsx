@@ -8,6 +8,7 @@ import { StorageSwitch } from "@/components/settings/StorageSwitch";
 import { BackupRestore } from "@/components/settings/BackupRestore";
 import { CloudSync } from "@/components/settings/CloudSync";
 import { ThemeCustomizer } from "@/components/settings/ThemeCustomizer";
+import { InvitationsManager } from "@/components/settings/InvitationsManager";
 import { BillingCenter } from "@/components/billing/BillingCenter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,7 +23,7 @@ import {
   User, Mail, Shield, Clock, Settings,
   Download, FolderInput, CheckSquare, X,
   Zap, Info, BarChart3, HardDrive, Sparkles,
-  Crown,
+  Crown, Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -98,7 +99,7 @@ export function SettingsViewContent() {
 
       <Tabs defaultValue="general" className="w-full">
         {/* Tab Navigation */}
-        <TabsList className="w-full grid grid-cols-5 mb-0">
+        <TabsList className="w-full grid grid-cols-6 mb-0">
           <TabsTrigger value="general" className="gap-1.5">
             <Settings className="h-4 w-4" />
             <span className="hidden sm:inline">通用</span>
@@ -114,6 +115,10 @@ export function SettingsViewContent() {
           <TabsTrigger value="billing" className="gap-1.5">
             <Crown className="h-4 w-4" />
             <span className="hidden sm:inline">会员</span>
+          </TabsTrigger>
+          <TabsTrigger value="team" className="gap-1.5">
+            <Users className="h-4 w-4" />
+            <span className="hidden sm:inline">团队</span>
           </TabsTrigger>
           <TabsTrigger value="about" className="gap-1.5">
             <Info className="h-4 w-4" />
@@ -420,7 +425,19 @@ export function SettingsViewContent() {
           </motion.div>
         </TabsContent>
 
-        {/* ── Tab 5: 关于 ── */}
+        {/* ── Tab 5: 团队邀请 ── */}
+        <TabsContent value="team">
+          <motion.div
+            className="space-y-6"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2 }}
+          >
+            <InvitationsManager />
+          </motion.div>
+        </TabsContent>
+
+        {/* ── Tab 6: 关于 ── */}
         <TabsContent value="about">
           <motion.div
             className="space-y-6"
