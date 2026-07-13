@@ -17605,3 +17605,123 @@ Radix Select 在 jsdom 受 portal/pointer 限制，mock 为透传 stub：`Select
   `files-route-post-ai-doc.test.ts` 契约，churn 大收益低，暂缓。
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
+
+---
+
+## 2026-07-14 21:00 自动迭代
+
+### 评估
+
+- 工作目录 `/workspace/laolin-brain` 不存在（沙箱重置），从 origin 克隆并补加 github
+  remote；`git config user.email/name` 已设。fetch 双端均与本地一致（克隆即最新），
+  无远端新提交、无遗留未提交改动、无未推送 commit。
+- 复核任务清单中「剩余优先级 1（已知安全/逻辑问题）」当前实际状态（与第 02:00 轮
+  复核结论一致，均已在先前轮次解决，任务描述陈旧）：
+  - `tenant-db.ts` raw 后门：已加调用堆栈软审计 + 警告日志，rawDb 无审计导出已移除。
+  - `payment/alipay.ts` & `wechat.ts`：RSA2/HMAC 验签已真实实现，缺字段直接拒绝，
+    「非空即通过」占位已废弃。
+  - `cloud-sync/sync-engine.ts` keep_both：已修复为本地重命名为 [冲突副本] + 云端
+    版本以新 id 落地，不再直接覆盖丢数据。
+  - `api-auth.test.ts`：已与 `api-auth.ts` 实现对齐（4 字段 / async / 拒绝 query param）。
+  - `files/route.ts` 绕过 TenantDb：低优先级剩余，事务内 tx 写与 auto-summary
+    `db.file.update` 仍直连但均操作已租户校验记录、无越权，churn 大收益低，暂缓。
+- 故按优先级 2（补功能缺口）推进 worklog 末尾「下一轮候选」首选项：**TeamMembersManager
+  角色筛选下拉**（后端 `GET /api/tenant/users` 早已支持 `role` 查询参数 route.ts 行
+  24/51-53，前端一直未接入；上轮 worklog 标注「为控制范围与 Select mock 测试复杂度
+  暂缓」）。
+
+### 本次开发内容
+
+**feat — `src/components/settings/TeamMembersManager.tsx`（+39/-3）**：
+
+团队 Tab 成员列表搜索栏新增按角色筛选的原生 `<select>`（aria-label="按角色筛选"），
+消费后端已支持的 `role` 查询参数。
+
+- **选项**：全部角色(value="") / 仅所有者(owner) / 仅管理员(admin) / 仅成员(member) /
+  仅访客(viewer)。空值不传 role 参数（全部）。
+- **即时生效**：`onChange` 调 `handleRoleFilterChange` → `setRoleFilter(value)`。
+  `fetchList` 的 `useCallback` 依赖加入 `roleFilter`，标识变化触发 `useEffect`
+  `[page, fetchList]` 重新拉取，无需手动调 fetch。
+- **重置分页**：切换筛选时 `setPage(1)`，与 `setRoleFilter` 同批合并（React 18
+  automatic batching），单次 re-render 单次 refetch，无 page=2+新 role 的中间态请求。
+- **与 search 组合**：searchApplied 与 roleFilter 独立累加到 URLSearchParams，
+  同时出现为 `?page=1&pageSize=10&search=xxx&role=yyy`。
+- **403 禁用**：`disabled={forbidden}`，与搜索框一致。
+- **实现选型**：采用原生 `<select>` 而非 Radix Select——项目内 23 处既有原生 select
+  范式（FavoritesViewContent / WebhookManager / 各 editor 等），样式沿用
+  `h-9 rounded-md border border-input bg-background px-3 text-sm`。此举规避 Radix
+  Select 在 jsdom 的 portal/pointer 限制，以及「筛选 Select 常驻 + 行内编辑 Select
+  共存」导致共享 selectHandler 串扰与 `role-option-${value}` testid 重复的多 Select
+  mock 复杂度（即上轮 worklog 标注的暂缓根因），零 mock 改动。
+- **标签防撞**：选项标签带「仅」前缀（仅管理员 等），与列表角色徽章文案（管理员 等）
+  区分，避免既有 `getByText("管理员")` 断言因 `<option>` 文本节点产生多匹配而误判，
+  既有 18 用例零改动。
+
+**test — `src/__tests__/components/TeamMembersManager.test.tsx`（+125/-1）**：
+
+新增「角色筛选」describe 块（6 用例），原生 select 经 `getByLabelText("按角色筛选")`
++ `fireEvent.change` 触发，不触碰 Radix Select mock：
+
+- 挂载默认不带 role 参数（全部角色）：断言 `?page=1&pageSize=10` 无 role
+- 切换角色筛选以 `role=admin` 重新拉取
+- 选回「全部角色」(value="") 去掉 role 参数
+- 角色筛选与 search 组合：先提交 search=alice，再切 role=member →
+  `?page=1&pageSize=10&search=alice&role=member`
+- 在第二页切换筛选重置到第一页：先翻 page=2，再切 role=viewer →
+  `?page=1&pageSize=10&role=viewer`（验证同批合并不产生 page=2&role=viewer 中间态）
+- 403 时下拉被禁用
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，62.6s）。
+- `npx prisma generate`（v6.19.3 客户端，200ms）。
+- `npx tsc --noEmit`：**0 错误**（全项目）。
+- `npx vitest run src/__tests__/components/TeamMembersManager.test.tsx`：**24 passed**
+  （18 既有 + 6 新增，2.42s）。
+- `npx vitest run` 相关 3 文件（TeamMembersManager + InvitationsManager +
+  tenant-users-route）：**78 passed**（5.49s，后端契约 + 邀请组件未触动）。
+- 全量 `npx vitest run`：**183 files / 5128 tests 全通过**（223s；上轮 183/5122，
+  +0 文件 +6 用例，即新增 6 个角色筛选用例，无回归）。
+
+环境备注：`pnpm-lock.yaml` 已在 .gitignore；`git status` 干净。
+
+### 改动量
+
+2 文件，+164/-4：
+- `src/components/settings/TeamMembersManager.tsx`（feat，+39/-3：roleFilter 状态 +
+  ROLE_FILTER_OPTIONS 常量 + fetchList role 参数 + handleRoleFilterChange + select UI +
+  顶部注释）
+- `src/__tests__/components/TeamMembersManager.test.tsx`（test，+125/-1：角色筛选
+  describe 块 6 用例 + 头注释补充）
+
+2 commit（1 feat + 1 test），符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `e5448bf` feat(team): TeamMembersManager 新增角色筛选下拉
+- `27d4020` test(team): 新增 TeamMembersManager 角色筛选测试
+
+### 推送
+
+- origin (Gitee)：`9b2a1e4..27d4020` 推送成功（含本轮 2 commit）
+- github (GitHub)：`9b2a1e4..27d4020` 推送成功
+- 双端同步校验：`git rev-list --left-right --count origin/main...github/main` = `0 0`
+
+### 下一轮候选
+
+- **invite 页面登录后自动重定向**（延续，可选 UX）：当前未登录内嵌 LoginForm、登录后
+  原地拉预览（已可用）；如需「邮件链接 → 跳根路径登录 → 自动回 /invite」可在
+  LoginForm 成功后读 sessionStorage 的 invite_redirect 并 router.push。
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  需接入外部模型 API（依赖外部 SDK，优先级低）。
+- **model-manager.ts 4 处模型 API 桩**（延续）：testModel/chat/complete/embeddings，
+  已有 691 行单测锁定 mock 边界，模块未被生产代码 import；可按 payment factory 模式
+  将 mock 显式标记，收益较低。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与
+  auto-summary `db.file.update` 仍直连，均操作已租户校验记录、无越权；迁移需重写
+  `files-route-post-ai-doc.test.ts` 契约，churn 大收益低，暂缓。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
+- **InvitationsManager 角色筛选**（新增，可选）：与本轮 TeamMembersManager 对齐，
+  邀请列表（GET /api/invitations）若后端支持 role/status 过滤可补下拉；需先确认后端
+  查询参数支持，避免单端空接入。
