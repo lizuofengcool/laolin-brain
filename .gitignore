@@ -29,6 +29,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+# 项目使用 package-lock.json / bun.lock 作为锁定文件；沙箱 pnpm install 生成
+# 的 pnpm-lock.yaml 不纳入版本控制，避免与既有 lockfile 冲突。
+pnpm-lock.yaml
 
 # env files
 .env
