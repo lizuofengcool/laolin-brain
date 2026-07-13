@@ -14,7 +14,8 @@ import { Users, RefreshCw, Search, UserCog, Trash2, Clock, X } from "lucide-reac
  * 团队成员管理（团队 Tab）
  *
  * 消费后端租户用户 API（均由后端做权限兜底）：
- *   - GET    /api/tenant/users          列表（分页 + search 按 name/email 模糊匹配；owner/admin 可调）
+ *   - GET    /api/tenant/users          列表（分页 + search 按 name/email 模糊匹配 +
+ *                                        role 按角色筛选；owner/admin 可调）
  *   - PATCH  /api/tenant/users/[id]     修改用户角色（owner 独有；不能改自己）
  *   - DELETE /api/tenant/users/[id]     移除用户（owner/admin；不能移除自己 / 所有者）
  *
@@ -67,6 +68,17 @@ const CHANGEABLE_ROLES: { value: "admin" | "member" | "viewer"; label: string }[
   { value: "viewer", label: "访客" },
 ];
 
+// 角色筛选选项：消费后端 GET 的 role 查询参数（route.ts 行 24/51-53）。
+// 标签带「仅」前缀以区别于列表中角色徽章文案（避免 getByText 误匹配），并表达
+// 「只看该角色」的过滤语义。空值 = 全部。
+const ROLE_FILTER_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "全部角色" },
+  { value: "owner", label: "仅所有者" },
+  { value: "admin", label: "仅管理员" },
+  { value: "member", label: "仅成员" },
+  { value: "viewer", label: "仅访客" },
+];
+
 const PAGE_SIZE = 10;
 
 export function TeamMembersManager() {
@@ -84,6 +96,8 @@ export function TeamMembersManager() {
   // 搜索：searchInput 为输入框值，searchApplied 为已提交并生效的搜索词
   const [searchInput, setSearchInput] = useState("");
   const [searchApplied, setSearchApplied] = useState("");
+  // 角色筛选：空值 = 全部（不传 role 参数）
+  const [roleFilter, setRoleFilter] = useState("");
 
   // 行级操作状态
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -100,6 +114,7 @@ export function TeamMembersManager() {
     try {
       const params = new URLSearchParams({ page: String(p), pageSize: String(PAGE_SIZE) });
       if (searchApplied.trim()) params.set("search", searchApplied.trim());
+      if (roleFilter) params.set("role", roleFilter);
       const res = await fetch(`/api/tenant/users?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -122,7 +137,7 @@ export function TeamMembersManager() {
     } finally {
       setLoading(false);
     }
-  }, [token, searchApplied]);
+  }, [token, searchApplied, roleFilter]);
 
   useEffect(() => {
     fetchList(page);
@@ -140,6 +155,14 @@ export function TeamMembersManager() {
     setSearchApplied(trimmed);
     if (page !== 1) setPage(1);
     else fetchList(1);
+  };
+
+  // 角色筛选即时生效：切换后重置到第一页。setRoleFilter 改变 fetchList 标识，
+  // 触发 useEffect 重新拉取；若当前已在第一页，setPage(1) 不变但 fetchList 变化
+  // 仍会触发 refetch。若在第三页切换筛选，setPage(1) 使其回到第一页。
+  const handleRoleFilterChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setRoleFilter(e.target.value);
+    if (page !== 1) setPage(1);
   };
 
   const startEdit = (member: Member) => {
@@ -233,7 +256,7 @@ export function TeamMembersManager() {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-5">
-        {/* 搜索 */}
+        {/* 搜索 + 角色筛选 */}
         <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-2">
           <Input
             type="text"
@@ -243,6 +266,19 @@ export function TeamMembersManager() {
             className="flex-1"
             disabled={forbidden}
           />
+          <select
+            aria-label="按角色筛选"
+            className="h-9 rounded-md border border-input bg-background px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+            value={roleFilter}
+            onChange={handleRoleFilterChange}
+            disabled={forbidden}
+          >
+            {ROLE_FILTER_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
           <Button type="submit" variant="outline" disabled={forbidden || loading}>
             <Search className="h-4 w-4" />
             搜索
