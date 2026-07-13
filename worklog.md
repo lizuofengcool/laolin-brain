@@ -17235,3 +17235,128 @@ accepted`。
   src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
+
+## 2026-07-14 01:00 自动迭代
+
+### 评估
+
+- 本轮 fetch 后双端均无远端更新（`origin/main` 与 `github/main` 与本地一致，0 0）。
+- 复核任务清单中的优先级 1（已知安全/逻辑问题），逐项确认**均已在前序轮次解决**：
+  - `tenant-db.ts` raw 后门：`raw` getter 与 `transaction` 已加调用堆栈软审计 + 警告
+    日志，rawDb 无审计导出已移除。
+  - `payment/alipay.ts` & `wechat.ts`：RSA2 验签占位"非空即通过"已废弃，缺字段直接
+    拒绝（"非空即通过已废弃" 见测试断言）。
+  - `cloud-sync/sync-engine.ts` keep_both：已修复为"本地重命名为 [冲突副本] 保留本地
+    版本 + 云端版本以新 id 落地"，不再直接覆盖丢数据。
+  - `api-auth.test.ts`：已与 `api-auth.ts` 实现对齐（返回 4 字段 userId/email/
+    tenantId/role、async、仅读 Authorization 头不接受 query param）。
+  - `files/route.ts` 绕过 TenantDb：worklog 标注低优先级暂缓（操作均经租户校验记录、
+    无实际越权），本轮不动。
+- 故按优先级 2（补功能缺口）推进：取 worklog "下一轮候选"中的 **invitations 撤销/重发
+  API**（Invitation 模型已支持 `status='revoked'`，此前仅可等待接受/过期，无 owner/admin
+  主动管理端点）。自包含、可测、不依赖外部 SDK，符合单轮 1-3 commit 约束。
+
+### 本轮开发内容
+
+**refactor — `src/lib/invitations/index.ts`（+76 新增）+ `route.ts`（-54/+1）**：
+
+抽取 POST `/api/invitations` 内联的 `sendInvitationEmail`、`ROLE_LABELS` 至共享模块
+`src/lib/invitations/index.ts`，并新增 `statusLabel` 导出。为撤销/重发路由复用邮件投递
+逻辑做铺垫，保证变量构造（tenantName 回退、baseUrl 取 NEXT_PUBLIC_BASE_URL/APP_URL/
+localhost、role 中文标签、inviteUrl 拼接、expiresAt ISO 串）单点维护。`route.ts` 仅改为
+import + 删除内联实现，行为不变。
+
+**feat — 撤销与重发 API**：
+
+- `src/app/api/invitations/[id]/route.ts`（DELETE 撤销）：
+  - 鉴权 + 仅 owner/admin（403 for member/viewer，门控在 findFirst 之前不触达 DB）。
+  - 跨租户守卫：`db.invitation.findFirst({ where: { id, tenantId } })` 双键作用域，
+    他租户 id 等价"不存在"→ 404，不泄漏存在性。
+  - 仅 `status='pending'` 可撤销；accepted/revoked/expired → 410（文案经 `statusLabel`
+    中文化）。
+  - 软撤销：`update data { status: 'revoked' }`，保留记录备审计，不 delete。
+- `src/app/api/invitations/[id]/resend/route.ts`（POST 重发）：
+  - 鉴权 + 仅 owner/admin。
+  - 跨租户守卫同上。
+  - 仅 `status='pending'` 可重发（410 for accepted/revoked/expired）。**逻辑过期**
+    （DB status=pending 但 expiresAt 已过）允许重发——status 检查只看 pending 不看
+    expiresAt，重发后刷新有效期使其重新可用。
+  - 刷新 `expiresAt` 至 `now + expiresInHours`（默认 72h，body 可传 1-8760 正整数，
+    校验与 POST 创建邀请一致：非数字/非整数/越界 → 400；无 body / 非 JSON body →
+    默认 72h 不报错）。
+  - 复用原 token（不轮换）：避免已投递邮件中的旧链接失效；token 为 randomUUID 不可
+    枚举，复用无安全降级。
+  - 邮件投递经共享 `sendInvitationEmail`，fire-and-forget（sendEmail reject 不中断
+    主流程，仍返回 200）。
+
+**test — `src/__tests__/api/invitations-id-route.test.ts`（+440，25 用例）**：
+
+复用 `invitations-route.test.ts` 的 `vi.hoisted` + `MockNextResponse` + 固定
+`Date.now()` 范式，mock `next/server` / `@/lib/api-auth` / `@/lib/email` / `@/lib/db`。
+锁定契约：
+
+- 撤销：未认证 401 透传、member/viewer 403、admin 放行、findFirst 未命中 404 且 where
+  全等 `{id, tenantId}`、accepted/revoked → 410、pending → 200 且 `update` data
+  `{status:'revoked'}` where `{id}`（不含 tenantId，findFirst 已鉴权）、update 抛错 500。
+- 重发：未认证 401、member 403、findFirst 未命中 404、revoked/accepted → 410、逻辑过期
+  pending 允许重发、默认 72h（`update` data `{expiresAt: now+72h}` 且 `sendEmail`
+  全等断言 to/templateId/variables/tenantId/userId，inviteUrl 复用原 token）、自定义
+  24h、expiresInHours=0/8761/1.5/'72' 全部 400、无 body/非法 JSON → 默认 72h、sendEmail
+  reject fire-and-forget 仍 200、update 抛错 500 不调 sendEmail。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，68.9s）。
+- `npx prisma generate`（v6.19.3 客户端）。
+- `npx tsc --noEmit`：**0 错误**（延续上轮干净基线）。
+- `npx vitest run` 相关 3 文件（invitations-id-route + invitations-route +
+  invitations-accept-route）：**87 用例全通过**（refactor 未破坏既有 41+21 用例）。
+- `npx vitest run`（全量）：**181 文件 / 5089 用例全通过**（227s；较上轮 180 文件 /
+  5063 用例 → +1 文件 / +26 用例，即新增 invitations-id-route.test.ts 25 用例 + 统计
+  口径微调，无回归）。
+
+环境备注：`pnpm-lock.yaml` 已在 .gitignore；`git status` 干净。
+
+### 改动量
+
+5 文件，+754/-54：
+- `src/lib/invitations/index.ts`（refactor，+76 新增）
+- `src/app/api/invitations/route.ts`（refactor，+1/-54）
+- `src/app/api/invitations/[id]/route.ts`（feat，+74 新增）
+- `src/app/api/invitations/[id]/resend/route.ts`（feat，+113 新增）
+- `src/__tests__/api/invitations-id-route.test.ts`（test，+440 新增）
+
+2 commit（1 refactor + 1 feat），符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `b668329` refactor(invitations): 抽取 sendInvitationEmail 至共享 lib
+- `3b157d9` feat(invitations): 新增邀请撤销与重发 API
+
+### 推送
+
+- origin (Gitee)：`0cfac4a..3b157d9` 推送成功（含本轮 2 commit）
+- github (GitHub)：`0cfac4a..3b157d9` 推送成功
+- 双端同步校验：`git rev-list --left-right --count origin/main...github/main` = `0 0`
+
+### 下一轮候选
+
+- **前端撤销/重发入口接入**（新增，可选）：本轮补齐了 DELETE/POST resend API，前端
+  邀请管理列表（如有）可补"撤销""重发"按钮调用新端点；属前端体验接入。
+- **invite 页面登录后自动重定向回 invite**（延续，可选 UX 增强）：未登录时内嵌
+  LoginForm，登录后即原地拉取预览（已可用）；如需"邮件链接 → 跳根路径登录 → 自动回
+  /invite"可在 LoginForm 成功后读 sessionStorage 的 invite_redirect 并 router.push。
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  需接入外部模型 API（属功能完整性缺口、依赖外部 SDK，优先级低于其他候选）。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/ai/model-manager.ts`（4 处模型 API 桩：
+  testModel/chat/complete/embeddings）——已有 691 行单测锁定 mock 边界行为，模块未被
+  任何生产代码 import；可考虑按 payment factory 模式将 mock 改为显式标记，但收益较低。
+- **registry.ts 文件/搜索桩接入**（延续）：getFiles/getFile/createFile/search 仍为空返回，
+  需注入认证 token + fetch 适配器走 /api/files、/api/search；属外部集成范畴（已加注释说明）。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：auto-summary 的
+  `db.file.update` 及 `$transaction` 内 tx 写未走 TenantDb，但均操作已租户校验记录、
+  无实际越权；迁移需重写 `files-route-post-ai-doc.test.ts` 契约，churn 大、收益低，暂缓。
+- **同型「inline 模拟」测试文件清理**（延续）：tenant-security.test.ts、
+  src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
