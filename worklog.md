@@ -17725,3 +17725,117 @@ Radix Select 在 jsdom 受 portal/pointer 限制，mock 为透传 stub：`Select
 - **InvitationsManager 角色筛选**（新增，可选）：与本轮 TeamMembersManager 对齐，
   邀请列表（GET /api/invitations）若后端支持 role/status 过滤可补下拉；需先确认后端
   查询参数支持，避免单端空接入。
+
+---
+
+## 2026-07-14 06:00 自动迭代
+
+### 评估
+
+- 工作目录 `/workspace/laolin-brain` 不存在（沙箱重置），从 origin 克隆并补加 github
+  remote；`git config user.email/name` 已设。fetch 双端均与本地一致（克隆即最新），
+  无远端新提交、无遗留未提交改动、无未推送 commit。
+- 复核任务清单「剩余优先级 1（已知安全/逻辑问题）」实际状态：与上轮（21:00）复核
+  结论一致，全部已在先前轮次解决，任务描述陈旧：
+  - `tenant-db.ts` raw 后门：已加调用堆栈软审计 + 警告日志。
+  - `payment/alipay.ts` & `wechat.ts`：RSA2/HMAC 验签已真实实现，缺字段直接拒绝。
+  - `cloud-sync/sync-engine.ts` keep_both：已修复为本地重命名 [冲突副本] + 云端新 id。
+  - `api-auth.test.ts`：已与 `api-auth.ts` 实现对齐（4 字段 / async / 拒绝 query param）。
+  - `files/route.ts` 绕过 TenantDb：低优先级剩余，churn 大收益低，暂缓。
+- 故按优先级 2（补功能缺口）推进 worklog 末尾「下一轮候选」首选项
+  **InvitationsManager 状态筛选下拉**。经核后端 `src/app/api/invitations/route.ts`
+  GET 行 24/51-53 早已支持 `status` 查询参数（非 role），前端一直未接入；属单端空接入
+  修复，无后端改动。
+
+### 本次开发内容
+
+**feat — `src/components/settings/InvitationsManager.tsx`（+46/-6）**：
+
+团队 Tab 邀请列表工具栏新增按状态筛选的原生 `<select>`（aria-label="按状态筛选"），
+消费后端已支持的 `status` 查询参数。
+
+- **选项**：全部状态(value="") / 仅待接受(pending) / 仅已接受(accepted) /
+  仅已撤销(revoked) / 仅已过期(expired)。空值不传 status 参数（全部）。
+- **即时生效**：`onChange` 调 `handleStatusFilterChange` → `setStatusFilter(value)`。
+  `fetchList` 的 `useCallback` 依赖加入 `statusFilter`，标识变化触发 `useEffect`
+  `[page, fetchList]` 重新拉取，无需手动调 fetch。
+- **重置分页**：切换筛选时 `setPage(1)`，与 `setStatusFilter` 同批合并（React 18
+  automatic batching），单次 re-render 单次 refetch，无 page=2&newStatus 中间态请求。
+- **布局**：列表工具栏由 `[共 N 条邀请 ... 刷新]` 升级为
+  `[[状态筛选 共 N 条邀请] ... 刷新]`，外层 flex 改 `flex-col sm:flex-row`，移动端
+  筛选与计数堆叠、桌面端并排；筛选项与计数内联 `gap-2`。
+- **实现选型**：采用原生 `<select>` 而非 Radix Select——本组件创建表单已有 Radix
+  Select（角色），共存会触发 Radix portal/pointer 的多 Select mock 串扰与
+  `role-option-${value}` testid 重复的 mock 复杂度（即上轮 TeamMembersManager 标注
+  的暂缓根因）；原生 select 不受 jsdom portal 限制，零 mock 改动，与
+  TeamMembersManager 角色筛选范式一致。
+- **标签防撞**：选项标签带「仅」前缀（仅待接受 等），与状态徽章文案（待接受 等）
+  区分，避免既有 `getByText("待接受")` 等精确断言因 `<option>` 文本节点产生多匹配而
+  误判，既有 15 用例零改动。
+- **403 隐藏**：select 位于 `!forbidden` 块内（与列表同区），403 时不渲染（无列表可
+  筛选）；不同于 TeamMembersManager（其 select 在常驻搜索表单内、disabled 兜底），
+  本组件无常驻搜索栏，放列表区更内聚。
+
+**test — `src/__tests__/components/InvitationsManager.test.tsx`（+136/-1）**：
+
+新增「状态筛选」describe 块（5 用例），原生 select 经 `getByLabelText("按状态筛选")`
++ `fireEvent.change` 触发，不触碰 Radix Select mock：
+
+- 挂载默认不带 status 参数（全部状态）：断言 `?page=1&pageSize=10` 无 status
+- 切换状态筛选以 `status=pending` 重新拉取
+- 选回「全部状态」(value="") 去掉 status 参数
+- 在第二页切换筛选重置到第一页：先翻 page=2，再切 status=accepted →
+  `?page=1&pageSize=10&status=accepted`（验证同批合并不产生 page=2&status=accepted
+  中间态）
+- 403 时不渲染筛选下拉（select 位于 !forbidden 块内）
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，63.3s）。
+- `npx prisma generate`（v6.19.3 客户端）。
+- `npx tsc --noEmit`：**0 错误**（全项目）。
+- `npx vitest run src/__tests__/components/InvitationsManager.test.tsx`：**20 passed**
+  （15 既有 + 5 新增，3.20s）。
+- `npx vitest run src/__tests__/api/invitations-route.test.ts`：**41 passed**
+  （后端契约未触动，确认 status 查询参数支持契约锁定，1.18s）。
+
+环境备注：`pnpm-lock.yaml` 已在 .gitignore；`git status` 干净。
+
+### 改动量
+
+2 文件，+182/-7：
+- `src/components/settings/InvitationsManager.tsx`（feat，+46/-6：STATUS_FILTER_OPTIONS
+  常量 + statusFilter 状态 + fetchList status 参数 + handleStatusFilterChange +
+  select UI + 顶部注释 + docstring 更新）
+- `src/__tests__/components/InvitationsManager.test.tsx`（test，+136/-1：状态筛选
+  describe 块 5 用例 + 头注释补充）
+
+2 commit（1 feat + 1 test），符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `36cca96` feat(invitations): InvitationsManager 新增状态筛选下拉
+- `b378d95` test(invitations): 新增 InvitationsManager 状态筛选测试
+
+### 推送
+
+- origin (Gitee)：`525fc64..b378d95` 推送成功（含本轮 2 commit）
+- github (GitHub)：`525fc64..b378d95` 推送成功
+- 双端同步校验：`git rev-list --left-right --count origin/main...github/main` = `0 0`，
+  三端（local/origin/github）均指向 `b378d95`
+
+### 下一轮候选
+
+- **invite 页面登录后自动重定向**（延续，可选 UX）：未登录内嵌 LoginForm、登录后原地
+  拉预览；如需「邮件链接 → 跳根路径登录 → 自动回 /invite」可在 LoginForm 成功后读
+  sessionStorage 的 invite_redirect 并 router.push。
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  依赖外部 SDK，优先级低。
+- **model-manager.ts 4 处模型 API 桩**（延续）：testModel/chat/complete/embeddings，
+  已有 691 行单测锁定 mock 边界，模块未被生产代码 import；收益较低。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与
+  auto-summary `db.file.update` 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
+- **TeamMembersManager 行内角色编辑的键盘提交**（新增，可选 UX）：当前行内编辑角色
+  需点「保存」按钮；可补 Enter 提交 / Esc 取消，提升键盘可达性。
