@@ -26,6 +26,9 @@ import { Users, RefreshCw, Search, UserCog, Trash2, Clock, X } from "lucide-reac
  * 角色变更采用「修改角色 → 行内 Select 选择 → 保存」两步式，避免误触直接降级。
  * 变更下拉不含 owner：转让所有权为高危操作，不在普通下拉暴露（后端 PATCH
  * 白名单含 owner，但 UI 不提供入口，与 InvitationsManager 创建表单约定一致）。
+ * 键盘可达性：行内编辑时 Enter 提交（捕获阶段拦截，先于 Radix 打开下拉）、
+ * Escape 取消；Select 下拉打开期间的键盘事件发源于 portal 不受拦截，保持
+ * Radix 原生 Enter 选值 / Escape 关闭行为。
  */
 
 interface Member {
@@ -175,6 +178,26 @@ export function TeamMembersManager() {
   const cancelEdit = () => {
     setEditingId(null);
     setDraftRole("member");
+  };
+
+  // 行内角色编辑键盘交互：Enter 提交 / Escape 取消。
+  // 绑定在 Select 容器的 onKeyDownCapture（捕获阶段），先于 Radix SelectTrigger
+  // 自身的 keydown 处理执行：Enter 不再触发 Radix 打开下拉而是直接提交，Escape
+  // 直接退出编辑。Radix 下拉打开时，键盘事件发源于 portal（挂载于 body，不在本
+  // 容器子树内），故本处理器不会拦截下拉内的 Enter 选值 / Escape 关闭，仅在下拉
+  // 关闭、焦点回到 trigger 时生效——即「选完角色 → Enter 保存」的期望流程。
+  // Enter 提交时若已有进行中的 PATCH（pendingAction 命中）则跳过，避免重复提交。
+  const handleEditKeyDown = (e: React.KeyboardEvent, member: Member) => {
+    if (e.key === "Enter") {
+      if (pendingAction === member.id) return;
+      e.preventDefault();
+      e.stopPropagation();
+      handleChangeRole(member);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      cancelEdit();
+    }
   };
 
   const handleChangeRole = async (member: Member) => {
@@ -359,7 +382,11 @@ export function TeamMembersManager() {
                               {badge.label}
                             </Badge>
                           ) : isEditing ? (
-                            <div className="flex items-center gap-1">
+                            <div
+                              className="flex items-center gap-1"
+                              data-testid="role-edit-select"
+                              onKeyDownCapture={(e) => handleEditKeyDown(e, m)}
+                            >
                               <Select
                                 value={draftRole}
                                 onValueChange={(v) => setDraftRole(v as "admin" | "member" | "viewer")}
@@ -389,7 +416,18 @@ export function TeamMembersManager() {
                           {isOwner ? (
                             <span className="text-sm text-muted-foreground">—</span>
                           ) : isEditing ? (
-                            <div className="flex justify-end gap-1">
+                            <div
+                              className="flex justify-end gap-1"
+                              data-testid="role-edit-actions"
+                              onKeyDown={(e) => {
+                                // 焦点落在保存/取消按钮时，Escape 退出编辑；
+                                // Enter 不在此处理（交由按钮原生 click 触发，避免重复提交）。
+                                if (e.key === "Escape") {
+                                  e.preventDefault();
+                                  cancelEdit();
+                                }
+                              }}
+                            >
                               <Button
                                 variant="outline"
                                 size="sm"
