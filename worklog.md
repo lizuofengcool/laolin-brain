@@ -17517,3 +17517,91 @@ portal/pointer 限制，mock 为透传 stub（`SelectContent` 返回 null 避免
   `files-route-post-ai-doc.test.ts` 契约，churn 大收益低，暂缓。
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
+
+## 2026-07-14 04:00 自动迭代
+
+### 本次做了什么
+
+补 worklog 首选「下一轮候选」：**团队成员管理 UI**。此前团队 Tab 仅有邀请管理，
+现新增 `TeamMembersManager` 组件，消费已有的 `/api/tenant/users` 系列 API，使租户
+所有者 / 管理员可在设置页直接查看成员、改角色、移除成员。
+
+**新增组件**（`src/components/settings/TeamMembersManager.tsx`）：
+- `GET /api/tenant/users?page&pageSize&search` 列表（分页 + 按 name/email 模糊搜索），
+  403 显示「没有权限查看成员列表」黄色提示（后端为权限唯一真源，前端不持角色）
+- `PATCH /api/tenant/users/[id]` 行内角色变更：两步式（修改角色 → Select 选择 → 保存），
+  避免误触直接降级；下拉不含 `owner`（转让所有权为高危操作，不在普通入口暴露，
+  与 InvitationsManager 创建表单约定一致）
+- `DELETE /api/tenant/users/[id]` 移除：`window.confirm` 二次确认
+- 行级权限 UX：所有者行操作列显示「—」；自身行（`user.id` 命中）按钮禁用，
+  后端另有 `targetUserId === userId` / `target.role === 'owner'` 兜底
+- 沿用 InvitationsManager 的 Card/Table/Select/Badge 范式与 `useAppStore((s) => s.token)`
+  选择器；成功反馈在 `await fetchList(page)` 之后设置，避免被 `fetchList` 内部
+  `setActionMsg(null)` 清空（同上轮 invitations 的 fix 根因）
+
+**接入**（`src/components/views/SettingsViewContent.tsx`）：团队 Tab 由单卡片
+`<InvitationsManager />` 改为 `<TeamMembersManager />` + `<InvitationsManager />`
+双卡片（成员在上、邀请在下，复用 `motion.div space-y-6` 间距）。
+
+**新增组件测试**（`src/__tests__/components/TeamMembersManager.test.tsx`，18 用例）：
+- 登录态：无 token 兜底、挂载即带 Bearer 拉取列表
+- 列表渲染：邮箱/姓名/角色徽章(所有者/管理员/成员/访客)/计数、空态、姓名占位
+- 权限与错误：GET 403 权限提示且不渲染列表、GET 500 后端 error
+- 行级权限：所有者行无操作按钮、自身行修改/移除按钮禁用
+- 搜索：提交后以 `search=` 查询参数重新拉取
+- 角色变更：修改→选择→保存 PATCH 契约 + body `{role}`、取消不发请求、
+  未变更(保存当前角色)不发请求、PATCH 403 error
+- 移除：确认 DELETE 契约 + 成功消息、confirm 取消不发请求、400 error
+- 分页：total>pageSize 翻页以 page=2 拉取
+
+Radix Select 在 jsdom 受 portal/pointer 限制，mock 为透传 stub：`SelectItem` 渲染为
+可点击 button，经 `vi.hoisted` 共享 `selectHandler` 调用 `onValueChange`，从而可测试
+行内角色编辑流程（同一时刻仅一个行内编辑 Select 渲染，无多 Select 串扰）。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，67.8s）。
+- `npx prisma generate`（v6.19.3 客户端）。
+- `npx tsc --noEmit`：**0 错误**（全项目；prisma generate 后历史 PrismaClient 报错亦消除）。
+- `npx vitest run src/__tests__/components/TeamMembersManager.test.tsx`：18 passed。
+- `npx vitest run src/__tests__/components/InvitationsManager.test.tsx
+  src/__tests__/api/tenant-users-route.test.ts`：54 passed（后端契约 + 邀请组件未触动）。
+- 全量 `npx vitest run`：**183 files / 5122 tests 全通过**（224s；上轮 182/5104，
+  +1 文件 +18 用例）。
+
+环境备注：`pnpm-lock.yaml` 已在 .gitignore；`git status` 干净。
+
+### 改动量
+
+3 文件，+931/-1：
+- `src/components/settings/TeamMembersManager.tsx`（feat，+432 新增）
+- `src/components/views/SettingsViewContent.tsx`（feat，+21/-1：import + 团队 Tab 双卡片）
+- `src/__tests__/components/TeamMembersManager.test.tsx`（test，+478 新增）
+
+2 commit，符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `25eedb3` feat(team): 设置页团队 Tab 新增成员管理（列表/搜索/角色变更/移除）
+- `5ce0678` test(team): 新增 TeamMembersManager 组件测试
+
+### 推送
+
+- origin (Gitee)：`79bf10a..5ce0678` 推送成功
+- github (GitHub)：`79bf10a..5ce0678` 推送成功
+- 双端同步校验：`git rev-list --left-right --count origin/main...github/main` = `0 0`
+
+### 下一轮候选
+
+- **角色筛选下拉**（延续，可选）：TeamMembersManager 当前仅 search 过滤，可补角色
+  Select 过滤（消费 GET 的 `role` 查询参数）；本轮为控制范围与 Select mock 测试复杂度暂缓。
+- **invite 页面登录后自动重定向**（延续，可选 UX）：当前未登录内嵌 LoginForm、登录后
+  原地拉预览；如需「邮件链接 → 跳根路径登录 → 自动回 /invite」可在 LoginForm 成功后读
+  sessionStorage 的 invite_redirect 并 router.push。
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  需接入外部模型 API（依赖外部 SDK，优先级低）。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与
+  auto-summary `db.file.update` 仍直连，均操作已租户校验记录、无越权；迁移需重写
+  `files-route-post-ai-doc.test.ts` 契约，churn 大收益低，暂缓。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
