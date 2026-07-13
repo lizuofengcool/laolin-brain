@@ -17839,3 +17839,112 @@ Radix Select 在 jsdom 受 portal/pointer 限制，mock 为透传 stub：`Select
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
 - **TeamMembersManager 行内角色编辑的键盘提交**（新增，可选 UX）：当前行内编辑角色
   需点「保存」按钮；可补 Enter 提交 / Esc 取消，提升键盘可达性。
+
+---
+
+## 2026-07-14 07:00 自动迭代
+
+### 背景
+
+fetch origin/github main：双端均无新提交（`origin/main..github/main` = `0 0`），工作树
+干净，无遗留未提交改动。
+
+优先级 1 复核（任务清单剩余项）——均已在历史轮次修复，本轮确认现状：
+
+- `tenant-db.ts` raw getter：已加调用堆栈软审计（`console.warn` 打印 caller），底部
+  注释明确「不再以 rawDb 形式无审计导出」策略。
+- `payment/alipay.ts`：`verifyRSA2Sign` 已用 `crypto.createVerify('RSA-SHA256')` 做
+  RSA2 真实验签（PEM 规整 + base64 解码 + PKCS1 padding）；mock 仅在未配置密钥的开发
+  模式生效，已配置时 createPayment/queryPayment/refund 显式失败而非静默 mock。
+- `payment/wechat.ts`：`verifyWechatSign` 已用 APIv3 密钥 HMAC-SHA256 +
+  `timingSafeEqual` 恒定时间比较（缺字段即拒），`decryptResource` 已做 AES-256-GCM
+  真实解密；不再「非空即通过」。
+- `cloud-sync/sync-engine.ts` keep_both：已修复——本地文件重命名为 `[冲突副本] xxx`、
+  云端版本以新 id create，不再直接覆盖丢本地版本；并前置 `findUnique where tenantId`
+  归属校验防跨租户。
+- `api-auth.test.ts`：已与 `api-auth.ts` 实现对齐（4 字段 / async / 不读 query param）。
+- `files/route.ts`：GET 与去重已走 `createTenantDb`；事务内 tx 写与 auto-summary
+  `db.file.update` 仍直连，但均操作已租户校验记录、无越权（churn 大收益低，维持延后）。
+
+→ 无待修优先级 1 问题。按 worklog 上一轮「下一轮候选」选取最高确定性的可选项：
+**TeamMembersManager 行内角色编辑键盘提交**（延续 TeamMembers/Invitations 系列的 UX 收尾）。
+
+### feat — `src/components/settings/TeamMembersManager.tsx`（+40/-2）
+
+行内角色编辑新增键盘可达性：Enter 提交 / Escape 取消。
+
+- **Select 容器 `onKeyDownCapture`**（捕获阶段）：先于 Radix `SelectTrigger` 自身的
+  keydown 处理执行。Enter → `handleChangeRole(member)`（`pendingAction` 命中则跳过避免
+  重复 PATCH）；Escape → `cancelEdit()`。`preventDefault + stopPropagation` 阻止 Radix
+  在 Enter 时打开下拉。
+- **actions 容器 `onKeyDown`**：仅绑 Escape → `cancelEdit`；Enter 不处理，交由 保存/取消
+  按钮原生 click 触发（避免与原生 Enter-click 重复提交）。
+- **Radix portal 不受拦截**：下拉打开期间键盘事件发源于挂载在 body 的 portal（不在
+  Select 容器子树内），本捕获处理器不会触发，保持 Radix 原生「Enter 选值 / Esc 关闭
+  下拉」行为。关闭后焦点回到 trigger，此时 Enter 提交 / Esc 取消——即「选完角色 →
+  Enter 保存」的期望流程。
+- **实现选型**：采用 `onKeyDownCapture`（而非 document 级 useEffect）——document 监听
+  会与搜索框 Enter 提交、Radix trigger Enter 打开下拉冲突，且需 portal-open 守卫；
+  容器级捕获天然把作用域限定在编辑行内，零副作用，与既有 Radix Select mock 范式兼容。
+- 顶部 docstring 补「键盘可达性」段落说明 Enter/Esc 语义与 portal 边界。
+
+### test — `src/__tests__/components/TeamMembersManager.test.tsx`（+95）
+
+新增「键盘交互」describe 块（4 用例），Radix Select 已 mock 为透传 stub
+（SelectTrigger 为 `<div>`），`fireEvent.keyDown(getByTestId(...))` 在容器上即可触发
+捕获处理器：
+
+- Select 区按 Enter 提交角色变更：选 admin → keyDown Enter → PATCH `u-2` body
+  `{ role: "admin" }`
+- Select 区按 Escape 取消：保存按钮消失、无 PATCH
+- actions 区按 Escape 取消：保存按钮消失、无 PATCH
+- 角色未变更时按 Enter 不发 PATCH（draftRole === member.role 提前 return，与点击保存一致）
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，61.9s）。
+- `npx prisma generate`（v6.19.3 客户端，build 脚本被 pnpm 忽略需手动生成）。
+- `npx tsc --noEmit`：**0 错误**（全项目）。
+- `npx vitest run src/__tests__/components/TeamMembersManager.test.tsx`：**28 passed**
+  （24 既有 + 4 新增，2.53s）。
+
+环境备注：`pnpm-lock.yaml` 已在 .gitignore；`git status` 干净。
+
+### 改动量
+
+2 文件，+135/-2：
+- `src/components/settings/TeamMembersManager.tsx`（feat，+40/-2：handleEditKeyDown +
+  Select 容器 onKeyDownCapture + actions 容器 onKeyDown + data-testid + docstring）
+- `src/__tests__/components/TeamMembersManager.test.tsx`（test，+95：键盘交互 describe
+  块 4 用例 + 头注释）
+
+2 commit（1 feat + 1 test），符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `1b80704` feat(team): TeamMembersManager 行内角色编辑支持 Enter/Esc 键盘操作
+- `935483b` test(team): 新增 TeamMembersManager 键盘交互测试
+
+### 推送
+
+- origin (Gitee)：`6aa72c6..935483b` 推送成功（含本轮 2 commit）
+- github (GitHub)：`6aa72c6..935483b` 推送成功
+- 双端同步校验：`git rev-list --left-right --count origin/main...github/main` = `0 0`，
+  三端（local/origin/github）均指向 `935483b`
+
+### 下一轮候选
+
+- **invite 页面登录后自动重定向**（延续，可选 UX）：未登录内嵌 LoginForm、登录后原地
+  拉预览；如需「邮件链接 → 跳根路径登录 → 自动回 /invite」可在 LoginForm 成功后读
+  sessionStorage 的 invite_redirect 并 router.push。
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  依赖外部 SDK，优先级低。
+- **model-manager.ts 4 处模型 API 桩**（延续）：testModel/chat/complete/embeddings，
+  已有 691 行单测锁定 mock 边界，模块未被生产代码 import；收益较低。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与
+  auto-summary `db.file.update` 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口；验签/解密已真实实现）。
+- **InvitationsManager 行内状态快捷操作**（新增，可选 UX）：当前邀请状态变更需进详情
+  或下拉；可补行内「重新发送/撤销」按钮的键盘可达性（Enter/Esc），与 TeamMembersManager
+  本轮范式对齐。
