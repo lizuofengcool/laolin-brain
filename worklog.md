@@ -17075,3 +17075,163 @@ TODO），邮件基础设施上轮已用 alert-notification 模板验证 sendEma
   src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
+
+## 2026-07-13 22:00 自动迭代
+
+### 背景
+
+clone 仓库到沙箱后 fetch 双端（origin/github main）：本地 / origin / github 三方均在
+`81db772`，工作树干净，无遗留未提交改动。
+
+**优先级 1 复核**：任务清单 5 项安全/逻辑问题历史轮次已闭环，本轮逐文件复核确认：
+1. `tenant-db.ts` raw 后门 → 已加 `console.warn` 调用堆栈软审计（raw getter L56-62）。
+2. `alipay.ts` / `wechat.ts` RSA2 验签 → 已走 `createVerify('RSA-SHA256')` 真验签 +
+   PEM 规整 / HMAC-SHA256 + timingSafeEqual + AES-256-GCM，经 isPaymentConfigured 门控。
+3. `files/route.ts` 绕过 TenantDb → GET/POST dedup 已走 TenantDb；剩余 raw 写均操作
+   已租户校验记录、含手动 tenantId，无实际越权（PARTIAL 可接受）。
+4. `sync-engine.ts` keep_both → 已改为「重命名本地为冲突副本 + 云端版本 create 新 id
+   并存」+ `resolveConflict` 入口 `{ id, tenantId }` 跨租户守卫。
+5. `api-auth.test.ts` 与实现不符 → 已重写为 4 字段 / async / 拒绝 query param 契约。
+本轮无优先级 1 待修。
+
+### 决策
+
+承接第一百五十六轮 worklog「下一轮候选」新增项「invite 接受页前端」。上轮（156）
+刚落地邀请邮件投递，邮件中 `inviteUrl = ${baseUrl}/invite?token=${token}` 指向
+`/invite` 页面，但 `src/app` 下既无 `/invite` 页面、也无邀请接受 API（`invitations/
+route.ts` 仅有 GET 列表 + POST 创建）。本轮补齐邀请接受全链路：**接受 API +
+前端页面**，使邮件 inviteUrl 真正可用。无外部 SDK 依赖，可独立推进。
+
+### 本次开发
+
+**feat — `src/app/api/invitations/accept/route.ts`（+178，新文件）**：
+
+新增 `GET /api/invitations/accept?token=xxx`（预览，只读）与
+`POST /api/invitations/accept body:{token}`（接受，写入）两个 handler：
+
+- **GET 预览**：`authenticateRequest` 鉴权后按 token 反查 `invitation.findUnique`，
+  返回 `{ tenantName, tenantId, role, invitedEmail, status, expiresAt, emailMatches }`。
+  DB 中 `pending` 但 `expiresAt <= now` 的统一对外返回 `status='expired'`（避免前端
+  误判可接受）。`emailMatches = auth.email === invitation.email` 供前端决定能否点
+  「接受」。GET 不做邮箱门控（仅只读预览，token 为 randomUUID 不可枚举）。
+  tenant 名经单独 `db.tenant.findUnique` 查询（Invitation 模型无 tenant 关联字段），
+  缺失回退「未知团队」。
+
+- **POST 接受**：鉴权 → 解析 body `{ token }`（非 JSON / 缺 token → 400）→
+  `findUnique by token`（null → 404）→ 状态校验（`status !== 'pending'` → 410
+  `邀请已${statusLabel}，无法再次接受`；pending 但过期 → 410 `邀请已过期`）→
+  **邮箱匹配校验**（`auth.email !== invitation.email` → 403 `此邀请不属于当前账号，
+  请使用被邀请的邮箱登录`，防 token 泄露后被冒领）→ `$transaction` 原子化
+  `tx.tenantUser.create` + `tx.invitation.update(status:'accepted', acceptedAt:now)` →
+  查租户名返回 `{ success, message, tenantName, tenantId, role }`。
+
+- **跨租户**：以 `invitation.tenantId` 落库成员关系（邀请可指向用户当前租户之外的
+  租户），不使用 `auth.tenantId`。
+- **P2002 兜底**：`TenantUser @@unique([tenantId,userId])` 冲突 → 409 `您已是该团队
+  的成员`（`isUniqueConstraintError` 判 `error.code === 'P2002'`）。
+- **顺序**：状态校验 → 过期校验 → 邮箱匹配 → 事务（create 在 update 前，create
+  抛 P2002 时不更新邀请状态）。
+
+**test — `src/__tests__/api/invitations-accept-route.test.ts`（+402，新文件）**：
+
+21 用例锁定 GET/POST 全分支，复用 `invitations-route.test.ts` 的 `vi.hoisted` +
+`MockNextResponse` 范式。`$transaction` 回调用 `mockImplementation(async fn => fn(tx))`
+注入 tx 客户端（`tx.tenantUser.create` + `tx.invitation.update`）。`vi.useFakeTimers` +
+`vi.setSystemTime(NOW)` 使 `new Date()` 过期判定可全等断言。
+
+- GET（9 用例）：401 透传 / 缺 token 400 / token 无效 404 / 正常预览 200（findUnique
+  by token + tenant.findUnique 入参 + 7 字段全等）/ 邮箱不匹配仍 200 但 emailMatches=false
+  （GET 只读不做门控）/ pending 已过期 → status='expired' / status='accepted' 透传 /
+  tenant 缺失回退「未知团队」/ findUnique 抛错 500。
+- POST（12 用例）：401 透传 / 请求体非 JSON 400 / 缺 token 400 / token 非 string 400 /
+  token 无效 404（不触达事务）/ status='accepted' 410「被接受」/ status='revoked' 410
+  「被撤销」/ pending 已过期 410（不触达事务）/ 邮箱不匹配 403（不触达事务）/ 正常接受
+  200（tx.tenantUser.create 以 invitation.tenantId 入参 + tx.invitation.update 入参
+  `{where:{id},data:{status:'accepted',acceptedAt:NOW}}` + 事务后 tenant.findUnique +
+  5 字段响应全等）/ P2002 → 409「您已是该团队的成员」/ 事务非 P2002 异常 → 500。
+
+**feat — `src/app/invite/page.tsx`（+355，新文件）**：
+
+`/invite` 客户端页面消费邮件 token，状态机：`loading → unauth → ready → accepting →
+accepted`。
+
+- 挂载时 `hydrateAuth()` + 从 `window.location.search` 读取 token（避免 useSearchParams
+  的 Suspense 边界要求），token 格式校验 UUIDv4，无效直接提示「无效的邀请链接」。
+- **未登录**：内嵌 `<LoginForm />`（复用现有组件，登录后 `isAuthenticated` 变化触发
+  预览拉取，无需跳转/重定向），顶部卡片提示「您收到一份团队邀请，登录或注册被邀请的
+  邮箱账号后即可在此页接受邀请」。
+- **已登录**：`GET /api/invitations/accept?token=xxx`（Bearer 头取自 `localStorage.kb_token`）
+  预览邀请信息，展示卡片（团队名 + 角色徽标 + 被邀请邮箱 + 有效期至）。
+- `pending + emailMatches`：可点「接受邀请」→ POST → 成功页「已成功加入团队」+ 引导
+  进入工作台按钮（`router.push('/')`）。
+- `!emailMatches`：禁用接受，琥珀色提示「此邀请属于 X，当前登录账号不匹配，请退出后
+  使用被邀请的邮箱登录」。
+- 已过期/已接受/已撤销：红色提示对应失效状态 + 「返回工作台」按钮。
+- 样式与 `/share/[token]` 页一致（Card + lucide 图标 + 渐变背景），复用 `Button` /
+  `Card` / `Badge` UI primitive。
+
+**chore — `.gitignore`（+3/-0）**：
+
+新增 `pnpm-lock.yaml` 忽略规则。项目以 `package-lock.json` / `bun.lock` 为锁定文件，
+沙箱 `pnpm install` 生成的 `pnpm-lock.yaml` 此前每轮均手动避免提交，现固化为 ignore
+规则，保持工作树整洁并防止误提交冲突 lockfile。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules、无 pnpm-lock；pnpm 10.28.1，
+  64.5s 完成）。
+- `npx prisma generate`（v6.19.3 客户端，@prisma/client build script 被 pnpm 忽略需手动生成）。
+- `npx tsc --noEmit`：**0 错误**（延续第一百五十六轮的干净基线）。
+- `npx vitest run src/__tests__/api/invitations-accept-route.test.ts`：**21 用例全通过**。
+- `npx vitest run`（相关 4 文件 invitations-route + invitations-accept-route + email +
+  api-auth）：**106 用例全通过**。
+- `npx vitest run`（全量）：**180 文件 / 5064 用例全通过**（222s；较上轮 179 文件 / 5043
+  用例 +1 文件 / +21 用例，即新增 invitations-accept-route.test.ts 21 用例；无回归）。
+
+环境备注：`pnpm-lock.yaml` 已加入 .gitignore（本轮 chore）；`git status` 干净。
+
+### 改动量
+
+4 文件，+938/-0：
+- `src/app/api/invitations/accept/route.ts`（feat，+178 新增）
+- `src/__tests__/api/invitations-accept-route.test.ts`（test，+402 新增）
+- `src/app/invite/page.tsx`（feat，+355 新增）
+- `.gitignore`（chore，+3）
+
+3 commit（2 feat + 1 chore），符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `cf008ed` feat(invitations): 新增邀请接受 API（GET 预览 + POST 接受）
+- `83d3fea` feat(invite): 新增 /invite 邀请接受页消费邮件 token
+- `309fa4f` chore: 忽略沙箱生成的 pnpm-lock.yaml
+
+### 推送
+
+- origin (Gitee)：`81db772..309fa4f` 推送成功（含本轮 3 commit + 本 worklog commit）
+- github (GitHub)：`81db772..309fa4f` 推送成功
+- 双端同步校验：`git rev-list --left-right --count origin/main...github/main` = `0 0`
+
+### 下一轮候选
+
+- **invite 页面登录后自动重定向回 invite**（新增，可选）：当前未登录时内嵌 LoginForm，
+  登录后即原地拉取预览（已可用）；如需支持「从邮件链接 → 跳根路径登录 → 自动回
+  /invite」可在 LoginForm 成功后读 sessionStorage 的 invite_redirect 并 router.push，
+  属体验增强（非功能缺口）。
+- **invitations 撤销/重发 API**（新增，可选）：当前邀请创建后仅可等待接受/过期，无
+  owner/admin 主动撤销（status='revoked'）或重发邮件的端点；Invitation 模型已支持
+  revoked 状态字段，可补 DELETE/PATCH 路由。
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  需接入外部模型 API（属功能完整性缺口、依赖外部 SDK，优先级低于其他候选）。
+- **剩余 TODO 桩集中区**（延续）：`src/lib/ai/model-manager.ts`（4 处模型 API 桩：
+  testModel/chat/complete/embeddings）——已有 691 行单测锁定 mock 边界行为，模块未被
+  任何生产代码 import；可考虑按 payment factory 模式将 mock 改为显式标记，但收益较低。
+- **registry.ts 文件/搜索桩接入**（延续）：getFiles/getFile/createFile/search 仍为空返回，
+  需注入认证 token + fetch 适配器走 /api/files、/api/search；属外部集成范畴（已加注释说明）。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：auto-summary 的
+  `db.file.update` 及 `$transaction` 内 tx 写未走 TenantDb，但均操作已租户校验记录、
+  无实际越权；迁移需重写 `files-route-post-ai-doc.test.ts` 契约，churn 大、收益低，暂缓。
+- **同型「inline 模拟」测试文件清理**（延续）：tenant-security.test.ts、
+  src/lib/utils/__tests__/security.test.ts 等——可改用统一 mock 工厂减少重复。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口）。
