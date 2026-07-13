@@ -399,14 +399,113 @@ export class AlertEngine {
 
   /**
    * 发送到指定渠道
+   *
+   * webhook / wecom / dingtalk / feishu 走 HTTP POST 投递（url 取自 channel.config.url）；
+   * email 渠道依赖邮件服务（src/lib/email），尚未接入，仅记录日志后跳过。
    */
   private async sendToChannel(
     channel: NotificationChannel,
     alert: AlertEvent,
     status: "firing" | "resolved"
   ): Promise<void> {
-    // TODO: 实现各渠道的通知发送
     console.log(`[Alert] Sending ${status} alert to ${channel.type}: ${alert.name}`);
+
+    const payload = this.buildNotificationPayload(channel, alert, status);
+    if (!payload) {
+      // email / 未知类型：保持 TODO，不触达 fetch
+      return;
+    }
+
+    const url = channel.config?.url;
+    if (!url || typeof url !== "string") {
+      console.warn(
+        `[Alert] channel ${channel.id} (${channel.type}) 缺 config.url，跳过投递`
+      );
+      return;
+    }
+
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(payload.headers ?? {}),
+        },
+        body: JSON.stringify(payload.body),
+      });
+      if (!res.ok) {
+        console.error(
+          `[Alert] ${channel.type} 渠道 ${channel.id} 投递失败：HTTP ${res.status} ${res.statusText}`
+        );
+      }
+    } catch (err) {
+      console.error(
+        `[Alert] ${channel.type} 渠道 ${channel.id} 投递异常：`,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
+  /**
+   * 构造各渠道通知 payload。返回 null 表示该渠道类型暂不支持 HTTP 投递（email/未知）。
+   */
+  private buildNotificationPayload(
+    channel: NotificationChannel,
+    alert: AlertEvent,
+    status: "firing" | "resolved"
+  ): { body: unknown; headers?: Record<string, string> } | null {
+    const statusText = status === "firing" ? "触发" : "恢复";
+    const title = `[${alert.level.toUpperCase()}] ${alert.name} ${statusText}`;
+    const detail = `${alert.message}（当前值 ${alert.value}，阈值 ${alert.threshold}）`;
+    const ts = new Date(alert.startedAt).toISOString();
+
+    switch (channel.type) {
+      case "webhook":
+        // 通用 webhook：透传结构化 alert 字段 + 自定义 headers（如鉴权头）
+        return {
+          body: {
+            alert: alert.name,
+            status,
+            level: alert.level,
+            message: alert.message,
+            value: alert.value,
+            threshold: alert.threshold,
+            ruleId: alert.ruleId,
+            alertId: alert.id,
+            timestamp: ts,
+          },
+          headers: channel.config?.headers,
+        };
+      case "wecom":
+        // 企业微信群机器人：markdown 消息
+        return {
+          body: {
+            msgtype: "markdown",
+            markdown: { content: `${title}\n${detail}` },
+          },
+        };
+      case "dingtalk":
+        // 钉钉群机器人：markdown 消息（title + text）
+        return {
+          body: {
+            msgtype: "markdown",
+            markdown: { title: alert.name, text: `${title}\n${detail}` },
+          },
+        };
+      case "feishu":
+        // 飞书群机器人：text 消息
+        return {
+          body: {
+            msg_type: "text",
+            content: { text: `${title}\n${detail}` },
+          },
+        };
+      case "email":
+        // TODO: email 渠道依赖邮件服务（src/lib/email）接入后落地
+        return null;
+      default:
+        return null;
+    }
   }
 
   /**
