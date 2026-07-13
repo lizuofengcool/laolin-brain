@@ -7,8 +7,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // 以可变 now 变量驱动 pending→firing 状态机。
 // getStats 的 duration 过滤 / cleanup 用直接 push 显式 timestamp 的 MetricPoint，
 // 避免 Date.now 干扰（data 是 Metric 公开字段，getMetric 返回引用可直接 mutate）。
-// sendToChannel 为 TODO 桩（仅 console.log），其 body 无 await 故在 evaluateRules 同步阶段即触发，
-// 可直接断言 console.log 调用。
+// sendToChannel 已实现 webhook/wecom/dingtalk/feishu HTTP POST 投递（email 仍 TODO），
+// 其 body 首段 console.log 同步触发可直接断言；fetch 调用经 vi.stubGlobal('fetch', ...)
+// 注入，在新的 describe 块内隔离验证各渠道 payload 与错误处理。
 // 单例 registerDefaultMetrics / registerDefaultAlertRules 操作模块级单例 metricsCollector/alertEngine，
 // 用 vi.resetModules() + 动态 import 取全新模块（全新单例）隔离。
 
@@ -555,13 +556,23 @@ describe('AlertEngine（条件评估与状态机）', () => {
     );
   });
 
-  it('sendToChannel 桩不抛错（console.error 未被调用）', () => {
-    // sendToChannel 为 TODO 桩仅 console.log，不会进 catch 分支
-    engine.registerChannel(makeChannel({ id: 'c1' }));
+  it('sendToChannel webhook 缺 config.url → console.warn 跳过，不报错不触达 fetch', async () => {
+    // webhook 渠道 config.url 缺失：buildNotificationPayload 返回 payload，
+    // 但 url 校验失败 → console.warn 后 return，不进 fetch try 块、不触发 console.error
+    const mockFetch = vi.fn(async () => ({ ok: true, status: 200, statusText: 'OK' }));
+    vi.stubGlobal('fetch', mockFetch);
+    engine.registerChannel(makeChannel({ id: 'c1' })); // config: {}
     engine.registerRule(makeRule({ notificationChannels: ['c1'] }));
     mc.record('m', 60);
     engine.evaluateRules();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('缺 config.url'),
+    );
     expect(console.error).not.toHaveBeenCalled();
+    // flush microtask 以确认异步分支无副作用
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockFetch).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 
   // --- getActiveAlerts / getAlertHistory ---
@@ -621,6 +632,206 @@ describe('AlertEngine（条件评估与状态机）', () => {
     engine.silenceRule('r1', 3600);
     mc.record('m', 60);
     expect(engine.evaluateRules().length).toBe(1); // 仍触发
+  });
+});
+
+// ============================ sendToChannel HTTP 投递（webhook/wecom/dingtalk/feishu） ============================
+// 各渠道通过 vi.stubGlobal('fetch', mockFetch) 注入 mock，断言：
+//   - fetch 调用 URL / method / headers / body 各渠道 payload 形态
+//   - res.ok=false → console.error 记录状态码
+//   - fetch reject → console.error 捕获异常（不抛出，不中断 evaluateRules）
+//   - email / 未知类型 → payload=null，仅 console.log，不触达 fetch
+// evaluateRules 不 await sendNotification（fire-and-forget），但 fetch 调用本身在
+// 同步阶段完成，故 mock.calls 在 evaluateRules 返回后即可断言；res 处理需 await 微任务。
+describe('sendToChannel HTTP 投递（webhook/wecom/dingtalk/feishu）', () => {
+  let mc: MetricsCollector;
+  let engine: AlertEngine;
+  let now: number;
+  let mockFetch: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    mc = new MetricsCollector();
+    mc.registerMetric('m', 'gauge', '测试指标');
+    engine = new AlertEngine(mc);
+    now = 1000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockFetch = vi.fn(async () => ({ ok: true, status: 200, statusText: 'OK' }));
+    vi.stubGlobal('fetch', mockFetch);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('webhook 配置 url 成功：fetch POST application/json + 结构化 alert body', async () => {
+    engine.registerChannel(
+      makeChannel({ id: 'c1', config: { url: 'https://hook.example/alert' } })
+    );
+    engine.registerRule(makeRule({ id: 'r1', notificationChannels: ['c1'] }));
+    mc.record('m', 60);
+    engine.evaluateRules();
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [url, init] = mockFetch.mock.calls[0] as [string, any];
+    expect(url).toBe('https://hook.example/alert');
+    expect(init.method).toBe('POST');
+    expect(init.headers['Content-Type']).toBe('application/json');
+    const body = JSON.parse(init.body);
+    expect(body.alert).toBe('规则1');
+    expect(body.status).toBe('firing');
+    expect(body.level).toBe('warning');
+    expect(body.value).toBe(60);
+    expect(body.threshold).toBe(50);
+    expect(body.ruleId).toBe('r1');
+    expect(body.timestamp).toBe(new Date(1000).toISOString());
+    // 2xx 响应不触发 console.error
+    await new Promise((r) => setTimeout(r, 0));
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it('webhook 自定义 headers（config.headers）合并到请求头', () => {
+    engine.registerChannel(
+      makeChannel({
+        id: 'c1',
+        config: {
+          url: 'https://hook.example/alert',
+          headers: { Authorization: 'Bearer token-xyz', 'X-Source': 'monitor' },
+        },
+      })
+    );
+    engine.registerRule(makeRule({ notificationChannels: ['c1'] }));
+    mc.record('m', 60);
+    engine.evaluateRules();
+
+    const init = mockFetch.mock.calls[0][1] as any;
+    expect(init.headers['Authorization']).toBe('Bearer token-xyz');
+    expect(init.headers['X-Source']).toBe('monitor');
+    expect(init.headers['Content-Type']).toBe('application/json'); // 默认头保留
+  });
+
+  it('webhook res.ok=false → console.error 记录状态码（不抛错）', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Server Error' });
+    engine.registerChannel(
+      makeChannel({ id: 'c1', config: { url: 'https://hook.example/alert' } })
+    );
+    engine.registerRule(makeRule({ notificationChannels: ['c1'] }));
+    mc.record('m', 60);
+    engine.evaluateRules();
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('投递失败：HTTP 500'),
+    );
+  });
+
+  it('webhook fetch reject → console.error 捕获异常消息（不抛出中断）', async () => {
+    mockFetch.mockRejectedValueOnce(new Error('network unreachable'));
+    engine.registerChannel(
+      makeChannel({ id: 'c1', config: { url: 'https://hook.example/alert' } })
+    );
+    engine.registerRule(makeRule({ notificationChannels: ['c1'] }));
+    mc.record('m', 60);
+    engine.evaluateRules();
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('投递异常：'),
+      'network unreachable',
+    );
+  });
+
+  it('wecom 渠道：payload msgtype=markdown + markdown.content 含标题与详情', () => {
+    engine.registerChannel(
+      makeChannel({ id: 'c1', type: 'wecom', config: { url: 'https://qyapi.weixin.qq.com/webhook' } })
+    );
+    engine.registerRule(makeRule({ id: 'r1', notificationChannels: ['c1'] }));
+    mc.record('m', 60);
+    engine.evaluateRules();
+
+    const [, init] = mockFetch.mock.calls[0] as [string, any];
+    const body = JSON.parse(init.body);
+    expect(body.msgtype).toBe('markdown');
+    expect(body.markdown.content).toContain('[WARNING] 规则1 触发');
+    expect(body.markdown.content).toContain('当前值 60');
+  });
+
+  it('dingtalk 渠道：payload markdown.title=alert.name + text 含详情', () => {
+    engine.registerChannel(
+      makeChannel({ id: 'c1', type: 'dingtalk', config: { url: 'https://oapi.dingtalk.com/robot/send' } })
+    );
+    engine.registerRule(makeRule({ id: 'r1', name: 'CPU告警', notificationChannels: ['c1'] }));
+    mc.record('m', 60);
+    engine.evaluateRules();
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.msgtype).toBe('markdown');
+    expect(body.markdown.title).toBe('CPU告警');
+    expect(body.markdown.text).toContain('[WARNING] CPU告警 触发');
+  });
+
+  it('feishu 渠道：payload msg_type=text + content.text 含标题与详情', () => {
+    engine.registerChannel(
+      makeChannel({ id: 'c1', type: 'feishu', config: { url: 'https://open.feishu.cn/open-apis/bot/v2/hook' } })
+    );
+    engine.registerRule(makeRule({ id: 'r1', notificationChannels: ['c1'] }));
+    mc.record('m', 60);
+    engine.evaluateRules();
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.msg_type).toBe('text');
+    expect(body.content.text).toContain('[WARNING] 规则1 触发');
+    expect(body.content.text).toContain('阈值 > 50');
+  });
+
+  it('email 渠道：payload=null，仅 console.log，不触达 fetch', () => {
+    engine.registerChannel(
+      makeChannel({ id: 'c1', type: 'email', config: { to: 'ops@example.com' } })
+    );
+    engine.registerRule(makeRule({ notificationChannels: ['c1'] }));
+    mc.record('m', 60);
+    engine.evaluateRules();
+
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining('Sending firing alert to email'),
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('resolved 状态投递：body.status="resolved"（firing→resolved 两轮触发两次 fetch）', async () => {
+    engine.registerChannel(
+      makeChannel({ id: 'c1', config: { url: 'https://hook.example/alert' } })
+    );
+    engine.registerRule(makeRule({ id: 'r1', notificationChannels: ['c1'] }));
+    mc.record('m', 60);
+    engine.evaluateRules(); // firing
+    mc.record('m', 10);
+    now = 2000;
+    engine.evaluateRules(); // resolved → sendNotification(alert, 'resolved')
+
+    // 两次 fetch：firing + resolved
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const resolvedBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(resolvedBody.status).toBe('resolved');
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it('config.url 非 string（数字/undefined）→ console.warn 跳过，不触达 fetch', async () => {
+    engine.registerChannel(
+      makeChannel({ id: 'c1', config: { url: 12345 } }) // 非 string
+    );
+    engine.registerRule(makeRule({ notificationChannels: ['c1'] }));
+    mc.record('m', 60);
+    engine.evaluateRules();
+
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('缺 config.url'),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });
 
