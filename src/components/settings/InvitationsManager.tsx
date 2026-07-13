@@ -165,8 +165,10 @@ export function InvitationsManager() {
       if (!res.ok) {
         throw new Error(data?.error || "撤销邀请失败");
       }
+      // 先刷新列表再设置成功消息：fetchList 内部会 setActionMsg(null) 清空旧消息，
+      // 若在刷新前设置会被立即清掉，用户永远看不到成功反馈。await 后再设置即可保留。
+      await fetchList(page);
       setActionMsg(`已撤销 ${emailAddr} 的邀请`);
-      fetchList(page);
     } catch (e) {
       setActionMsg(e instanceof Error ? e.message : "撤销邀请失败");
     } finally {
@@ -187,8 +189,9 @@ export function InvitationsManager() {
       if (!res.ok) {
         throw new Error(data?.error || "重发邀请失败");
       }
+      // 同 handleRevoke：先 await 刷新列表，再设置成功消息，避免被 fetchList 清空。
+      await fetchList(page);
       setActionMsg(`已重新发送 ${emailAddr} 的邀请，有效期已刷新`);
-      fetchList(page);
     } catch (e) {
       setActionMsg(e instanceof Error ? e.message : "重发邀请失败");
     } finally {
