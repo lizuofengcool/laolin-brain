@@ -2,13 +2,16 @@
  * InvitationsManager 组件测试
  *
  * 锁定团队邀请管理组件（src/components/settings/InvitationsManager.tsx）的渲染
- * 与 fetch 契约：列表渲染 / 创建 / 撤销 / 重发 / 403 / 410 / 分页 / 空与加载态。
+ * 与 fetch 契约：列表渲染 / 创建 / 撤销 / 重发 / 403 / 410 / 分页 / 状态筛选 /
+ * 空与加载态。
  *
  * 后端契约由 invitations-route.test.ts 等 handler 测试锁定；本测试聚焦前端消费层：
  *   - useAppStore 提供 token（vi.hoisted + mockUseAppStore，沿用项目范式）
  *   - global.fetch 按 method+url 路由返回固定响应
  *   - Radix Select 在 jsdom 下受 portal/pointer 限制，mock 为透传 stub（不测角色
  *     选择，组件默认 role='member'，与初值一致）
+ *   - 状态筛选采用原生 <select>（aria-label="按状态筛选"），不受 Radix portal
+ *     限制，经 getByLabelText + fireEvent.change 触发，无需扩展 Radix Select mock
  *   - window.confirm 在撤销流程中 spy 控制返回值
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -417,5 +420,137 @@ describe("InvitationsManager - 分页", () => {
       );
       expect(page2Call).toBeDefined();
     });
+  });
+});
+
+// ─── 状态筛选 ──────────────────────────────────────────
+//
+// 状态筛选下拉消费后端 GET /api/invitations 的 status 查询参数（route.ts 行
+// 24/51-53）。采用原生 <select>（aria-label="按状态筛选"），与 TeamMembersManager
+// 角色筛选一致；本组件创建表单的 Radix Select 已 mock 为透传 stub，原生 select
+// 不受 portal/pointer 限制，故无需扩展 Radix Select mock。
+// 选项标签带「仅」前缀（仅待接受 等），与状态徽章文案（待接受 等）区分，避免
+// getByText 精确匹配因 <option> 文本节点产生多匹配而误判。
+describe("InvitationsManager - 状态筛选", () => {
+  it("挂载默认不带 status 参数（全部状态）", async () => {
+    mockFetch.mockImplementation(makeFetch({ list: () => res(listResponse([], 0)) }));
+
+    render(<InvitationsManager />);
+
+    await waitFor(() => {
+      const call = mockFetch.mock.calls.find(
+        ([url]) => typeof url === "string" && url.startsWith("/api/invitations?")
+      );
+      expect(call).toBeDefined();
+      expect(call![0] as string).toBe("/api/invitations?page=1&pageSize=10");
+      expect(call![0] as string).not.toContain("status=");
+    });
+  });
+
+  it("切换状态筛选以 status=pending 重新拉取", async () => {
+    mockFetch.mockImplementation(makeFetch({ list: () => res(listResponse([], 0)) }));
+
+    render(<InvitationsManager />);
+    await screen.findByText("暂无邀请记录");
+
+    fireEvent.change(screen.getByLabelText("按状态筛选"), {
+      target: { value: "pending" },
+    });
+
+    await waitFor(() => {
+      const call = mockFetch.mock.calls.find(
+        ([url]) => typeof url === "string" && url.includes("status=pending")
+      );
+      expect(call).toBeDefined();
+      expect(call![0] as string).toBe("/api/invitations?page=1&pageSize=10&status=pending");
+    });
+  });
+
+  it("选回「全部状态」(value=\"\") 去掉 status 参数", async () => {
+    mockFetch.mockImplementation(makeFetch({ list: () => res(listResponse([], 0)) }));
+
+    render(<InvitationsManager />);
+    await screen.findByText("暂无邀请记录");
+
+    // 先切到 pending
+    fireEvent.change(screen.getByLabelText("按状态筛选"), {
+      target: { value: "pending" },
+    });
+    await waitFor(() => {
+      expect(
+        mockFetch.mock.calls.some(
+          ([url]) => typeof url === "string" && url.includes("status=pending")
+        )
+      ).toBe(true);
+    });
+
+    // 再切回全部状态
+    fireEvent.change(screen.getByLabelText("按状态筛选"), {
+      target: { value: "" },
+    });
+
+    await waitFor(() => {
+      const lastGet = mockFetch.mock.calls
+        .filter(
+          ([url, init]) =>
+            typeof url === "string" &&
+            url.startsWith("/api/invitations?") &&
+            ((init as RequestInit)?.method ?? "GET").toUpperCase() === "GET"
+        )
+        .pop();
+      expect(lastGet).toBeDefined();
+      expect(lastGet![0] as string).toBe("/api/invitations?page=1&pageSize=10");
+      expect(lastGet![0] as string).not.toContain("status=");
+    });
+  });
+
+  it("在第二页切换筛选重置到第一页（同批合并不产生 page=2&status 中间态）", async () => {
+    mockFetch.mockImplementation(makeFetch({ list: () => res(listResponse([inv()], 15)) }));
+
+    render(<InvitationsManager />);
+    expect(await screen.findByText(/共 15 条邀请/)).toBeInTheDocument();
+
+    // 翻到第二页
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await waitFor(() => {
+      expect(
+        mockFetch.mock.calls.some(
+          ([url]) => typeof url === "string" && url.includes("page=2")
+        )
+      ).toBe(true);
+    });
+
+    // 切状态筛选：应回到第一页并带 status=accepted
+    fireEvent.change(screen.getByLabelText("按状态筛选"), {
+      target: { value: "accepted" },
+    });
+
+    await waitFor(() => {
+      const acceptedCall = mockFetch.mock.calls.find(
+        ([url]) => typeof url === "string" && url.includes("status=accepted")
+      );
+      expect(acceptedCall).toBeDefined();
+      expect(acceptedCall![0] as string).toBe(
+        "/api/invitations?page=1&pageSize=10&status=accepted"
+      );
+    });
+
+    // 不应出现 page=2 与 status=accepted 同时存在的中间态请求
+    const badMidState = mockFetch.mock.calls.find(
+      ([url]) =>
+        typeof url === "string" &&
+        url.includes("page=2") &&
+        url.includes("status=accepted")
+    );
+    expect(badMidState).toBeUndefined();
+  });
+
+  it("403 时不渲染筛选下拉（select 位于 !forbidden 块内）", async () => {
+    mockFetch.mockImplementation(makeFetch({ list: () => res({ error: "forbidden" }, 403) }));
+
+    render(<InvitationsManager />);
+
+    expect(await screen.findByText(/没有权限管理邀请/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("按状态筛选")).not.toBeInTheDocument();
   });
 });
