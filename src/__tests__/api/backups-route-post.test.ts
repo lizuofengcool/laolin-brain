@@ -276,11 +276,101 @@ describe("/api/backups 路由 POST", () => {
     expect(createArg.data.type).toBe("full");
   });
 
-  it("type=incremental 透传到 create 记录", async () => {
-    await POST(makePostRequest({ name: "增量", type: "incremental" }));
+  it("type=incremental 缺 baseBackupId → 400 { error: '增量备份需要 baseBackupId' }，不触达 findFirst", async () => {
+    const res = (await POST(makePostRequest({ name: "增量", type: "incremental" }))) as MockRes;
 
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "增量备份需要 baseBackupId" });
+    expect(mockBackupFindFirst).not.toHaveBeenCalled();
+    expect(mockBackupCreate).not.toHaveBeenCalled();
+  });
+
+  it("type=incremental 基准备份不存在/跨租户 → 400，不触达 create", async () => {
+    // base backup lookup 返回 null（不存在或跨租户被租户过滤拦截）
+    mockBackupFindFirst.mockResolvedValue(null);
+
+    const res = (await POST(
+      makePostRequest({ name: "增量", type: "incremental", baseBackupId: "bk-missing" })
+    )) as MockRes;
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "基准备份不存在或不属于当前租户" });
+    // findFirst 以 { id, tenantId } 查询基准备份（租户隔离契约：跨租户 id 返回 null）
+    expect(mockBackupFindFirst).toHaveBeenCalledWith({
+      where: { id: "bk-missing", tenantId: "tenant-1" },
+    });
+    expect(mockBackupCreate).not.toHaveBeenCalled();
+  });
+
+  it("type=incremental 基准备份未完成 → 400，不触达 create", async () => {
+    mockBackupFindFirst.mockResolvedValue({
+      id: "bk-base",
+      status: "running",
+      createdAt: new Date("2026-07-10T00:00:00.000Z"),
+    });
+
+    const res = (await POST(
+      makePostRequest({ name: "增量", type: "incremental", baseBackupId: "bk-base" })
+    )) as MockRes;
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "基准备份未完成，无法用于增量备份" });
+    expect(mockBackupCreate).not.toHaveBeenCalled();
+  });
+
+  it("type=incremental 成功 → file/folder 按 updatedAt >= sinceDate 过滤，metadata 含 baseBackupId/sinceDate 溯源", async () => {
+    const baseCreatedAt = new Date("2026-07-10T00:00:00.000Z");
+    // 第一次 findFirst（base lookup）返回已完成的基准备份；
+    // 第二次 findFirst（running check）回落到 null（beforeEach 默认 mockResolvedValue(null)）
+    mockBackupFindFirst.mockResolvedValueOnce({
+      id: "bk-base",
+      status: "completed",
+      createdAt: baseCreatedAt,
+    });
+    // 增量结果：仅 1 个变更文件、0 个变更文件夹
+    mockFileFindMany.mockResolvedValue([
+      { id: "file-changed", tenantId: "tenant-1", fileName: "changed.txt", fileSize: 512 },
+    ]);
+    mockFolderFindMany.mockResolvedValue([]);
+    mockBackupUpdate.mockResolvedValue(makeCompletedBackup({ fileCount: 1, size: 512 }));
+
+    const res = (await POST(
+      makePostRequest({ name: "增量-1", type: "incremental", baseBackupId: "bk-base" })
+    )) as MockRes;
+
+    expect(res.status).toBe(200);
+    const body = res.body as { success: boolean; data: Record<string, unknown> };
+    expect(body.success).toBe(true);
+
+    // create 记录 type=incremental
     const createArg = mockBackupCreate.mock.calls[0][0] as { data: { type: string } };
     expect(createArg.data.type).toBe("incremental");
+
+    // findFirst 调用两次：base lookup（{ id, tenantId }）+ running check（{ tenantId, status }）
+    expect(mockBackupFindFirst).toHaveBeenCalledTimes(2);
+    expect(mockBackupFindFirst).toHaveBeenNthCalledWith(1, {
+      where: { id: "bk-base", tenantId: "tenant-1" },
+    });
+    expect(mockBackupFindFirst).toHaveBeenNthCalledWith(2, {
+      where: { tenantId: "tenant-1", status: "running" },
+    });
+
+    // file/folder findMany 以 updatedAt >= sinceDate 过滤（增量备份核心契约）
+    expect(mockFileFindMany).toHaveBeenCalledWith({
+      where: { tenantId: "tenant-1", updatedAt: { gte: baseCreatedAt } },
+    });
+    expect(mockFolderFindMany).toHaveBeenCalledWith({
+      where: { tenantId: "tenant-1", updatedAt: { gte: baseCreatedAt } },
+    });
+
+    // writeFile 写入的 JSON 含 baseBackupId/sinceDate 溯源元数据 + 仅变更文件
+    const writtenJson = mockWriteFile.mock.calls[0][1] as string;
+    const parsed = JSON.parse(writtenJson);
+    expect(parsed.type).toBe("incremental");
+    expect(parsed.metadata.baseBackupId).toBe("bk-base");
+    expect(parsed.metadata.sinceDate).toBe(baseCreatedAt.toISOString());
+    expect(parsed.data.files).toHaveLength(1);
+    expect(parsed.data.files[0].id).toBe("file-changed");
   });
 
   it("空租户（file/folder 均为空数组）→ fileCount=0，仍 200 completed", async () => {
