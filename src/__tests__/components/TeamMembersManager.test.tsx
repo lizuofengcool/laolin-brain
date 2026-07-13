@@ -2,7 +2,7 @@
  * TeamMembersManager 组件测试
  *
  * 锁定团队成员管理组件（src/components/settings/TeamMembersManager.tsx）的渲染
- * 与 fetch 契约：列表渲染 / 搜索 / 角色变更 / 移除 / 403 / 自身行禁用 /
+ * 与 fetch 契约：列表渲染 / 搜索 / 角色筛选 / 角色变更 / 移除 / 403 / 自身行禁用 /
  * 所有者行不可操作 / 分页 / 空与加载态。
  *
  * 后端契约由 tenant-users-route.test.ts 锁定；本测试聚焦前端消费层：
@@ -300,6 +300,130 @@ describe("TeamMembersManager - 搜索", () => {
         expect.objectContaining({ headers: { Authorization: "Bearer test-token" } })
       );
     });
+  });
+});
+
+// ─── 角色筛选 ──────────────────────────────────────────
+// 消费后端 GET 的 role 查询参数（route.ts 行 24/51-53）。下拉为原生 <select>
+// （aria-label="按角色筛选"），jsdom 下 fireEvent.change 即可触发，无需 Radix mock。
+// 选项标签带「仅」前缀以区别于列表角色徽章文案（避免 getByText 误匹配）。
+describe("TeamMembersManager - 角色筛选", () => {
+  it("挂载默认不带 role 参数（全部角色）", async () => {
+    mockFetch.mockImplementation(makeFetch({ list: () => res(listResponse([], 0)) }));
+
+    render(<TeamMembersManager />);
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/tenant/users?page=1&pageSize=10",
+        expect.objectContaining({ headers: { Authorization: "Bearer test-token" } })
+      );
+    });
+  });
+
+  it("切换角色筛选以 role 查询参数重新拉取列表", async () => {
+    mockFetch.mockImplementation(makeFetch({ list: () => res(listResponse([], 0)) }));
+
+    render(<TeamMembersManager />);
+    await screen.findByText("暂无成员");
+
+    fireEvent.change(screen.getByLabelText("按角色筛选"), { target: { value: "admin" } });
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/tenant/users?page=1&pageSize=10&role=admin",
+        expect.objectContaining({ headers: { Authorization: "Bearer test-token" } })
+      );
+    });
+  });
+
+  it("选回「全部角色」去掉 role 参数", async () => {
+    mockFetch.mockImplementation(makeFetch({ list: () => res(listResponse([], 0)) }));
+
+    render(<TeamMembersManager />);
+    await screen.findByText("暂无成员");
+
+    // 先切到 admin
+    fireEvent.change(screen.getByLabelText("按角色筛选"), { target: { value: "admin" } });
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/tenant/users?page=1&pageSize=10&role=admin",
+        expect.objectContaining({ headers: { Authorization: "Bearer test-token" } })
+      );
+    });
+    // 再切回全部（空值）
+    fireEvent.change(screen.getByLabelText("按角色筛选"), { target: { value: "" } });
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/tenant/users?page=1&pageSize=10",
+        expect.objectContaining({ headers: { Authorization: "Bearer test-token" } })
+      );
+    });
+  });
+
+  it("角色筛选与 search 组合：role + search 同时出现在查询参数", async () => {
+    mockFetch.mockImplementation(makeFetch({ list: () => res(listResponse([], 0)) }));
+
+    render(<TeamMembersManager />);
+    await screen.findByText("暂无成员");
+
+    // 先提交 search
+    const input = screen.getByPlaceholderText("按姓名或邮箱搜索");
+    fireEvent.change(input, { target: { value: "alice" } });
+    fireEvent.click(screen.getByRole("button", { name: "搜索" }));
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/tenant/users?page=1&pageSize=10&search=alice",
+        expect.objectContaining({ headers: { Authorization: "Bearer test-token" } })
+      );
+    });
+    // 再切角色筛选：search 保留 + role 叠加
+    fireEvent.change(screen.getByLabelText("按角色筛选"), { target: { value: "member" } });
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/tenant/users?page=1&pageSize=10&search=alice&role=member",
+        expect.objectContaining({ headers: { Authorization: "Bearer test-token" } })
+      );
+    });
+  });
+
+  it("在第二页切换角色筛选时重置到第一页", async () => {
+    const rows: Member[] = Array.from({ length: 10 }, (_, i) =>
+      mem({ id: `u-${i + 1}`, email: `u${i + 1}@x.com`, name: `U${i + 1}` })
+    );
+    mockFetch.mockImplementation(makeFetch({ list: () => res(listResponse(rows, 25)) }));
+
+    render(<TeamMembersManager />);
+    await screen.findByText("u1@x.com");
+
+    // 跳到第二页
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/tenant/users?page=2&pageSize=10",
+        expect.objectContaining({ headers: { Authorization: "Bearer test-token" } })
+      );
+    });
+
+    // 切换角色筛选 → 回到第一页并带 role（setRoleFilter + setPage(1) 同批合并）
+    fireEvent.change(screen.getByLabelText("按角色筛选"), { target: { value: "viewer" } });
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/tenant/users?page=1&pageSize=10&role=viewer",
+        expect.objectContaining({ headers: { Authorization: "Bearer test-token" } })
+      );
+    });
+  });
+
+  it("403 时角色筛选下拉被禁用", async () => {
+    mockFetch.mockImplementation(
+      makeFetch({ list: () => res({ error: "没有权限查看用户列表" }, 403) })
+    );
+
+    render(<TeamMembersManager />);
+
+    await screen.findByText(/没有权限查看成员列表/);
+    expect(screen.getByLabelText("按角色筛选")).toBeDisabled();
   });
 });
 
