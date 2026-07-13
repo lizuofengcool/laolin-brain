@@ -2,7 +2,7 @@
  * email 模块单测
  *
  * 锁定 src/lib/email/index.ts 的行为契约：
- *   - 8 个默认模板注册（id/name/subject/variables）。
+ *   - 9 个默认模板注册（id/name/subject/variables）。
  *   - renderTemplate：变量替换（subject + html）、未知模板返回 null、未提供变量保留 {{占位}}、
  *     多余变量忽略不报错、text 去除 HTML 标签并折叠空白。
  *   - init / isConfigured：init 前后状态翻转，init 透传 host/port/secure/auth 给 createTransport。
@@ -64,14 +64,15 @@ describe("EmailService 模板注册", () => {
     service = new EmailService();
   });
 
-  it("构造时注册 8 个默认模板", () => {
+  it("构造时注册 9 个默认模板", () => {
     const templates = service.getTemplates();
-    expect(templates).toHaveLength(8);
+    expect(templates).toHaveLength(9);
     const ids = templates.map((t) => t.id).sort();
     expect(ids).toEqual(
       [
         "alert-notification",
         "comment-notification",
+        "invitation",
         "payment-success",
         "password-reset",
         "share-notification",
@@ -195,6 +196,25 @@ describe("EmailService renderTemplate", () => {
     expect(rendered!.html).toContain("80");
     expect(rendered!.html).toContain("rule-cpu-001");
     expect(rendered!.html).toContain("2026-07-13T03:00:00.000Z");
+    // 无残留占位
+    expect(rendered!.html).not.toContain("{{");
+  });
+
+  it("invitation 替换全部 5 个变量：subject 含 tenantName，html 含各字段且无残留占位", () => {
+    const rendered = service.renderTemplate("invitation", {
+      email: "invitee@example.com",
+      tenantName: "知识团队",
+      role: "管理员",
+      inviteUrl: "https://brain.example.com/invite?token=abc-123",
+      expiresAt: "2026-07-14T00:00:00.000Z",
+    });
+    expect(rendered).not.toBeNull();
+    expect(rendered!.subject).toBe("邀请你加入知识团队");
+    expect(rendered!.html).toContain("知识团队");
+    expect(rendered!.html).toContain("invitee@example.com");
+    expect(rendered!.html).toContain("管理员");
+    expect(rendered!.html).toContain("https://brain.example.com/invite?token=abc-123");
+    expect(rendered!.html).toContain("2026-07-14T00:00:00.000Z");
     // 无残留占位
     expect(rendered!.html).not.toContain("{{");
   });

@@ -345,6 +345,55 @@ const DEFAULT_TEMPLATES: EmailTemplate[] = [
     `,
     variables: ["alertName", "level", "statusText", "message", "value", "threshold", "ruleId", "timestamp"],
   },
+  {
+    id: "invitation",
+    name: "团队邀请",
+    subject: "邀请你加入{{tenantName}}",
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px; text-align: center; color: white; border-radius: 8px 8px 0 0;">
+          <div style="font-size: 48px;">✉️</div>
+          <h1 style="margin: 10px 0 0 0; font-size: 28px;">团队邀请</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 40px; border-radius: 0 0 8px 8px;">
+          <p style="font-size: 16px; color: #374151; line-height: 1.6;">
+            你好！
+          </p>
+          <p style="font-size: 16px; color: #374151; line-height: 1.6;">
+            <strong>{{tenantName}}</strong> 邀请你以 <strong>{{role}}</strong> 身份加入他们的团队，共同使用个人私有第二大脑管理知识库。
+          </p>
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
+            <table style="width: 100%; border-collapse: collapse;">
+              <tr>
+                <td style="padding: 8px 0; color: #6b7280; width: 100px;">邮箱</td>
+                <td style="padding: 8px 0; color: #111827;">{{email}}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 0; color: #6b7280;">角色</td>
+                <td style="padding: 8px 0; color: #111827; font-weight: bold;">{{role}}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 0; color: #6b7280;">有效期至</td>
+                <td style="padding: 8px 0; color: #6b7280; font-family: monospace; font-size: 13px;">{{expiresAt}}</td>
+              </tr>
+            </table>
+          </div>
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="{{inviteUrl}}" style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 14px 40px; text-decoration: none; border-radius: 8px; font-size: 16px; font-weight: bold;">
+              接受邀请
+            </a>
+          </div>
+          <p style="font-size: 12px; color: #9ca3af; word-break: break-all; background: white; padding: 10px; border-radius: 4px;">
+            如果按钮无法点击，请复制下面的链接到浏览器：{{inviteUrl}}
+          </p>
+          <p style="font-size: 14px; color: #ef4444; margin-top: 20px;">
+            ⚠️ 此邀请链接将在到期后失效。如果你不认识邀请方，请忽略此邮件。
+          </p>
+        </div>
+      </div>
+    `,
+    variables: ["email", "tenantName", "role", "inviteUrl", "expiresAt"],
+  },
 ];
 
 // 邮件服务类
