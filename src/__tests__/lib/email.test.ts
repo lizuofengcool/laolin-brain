@@ -2,7 +2,7 @@
  * email 模块单测
  *
  * 锁定 src/lib/email/index.ts 的行为契约：
- *   - 7 个默认模板注册（id/name/subject/variables）。
+ *   - 8 个默认模板注册（id/name/subject/variables）。
  *   - renderTemplate：变量替换（subject + html）、未知模板返回 null、未提供变量保留 {{占位}}、
  *     多余变量忽略不报错、text 去除 HTML 标签并折叠空白。
  *   - init / isConfigured：init 前后状态翻转，init 透传 host/port/secure/auth 给 createTransport。
@@ -64,12 +64,13 @@ describe("EmailService 模板注册", () => {
     service = new EmailService();
   });
 
-  it("构造时注册 7 个默认模板", () => {
+  it("构造时注册 8 个默认模板", () => {
     const templates = service.getTemplates();
-    expect(templates).toHaveLength(7);
+    expect(templates).toHaveLength(8);
     const ids = templates.map((t) => t.id).sort();
     expect(ids).toEqual(
       [
+        "alert-notification",
         "comment-notification",
         "payment-success",
         "password-reset",
@@ -171,6 +172,31 @@ describe("EmailService renderTemplate", () => {
     expect(rendered!.html).toContain("升级公告");
     expect(rendered!.html).toContain("将于今晚维护");
     expect(rendered!.html).toContain("你好，Bob！");
+  });
+
+  it("alert-notification 替换全部 8 个变量：subject 含 alertName+statusText，html 含各字段", () => {
+    const rendered = service.renderTemplate("alert-notification", {
+      alertName: "CPU 使用率过高",
+      level: "critical",
+      statusText: "触发",
+      message: "CPU 使用率持续超过阈值",
+      value: "92",
+      threshold: "80",
+      ruleId: "rule-cpu-001",
+      timestamp: "2026-07-13T03:00:00.000Z",
+    });
+    expect(rendered).not.toBeNull();
+    expect(rendered!.subject).toBe("[告警] CPU 使用率过高 触发");
+    expect(rendered!.html).toContain("CPU 使用率过高");
+    expect(rendered!.html).toContain("critical");
+    expect(rendered!.html).toContain("触发");
+    expect(rendered!.html).toContain("CPU 使用率持续超过阈值");
+    expect(rendered!.html).toContain("92");
+    expect(rendered!.html).toContain("80");
+    expect(rendered!.html).toContain("rule-cpu-001");
+    expect(rendered!.html).toContain("2026-07-13T03:00:00.000Z");
+    // 无残留占位
+    expect(rendered!.html).not.toContain("{{");
   });
 
   it("text 去除所有 HTML 标签并折叠空白（无 '<' 且含替换文本）", () => {

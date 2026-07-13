@@ -7,14 +7,24 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // 以可变 now 变量驱动 pending→firing 状态机。
 // getStats 的 duration 过滤 / cleanup 用直接 push 显式 timestamp 的 MetricPoint，
 // 避免 Date.now 干扰（data 是 Metric 公开字段，getMetric 返回引用可直接 mutate）。
-// sendToChannel 已实现 webhook/wecom/dingtalk/feishu HTTP POST 投递（email 仍 TODO），
-// 其 body 首段 console.log 同步触发可直接断言；fetch 调用经 vi.stubGlobal('fetch', ...)
-// 注入，在新的 describe 块内隔离验证各渠道 payload 与错误处理。
+// sendToChannel 已实现 webhook/wecom/dingtalk/feishu HTTP POST 投递 + email 渠道经
+// emailService.sendEmail 投递（vi.mock('@/lib/email') 注入 mock）。HTTP 渠道其 body
+// 首段 console.log 同步触发可直接断言；fetch 调用经 vi.stubGlobal('fetch', ...) 注入。
+// email 渠道断言 emailService.sendEmail 被 vi.mocked(...) 取得 mock 引用后断言入参。
 // 单例 registerDefaultMetrics / registerDefaultAlertRules 操作模块级单例 metricsCollector/alertEngine，
 // 用 vi.resetModules() + 动态 import 取全新模块（全新单例）隔离。
 
+// vi.mock 工厂被 vitest 自动提升到所有 import 之前执行：monitoring 模块在 import 时
+// 拿到的 emailService 即此处的 mock（sendEmail 为 vi.fn），而非真实邮件服务。
+vi.mock('@/lib/email', () => ({
+  emailService: {
+    sendEmail: vi.fn(async () => true),
+  },
+}));
+
 import { MetricsCollector, AlertEngine } from '@/lib/monitoring';
 import type { AlertRule, NotificationChannel, MetricPoint } from '@/lib/monitoring';
+import { emailService } from '@/lib/email';
 
 type MonitoringModule = typeof import('@/lib/monitoring');
 
@@ -635,15 +645,19 @@ describe('AlertEngine（条件评估与状态机）', () => {
   });
 });
 
-// ============================ sendToChannel HTTP 投递（webhook/wecom/dingtalk/feishu） ============================
-// 各渠道通过 vi.stubGlobal('fetch', mockFetch) 注入 mock，断言：
+// ============================ sendToChannel 渠道投递（webhook/wecom/dingtalk/feishu/email） ============================
+// HTTP 渠道通过 vi.stubGlobal('fetch', mockFetch) 注入 mock，断言：
 //   - fetch 调用 URL / method / headers / body 各渠道 payload 形态
 //   - res.ok=false → console.error 记录状态码
 //   - fetch reject → console.error 捕获异常（不抛出，不中断 evaluateRules）
-//   - email / 未知类型 → payload=null，仅 console.log，不触达 fetch
-// evaluateRules 不 await sendNotification（fire-and-forget），但 fetch 调用本身在
-// 同步阶段完成，故 mock.calls 在 evaluateRules 返回后即可断言；res 处理需 await 微任务。
-describe('sendToChannel HTTP 投递（webhook/wecom/dingtalk/feishu）', () => {
+//   - 未知类型 → payload=null，仅 console.log，不触达 fetch
+// email 渠道经 vi.mock('@/lib/email') 注入的 emailService.sendEmail 投递，断言：
+//   - sendEmail 入参（to / templateId / variables 含 statusText 等）
+//   - config.to 缺失 → console.warn 跳过，不触达 sendEmail / fetch
+// evaluateRules 不 await sendNotification（fire-and-forget），但 sendToChannel 内
+// fetch / sendEmail 调用本身在同步阶段完成，故 mock.calls 在 evaluateRules 返回后
+// 即可断言；res 处理需 await 微任务。
+describe('sendToChannel 渠道投递（webhook/wecom/dingtalk/feishu/email）', () => {
   let mc: MetricsCollector;
   let engine: AlertEngine;
   let now: number;
@@ -660,6 +674,9 @@ describe('sendToChannel HTTP 投递（webhook/wecom/dingtalk/feishu）', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     mockFetch = vi.fn(async () => ({ ok: true, status: 200, statusText: 'OK' }));
     vi.stubGlobal('fetch', mockFetch);
+    // emailService.sendEmail 为 vi.mock 工厂创建的文件级 vi.fn，跨用例累积调用记录，
+    // 每例前清空以隔离断言（mockClear 仅清 calls，不改动 mockResolvedValue 默认行为）
+    vi.mocked(emailService.sendEmail).mockClear();
   });
 
   afterEach(() => {
@@ -787,11 +804,11 @@ describe('sendToChannel HTTP 投递（webhook/wecom/dingtalk/feishu）', () => {
     expect(body.content.text).toContain('阈值 > 50');
   });
 
-  it('email 渠道：payload=null，仅 console.log，不触达 fetch', () => {
+  it('email 渠道：调用 emailService.sendEmail 投递 alert-notification，不触达 fetch', () => {
     engine.registerChannel(
       makeChannel({ id: 'c1', type: 'email', config: { to: 'ops@example.com' } })
     );
-    engine.registerRule(makeRule({ notificationChannels: ['c1'] }));
+    engine.registerRule(makeRule({ id: 'r1', notificationChannels: ['c1'] }));
     mc.record('m', 60);
     engine.evaluateRules();
 
@@ -799,6 +816,88 @@ describe('sendToChannel HTTP 投递（webhook/wecom/dingtalk/feishu）', () => {
       expect.stringContaining('Sending firing alert to email'),
     );
     expect(mockFetch).not.toHaveBeenCalled();
+    expect(emailService.sendEmail).toHaveBeenCalledTimes(1);
+    expect(emailService.sendEmail).toHaveBeenCalledWith(
+      'ops@example.com',
+      'alert-notification',
+      {
+        alertName: '规则1',
+        level: 'warning',
+        statusText: '触发',
+        message: '规则1: 当前值 60，阈值 > 50',
+        value: '60',
+        threshold: '50',
+        ruleId: 'r1',
+        timestamp: new Date(1000).toISOString(),
+      },
+      '',
+      '',
+    );
+  });
+
+  it('email 渠道 config.to 缺失 → console.warn 跳过，不触达 sendEmail / fetch', () => {
+    engine.registerChannel(
+      makeChannel({ id: 'c1', type: 'email', config: {} }) // 无 to
+    );
+    engine.registerRule(makeRule({ notificationChannels: ['c1'] }));
+    mc.record('m', 60);
+    engine.evaluateRules();
+
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('email 渠道 c1 缺 config.to'),
+    );
+    expect(emailService.sendEmail).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('email 渠道 config.to 非 string（12345）→ console.warn 跳过', () => {
+    engine.registerChannel(
+      makeChannel({ id: 'c1', type: 'email', config: { to: 12345 } })
+    );
+    engine.registerRule(makeRule({ notificationChannels: ['c1'] }));
+    mc.record('m', 60);
+    engine.evaluateRules();
+
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('email 渠道 c1 缺 config.to'),
+    );
+    expect(emailService.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('email 渠道 resolved 状态：sendEmail variables.statusText="恢复"', () => {
+    engine.registerChannel(
+      makeChannel({ id: 'c1', type: 'email', config: { to: 'ops@example.com' } })
+    );
+    engine.registerRule(makeRule({ id: 'r1', notificationChannels: ['c1'] }));
+    mc.record('m', 60);
+    engine.evaluateRules(); // firing
+    mc.record('m', 10);
+    now = 2000;
+    engine.evaluateRules(); // resolved
+
+    expect(emailService.sendEmail).toHaveBeenCalledTimes(2);
+    const resolvedCall = vi.mocked(emailService.sendEmail).mock.calls[1];
+    expect(resolvedCall[0]).toBe('ops@example.com');
+    expect(resolvedCall[1]).toBe('alert-notification');
+    expect(resolvedCall[2].statusText).toBe('恢复');
+    expect(resolvedCall[2].alertName).toBe('规则1');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('email 渠道 sendEmail reject → console.error 捕获异常（不抛出中断）', async () => {
+    vi.mocked(emailService.sendEmail).mockRejectedValueOnce(new Error('SMTP down'));
+    engine.registerChannel(
+      makeChannel({ id: 'c1', type: 'email', config: { to: 'ops@example.com' } })
+    );
+    engine.registerRule(makeRule({ notificationChannels: ['c1'] }));
+    mc.record('m', 60);
+    engine.evaluateRules();
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('email 渠道 c1 投递异常：'),
+      'SMTP down',
+    );
   });
 
   it('resolved 状态投递：body.status="resolved"（firing→resolved 两轮触发两次 fetch）', async () => {
