@@ -522,6 +522,101 @@ describe("TeamMembersManager - 角色变更", () => {
   });
 });
 
+// ─── 键盘交互 ──────────────────────────────────────────
+// 行内角色编辑支持 Enter 提交 / Escape 取消（见 TeamMembersManager 顶部 docstring）。
+// Enter/Escape 绑定在 Select 容器的 onKeyDownCapture；actions 容器仅绑 Escape。
+// Radix Select 已 mock 为透传 stub（SelectTrigger 为 <div>），fireEvent.keyDown
+// 在容器上即可触发捕获处理器。
+describe("TeamMembersManager - 键盘交互", () => {
+  it("行内编辑时在角色 Select 区按 Enter 提交角色变更（发起 PATCH）", async () => {
+    const patchFn = vi.fn(() => res({ success: true }));
+    mockFetch.mockImplementation(
+      makeFetch({
+        list: () => res(listResponse([mem({ id: "u-2", email: "bob@x.com", role: "member" })], 1)),
+        patch: (id) => {
+          patchFn(id);
+          return res({ success: true });
+        },
+      })
+    );
+
+    render(<TeamMembersManager />);
+    await screen.findByText("bob@x.com");
+
+    fireEvent.click(screen.getByRole("button", { name: /修改角色/ }));
+    // 选择「管理员」
+    fireEvent.click(screen.getByTestId("role-option-admin"));
+    // 在角色 Select 容器按 Enter 提交（捕获阶段先于 Radix 打开下拉）
+    fireEvent.keyDown(screen.getByTestId("role-edit-select"), { key: "Enter" });
+
+    await waitFor(() => expect(patchFn).toHaveBeenCalledWith("u-2"));
+    // 校验 PATCH body
+    const patchCall = mockFetch.mock.calls.find(
+      ([url, init]) => init?.method === "PATCH" && /\/api\/tenant\/users\/u-2$/.test(url as string)
+    );
+    expect(patchCall).toBeDefined();
+    expect(JSON.parse((patchCall![1] as RequestInit).body as string)).toEqual({ role: "admin" });
+  });
+
+  it("行内编辑时在角色 Select 区按 Escape 取消编辑（不发起 PATCH）", async () => {
+    mockFetch.mockImplementation(
+      makeFetch({
+        list: () => res(listResponse([mem({ id: "u-2", email: "bob@x.com", role: "member" })], 1)),
+      })
+    );
+
+    render(<TeamMembersManager />);
+    await screen.findByText("bob@x.com");
+
+    fireEvent.click(screen.getByRole("button", { name: /修改角色/ }));
+    fireEvent.click(screen.getByTestId("role-option-admin"));
+    fireEvent.keyDown(screen.getByTestId("role-edit-select"), { key: "Escape" });
+
+    // 编辑器退出，恢复修改角色按钮
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "保存" })).not.toBeInTheDocument();
+    });
+    expect(mockFetch.mock.calls.some(([_, init]) => init?.method === "PATCH")).toBe(false);
+  });
+
+  it("操作按钮区按 Escape 取消编辑", async () => {
+    mockFetch.mockImplementation(
+      makeFetch({
+        list: () => res(listResponse([mem({ id: "u-2", email: "bob@x.com", role: "member" })], 1)),
+      })
+    );
+
+    render(<TeamMembersManager />);
+    await screen.findByText("bob@x.com");
+
+    fireEvent.click(screen.getByRole("button", { name: /修改角色/ }));
+    fireEvent.keyDown(screen.getByTestId("role-edit-actions"), { key: "Escape" });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "保存" })).not.toBeInTheDocument();
+    });
+    expect(mockFetch.mock.calls.some(([_, init]) => init?.method === "PATCH")).toBe(false);
+  });
+
+  it("角色未变更时按 Enter 不发起 PATCH（与点击保存一致）", async () => {
+    mockFetch.mockImplementation(
+      makeFetch({
+        list: () => res(listResponse([mem({ id: "u-2", email: "bob@x.com", role: "member" })], 1)),
+      })
+    );
+
+    render(<TeamMembersManager />);
+    await screen.findByText("bob@x.com");
+
+    fireEvent.click(screen.getByRole("button", { name: /修改角色/ }));
+    // draftRole 初值 = 当前角色 member，不改动直接 Enter
+    fireEvent.keyDown(screen.getByTestId("role-edit-select"), { key: "Enter" });
+
+    // 无 PATCH（newRole === member.role 提前 return）
+    expect(mockFetch.mock.calls.some(([_, init]) => init?.method === "PATCH")).toBe(false);
+  });
+});
+
 // ─── 移除成员 ──────────────────────────────────────────
 describe("TeamMembersManager - 移除成员", () => {
   it("确认后发起 DELETE 契约并显示成功消息", async () => {
