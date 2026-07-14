@@ -41,6 +41,7 @@ const {
   mockGetCurrentSubscription,
   mockCheckTrialStatus,
   mockTenantFindUnique,
+  mockCancelSubscription,
   PLANS_FIXTURE,
 } = vi.hoisted(() => {
   class MockNextResponse {
@@ -97,6 +98,7 @@ const {
     mockGetCurrentSubscription: vi.fn(),
     mockCheckTrialStatus: vi.fn(),
     mockTenantFindUnique: vi.fn(),
+    mockCancelSubscription: vi.fn(),
     PLANS_FIXTURE,
   };
 });
@@ -108,6 +110,7 @@ vi.mock('@/lib/api-auth', () => ({
 vi.mock('@/lib/billing/subscription', () => ({
   getCurrentSubscription: (...args: unknown[]) => mockGetCurrentSubscription(...args),
   checkTrialStatus: (...args: unknown[]) => mockCheckTrialStatus(...args),
+  cancelSubscription: (...args: unknown[]) => mockCancelSubscription(...args),
   PLANS: PLANS_FIXTURE,
 }));
 vi.mock('@/lib/db', () => ({
@@ -116,7 +119,7 @@ vi.mock('@/lib/db', () => ({
   },
 }));
 
-import { GET } from '@/app/api/billing/subscription/route';
+import { GET, POST } from '@/app/api/billing/subscription/route';
 
 type MockRes = InstanceType<typeof MockNextResponse>;
 
@@ -125,6 +128,15 @@ const AUTH_USER = { userId: 'user-1', email: 'u@x.com', tenantId: 'tenant-1', ro
 function makeRequest(): NextRequest {
   return new Request('http://localhost/api/billing/subscription', {
     method: 'GET',
+  }) as unknown as NextRequest;
+}
+
+/** 构造 POST 请求：body 为可序列化对象（route 经 request.json().catch(() => ({})) 解析）。 */
+function makePostRequest(body: unknown): NextRequest {
+  return new Request('http://localhost/api/billing/subscription', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   }) as unknown as NextRequest;
 }
 
@@ -169,6 +181,7 @@ describe('GET /api/billing/subscription', () => {
     mockGetCurrentSubscription.mockResolvedValue(makeSubscription());
     mockTenantFindUnique.mockResolvedValue(makeTenant());
     mockCheckTrialStatus.mockResolvedValue({ isTrial: false, trialEndsAt: null, daysLeft: 0 });
+    mockCancelSubscription.mockResolvedValue(true);
   });
 
   // ---- 分支 1：未认证 ----
@@ -369,5 +382,77 @@ describe('GET /api/billing/subscription', () => {
 
     expect(mockAuthenticate).toHaveBeenCalledTimes(1);
     expect(mockAuthenticate).toHaveBeenCalledWith(req);
+  });
+});
+
+// ==================== POST /api/billing/subscription ====================
+// 锁定取消订阅控制流（body.action === 'cancel'）：
+//   - 鉴权 → 调 cancelSubscription(tenantId) → 200 { success, cancelAtPeriodEnd }
+//   - cancelSubscription 抛错（如无活跃订阅）→ 400 + error message（不暴露 500）
+//   - 未认证 → 透传 401，不触达 cancelSubscription
+//   - 非 cancel action 走 planId 分支（既有降级逻辑），此处仅锁定 cancel 互斥语义
+describe('POST /api/billing/subscription — cancel 分支', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAuthenticate.mockResolvedValue(AUTH_USER);
+    mockCancelSubscription.mockResolvedValue(true);
+  });
+
+  it('action=cancel 成功：调 cancelSubscription(tenantId) → 200 { success, cancelAtPeriodEnd: true }', async () => {
+    const res = (await POST(makePostRequest({ action: 'cancel' }))) as MockRes;
+
+    expect(mockAuthenticate).toHaveBeenCalledTimes(1);
+    expect(mockCancelSubscription).toHaveBeenCalledWith('tenant-1');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, cancelAtPeriodEnd: true });
+  });
+
+  it('cancelSubscription 抛错 → 400 + error message（不暴露 500）', async () => {
+    mockCancelSubscription.mockRejectedValue(new Error('No active subscription found'));
+
+    const res = (await POST(makePostRequest({ action: 'cancel' }))) as MockRes;
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'No active subscription found' });
+  });
+
+  it('cancelSubscription 抛非 Error 值 → 400 + 兜底文案', async () => {
+    mockCancelSubscription.mockRejectedValue('boom');
+
+    const res = (await POST(makePostRequest({ action: 'cancel' }))) as MockRes;
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: '取消订阅失败' });
+  });
+
+  it('未认证 → 透传 401，不触达 cancelSubscription', async () => {
+    mockAuthenticate.mockResolvedValue(
+      MockNextResponse.json({ error: '未提供身份认证令牌' }, { status: 401 }),
+    );
+
+    const res = (await POST(makePostRequest({ action: 'cancel' }))) as MockRes;
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: '未提供身份认证令牌' });
+    expect(mockCancelSubscription).not.toHaveBeenCalled();
+  });
+
+  it('action 非 cancel（如 resume）→ 不走 cancel 分支，落入 planId 校验 → 400 缺少 planId', async () => {
+    // 锁定 cancel 分支的严格匹配：仅 action==='cancel' 触发取消，其它 action 值
+    // 不被特殊处理，按既有 planId 流程校验。避免 action 语义被静默扩展。
+    const res = (await POST(makePostRequest({ action: 'resume' }))) as MockRes;
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: '缺少 planId 参数' });
+    expect(mockCancelSubscription).not.toHaveBeenCalled();
+  });
+
+  it('action=cancel 时忽略 body 中的 planId（cancel 与降级互斥）', async () => {
+    // 即使同时传了 planId，action=cancel 仍走取消分支，不触发 createSubscription
+    const res = (await POST(makePostRequest({ action: 'cancel', planId: 'free' }))) as MockRes;
+
+    expect(mockCancelSubscription).toHaveBeenCalledWith('tenant-1');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, cancelAtPeriodEnd: true });
   });
 });
