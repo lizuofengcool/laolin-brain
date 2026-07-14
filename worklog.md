@@ -19537,4 +19537,98 @@ throw 语义不变，`analytics` 等已预 authenticate 的调用方与 `getTena
   （依赖 alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 /
   download `?password=` 路径移除（前端已不用）/ share session Redis 持久化。
 
+## 2026-07-15 02:00 自动迭代（第一百八十轮）
+
+fetch 双端无新提交（local/origin/github 均在 `e1878e7`），工作树干净，无遗留改动。本轮按 worklog
+"下一轮候选" 首项处理 email settings 跨租户污染 + 不持久化——一个真实的多租户隔离 + 数据持久化
+双重缺陷，范围清晰，适合单轮收口。
+
+### 本次开发：邮件设置按租户加密落库 + sendEmail 租户隔离投递（多租户隔离 / 持久化）
+
+**问题**：`api/email/settings/route.ts` 仅调进程全局单例 `emailService.init()`，不落库——两个缺陷：
+1. **不持久化**：进程重启配置丢失（`initEmailServiceFromEnv` 实际无任何 bootstrap 调用，唯一配置
+   来源是 POST 时 init 单例，重启即丢）；
+2. **跨租户污染**：`emailService` 只有一个全局 transporter，租户 A POST 配置 SMTP 后，租户 B 的
+   `sendEmail(..., tenantId, ...)`（如 invitations 邀请邮件）会复用 A 的 SMTP 投递。GET 也只读
+   env，看不到租户自己的配置。
+
+**修复**：把"邮件配置属于租户"贯彻到数据层 + 投递层：
+- **新增 `src/lib/email/settings-store.ts`**：`getEmailConfig/saveEmailConfig/maskEmailConfig`。按
+  `tenantId` 把 SMTP 配置（含 pass）经 AES-256-GCM 加密落库到 `Setting` 表（`key=email.smtp`、
+  `category=notification`、`isEncrypted=true`、`userId=null` 租户级），复用 `config-crypto` 的
+  `encryptConfig/decryptConfig`（与 `storageConfig.config` 同范式；SMTP 配置为 JSON 对象故用
+  `encryptConfig` 而非面向裸字符串的 `encryptSecret`）。`Setting` 表无 `(tenantId,key)` 唯一约束，
+  故 `findFirst → update/create` 而非 upsert（写入频率极低，竞争可忽略）。解密失败（密钥轮换/数据
+  损坏）回退 null 不外抛，调用方按"未配置"处理。`maskEmailConfig` 返回脱敏视图（不含 pass，仅
+  `hasPass` 布尔）。
+- **`src/lib/email/index.ts` 改 sendEmail 租户感知**：新增 `tenantTransporters: Map<tenantId,
+  {config, transporter}>` 缓存与 `invalidateTenant(tenantId)`。`resolveTransporter(tenantId)`：
+  tenantId 非空 → 从 DB 读该租户配置（命中缓存则复用），用该配置建**独立 transporter**（每租户
+  隔离，不再共享单例）；tenantId 空（平台级，如 monitoring 告警 `sendEmail(..., "", "")`）→ 回退
+  单例（env）。`doSendEmail` 改为按 tenantId 解析 transporter，无配置时 warn + 跳过（不跨租户回退
+  到单例——那正是污染源）。`processQueue` 移除"未配置即清空整队列"的全局前置检查，改为逐邮件
+  解析（平台未配置只跳过平台邮件，不影响队列中的租户邮件）。**延迟 `import("./settings-store")`**
+  于 `resolveTransporter` 内：避免 email 模块静态依赖 db，保持模板渲染等纯逻辑可独立测试（现有
+  `email.test.ts` 35 用例无需 mock db、全绿）。
+- **`route.ts`**：GET 按租户从 DB 读脱敏配置（不含 pass），无配置回退 env（只读，向后兼容）；
+  POST 加密落库 + `invalidateTenant` 清缓存 + 活动日志，**不再 init 全局单例**（消除污染源）。
+  移除未使用的 `initEmailServiceFromEnv` 死导入。
+
+**设计取舍 / 不在本次范围**：平台级（tenantId 空）投递路径（monitoring 告警）依赖单例经 env
+初始化，而 `initEmailServiceFromEnv` 当前无 bootstrap 调用——这是既有的、独立于本次的 env 接线
+问题。本次让 tenant 投递路径（invitations 邀请邮件，真实租户场景）端到端正确，平台路径行为不
+恶化（原：用某租户的单例配置投递平台邮件=跨租户；现：单例未配置则跳过=fail-closed，更安全）。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --registry=https://registry.npmmirror.com`（沙箱无 node_modules；
+  默认 registry 对 `@types/chai` 404，沿用第一百七十九轮的 npmmirror 方案，42.3s）。
+- `npx prisma generate`（v6.19.3 客户端，316ms）。
+- `npx tsc --noEmit`：**0 错误**。
+- `npx vitest run`（全量）：**5348 passed / 200 files**，0 失败（上轮 5315/197 → 本轮 +33 用例、
+  +3 文件：email-settings-route 15、email-settings-store 11、email-tenant-send 7）。现有 email.test.ts
+  35 用例全绿，确认 processQueue/doSendEmail 重构未破坏既有契约。store 测试用真实 AES-256-GCM
+  加解密往返（仅隔离 db），覆盖密文随机性（同明文不同密文）与解密失败回退。stderr 仅为 dev 回退
+  加密密钥警告与 pdf-parse 既有输出（预期）。
+
+环境备注：`pnpm-lock.yaml` 与 `node_modules` 均在 .gitignore；本轮改动 6 文件。
+
+### 改动量
+
+6 文件，+926/-61：
+- `src/lib/email/settings-store.ts`（新增 +86）
+- `src/lib/email/index.ts`（+73/-19，租户 transporter 缓存 + resolveTransporter + 重构 processQueue/doSendEmail）
+- `src/app/api/email/settings/route.ts`（+27/-64，DB 落库 + 脱敏 + 移除单例 init/死导入）
+- `src/__tests__/api/email-settings-route.test.ts`（新增 +353）
+- `src/__tests__/lib/email-settings-store.test.ts`（新增 +177）
+- `src/__tests__/lib/email-tenant-send.test.ts`（新增 +205）
+
+1 commit（feat，实现+测试同属一个多租户隔离特性，符合单轮 1-3 commit 约束）。
+
+### Commit
+
+- `e2f2fef` feat(email): 邮件设置按租户加密落库 + sendEmail 租户隔离投递
+
+### 推送
+
+- origin (Gitee)：`e1878e7..e2f2fef` ✅
+- github (GitHub)：`e1878e7..e2f2fef` ✅
+
+### 下一轮候选
+
+- **AiProviderConfig.config 字段同样明文**（未变动，低优先级，安全）：schema `config String? // JSON string:
+  temperature, maxTokens, topP 等` 通常不含凭据但可能含敏感参数，且第 177 轮只加密了 apiKey。可复用
+  `encryptConfig`（已是 JSON 对象范式）一并加密，与 storageConfig.config / email.smtp 完全同范式。
+- **平台级邮件 env 接线**（新增，低优先级）：`initEmailServiceFromEnv` 无 bootstrap 调用，monitoring
+  告警（tenantId 空）的平台投递路径在 env 已配 SMTP 时也无法生效（单例未 init）。可在 app 启动
+  /instrumentation 接线 `initEmailServiceFromEnv()`，或在 monitoring 投递处显式 env 回退。
+- **tenant-db.ts raw 后门审计**（未变动，低优先级）：TenantDb.raw 暴露无审计原始客户端，可加使用日志/
+  限制调用点。
+- **payment alipay/wechat RSA2 验签占位**（未变动，低优先级，依赖外部 SDK）："非空即通过" mock 默认，
+  需接 alipay-sdk / wechatpay-node-v3 真实验签。
+- 延续项（低优先级，未变动）：document-qna AI 桩 / model-manager 4 处模型 API 桩（均依赖外部 SDK，
+  收益低）/ files/route.ts POST 事务内 tx 与 auto-summary 直连（无越权、churn 大）/ 支付 SDK 真接入
+  （依赖 alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 /
+  download `?password=` 路径移除（前端已不用）/ share session Redis 持久化。
+
 
