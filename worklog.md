@@ -18313,3 +18313,101 @@ working tree 干净，无遗留改动。优先级 1 清单复核：
   auto-summary `db.file.update` 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口；验签/解密已真实实现）。
+
+## 2026-07-14 05:00 自动迭代
+
+第一百六十八轮自动迭代。本次为克隆后首轮开发（本地无历史工作区，从 origin 克隆）。
+
+### 优先级 1 问题复核（任务清单 vs 实际代码）
+
+逐项核对任务描述列出的优先级 1 待修问题，发现**均已在历史轮次解决**，本轮无需重复修复：
+
+- `src/lib/db/tenant-db.ts` raw 后门 → `raw` getter 与 `transaction` 均已加 `console.warn`
+  调用堆栈软审计（`new Error().stack` 取第 3 帧），且 `rawDb` 无审计导出已移除。
+- `src/lib/payment/alipay.ts` RSA2 验签 → `verifyRSA2Sign` 已用 `crypto.createVerify('RSA-SHA256')`
+  真实验签 + `normalizePublicKey` 自动补齐 PEM 头尾/换行；已配置密钥但未接 SDK 时
+  createPayment/queryPayment/refund 显式失败而非静默 mock。
+- `src/lib/cloud-sync/sync-engine.ts` keep_both → 已修复：本地文件重命名为 `[冲突副本]`
+  保留本地版本，云端版本以新 id create 落地，不再直接覆盖；前置 `findUnique({id,tenantId})`
+  守卫防跨租户。
+- `src/__tests__/lib/api-auth.test.ts` → 已与 `api-auth.ts` 实现对齐：期望 4 字段
+  (userId/email/tenantId/role)、async/await、query param 令牌被拒绝（仅读 Authorization 头）。
+
+### 本次开发：OrderHistory pending 订单操作（优先级 2，README/worklog 下一轮候选 #1）
+
+`OrderHistory.tsx` 详情弹窗内 pending 订单的「立即支付」/「取消订单」按钮原本无 onClick。
+本次完成接线 + 取消订单端点：
+
+#### feat — cancelOrder 端点 + 按钮接线（6715001）
+
+- **`src/lib/billing/subscription.ts`**（+28）：新增 `cancelOrder(tenantId, orderId)`：
+  按 `{id, tenantId}` 双键 findFirst 定位（跨租户 orderId 不命中 → 抛「订单不存在」），
+  仅 `status==='pending'` 可取消（已支付需走退款），置 `status='cancelled'` 不删除以便审计。
+- **`src/app/api/billing/orders/[id]/cancel/route.ts`**（新增 39 行）：POST handler，
+  `params: Promise<{id}>`（Next.js 16 动态路由约定，与 shares/[id] 等一致），鉴权后调
+  cancelOrder；已知业务错误（订单不存在/非待支付）→ 400，未知错误 → 500 兜底「取消订单失败」。
+- **`src/components/billing/OrderHistory.tsx`**（+117/-2）：
+  - 「取消订单」→ AlertDialog 二次确认 → POST cancel → 成功 toast「订单已取消」+ 关闭弹窗 +
+    重新 GET /api/billing/orders 刷新列表；失败/网络异常 → destructive toast + 弹窗保留。
+  - 「立即支付」→ 关闭详情弹窗 + 复用 PaymentDialog（带 order.plan/interval/amount，
+    planName 经 getPlanText 派生）；onSuccess 刷新订单列表。
+  - 新增 cancelled 状态文案（「已取消」）/徽章（gray）映射；提交中 cancelling=true 时
+    按钮文案「处理中…」+ disabled，AlertDialog onOpenChange 被 cancelling 守卫拦截。
+
+#### test — 契约测试（683fd36）
+
+- **`src/__tests__/api/billing-orders-cancel-route.test.ts`**（7 用例）：成功 200 /
+  未认证 401 透传 / 订单不存在 400 / 非待支付 400 / 未知 Error 500 / 非 Error 500 /
+  orderId 取自动态路由参数透传。Mock next/server + api-auth + billing/subscription。
+- **`src/__tests__/components/OrderHistory.test.tsx`**（7 用例）：pending 渲染操作按钮 /
+  paid 不渲染 / 取消成功 toast+刷新(GET≥2)+关闭 / 取消 400 destructive toast+弹窗保留 /
+  网络异常 destructive toast / 提交中 disabled+「处理中…」/ 立即支付打开 PaymentDialog
+  入参正确(plan=pro/interval=month/amount=3900)+关闭详情弹窗。AlertDialog/Dialog/Select/
+  PaymentDialog 桩化绕开 Radix portal，fetch 全局桩按 url+method 路由。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，71.6s）。
+- `npx prisma generate`（v6.19.3 客户端，230ms）。
+- `npx tsc --noEmit`：**0 错误**（全项目）。
+- `npx vitest run`（全量）：**5181 passed / 189 files**，无回归（上轮 5167/186，
+  本轮 +14 测试 / +2 文件：cancel-route 7 + OrderHistory 7）。
+
+环境备注：`pnpm-lock.yaml` 已在 .gitignore；`git status` 干净（无 node_modules/lockfile 入侵）。
+
+### 改动量
+
+5 文件，+677/-2：
+- `src/lib/billing/subscription.ts`（feat，+28：cancelOrder）
+- `src/app/api/billing/orders/[id]/cancel/route.ts`（feat，+39：POST handler）
+- `src/components/billing/OrderHistory.tsx`（feat，+117/-2：按钮接线+弹窗）
+- `src/__tests__/api/billing-orders-cancel-route.test.ts`（test，+161：7 用例）
+- `src/__tests__/components/OrderHistory.test.tsx`（test，+335：7 用例）
+
+2 commit（1 feat + 1 test），符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `6715001` feat(billing): 订单历史 pending 订单操作——取消订单端点 + 立即支付/取消订单接线
+- `683fd36` test(billing): 订单历史 pending 订单操作契约测试——cancel 端点 + OrderHistory 控制流
+
+### 推送
+
+- origin (Gitee)：`10b7241..683fd36` 推送成功（含本轮 2 commit + worklog）
+- github (GitHub)：`10b7241..683fd36` 推送成功
+- 双端同步校验：`git rev-list --left-right --count origin/main...github/main` = `0 0`
+
+### 下一轮候选
+
+- **OrderHistory 立即支付创建新订单的 dangling 问题**（新增，低优先级）：当前「立即支付」
+  复用 PaymentDialog 走 /api/payment/create 会创建新订单，原 pending 订单仍在。可后续扩展
+  /api/payment/create 支持传 orderId 复用现有 pending 订单，或在点击立即支付时先 cancel 旧单。
+  当前用户可手动「取消订单」清理，非阻塞性问题。
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  依赖外部 SDK，优先级低。
+- **model-manager.ts 4 处模型 API 桩**（延续）：testModel/chat/complete/embeddings，
+  已有单测锁定 mock 边界，模块未被生产代码 import；收益较低。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与
+  auto-summary `db.file.update` 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口；验签/解密已真实实现）。
