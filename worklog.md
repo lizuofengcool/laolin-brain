@@ -19291,4 +19291,87 @@ UX bug，并连带修复密码保护分享下载始终 403 的预存缺陷。
   （依赖 alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 /
   download `?password=` 路径移除（前端已不用）/ share session Redis 持久化。
 
+## 2026-07-14 23:00 自动迭代
+
+第一百七十七轮自动迭代。fetch 双端无新提交（local/origin/github 均在 `9a430d1`），工作树干净，
+无遗留改动。评估当前状态：任务清单中的 5 项优先级 1 问题经前 176 轮已全部解决——
+tenant-db.ts raw getter 已加调用堆栈软审计；alipay.ts/wechat.ts RSA2/V3 验签已接入真实
+`createVerify`/`createHmac`+timingSafeEqual+AES-256-GCM resource 解密，mock 默认已删；sync-engine.ts
+keep_both 已改为"本地重命名为冲突副本 + 云端版本新建文件"不再直接覆盖；api-auth.test.ts 已与
+实现对齐（4 字段/async/拒绝 query param）。本轮按 worklog "下一轮候选" 首项开发。
+
+### 本次开发：AiProviderConfig.apiKey 落库 AES-256-GCM 加密（安全，中优先级）
+
+**问题**：`src/app/api/ai/providers/route.ts` POST 把 OpenAI/DeepSeek/智谱等第三方 API Key
+明文写入 `AiProviderConfig.apiKey`（GET/POST 仅在响应里脱敏掩码，落库为明文）。prisma schema
+该字段已标注 `// 加密存储` 但实现未补齐。DB 备份/泄露时所有租户 AI 凭据直接暴露。对比
+`api-keys/route.ts` 的 `apiSecret` 已用 sha256 哈希（但那是仅比对、不可还原的场景；apiKey 需可逆
+读取以调用第三方 API，故用对称加密而非哈希）。
+
+**修复**：
+- `src/lib/cloud-sync/config-crypto.ts`：新增 `encryptSecret(plaintext)` / `decryptSecret(stored)`
+  字符串加解密。与 `encryptConfig` 同范式（AES-256-GCM + `v1:` 前缀 + 随机 IV + 同一 PBKDF2 密钥
+  派生 + production fail-closed），但面向字符串而非 JSON 对象——避免对裸字符串 `JSON.stringify`
+  的语义错配（`encryptConfig` 会对入参 JSON.stringify 再加密）。`decryptSecret` 对非 `v1:` 前缀
+  原样返回，存量明文行向后兼容、下次写入即自动加密（与 `decryptConfig` 历史明文兼容策略一致）。
+- `src/app/api/ai/providers/route.ts`：POST 落库前 `encryptSecret` 加密；关键点——`encryptSecret`
+  使用随机 IV，故仅调用一次并复用 update/create 两处，避免产生两份不同密文（首轮测试暴露此问题后
+  重构为单次加密复用）。GET/POST 响应新增 `maskApiKey` helper：`decryptSecret` 解密后做
+  `首6****末4` 掩码，解密失败（密钥轮换/数据损坏）回退 `"****"` 不泄露密文也不抛错。`hasKey`
+  仍以落库值是否非空为准。
+- `src/app/api/chat/route.ts`：`getProviderConfig` 读取 `userConfig.apiKey` 后 `decryptSecret`
+  解密再传给 provider，解密失败回退环境变量（`process.env.*_API_KEY`）避免阻塞对话。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，62.1s）。
+- `npx prisma generate`（v6.19.3 客户端）。
+- `npx tsc --noEmit`：**0 错误**。
+- `npx vitest run`（全量）：**5296 passed / 195 files**，0 失败（上轮 5268/194 → 本轮 +28 用例、
+  +1 文件：config-crypto +14、ai-providers-route +14）。config-crypto stderr 仅为 dev 回退密钥
+  警告（预期）。
+
+环境备注：`pnpm-lock.yaml` 与 `node_modules` 均在 .gitignore；本轮改动 5 文件。
+
+### 改动量
+
+5 文件，+499/-8：
+- `src/lib/cloud-sync/config-crypto.ts`（+54）
+- `src/app/api/ai/providers/route.ts`（+27/-5）
+- `src/app/api/chat/route.ts`（+15/-1）
+- `src/__tests__/lib/config-crypto.test.ts`（+113/-1）
+- `src/__tests__/api/ai-providers-route.test.ts`（新增 +288）
+
+1 commit（feat，实现+测试同属一个安全特性，符合单轮 1-3 commit 约束）。
+
+### Commit
+
+- `91f4307` feat(security): AiProviderConfig.apiKey 落库 AES-256-GCM 加密
+
+### 推送
+
+- origin (Gitee)：`9a430d1..91f4307` ✅
+- github (GitHub)：`9a430d1..91f4307` ✅
+
+### 下一轮候选
+
+- **files/[id]/info 路径校验缺失 + 同步 I/O**（未变动，中优先级，纵深防御）：`src/app/api/files/[id]/info/route.ts`
+  L106 直接 `fs.existsSync/readFileSync(file.filePath)` 无 `startsWith(uploadDir)` 守卫（download/preview/restore
+  均有），且同步 I/O 阻塞事件循环。
+- **path.startsWith 缺 path.sep 统一**（未变动，低优先级，纵深防御）：download/route.ts L67/118 与
+  files/[id]/route.ts L168 用 `startsWith(uploadDir)`，preview/restore/thumbnail 已用
+  `startsWith(uploadDir + path.sep)`。前者在 `uploadDir=/app/upload` 时 `/app/upload-secret/x` 可误过。
+- **getTenantIdFromRequest 401 死代码**（未变动，低优先级）：`lib/db/tenant-context.ts` 的
+  `getTenantIdFromRequest` 失败时 throw（不返回空），调用方 `if(!tenantId) return 401` 为死代码，
+  未认证请求实际落 catch 返回 500。可改为返回 null 或调用方改 try/catch 返 401。
+- **email settings 跨租户污染 + 不持久化**（未变动，中低优先级）：`api/email/settings/route.ts` 仅调
+  进程全局单例 `emailService.init()`，不落库；租户 A 配置 SMTP 覆盖租户 B，进程重启丢失。
+- **AiProviderConfig.config 字段同样明文**（新增，低优先级，安全）：schema 中 `config String? // JSON string:
+  temperature, maxTokens, topP 等` 通常不含凭据但可能含敏感参数，且本轮只加密了 apiKey。可复用
+  `encryptConfig`（已是 JSON 对象范式）一并加密，与 storageConfig.config 完全同范式。
+- 延续项（低优先级，未变动）：document-qna AI 桩 / model-manager 4 处模型 API 桩（均依赖外部 SDK，
+  收益低）/ files/route.ts POST 事务内 tx 与 auto-summary 直连（无越权、churn 大）/ 支付 SDK 真接入
+  （依赖 alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 /
+  download `?password=` 路径移除（前端已不用）/ share session Redis 持久化。
+
 
