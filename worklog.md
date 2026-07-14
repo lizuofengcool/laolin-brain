@@ -18946,3 +18946,111 @@ mockSign 服务端生成无需转义。
   payment-success / storage-warning / system-announcement 7 个模板目前未被任何生产代码调用
   （仅 invitation + alert-notification 真实投递）。补全触发属增量功能、非缺口。
 
+## 2026-07-14 20:00 自动迭代
+
+### 状态评估
+
+- fetch origin/main + github/main：三端均停在 `66d4227`（上一轮 worklog docs commit），
+  无远端更新，无需 rebase，工作树干净。
+- 优先级 1 已知问题复核（与上一轮结论一致，全部清零）：tenant-db raw 后门已审计、
+  alipay/wechat RSA2 验签已真实实现、files/route 已走 TenantDb、sync-engine keep_both
+  已修、api-auth.test 已对齐实现。
+- 推进上一轮"下一轮候选"中的 **share 链接密码暴破防护**（中低优先级，真实安全增强、
+  无外部 SDK 依赖）。复核实际代码确认缺口成立：
+  · `src/app/api/files/[id]/share/route.ts` GET 接受 `?password=` query param（L165/188），
+    密码会泄漏到 URL/访问日志/Referer/浏览器历史。
+  · 无 per-token 失败计数限流，仅 middleware 的 IP+路径 100/min 通用限流；4 位最短密码
+    仅 10000 种组合，单 IP 100/min ≈ 6000 猜/小时，可暴破。
+  · 前端 `src/app/share/[token]/page.tsx` 已用 POST 提交密码（L105-111，注释明示
+    "avoids password in URL/URL logs"），GET 的 `?password=` 路径是冗余的不安全向量。
+
+### 本次开发：分享链接密码暴破防护（优先级 1，安全）
+
+#### fix — GET 移除密码路径 + POST per-token 失败限流（与 test 合并为单 commit）
+
+- **`src/lib/rate-limit.ts`**（+88）：
+  · 新增按 token 维度的密码失败计数限流器，复用已 import 的 `lru-cache`：
+    `SHARE_PASSWORD_LIMIT = { maxFailures: 10, windowMs: 15min }`，独立 LRU 缓存
+    （max 50000、ttl=windowMs），与现有 IP+路径 `rateLimit` 同构但语义不同（按 token
+    计失败次数，非按 IP 计所有请求）。
+  · `checkSharePasswordLimit(token)`：密码比对前调用，`failures >= maxFailures` 时
+    `success=false`；返回 `{ success, remaining, resetTime }`。
+  · `recordSharePasswordFailure(token)`：密码错误后调用，`failures++`，窗口过期自动重置。
+  · `clearSharePasswordLimit(token)`：验证成功后调用，清失败计数（合法用户误输不累积）。
+  · `clearAllSharePasswordLimits()`：仅测试用全清。
+- **`src/app/api/files/[id]/share/route.ts`**（+30/-20）：
+  · **GET**：移除 `searchParams.get("password")` 与 query 密码比对分支。密码保护分享
+    始终返回 403 `passwordRequired`，**即使带 `?password=正确密码` 也忽略**（强制 POST）。
+    无密码分享仍 200 回包。前端已用 POST，无行为回归。
+  · **POST 密码验证分支**：在 `share` 查到、未过期、有密码后、密码比对前插入
+    `checkSharePasswordLimit(id)`：`success=false` → 429 + `Retry-After` header
+    （`passwordRequired:true` 保持前端 UI 一致），不触达 `timingSafeEqual`。密码错误时
+    `recordSharePasswordFailure(id)`；正确时 `clearSharePasswordLimit(id)`。
+  · 限流 key 为 share token（`id` 即 token），仅对真实存在的 token 计数（404/410/无密码
+    分支在限流 check 之前返回，不污染缓存）。
+- **`src/__tests__/api/files-id-share-route.test.ts`**（新增，14 例）：
+  · GET：无密码 200 / 密码保护 403 / **`?password=正确密码` 仍 403（锁定修复契约）** /
+    不存在 404 / 过期 410。
+  · POST：正确密码 200 + `clearSharePasswordLimit` 调用 / 错误密码 403 +
+    `recordSharePasswordFailure` 调用 / 空密码 400（不触达限流）/ 非字符串密码 400 /
+    不存在 404（不触达限流）/ 过期 410（不触达限流）/ 无密码分享 400 /
+    `checkSharePasswordLimit` success=false → 429 + Retry-After（不触达密码比对）/
+    `checkSharePasswordLimit` 以 token 为 key 调用。
+  · 复用 `vi.hoisted + MockNextResponse` 范式；MockNextResponse 扩展 `headers` 字段
+    以断言 `Retry-After`。mock `@/lib/rate-limit` 三函数测路由契约。
+- **`src/__tests__/lib/rate-limit-share.test.ts`**（新增，8 例，真实实现非 mock）：
+  · 初始 success=true,remaining=10 / 累计 10 次失败后第 11 次 check 锁定 /
+    锁定后继续 record 仍 locked / clear 解锁 / 验证成功 clear 后重新从 0 计数 /
+    不同 token 独立计数 / remaining 递减 / resetTime 未来时间戳。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，64.8s）。
+- `npx prisma generate`（v6.19.3 客户端）。
+- `npx tsc --noEmit`：**0 错误**（含限流器类型推断与 route 新分支）。
+- `npx vitest run src/__tests__/api/files-id-share-route.test.ts src/__tests__/lib/rate-limit-share.test.ts`：
+  **22 passed**（14 路由 + 8 限流器）。
+- `npx vitest run`（全量）：**5242 passed / 192 files**，无回归（上轮 5220/190，本轮 +22/+2）。
+
+环境备注：`pnpm-lock.yaml` 与 `node_modules` 均在 .gitignore；改动 4 文件（fix+test 合并）。
+
+### 改动量
+
+4 文件，+542/-20：
+- `src/lib/rate-limit.ts`（+88：share 密码限流器 4 函数）
+- `src/app/api/files/[id]/share/route.ts`（+30/-20：GET 去 query 密码 + POST 加限流）
+- `src/__tests__/api/files-id-share-route.test.ts`（新增 14 例路由集成测试）
+- `src/__tests__/lib/rate-limit-share.test.ts`（新增 8 例限流器单元测试）
+
+1 commit（fix + test 合并）。原因：fix 改变 GET/POST 行为契约，配套测试同步锁定新契约，
+合并为单 commit 保证每个 commit 全绿。符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `740ee49` fix(security): 分享链接密码暴破防护——GET 移除密码路径 + per-token 失败限流
+
+### 推送
+
+- origin (Gitee)：`66d4227..740ee49`（待推送，含本轮 fix commit + worklog docs commit）
+- github (GitHub)：`66d4227..740ee49`（待推送）
+- 双端同步校验：推送后 `git rev-list --left-right --count origin/main...github/main` = `0 0`
+
+### 下一轮候选
+
+- **document-qna AI 模型调用桩**（延续，低优先级）：askQuestion 的 generateMockAnswer 仍为模拟，
+  依赖外部模型 SDK，优先级低。
+- **model-manager.ts 4 处模型 API 桩**（延续，低优先级）：testModel/chat/complete/embeddings，
+  已有单测锁定 mock 边界，模块未被生产代码 import；收益较低。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与 auto-summary
+  db.file.update 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口；验签/解密已真实实现）。
+- **ActivityLog 审计 trail 查询端点/UI**（延续，低优先级）：/api/activity-logs 已有通用查询，
+  可后续补管理后台「支付方式变更记录」视图，属增量功能、非缺口。
+- **share 链接密码限流持久化**（新增，低优先级）：本轮 per-token 限流为内存 LRU，单实例重启
+  重置；多实例部署下需 Redis 共享计数。当前 README 定位为个人/小团队单实例，内存方案足够。
+- **share 页面 X-Share-Session 刷新失效**（新增，低优先级）：前端 `src/app/share/[token]/page.tsx`
+  在密码验证成功后存 sessionStorage 并于 GET 带 `X-Share-Session` header，但 GET 路由不读该
+  header，导致页面刷新后重新要求输入密码。属预存 UX 小问题（非安全、非本轮引入），可后续
+  改为 GET 读 header 或服务端 session token 机制。
+
