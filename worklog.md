@@ -18411,3 +18411,106 @@ working tree 干净，无遗留改动。优先级 1 清单复核：
   auto-summary `db.file.update` 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口；验签/解密已真实实现）。
+
+---
+
+## 2026-07-14 06:00 自动迭代
+
+### 上轮状态核对
+
+fetch origin/main + github/main：本地 = origin = github（`git rev-list --left-right --count`
+均为 `0 0`），工作树干净，无遗留未提交改动。
+
+### 优先级 1 复核（首轮清单剩余项）
+
+逐项核对当前实现，确认上几轮已全部闭环，本轮无需再动：
+
+- **tenant-db.ts raw 后门**：`raw` getter 与 `transaction` 均已加 `console.warn` 调用方堆栈
+  软审计；`rawDb` 顶层导出已删除（文件末注释说明三种合规取用路径）。
+- **alipay.ts RSA2 验签**：`verifyRSA2Sign` 已用 `crypto.createVerify('RSA-SHA256')` +
+  `RSA_PKCS1_PADDING` 真实验签，`normalizePublicKey` 自动补 PEM 头尾；已配置真实密钥时
+  createPayment/queryPayment/refund 均显式失败（不再静默 mock）。
+- **wechat.ts**：注释明示「缺少任一字段或密钥未配置时直接拒绝，不再"非空即通过"」。
+- **sync-engine.ts keep_both**：`resolveConflict` keep_both 分支已正确重命名本地为
+  `[冲突副本] xxx` + 新建云端版本为新文件（新 cuid），不再直接覆盖。
+- **api-auth.test.ts**：已与 api-auth.ts 实现（4 字段 / async / 仅读 Authorization 头）对齐。
+
+### 本次开发：OrderHistory 立即支付 dangling 订单问题（优先级 2，上轮下一轮候选 #1）
+
+OrderHistory「立即支付」原本复用 PaymentDialog 走 /api/payment/create 创建**新**订单，
+原 pending 订单仍在，造成 dangling（每点一次立即支付就多一条 pending）。
+本次扩展 /api/payment/create 接受可选 `orderId`，提供时复用既有 pending 订单而非新建。
+
+#### feat — reusePendingOrder + 路由 orderId 分支 + 组件透传（ed8e243）
+
+- **`src/lib/billing/subscription.ts`**（+37）：新增 `reusePendingOrder(tenantId, orderId,
+  payMethod)`：按 `{id, tenantId}` findFirst 定位（跨租户 orderId 不命中 → 抛「订单不存在」），
+  仅 `status==='pending'` 可复用（已支付走退款、已取消/失败需重新下单 → 抛「仅待支付订单可复用」）；
+  `payMethod` 与订单记录不同时刷新（未支付前可在 alipay/wechat 间切换），其余字段不变。
+- **`src/app/api/payment/create/route.ts`**（+50/-17）：body 新增可选 `orderId`；提供时调
+  `reusePendingOrder` 而非 `createOrder`，`subject`/`planName`/`interval` 以 `order.plan`/
+  `order.interval` 为权威来源（避免 body 与订单不一致导致 subject 错配）；`reusePendingOrder`
+  抛已知业务错误（订单不存在 / 非待支付）→ 400 透传 message，未知错误 → 500「创建支付订单失败」兜底。
+- **`src/components/billing/PaymentDialog.tsx`**（+9/-2）：新增 `reuseOrderId?: string` prop
+  （命名避开组件内 `orderId` state 冲突）；POST body 在 `reuseOrderId` 存在时透传 `orderId`；
+  状态重置 effect deps 加入 `reuseOrderId`。
+- **`src/components/billing/OrderHistory.tsx`**（+12/-2）：「立即支付」路径传
+  `reuseOrderId={payOrder.id}` 给 PaymentDialog；更新相关注释（去掉「创建新支付订单」措辞）。
+
+#### test — 契约测试（fd62cbc）
+
+- **`src/__tests__/api/payment-create-route.test.ts`**（+6 用例，22 总）：orderId 复用成功
+  （subject 以 order.plan=enterprise/year 为准「企业版 - 年付」、createOrder 不调用、
+  响应 orderId 为复用订单 id）/ payMethod=wechat 透传 / 订单不存在 400 / 非待支付 400 /
+  未知错误 500 兜底 / 不带 orderId 走 createOrder 既有行为。新增 `mockReusePendingOrder`，
+  `makeOrder` 扩展 plan/interval/payMethod 字段。
+- **`src/__tests__/components/OrderHistory.test.tsx`**（更新 1 用例）：PaymentDialog 桩暴露
+  `data-reuse-order-id`，「立即支付」用例断言 `reuseOrderId=order-1` 透传。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，56.6s）。
+- `npx prisma generate`（v6.19.3 客户端）。
+- `npx tsc --noEmit`：**0 错误**（全项目）。
+- `npx vitest run`（全量）：**5187 passed / 189 files**，无回归（上轮 5181/189，
+  本轮 +6 测试：payment-create-route orderId 分支 6 用例；OrderHistory 用例数不变仅断言增强）。
+
+环境备注：`pnpm-lock.yaml` 已在 .gitignore；`git status` 干净（无 node_modules/lockfile 入侵）。
+
+### 改动量
+
+6 文件，+221/-22：
+- `src/lib/billing/subscription.ts`（feat，+37：reusePendingOrder）
+- `src/app/api/payment/create/route.ts`（feat，+50/-17：orderId 分支）
+- `src/components/billing/PaymentDialog.tsx`（feat，+9/-2：reuseOrderId prop）
+- `src/components/billing/OrderHistory.tsx`（feat，+12/-2：透传 reuseOrderId）
+- `src/__tests__/api/payment-create-route.test.ts`（test，+122/-3：6 用例）
+- `src/__tests__/components/OrderHistory.test.tsx`（test，+13/-2：断言增强）
+
+2 commit（1 feat + 1 test），符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `ed8e243` feat(billing): 立即支付复用 pending 订单——reusePendingOrder + /api/payment/create orderId 分支
+- `fd62cbc` test(billing): 立即支付复用订单契约测试——payment/create orderId 分支 + OrderHistory reuseOrderId
+
+### 推送
+
+- origin (Gitee)：`bd983b6..fd62cbc` 推送成功（含本轮 2 commit + worklog）
+- github (GitHub)：`bd983b6..fd62cbc` 推送成功
+- 双端同步校验：`git rev-list --left-right --count origin/main...github/main` = `0 0`
+
+### 下一轮候选
+
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  依赖外部 SDK，优先级低。
+- **model-manager.ts 4 处模型 API 桩**（延续）：testModel/chat/complete/embeddings，
+  已有单测锁定 mock 边界，模块未被生产代码 import；收益较低。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与
+  auto-summary `db.file.update` 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口；验签/解密已真实实现）。
+- **reusePendingOrder 切换 payMethod 时的旧支付链接失效**（新增，低优先级）：当前切换
+  alipay→wechat 会更新订单 payMethod 字段，但若用户已打开旧 alipay 支付页，旧 tradeNo 仍
+  可能在第三方侧 pending。非阻塞（回调验签会拒绝未匹配的 tradeNo），可后续在切换时记录支付
+  方式变更审计日志。
