@@ -56,8 +56,10 @@ describe("share-session issue/verify roundtrip", () => {
   it("篡改签名 → 失败", () => {
     const token = issueShareSessionToken(SHARE_TOKEN, null);
     const [payloadB64, sigB64] = token.split(".");
-    // 翻转签名末尾字符（base64url 字符表内替换）
-    const tamperedSig = sigB64.slice(0, -1) + (sigB64.endsWith("A") ? "B" : "A");
+    // 翻转签名首字符（非末字符）：base64url 末字符仅 4 个有效位、低 2 位为填充位，
+    // A↔B 翻转是 no-op（解码字节不变），签名末字符恰好为 A 时"篡改"令牌仍通过验签 → 测试 flaky。
+    // 首字符 6 位全部映射到签名首字节的高 6 位，翻转必改变解码首字节。
+    const tamperedSig = (sigB64.startsWith("A") ? "B" : "A") + sigB64.slice(1);
     const tampered = `${payloadB64}.${tamperedSig}`;
     expect(verifyShareSessionToken(tampered, SHARE_TOKEN)).toBe(false);
   });

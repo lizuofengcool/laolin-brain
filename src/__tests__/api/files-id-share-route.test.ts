@@ -233,7 +233,12 @@ describe("/api/files/[id]/share GET + X-Share-Session（第一百七十五轮：
   it("密码保护分享 + 篡改的 X-Share-Session → 403 passwordRequired", async () => {
     mockFileShareFindUnique.mockResolvedValue(makeShare({ password: hashPwd("s3cret") }));
     const session = issueShareSessionToken(TOKEN, null);
-    const tampered = session.slice(0, -1) + (session.endsWith("A") ? "B" : "A");
+    // 翻转签名首字符（非末字符）：base64url 末字符仅 4 个有效位，A↔B 同组翻转是 no-op，
+    // 签名末字符恰好为 A 时"篡改"令牌仍通过验签 → 测试 flaky。首字符 6 位全部映射到
+    // 签名首字节高 6 位，翻转必改变解码首字节 → 签名恒不匹配。
+    const [payloadB64, sigB64] = session.split(".");
+    const tamperedSig = (sigB64.startsWith("A") ? "B" : "A") + sigB64.slice(1);
+    const tampered = `${payloadB64}.${tamperedSig}`;
 
     const { req, ctx } = makeGetRequest(TOKEN, "", { "X-Share-Session": tampered });
     const res = (await GET(req, ctx)) as MockRes;
