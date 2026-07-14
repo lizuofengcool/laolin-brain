@@ -18052,3 +18052,124 @@ sessionStorage 仅存本页自身 URL，无敏感信息，且读取即消费。
 - **BillingCenter 订阅/升级逻辑**（新增）：`src/components/billing/BillingCenter.tsx:27`
   有 `// TODO: 实现订阅/升级逻辑`，按钮回调为空；可接 `/api/billing/subscription` 等已有
   后端路由补前端调用（需先核后端契约）。
+
+## 2026-07-14 10:00 自动迭代
+
+第一百六十六轮。fetch origin/github 均无新提交（双端同处 `95e32fd`），工作树
+干净，无遗留未提交改动。
+
+优先级 1 复核——均已在历史轮次修复，本轮未触碰相关文件：
+- `tenant-db.ts` raw getter 已带调用堆栈软审计（`[TenantDb.raw] ... 越过租户隔离层
+  ... 调用方: ${caller}`）。
+- `alipay.ts:200` RSA2 验签已真实（`verifier.verify`，base64 解码后 RSA-SHA256）。
+- `sync-engine.ts:687` keep_both 分支已实现（注释保留了历史 bug 说明）。
+
+按 worklog 上一轮「下一轮候选」末位「BillingCenter 订阅/升级逻辑」开工——该候选
+为上轮新增，确定性最高（明确 TODO + 明确文件 + 明确触发路径）。复核后端契约时
+发现 `/api/billing/subscription` 仅有 GET（读），无写入端点；`/api/payment/create`
+拒绝 free 套餐（`免费套餐无需支付` → 400），故 free 降级无后端承接。本轮补齐。
+
+### 设计说明
+
+PlanComparison 触发 `onSelectPlan` 的两条路径：
+1. **free 套餐按钮**：直接回调，未走支付 → 需后端变更订阅。
+2. **付费套餐**：经 `PaymentDialog` → POST `/api/payment/create` → 支付回调
+   `handlePaymentCallback` 在服务端调 `createSubscription` 更新订阅 →
+   `PaymentDialog.onSuccess` 回调 `onSelectPlan`（此时订阅已更新）。
+
+故 `handleSelectPlan` 分两路：free 走 POST 变更订阅；付费仅刷新本地状态。
+另发现 `currentPlanId` 硬编码 `'free'` 的 bug——即使 pro/enterprise 用户也显示
+free 为「当前套餐」。改为 BillingDashboard 拉到订阅后经 `onPlanLoaded` 回传真实
+plan（避免父组件重复请求 `/api/billing/subscription`）。
+
+### feat — POST 端点 + BillingCenter 控制流 + plan 回传（+134/-7）
+
+- **`src/app/api/billing/subscription/route.ts`**（+73）：新增 POST handler。
+  - `authenticateRequest` 鉴权 → 取 `tenantId`。
+  - body 解析 `{ planId, interval }`，`planId` 必填且须为合法 PLANS key；
+    `interval` 缺省 `'month'`，仅接受 `'month'|'year'`。
+  - **仅允许 `planId === 'free'`**（无需支付的降级）；付费套餐返回 400 +
+    `code: 'PAYMENT_REQUIRED'` + 提示走支付流程。
+  - 调 `createSubscription(tenantId, 'free', interval)`：取消当前活跃订阅 →
+    创建新 free 订阅 → `updateTenantQuota` 同步租户配额。
+  - 返回 `{ success, subscription: { id, plan, status, interval, ... } }`。
+- **`src/components/billing/BillingCenter.tsx`**（+54/-7）：
+  - 新增 `useCallback` 包裹 `handlePlanLoaded`；`toast` from `@/hooks/use-toast`。
+  - `handleSelectPlan`：free → POST + 成功 toast `已切换到免费版` + `setCurrentPlanId('free')`
+    + 切回 overview；POST 失败（`!res.ok || !data.success`）→ destructive toast
+    带 `data.error` + 留在 plans；网络异常 catch → destructive toast `网络错误，请稍后重试`。
+    付费 → `setCurrentPlanId(planId)` + 成功 toast `套餐升级成功` + 切回 overview（不发 POST）。
+  - `BillingDashboard` 新增 `onPlanLoaded` prop 透传。
+- **`src/components/billing/BillingDashboard.tsx`**（+6/-1）：
+  - props 新增 `onPlanLoaded?: (plan: string) => void`。
+  - `fetchSubscription` 拿到 `data.subscription.plan` 后调用 `onPlanLoaded?.()`
+    （防御：缺字段回退 `'free'`）。
+
+无安全影响：POST 端点经 `authenticateRequest` 鉴权 + 仅限 free 降级（不可绕过支付
+升级到付费）；`createSubscription` 取消旧订阅 + 更新租户配额为 free 配额，无越权。
+
+### test — BillingCenter 控制流契约测试（+262）
+
+- **`src/__tests__/components/BillingCenter.test.tsx`**（6 用例）：
+  - **onPlanLoaded 回传驱动 currentPlanId**：load-pro → 切 plans → PlanComparison
+    桩显示 `current-plan='pro'`（覆盖历史硬编码 bug）。
+  - **free 套餐 POST 成功**：断言 fetch 入参 `{method:'POST', body: JSON.stringify({planId:'free',interval:'month'})}`；
+    toast title `已切换到免费版`；切回 overview（dashboard 桩可见、plans 桩卸载）。
+  - **付费套餐不发 POST**：`mockFetch.mockClear()` 后断言 `not.toHaveBeenCalled()`；
+    toast title `套餐升级成功`；切回 overview。
+  - **free POST 400 失败**：返回 `{error:'余额异常'}` → destructive toast 带 description
+    + 留在 plans 标签。
+  - **free 网络异常**：`mockRejectedValue` → destructive toast `网络错误，请稍后重试`
+    + 留在 plans 标签。
+  - **标签导航**：go-orders → order-history 桩可见 + dashboard 桩卸载；go-back → 回 overview。
+  - 子组件 BillingDashboard/PlanComparison/OrderHistory 经 `vi.mock` 桩化，暴露
+    回调触发按钮；`@/hooks/use-toast` 的 `toast` 经 `vi.hoisted` + spy 断言。
+  - Radix Tabs 默认卸载非激活 TabsContent，故通过 stub testid 的可见性判断当前 tab。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，51.3s）。
+- `npx prisma generate`（v6.19.3 客户端，build 脚本被 pnpm 忽略需手动生成）。
+- `npx tsc --noEmit`：**0 错误**（全项目）。
+- `npx vitest run src/__tests__/components`：**72 passed**（含本轮 6 新增；既有 66 全绿）。
+- `npx vitest run`（全量）：**5152 passed / 186 files**，无回归。
+
+环境备注：`pnpm-lock.yaml` 已在 .gitignore；`git status` 干净。
+
+### 改动量
+
+4 文件，+396/-7：
+- `src/app/api/billing/subscription/route.ts`（feat，+73/-1：POST handler）
+- `src/components/billing/BillingCenter.tsx`（feat，+54/-7：handleSelectPlan + onPlanLoaded）
+- `src/components/billing/BillingDashboard.tsx`（feat，+6/-1：onPlanLoaded prop）
+- `src/__tests__/components/BillingCenter.test.tsx`（test，+262：6 用例）
+
+2 commit（1 feat + 1 test），符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `a6af3ad` feat(billing): BillingCenter 订阅/升级逻辑——POST /api/billing/subscription + currentPlanId 回传
+- `1593a1e` test(billing): 新增 BillingCenter 订阅/升级控制流契约测试
+
+### 推送
+
+- origin (Gitee)：`95e32fd..1593a1e` 推送成功（含本轮 2 commit）
+- github (GitHub)：`95e32fd..1593a1e` 推送成功
+- 双端同步校验：`git rev-list --left-right --count origin/main...github/main` = `0 0`，
+  三端（local/origin/github）均指向 `1593a1e`
+
+### 下一轮候选
+
+- **OrderHistory 组件**（新增）：`src/components/billing/OrderHistory.tsx` 未审，本轮因
+  桩化未触及；可补加载态/空态/分页/错误处理审计，必要时补单测。
+- **BillingDashboard「管理订阅」按钮**（新增）：`BillingDashboard.tsx:226` 的「管理订阅」
+  按钮无 onClick（仅 `subscription.plan !== 'free'` 时显示）；可接取消订阅
+  `cancelSubscription`（lib 已有）+ 新增 POST `/api/billing/subscription` cancel 端点。
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  依赖外部 SDK，优先级低。
+- **model-manager.ts 4 处模型 API 桩**（延续）：testModel/chat/complete/embeddings，
+  已有单测锁定 mock 边界，模块未被生产代码 import；收益较低。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与
+  auto-summary `db.file.update` 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口；验签/解密已真实实现）。
