@@ -18514,3 +18514,103 @@ OrderHistory「立即支付」原本复用 PaymentDialog 走 /api/payment/create
   alipay→wechat 会更新订单 payMethod 字段，但若用户已打开旧 alipay 支付页，旧 tradeNo 仍
   可能在第三方侧 pending。非阻塞（回调验签会拒绝未匹配的 tradeNo），可后续在切换时记录支付
   方式变更审计日志。
+
+## 2026-07-14 14:00 自动迭代
+
+### 状态评估
+
+- fetch origin/main + github/main：三端（local / origin / github）均停在 `ef4ded6`，
+  无远端更新，无需 rebase。工作树干净，无遗留未提交改动。
+- 优先级 1 已知问题复核（任务清单逐项 grep 确认当前实现）：
+  · tenant-db.ts raw 后门 → 已加 `get raw()` getter 软审计（caller 堆栈日志），已解决。
+  · alipay/wechat RSA2 验签「非空即通过」 → 已改为 fail-closed，缺字段/未配密钥直接拒绝，
+    回调走真实 RSA-SHA256 / V3 签名验证；mock 链接会被验签拒绝。已解决（真实 SDK 下单/查询
+    仍缺，属功能完整性缺口，依赖外部 SDK）。
+  · files/route.ts 绕过 TenantDb → 去重已走 createTenantDb；剩余 raw SQL 聚合（size 统计）
+    带 tenantId 过滤、无越权，低优先级延续。
+  · sync-engine keep_both 直接覆盖 bug → 已修：本地文件重命名为「[冲突副本]」+ 云端版本以
+    新 id create，两者并存。已解决。
+  · api-auth.test.ts 与实现不符 → 测试已对齐 4 字段（userId/email/tenantId/role）/ async /
+    读 tenantUser，与 api-auth.ts 实现一致。已解决。
+  → 优先级 1 全部清零，转向 worklog 下一轮候选。
+
+### 本次开发：reusePendingOrder 切换 payMethod 记审计日志（优先级 2，上轮下一轮候选 #5）
+
+OrderHistory「立即支付」复用 pending 订单时，用户可在 alipay↔wechat 间切换支付方式。
+切换会刷新订单 payMethod 字段，但用户已打开的旧支付页/tradeNo 仍可能在第三方侧 pending
+（回调验签会拒绝未匹配 tradeNo，非阻塞）。本次在切换成功后落审计日志，留痕迹便于事后排查
+重复支付疑议。
+
+#### feat — 切换成功后 logger.audit（6bd69f0）
+
+- **`src/lib/billing/subscription.ts`**（+16/-1）：
+  · 新增 `import { logger } from "@/lib/logging"`。
+  · `reusePendingOrder` 的 payMethod 切换分支：原先 `return db.order.update(...)` 直接返回；
+    改为先 `await db.order.update` 拿 updated，再 `logger.audit("支付方式切换", {...})` 记
+    `{tenantId, orderId, orderNo, previousPayMethod, newPayMethod, amount}`，最后 return updated。
+  · 语义：仅记**成功切换**（update 抛错由调用方 /api/payment/create 的 catch 兜底，不在此记审计，
+    避免记录未生效的切换）。payMethod 不变 / 订单不存在 / 非待支付三分支均不触发审计。
+  · amount 取 `order.amount`（Prisma.Decimal，decimal.js toJSON 序列化为字符串，logger 内
+    JSON.stringify 安全）。
+
+#### test — reusePendingOrder 直接单元测试（5b96020）
+
+- **`src/__tests__/lib/billing-subscription-reuse.test.ts`**（新增，+152，6 用例）：
+  reusePendingOrder 此前仅经 payment-create-route 路由级 mock 间接覆盖（reusePendingOrder
+  被整体 mock，真实实现未执行），无直接测试。新增 6 用例锁定控制流：
+  1. 订单不存在（findFirst null）→ 抛「订单不存在」，不 update、不审计
+  2. 非待支付（status='paid'）→ 抛「仅待支付订单可复用」，不 update、不审计
+  3. alipay→wechat 切换 → update 刷新 payMethod + logger.audit 字段精确断言
+     （tenantId/orderId/orderNo/previousPayMethod/newPayMethod/amount 全匹配）
+  4. wechat→alipay 切换 → 审计 previousPayMethod/newPayMethod 方向正确
+  5. payMethod 不变 → 不 update、不审计，原样返回 order（`toBe` 引用相等）
+  6. findFirst 按 `{id, tenantId}` 定位（跨租户 orderId 不命中）
+  Mock 策略：`vi.mock('@/lib/db')` 隔离 Prisma；`vi.spyOn(logger, 'audit')` 拦截审计调用
+  断言字段（logger 为 @/lib/logging 单例，subscription.ts 与测试共享同一实例，spy 生效）；
+  `afterEach vi.restoreAllMocks` 防泄漏。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，65.5s）。
+- `npx prisma generate`（v6.19.3 客户端）。
+- `npx tsc --noEmit`：**0 错误**（全项目，含 ReturnType<typeof vi.spyOn> 类型推断）。
+- `npx vitest run`（全量）：**5193 passed / 190 files**，无回归（上轮 5187/189，
+  本轮 +6 测试 / +1 文件：billing-subscription-reuse 6 用例）。
+- 定向回归：`vitest run billing-subscription-reuse payment-create-route OrderHistory`
+  = 35 passed（reusePendingOrder 路由 mock 未受影响、OrderHistory 透传断言未受影响）。
+
+环境备注：`pnpm-lock.yaml` 与 `node_modules` 均在 .gitignore；`git status` 干净（无入侵）。
+
+### 改动量
+
+2 文件，+168/-1：
+- `src/lib/billing/subscription.ts`（feat，+16/-1：logger.audit 切换审计）
+- `src/__tests__/lib/billing-subscription-reuse.test.ts`（test，+152：6 用例直接单元测试）
+
+2 commit（1 feat + 1 test），符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `6bd69f0` feat(billing): reusePendingOrder 切换 payMethod 记审计日志
+- `5b96020` test(billing): reusePendingOrder 单元测试——payMethod 切换审计断言
+
+### 推送
+
+- origin (Gitee)：`ef4ded6..5b96020`（待推送，含本轮 2 commit + worklog）
+- github (GitHub)：`ef4ded6..5b96020`（待推送）
+- 双端同步校验：`git rev-list --left-right --count origin/main...github/main` = `0 0`（推送后）
+
+### 下一轮候选
+
+- **document-qna AI 模型调用桩**（延续，低优先级）：askQuestion 的 generateMockAnswer 仍为模拟，
+  依赖外部模型 SDK，优先级低。
+- **model-manager.ts 4 处模型 API 桩**（延续，低优先级）：testModel/chat/complete/embeddings，
+  已有单测锁定 mock 边界，模块未被生产代码 import；收益较低。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与 auto-summary
+  db.file.update 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口；验签/解密已真实实现）。
+- **reusePendingOrder 切换审计落库**（新增，低优先级）：当前审计走 logger.audit（内存 +
+  console），未持久化到 ActivityLog 表。若需可查询的审计 trail，可后续在切换时写一条
+  ActivityLog（resourceType='order'、action='pay_method_switch'、details=前后支付方式 JSON），
+  但会增加支付路径一次 DB 写，需权衡。
