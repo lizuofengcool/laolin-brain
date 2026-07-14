@@ -5,10 +5,22 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious } from '@/components/ui/pagination';
 import { Eye, RefreshCw, FileText } from 'lucide-react';
+import { toast } from '@/hooks/use-toast';
+import { PaymentDialog } from './PaymentDialog';
 
 interface Order {
   id: string;
@@ -36,6 +48,14 @@ export function OrderHistory({ onBack }: OrderHistoryProps) {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [detailDialogOpen, setDetailDialogOpen] = useState(false);
+  // 取消订单确认弹窗 + 提交中状态。仅 pending 订单显示「取消订单」按钮，
+  // 点击后弹 AlertDialog 二次确认 → POST /api/billing/orders/:id/cancel。
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  // 立即支付：复用 PaymentDialog（创建新支付订单）。点击后关闭详情弹窗，
+  // 以选中订单的 plan/interval/amount 打开 PaymentDialog。
+  const [payDialogOpen, setPayDialogOpen] = useState(false);
+  const [payOrder, setPayOrder] = useState<Order | null>(null);
 
   useEffect(() => {
     fetchOrders();
@@ -73,6 +93,7 @@ export function OrderHistory({ onBack }: OrderHistoryProps) {
       paid: 'bg-green-100 text-green-800',
       failed: 'bg-red-100 text-red-800',
       refunded: 'bg-gray-100 text-gray-800',
+      cancelled: 'bg-gray-100 text-gray-800',
     };
     return variants[status] || 'bg-gray-100 text-gray-800';
   };
@@ -83,6 +104,7 @@ export function OrderHistory({ onBack }: OrderHistoryProps) {
       paid: '已支付',
       failed: '支付失败',
       refunded: '已退款',
+      cancelled: '已取消',
     };
     return texts[status] || status;
   };
@@ -120,6 +142,51 @@ export function OrderHistory({ onBack }: OrderHistoryProps) {
   const viewOrderDetail = (order: Order) => {
     setSelectedOrder(order);
     setDetailDialogOpen(true);
+  };
+
+  // 立即支付：关闭详情弹窗，以选中订单的 plan/interval/amount 打开 PaymentDialog。
+  // PaymentDialog 走 /api/payment/create 创建新支付订单（与套餐升级同一链路）。
+  const handlePayNow = (order: Order) => {
+    setPayOrder(order);
+    setDetailDialogOpen(false);
+    setPayDialogOpen(true);
+  };
+
+  // 取消订单：仅 pending 订单可取消。服务端 cancelOrder 按 id+tenantId 定位，
+  // 跨租户 orderId 不会命中 → 返回 400「订单不存在」。
+  const handleCancelOrder = async () => {
+    if (!selectedOrder) return;
+    setCancelling(true);
+    try {
+      const res = await fetch(`/api/billing/orders/${selectedOrder.id}/cancel`, {
+        method: 'POST',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        toast({
+          title: '取消订单失败',
+          description: data.error || '请稍后重试',
+          variant: 'destructive',
+        });
+        return;
+      }
+      toast({
+        title: '订单已取消',
+        description: `订单 ${selectedOrder.orderNo} 已取消。`,
+      });
+      setCancelDialogOpen(false);
+      setDetailDialogOpen(false);
+      await fetchOrders();
+    } catch (error) {
+      console.error('取消订单失败:', error);
+      toast({
+        title: '取消订单失败',
+        description: '网络错误，请稍后重试',
+        variant: 'destructive',
+      });
+    } finally {
+      setCancelling(false);
+    }
   };
 
   if (loading && orders.length === 0) {
@@ -343,14 +410,60 @@ export function OrderHistory({ onBack }: OrderHistoryProps) {
               {/* 操作按钮 */}
               {selectedOrder.status === 'pending' && (
                 <div className="flex gap-3">
-                  <Button className="flex-1">立即支付</Button>
-                  <Button variant="outline" className="flex-1">取消订单</Button>
+                  <Button className="flex-1" onClick={() => handlePayNow(selectedOrder)}>立即支付</Button>
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => setCancelDialogOpen(true)}
+                    disabled={cancelling}
+                  >
+                    取消订单
+                  </Button>
                 </div>
               )}
             </div>
           )}
         </DialogContent>
       </Dialog>
+
+      {/* 取消订单确认弹窗 */}
+      <AlertDialog open={cancelDialogOpen} onOpenChange={(open) => {
+        if (!cancelling) setCancelDialogOpen(open);
+      }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认取消订单？</AlertDialogTitle>
+            <AlertDialogDescription>
+              订单 {selectedOrder?.orderNo} 取消后无法恢复，如需购买请重新下单。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={cancelling}>再想想</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleCancelOrder}
+              disabled={cancelling}
+            >
+              {cancelling ? '处理中…' : '确认取消'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* 立即支付：复用 PaymentDialog（创建新支付订单） */}
+      {payOrder && (
+        <PaymentDialog
+          open={payDialogOpen}
+          onOpenChange={(open) => setPayDialogOpen(open)}
+          planId={payOrder.plan}
+          planName={getPlanText(payOrder.plan)}
+          interval={payOrder.interval as 'month' | 'year'}
+          amount={payOrder.amount}
+          onSuccess={() => {
+            // 支付成功后刷新订单列表（新订单经回调变 paid 后会出现在列表中）
+            fetchOrders();
+          }}
+        />
+      )}
     </div>
   );
 }

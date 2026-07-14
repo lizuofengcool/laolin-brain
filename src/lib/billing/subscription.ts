@@ -324,6 +324,34 @@ export async function getOrders(tenantId: string, limit: number = 20) {
   });
 }
 
+/**
+ * 取消待支付订单
+ *
+ * 仅 status==='pending' 的订单可取消（已支付订单需走退款流程）。
+ * 按 id + tenantId 定位，跨租户 orderId 不会命中 → 抛"订单不存在"。
+ * 取消后置 status='cancelled'，不删除记录以便审计。
+ */
+export async function cancelOrder(tenantId: string, orderId: string) {
+  const order = await db.order.findFirst({
+    where: { id: orderId, tenantId },
+  });
+
+  if (!order) {
+    throw new Error('订单不存在');
+  }
+
+  if (order.status !== 'pending') {
+    throw new Error('仅待支付订单可取消');
+  }
+
+  const updated = await db.order.update({
+    where: { id: order.id },
+    data: { status: 'cancelled' },
+  });
+
+  return updated;
+}
+
 // ==================== 配额检查 ====================
 
 /**
