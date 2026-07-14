@@ -27,6 +27,10 @@ import {
  *   2. 已登录：GET /api/invitations/accept?token=xxx 预览邀请信息（团队名/角色/状态）。
  *   3. 预览通过（pending + 邮箱匹配）：展示"接受邀请"按钮 → POST 接受 → 成功页。
  *
+ * 回跳记忆：当用户无法在本页立即接受（未登录 / 邮箱不匹配需切换账号）时，把当前
+ * 邀请 URL 暂存到 sessionStorage（invite_redirect）；用户离开本页到根路径登录后，
+ * LoginForm 读取并消费该值，router.push 回 /invite 继续接受流程。
+ *
  * 安全：token 为 randomUUID，邮箱不匹配时禁用接受按钮并提示切换账号。
  */
 
@@ -122,6 +126,27 @@ export default function InvitePage() {
       setPhase("unauth");
     }
   }, [isAuthenticated, token, fetchPreview]);
+
+  // 邀请回跳记忆：用户无法在本页立即接受邀请时，把当前邀请 URL 暂存到
+  // sessionStorage（key=invite_redirect），供 LoginForm 登录成功后回跳。
+  //   - 无有效 token / 已接受：清理，避免后续登录误跳到无效或已接受的邀请
+  //   - 未登录（可能离开本页去登录）或邮箱不匹配（需切换账号）：记忆回跳地址
+  //   - 已登录且邮箱匹配（可立即接受）：清理，无需回跳
+  // 说明：未登录时本页内嵌 LoginForm 可原地登录，回跳目标即当前页会被 LoginForm
+  // 跳过；此记忆主要覆盖「离开 /invite 到根路径登录」与「切换账号」两类场景。
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!token || phase === "accepted") {
+      sessionStorage.removeItem("invite_redirect");
+      return;
+    }
+    const blocked = !isAuthenticated || (preview?.kind === "ok" && !preview.emailMatches);
+    if (blocked) {
+      sessionStorage.setItem("invite_redirect", `/invite?token=${token}`);
+    } else {
+      sessionStorage.removeItem("invite_redirect");
+    }
+  }, [token, phase, preview, isAuthenticated]);
 
   // 3) 接受邀请
   const handleAccept = async () => {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,6 +24,7 @@ export function LoginForm() {
   const [password, setPassword] = useState("");
 
   const { login } = useAppStore();
+  const router = useRouter();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,6 +49,21 @@ export function LoginForm() {
       }
 
       login(data.user, data.token);
+
+      // 邀请回跳：invite 页在用户「未登录」或「邮箱不匹配需切换账号」时把当前邀请
+      // URL 暂存到 sessionStorage（key=invite_redirect）。登录成功后读取即消费
+      // （removeItem），避免后续登录被回跳到已过期/已接受的邀请；若回跳目标即当前
+      // 页（如在 /invite 内嵌登录），跳过导航，交由原地 isAuthenticated 变化驱动预览。
+      if (typeof window !== "undefined") {
+        const redirect = sessionStorage.getItem("invite_redirect");
+        if (redirect) {
+          sessionStorage.removeItem("invite_redirect");
+          const current = window.location.pathname + window.location.search;
+          if (redirect !== current) {
+            router.push(redirect);
+          }
+        }
+      }
     } catch {
       setError("网络错误，请重试");
     } finally {
