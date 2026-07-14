@@ -4,6 +4,7 @@
  */
 
 import { db } from "@/lib/db";
+import { logger } from "@/lib/logging";
 
 // ==================== 套餐定义 ====================
 
@@ -352,10 +353,24 @@ export async function reusePendingOrder(
 
   // 切换支付方式时更新订单记录（未支付前可在 alipay/wechat 间切换）
   if (order.payMethod !== payMethod) {
-    return db.order.update({
+    const previousPayMethod = order.payMethod;
+    const updated = await db.order.update({
       where: { id: order.id },
       data: { payMethod },
     });
+    // 记录支付方式变更审计日志：用户在待支付订单上切换 alipay↔wechat 时，
+    // 旧支付页/tradeNo 仍可能在第三方侧 pending（回调验签会拒绝未匹配的 tradeNo，
+    // 非阻塞），留审计痕迹便于事后排查重复支付疑议。仅记成功切换，更新失败由
+    // 调用方 catch 兜底，不在此记审计。
+    logger.audit("支付方式切换", {
+      tenantId,
+      orderId: order.id,
+      orderNo: order.orderNo,
+      previousPayMethod,
+      newPayMethod: payMethod,
+      amount: order.amount,
+    });
+    return updated;
   }
 
   return order;
