@@ -19983,3 +19983,83 @@ churn 与本轮「不铺大摊子」原则相悖，留作后续候选）。
   files/route.ts POST 事务内 tx 与 auto-summary 直连（无越权、churn 大）/ 支付 SDK 真接入
   （依赖 alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 /
   share session Redis 持久化。
+
+## 2026-07-15 23:00 自动迭代
+
+### 任务评估
+
+fetch origin/main + github/main 后三者同处 `fc10ecf`，工作树干净、无未推送 commit、
+无远端更新需 rebase。优先级 1 五项本轮 spot-check 复核仍全部闭环（tenant-db raw
+软审计 / alipay+wechat RSA2 真实验签 / files 等路由 TenantDb 收口 / sync-engine
+keep_both 两端并存 / api-auth.test.ts 匹配实现），与上轮一致，无回归。
+
+本轮从「下一轮候选」选取**中优先级功能完整性缺口**：**report CSV 行数据接入**
+（上轮候选 #2）。`buildTableCsv` 此前仅导出列标题表头、无行数据——导出的 CSV 实际
+无业务内容，是真实的用户可见功能缺口（优先级 2「补未完成功能」）。自包含、无外部
+依赖、向后兼容，契合本轮 1-3 commit 规模。
+
+### 改动
+
+**问题**（`src/lib/reports/report-manager.ts` buildTableCsv）：CSV 导出只产出表头行
+（`columns.map(col => escapeCsvCell(col.title))`），完全不输出任何数据行。即便补齐
+列定义也无行数据来源——导出的 CSV 对用户而言是「空表」。
+
+**修复**：
+1. `src/lib/reports/types.ts` `TableConfig` 新增可选 `rows?: Record<string, unknown>[]`
+   ——行数据与列定义同处一对象，CSV 导出与未来表格渲染共用同一来源。可选字段保证
+   向后兼容。
+2. `src/lib/reports/report-manager.ts` `buildTableCsv` 在表头行后追加数据行：每行按
+   列 `dataIndex` 取值（`row[col.dataIndex]`），列定义 `format` 优先于原始值（与
+   表格渲染契约一致）；缺失 `dataIndex` 时单元格留空（`escapeCsvCell(undefined)`
+   返回空串）；单元格复用现有 `escapeCsvCell` 走 RFC 4180 转义，与表头转义同源。
+   `rows` 未提供或为空数组时不追加任何行（历史行为不变）。
+
+未抽取 `escapeCsvCell` 为共享 util（上轮已记为低优先级 refactor 候选，churn 与本轮
+「不铺大摊子」原则相悖，维持 defer）。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --registry=https://registry.npmmirror.com`（沙箱无
+  node_modules，33.8s）。
+- `npx prisma generate`（v6.19.3 客户端，tsc 前置依赖）。
+- `npx tsc --noEmit`：**0 错误**。
+- `npx vitest run src/__tests__/lib/reports`：**54 passed / 1 file**（原 48 用例零改动
+  全绿；新增 6 例覆盖：基本行输出 / format 优先 / 单元格 RFC 4180 转义 / 行缺失
+  dataIndex 留空 / rows 为空数组仅表头 / 多 table widget 块间空行分隔）。
+
+环境备注：`pnpm-lock.yaml` 与 `node_modules` 均在 .gitignore；本轮改动 3 文件。
+
+### 改动量
+
+3 文件，+228/-1：
+- `src/lib/reports/types.ts`（+3，`TableConfig.rows` 可选字段 + 注释）
+- `src/lib/reports/report-manager.ts`（+21/-1，`buildTableCsv` 行数据追加 + 注释更新）
+- `src/__tests__/lib/reports/report-manager.test.ts`（+204，6 新增用例 + 头注释补充）
+
+1 commit（feat(reports)，单一关切「CSV 导出接入行数据」，类型 + 实现 + 测试同属一个特性）。
+
+### Commit
+
+- `7ee00e8` feat(reports): CSV 导出接入行数据 TableConfig.rows
+
+### 推送
+
+- origin (Gitee)：`fc10ecf..7ee00e8` ✅
+- github (GitHub)：`fc10ecf..7ee00e8` ✅（push protection 未拦截，本次无 sk_ 前缀占位密钥）
+
+### 下一轮候选
+
+- **TableWidget 渲染层接入 rows**（新候选，中优先级，功能完整性）：本轮 CSV 导出已读
+  `TableConfig.rows`，但前端表格渲染组件尚未消费 rows（dataIndex 目前仅 CSV 用）。
+  可让 TableWidget 按 columns.dataIndex 从 rows 取值渲染，与 CSV 导出共享数据源，
+  消除「CSV 有数据 / 页面无数据」的不一致。需定位渲染组件并补 jsdom 测试。
+- **escapeCsvCell 共享 util 抽取**（未变动，低优先级，refactor）：report-manager.ts
+  escapeCsvCell 与 visualization/utils.ts escapeCell 逻辑重复，可抽 src/lib/csv-utils.ts
+  统一。churn 小（2 文件 import），收益单一来源。
+- **AiProviderConfig.config 字段加密**（未变动，低优先级）：死字段，加密前需先接线
+  POST 接受 config → 落库 → chat 读取 temperature/maxTokens/topP 传 provider，较大 feature。
+- 延续项（低优先级，未变动）：document-qna AI 桩 / model-manager 4 处模型 API 桩
+  （依赖外部 SDK）/ files/route.ts POST 事务内 tx 与 auto-summary 直连（无越权、churn 大）/
+  支付 SDK 真接入（依赖 alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流
+  Redis 持久化 / share session Redis 持久化 / backups 路由经 TenantDb 收口（backup 表
+  尚无 TenantDb 访问器，且 findFirst 已带 tenantId 无越权，churn 大）。
