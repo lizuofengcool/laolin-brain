@@ -19188,4 +19188,107 @@ UX bug，并连带修复密码保护分享下载始终 403 的预存缺陷。
   短期过期 + sessionStorage；多实例部署或需要「分享者主动吊销已验证会话」时，可引入 Redis
   存有效 session id。单实例个人/小团队场景下当前方案足够。
 
+---
+
+## 2026-07-14 23:00 自动迭代（第一百七十六轮）
+
+### 评估
+
+- fetch origin/github main：双端均与本地 main(0bf9395) 一致，无远端新提交，无未提交遗留。
+- 复核任务清单"优先级 1 剩余项"全部已在历史轮次闭环：
+  · tenant-db.ts raw/transaction 已加调用堆栈软审计 ✓
+  · alipay/wechat 验签已真实实现（RSA2 / V3 签名，缺字段拒绝，已配真实密钥时显式失败不再回退 mock）✓
+  · files/route.ts GET + POST dedup 已走 TenantDb（仅余事务内 tx 与 fire-and-forget auto-summary 直连，
+    操作已租户校验记录、无越权，churn 大收益低）✓
+  · sync-engine.ts keep_both 已改为"重命名本地为[冲突副本]+云端版本新 id 落地"+ 前置跨租户守卫 ✓
+  · api-auth.test.ts 已对齐实现（4 字段/async/拒 query param/requirePlatformAdmin fail-closed）✓
+- worklog「下一轮候选」均为低优先级（外部 SDK 桩 / Redis 持久化 / backwards-compat 移除等）。
+- 本轮通过代码扫描发现 worklog **未记录的 HIGH 严重度安全+功能 bug**，转优先级 1 处理。
+
+### 本次开发
+
+#### 1. fix(migrations): initializeDefaultAdmin 改用 bcrypt 哈希密码并移除弱默认凭据
+
+**问题（worklog 未记录的新发现，HIGH）**：`src/lib/migrations/index.ts` 的 `initializeDefaultAdmin`
+- 明文存储密码（`password: adminPassword`，注释自承"实际应该加密"）。但登录路由 `/api/auth/login`
+  走 `verifyPassword` = `bcrypt.compare`，对明文存储的密码恒返回 false → **该默认管理员永远无法登录**
+  （功能损坏）；同时数据库泄露时凭据直接暴露（安全）。
+- 回退弱默认 `admin@example.com` / `admin123456`（源码公开、可猜）。虽仅 `INIT_DEFAULT_ADMIN=true` 时
+  才创建，但未显式配置 env 的部署会得到一个可猜且无法登录的"幽灵管理员"账号。
+
+**修复**：
+- `src/lib/migrations/index.ts`：引入 `hashPassword`（`@/lib/auth`，bcrypt），密码经哈希再落库；
+  `ADMIN_EMAIL`/`ADMIN_PASSWORD` 不再回退默认值——未配置时返回 `success=false` 跳过初始化
+  （ADMIN_EMAIL 顶部校验，ADMIN_PASSWORD 在创建分支校验，已存在管理员路径不需密码）。
+- `src/__tests__/lib/migrations.test.ts`：`vi.mock("@/lib/auth")` 提供 `hashPassword` 确定性返回，
+  锁定"密码经 hashPassword 后再落库"契约；新增 2 条 env 缺失用例（ADMIN_EMAIL 缺 → 不查库不建用户 /
+  ADMIN_PASSWORD 缺 → 不建用户）；"user.create 抛错"与 runAllMigrations `INIT_DEFAULT_ADMIN=true`
+  用例补设环境变量以走创建路径。runAllMigrations describe 的 afterEach 增补 ADMIN_EMAIL/ADMIN_PASSWORD
+  保存恢复防污染。
+
+#### 2. test(share): 修复 X-Share-Session 签名篡改用例 base64url 末位翻转 no-op flakiness
+
+**问题（全量测试偶发失败，本轮首次复现）**：`files-id-share-route.test.ts` 与 `share-session.test.ts`
+的"篡改签名 → 失败"用例翻转签名**末字符**模拟篡改。但 base64url 末字符仅 4 个有效位、低 2 位为填充位，
+`A`↔`B` 翻转解码字节不变（同组 no-op）。当 HMAC 签名末字符恰好为 `A` 时，"篡改"令牌仍通过验签 →
+用例期望 403 实得 200 → 全量测试偶发失败（约 1/64 概率，取决于 exp 时间戳决定的签名末字符）。
+本轮全量跑首次命中（share-route 用例失败，share-session 单测同轮侥幸未命中）。
+
+**修复**：改翻转签名**首字符**——首字符 6 位全部映射到签名首字节高 6 位，翻转必改变解码首字节，
+签名恒不匹配。两处（单测 + 集成测）同步修正，附注释说明不可回退末字符的原因。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，65.9s）。
+- `npx prisma generate`（v6.19.3 客户端）。
+- `npx tsc --noEmit`：**0 错误**。
+- `npx vitest run`（全量）：**5268 passed / 194 files**，0 失败（上轮 5266/192 → 本轮 +2 env 缺失用例，
+  且原 flaky 用例已稳健）。修复前全量跑出现 1 处 share-route flaky 失败，修复后复跑全绿。
+
+环境备注：`pnpm-lock.yaml` 与 `node_modules` 均在 .gitignore；本轮改动 4 文件。
+
+### 改动量
+
+4 文件，+95/-22：
+- `src/lib/migrations/index.ts`（+25/-6）
+- `src/__tests__/lib/migrations.test.ts`（+60/-13）
+- `src/__tests__/api/files-id-share-route.test.ts`（+6/-1）
+- `src/__tests__/lib/share-session.test.ts`（+4/-2）
+
+2 commit（fix + test 分离，按关注点切分，符合单轮 1-3 commit 约束）。
+
+### Commit
+
+- `181dd5c` fix(migrations): initializeDefaultAdmin 改用 bcrypt 哈希密码并移除弱默认凭据
+- `b12b699` test(share): 修复 X-Share-Session 签名篡改用例 base64url 末位翻转 no-op flakiness
+
+### 推送
+
+- origin (Gitee)：`0bf9395..b12b699`（待推送，含 2 commit + worklog docs commit）
+- github (GitHub)：`0bf9395..b12b699`（待推送）
+
+### 下一轮候选
+
+- **AI Provider API Key 明文落库**（新增，中优先级，安全）：`src/app/api/ai/providers/route.ts` POST
+  把 OpenAI 等第三方 API Key 明文写入 `AiProviderConfig.apiKey`（GET/POST 仅在响应里脱敏，落库为明文）。
+  DB 备份/泄露时所有租户 AI 凭据暴露。可复用 `lib/cloud-sync/config-crypto.ts` 的 AES-256-GCM 加密落库
+  （与 storageConfig 同范式），读取时 decryptConfig。对比 `api-keys/route.ts` 已用 sha256 hash。
+- **files/[id]/info 路径校验缺失 + 同步 I/O**（新增，中优先级，纵深防御）：`src/app/api/files/[id]/info/route.ts`
+  L106 直接 `fs.existsSync/readFileSync(file.filePath)` 无 `startsWith(uploadDir)` 守卫（download/preview/restore
+  均有），且同步 I/O 阻塞事件循环。`file.filePath` 虽服务端写入、非直接可利用，但与同模块不一致。
+- **path.startsWith 缺 path.sep 统一**（新增，低优先级，纵深防御）：download/route.ts L67/118 与
+  files/[id]/route.ts L168 用 `startsWith(uploadDir)`，preview/restore/thumbnail 已用
+  `startsWith(uploadDir + path.sep)`。前者在 `uploadDir=/app/upload` 时 `/app/upload-secret/x` 可误过。
+  file.filePath 服务端可控、非直接可利用，可批量统一。
+- **getTenantIdFromRequest 401 死代码**（新增，低优先级）：`lib/db/tenant-context.ts` 的
+  `getTenantIdFromRequest` 失败时 throw（不返回空），调用方 `if(!tenantId) return 401` 为死代码，
+  未认证请求实际落 catch 返回 500（泄漏原始错误语义）。integrations/plugins 路由受影响。
+  可改为返回 null 或调用方改 try/catch 返 401。
+- **email settings 跨租户污染 + 不持久化**（新增，中低优先级）：`api/email/settings/route.ts` 仅调
+  进程全局单例 `emailService.init()`，不落库；租户 A 配置 SMTP 覆盖租户 B，进程重启丢失。
+- 延续项（低优先级，未变动）：document-qna AI 桩 / model-manager 4 处模型 API 桩（均依赖外部 SDK，
+  收益低）/ files/route.ts POST 事务内 tx 与 auto-summary 直连（无越权、churn 大）/ 支付 SDK 真接入
+  （依赖 alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 /
+  download `?password=` 路径移除（前端已不用）/ share session Redis 持久化。
+
 
