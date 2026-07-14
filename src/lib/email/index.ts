@@ -410,6 +410,11 @@ export class EmailService {
     userId: string;
   }> = [];
   private isProcessing = false;
+  // 租户级 transporter 缓存：tenantId → { config, transporter }。
+  // 历史实现只有一个全局 transporter，租户 A 配置 SMTP 会覆盖租户 B 的投递（单例污染）。
+  // 现按 tenantId 各自缓存独立 transporter，配置变更时由 POST /api/email/settings 调
+  // invalidateTenant 清缓存，下次投递从 DB 重新加载并重建 transporter。
+  private tenantTransporters: Map<string, { config: EmailConfig; transporter: any }> = new Map();
 
   constructor() {
     // 加载默认模板
@@ -418,7 +423,7 @@ export class EmailService {
     });
   }
 
-  // 初始化邮件服务
+  // 初始化邮件服务（平台级 / env 配置；仅用于 tenantId 为空的平台投递，如监控告警）
   init(config: EmailConfig) {
     this.config = config;
     this.transporter = nodemailer.createTransport({
@@ -432,9 +437,17 @@ export class EmailService {
     });
   }
 
-  // 检查是否已配置
+  // 检查平台级单例是否已配置（env 初始化后为 true）
   isConfigured(): boolean {
     return this.config !== null && this.transporter !== null;
+  }
+
+  /**
+   * 清除指定租户的 transporter 缓存。配置更新后由路由调用，使下次投递重建 transporter。
+   * 不清空单例（平台级配置不受租户配置变更影响）。
+   */
+  invalidateTenant(tenantId: string): void {
+    if (tenantId) this.tenantTransporters.delete(tenantId);
   }
 
   // 获取模板列表
@@ -515,18 +528,13 @@ export class EmailService {
   // 处理邮件队列
   private async processQueue() {
     if (this.isProcessing || this.sendQueue.length === 0) return;
-    if (!this.isConfigured()) {
-      console.warn("Email service not configured, skipping queue");
-      this.sendQueue = [];
-      return;
-    }
 
     this.isProcessing = true;
 
     while (this.sendQueue.length > 0) {
       const email = this.sendQueue.shift()!;
       try {
-        await this.doSendEmail(email.to, email.templateId, email.variables);
+        await this.doSendEmail(email.to, email.templateId, email.variables, email.tenantId);
         console.log(`Email sent to ${email.to}`);
       } catch (error) {
         console.error(`Failed to send email to ${email.to}:`, error);
@@ -537,23 +545,65 @@ export class EmailService {
     this.isProcessing = false;
   }
 
+  /**
+   * 解析投递所需 transporter：
+   * - tenantId 非空 → 从 DB 读取该租户 SMTP 配置（命中缓存则复用），租户隔离；
+   *   延迟 import settings-store 避免 email 模块静态依赖 db（保持模板渲染等纯逻辑可独立测试）。
+   * - tenantId 空（平台级，如监控告警）→ 回退平台单例（env 初始化）。
+   * 解析失败（未配置 / 解密失败 / DB 故障）返回 null，调用方按"跳过"处理，不跨租户回退。
+   */
+  private async resolveTransporter(
+    tenantId: string
+  ): Promise<{ transporter: any; config: EmailConfig } | null> {
+    if (tenantId) {
+      const cached = this.tenantTransporters.get(tenantId);
+      if (cached) return cached;
+      try {
+        const { getEmailConfig } = await import("./settings-store");
+        const config = await getEmailConfig(tenantId);
+        if (!config) return null;
+        const transporter = nodemailer.createTransport({
+          host: config.host,
+          port: config.port,
+          secure: config.secure,
+          auth: { user: config.user, pass: config.pass },
+        });
+        const entry = { config, transporter };
+        this.tenantTransporters.set(tenantId, entry);
+        return entry;
+      } catch (error) {
+        console.error(`Failed to resolve email transporter for tenant ${tenantId}:`, error);
+        return null;
+      }
+    }
+    // 平台级：单例 transporter（env 初始化）
+    if (this.transporter && this.config) {
+      return { transporter: this.transporter, config: this.config };
+    }
+    return null;
+  }
+
   // 实际发送邮件
   private async doSendEmail(
     to: string,
     templateId: string,
-    variables: Record<string, string>
+    variables: Record<string, string>,
+    tenantId: string
   ): Promise<void> {
-    if (!this.transporter || !this.config) {
-      throw new Error("Email service not initialized");
+    const resolved = await this.resolveTransporter(tenantId);
+    if (!resolved) {
+      console.warn("Email service not configured, skipping queue");
+      return;
     }
+    const { transporter, config } = resolved;
 
     const rendered = this.renderTemplate(templateId, variables);
     if (!rendered) {
       throw new Error(`Template not found: ${templateId}`);
     }
 
-    await this.transporter.sendMail({
-      from: `"${this.config.fromName}" <${this.config.from}>`,
+    await transporter.sendMail({
+      from: `"${config.fromName}" <${config.from}>`,
       to,
       subject: rendered.subject,
       html: rendered.html,
@@ -571,7 +621,7 @@ export class EmailService {
       await this.doSendEmail(to, "welcome", {
         userName: "测试用户",
         appUrl: "https://example.com",
-      });
+      }, "");
       return true;
     } catch (error) {
       console.error("Failed to send test email:", error);

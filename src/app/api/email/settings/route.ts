@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
-import { emailService, initEmailServiceFromEnv } from "@/lib/email";
+import { emailService } from "@/lib/email";
+import { getEmailConfig, saveEmailConfig, maskEmailConfig } from "@/lib/email/settings-store";
 
 /**
  * 邮件设置API
- * GET /api/email/settings - 获取邮件设置
- * POST /api/email/settings - 更新邮件设置
- * POST /api/email/test - 发送测试邮件
+ * GET /api/email/settings - 获取邮件设置（按租户从 DB 读取，脱敏不含 pass）
+ * POST /api/email/settings - 更新邮件设置（加密落库到租户 Setting，不再污染全局单例）
  * GET /api/email/templates - 获取邮件模板列表
  * GET /api/email/templates/[id] - 获取模板详情
  */
@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
   const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId, tenantId, role } = auth;
+  const { tenantId, role } = auth;
 
   // 只有管理员和所有者可以管理邮件设置
   if (role !== "owner" && role !== "admin") {
@@ -28,21 +28,31 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // 从环境变量获取当前配置（不返回密码）
-    const settings = {
-      configured: emailService.isConfigured(),
-      host: process.env.SMTP_HOST || "",
-      port: parseInt(process.env.SMTP_PORT || "587", 10),
-      secure: process.env.SMTP_SECURE === "true",
-      user: process.env.SMTP_USER || "",
-      from: process.env.SMTP_FROM || process.env.SMTP_USER || "",
-      fromName: process.env.SMTP_FROM_NAME || "个人私有第二大脑",
-      // 注意：不返回密码
-    };
+    // 按租户从 DB 读取加密配置，解密后脱敏返回（不含 pass）
+    const tenantConfig = await getEmailConfig(tenantId);
+    if (tenantConfig) {
+      return NextResponse.json({
+        success: true,
+        data: maskEmailConfig(tenantConfig),
+      });
+    }
 
+    // 租户未配置时回退到环境变量（平台级 SMTP，只读），保持向后兼容
+    const envConfigured =
+      !!process.env.SMTP_HOST && !!process.env.SMTP_USER && !!process.env.SMTP_PASS;
     return NextResponse.json({
       success: true,
-      data: settings,
+      data: {
+        configured: envConfigured,
+        host: process.env.SMTP_HOST || "",
+        port: parseInt(process.env.SMTP_PORT || "587", 10),
+        secure: process.env.SMTP_SECURE === "true",
+        user: process.env.SMTP_USER || "",
+        from: process.env.SMTP_FROM || process.env.SMTP_USER || "",
+        fromName: process.env.SMTP_FROM_NAME || "个人私有第二大脑",
+        hasPass: envConfigured,
+        // 注意：不返回密码
+      },
     });
   } catch (error) {
     console.error("Failed to fetch email settings:", error);
@@ -80,28 +90,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 注意：实际生产环境中，应该将配置保存到数据库或环境变量
-    // 这里只是演示，实际需要根据部署方式来处理
-    // 可以保存到租户设置中
+    const config = {
+      host,
+      port: parseInt(port, 10),
+      secure: !!secure,
+      user,
+      pass,
+      from: from || user,
+      fromName: fromName || "个人私有第二大脑",
+    };
 
-    // 临时初始化邮件服务用于测试
-    try {
-      emailService.init({
-        host,
-        port: parseInt(port, 10),
-        secure: !!secure,
-        user,
-        pass,
-        from: from || user,
-        fromName: fromName || "个人私有第二大脑",
-      });
-    } catch (initError) {
-      console.error("Failed to init email service:", initError);
-      return NextResponse.json(
-        { error: "邮件服务配置失败，请检查SMTP设置" },
-        { status: 400 }
-      );
-    }
+    // 加密落库到该租户的 Setting（AES-256-GCM，pass 不在 DB 文件中裸露），
+    // 替代历史 emailService.init() 全局单例写法——避免租户 A 配置覆盖租户 B、
+    // 且进程重启后配置从 DB 恢复。
+    await saveEmailConfig(tenantId, config);
+
+    // 配置变更后清租户 transporter 缓存，下次投递从 DB 重建 transporter
+    emailService.invalidateTenant(tenantId);
 
     // 记录活动日志
     try {
@@ -121,15 +126,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       message: "邮件设置已更新",
-      data: {
-        configured: true,
-        host,
-        port: parseInt(port, 10),
-        secure: !!secure,
-        user,
-        from: from || user,
-        fromName: fromName || "个人私有第二大脑",
-      },
+      data: maskEmailConfig(config),
     });
   } catch (error) {
     console.error("Failed to update email settings:", error);
