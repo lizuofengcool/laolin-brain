@@ -1,11 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { BillingDashboard } from './BillingDashboard';
 import { PlanComparison } from './PlanComparison';
 import { OrderHistory } from './OrderHistory';
 import { Crown, CreditCard, FileText } from 'lucide-react';
+import { toast } from '@/hooks/use-toast';
 
 interface BillingCenterProps {
   defaultTab?: string;
@@ -13,6 +14,8 @@ interface BillingCenterProps {
 
 export function BillingCenter({ defaultTab = 'overview' }: BillingCenterProps) {
   const [activeTab, setActiveTab] = useState(defaultTab);
+  // currentPlanId 初始为 'free'，BillingDashboard 挂载后通过 onPlanLoaded 回调
+  // 把真实订阅套餐回传上来（避免本组件再发一次 /api/billing/subscription 请求）。
   const [currentPlanId, setCurrentPlanId] = useState<string>('free');
 
   const handleUpgradeClick = () => {
@@ -23,10 +26,57 @@ export function BillingCenter({ defaultTab = 'overview' }: BillingCenterProps) {
     setActiveTab('orders');
   };
 
-  const handleSelectPlan = (planId: string, interval: 'month' | 'year') => {
-    // TODO: 实现订阅/升级逻辑
-    console.log('Select plan:', planId, interval);
-    // 这里可以跳转到支付页面或者打开支付对话框
+  // BillingDashboard 拉到订阅信息后回传真实 plan，驱动 PlanComparison 的「当前套餐」高亮
+  const handlePlanLoaded = useCallback((plan: string) => {
+    setCurrentPlanId(plan);
+  }, []);
+
+  // handleSelectPlan 由 PlanComparison 触发，分两种场景：
+  //   1. free 套餐按钮：未走支付，需 POST /api/billing/subscription 直接降级
+  //   2. 付费套餐：PaymentDialog.onSuccess 已确认支付成功，订阅经支付回调
+  //      handlePaymentCallback → createSubscription 在服务端更新完毕，
+  //      客户端只需刷新本地状态 + 提示用户。
+  const handleSelectPlan = async (planId: string, interval: 'month' | 'year') => {
+    if (planId === 'free') {
+      try {
+        const res = await fetch('/api/billing/subscription', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ planId, interval }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) {
+          toast({
+            title: '切换套餐失败',
+            description: data.error || '请稍后重试',
+            variant: 'destructive',
+          });
+          return;
+        }
+        setCurrentPlanId('free');
+        toast({
+          title: '已切换到免费版',
+          description: '订阅已更新，将在当前计费周期结束后生效。',
+        });
+        setActiveTab('overview');
+      } catch (error) {
+        console.error('切换套餐失败:', error);
+        toast({
+          title: '切换套餐失败',
+          description: '网络错误，请稍后重试',
+          variant: 'destructive',
+        });
+      }
+      return;
+    }
+
+    // 付费套餐：支付回调已更新服务端订阅
+    setCurrentPlanId(planId);
+    toast({
+      title: '套餐升级成功',
+      description: '您的订阅已更新，感谢您的支持！',
+    });
+    setActiveTab('overview');
   };
 
   const handleBackToOverview = () => {
@@ -59,6 +109,7 @@ export function BillingCenter({ defaultTab = 'overview' }: BillingCenterProps) {
         <BillingDashboard
           onUpgradeClick={handleUpgradeClick}
           onOrdersClick={handleOrdersClick}
+          onPlanLoaded={handlePlanLoaded}
         />
       </TabsContent>
 

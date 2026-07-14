@@ -38,9 +38,12 @@ interface TrialInfo {
 interface BillingDashboardProps {
   onUpgradeClick?: () => void;
   onOrdersClick?: () => void;
+  // 订阅信息加载完成后，把当前 plan 回传给父组件（BillingCenter），
+  // 用于驱动 PlanComparison 的「当前套餐」高亮，避免父组件重复请求。
+  onPlanLoaded?: (plan: string) => void;
 }
 
-export function BillingDashboard({ onUpgradeClick, onOrdersClick }: BillingDashboardProps) {
+export function BillingDashboard({ onUpgradeClick, onOrdersClick, onPlanLoaded }: BillingDashboardProps) {
   const [subscription, setSubscription] = useState<SubscriptionInfo | null>(null);
   const [usage, setUsage] = useState<UsageInfo | null>(null);
   const [trial, setTrial] = useState<TrialInfo | null>(null);
@@ -58,6 +61,8 @@ export function BillingDashboard({ onUpgradeClick, onOrdersClick }: BillingDashb
         setSubscription(data.subscription);
         setUsage(data.usage);
         setTrial(data.trial);
+        // 回传当前 plan 给父组件（防御：缺字段时回退 'free'）
+        onPlanLoaded?.(data.subscription?.plan || 'free');
       }
     } catch (error) {
       console.error('Failed to fetch subscription:', error);
