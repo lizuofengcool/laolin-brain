@@ -2,13 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { db, createTenantDb } from "@/lib/db";
 import { readFile } from "fs/promises";
 import path from "path";
-import { createHash, timingSafeEqual } from "crypto";
 import { authenticateRequest } from "@/lib/api-auth";
-
-/** Hash a share password with SHA-256 for verification */
-function hashSharePassword(password: string): string {
-  return createHash('sha256').update(password).digest('hex');
-}
+import { verifyShareSessionToken } from "@/lib/share-session";
 
 /**
  * Serve image files inline (for <img> src) instead of as download
@@ -37,17 +32,12 @@ export async function GET(
         return NextResponse.json({ error: "链接已过期" }, { status: 410 });
       }
 
-      const passwordParam = searchParams.get("password") || "";
-      if (share.password) {
-        if (!passwordParam) {
-          return NextResponse.json({ error: "需要密码" }, { status: 403 });
-        }
-        const hashedInput = hashSharePassword(passwordParam);
-        const a = Buffer.from(hashedInput);
-        const b = Buffer.from(share.password);
-        if (a.length !== b.length || !timingSafeEqual(a, b)) {
-          return NextResponse.json({ error: "密码错误" }, { status: 403 });
-        }
+      // Check password: 仅接受 ?session= 令牌（与 download 路由一致；预览/下载均为
+      // <img>/window.open 导航无法带 header，故走 query）。不再接受 ?password= query——
+      // 密码会泄漏到 URL/访问日志/Referer/浏览器历史，与 share GET 路由的安全模型保持一致。
+      const sessionParam = searchParams.get("session");
+      if (share.password && !verifyShareSessionToken(sessionParam, shareToken)) {
+        return NextResponse.json({ error: "需要密码" }, { status: 403 });
       }
 
       const file = share.file;
