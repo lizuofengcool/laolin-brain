@@ -35,7 +35,8 @@ import type { DataPoint } from "@/lib/visualization/types";
  *   - generateTimeSeries 的 `current <= endDate` 闭区间与每项 `new Date(current)` 副本。
  *   - correlation 的长度不等/空集/零分母守卫。
  *   - detectOutliers 的 std===0 守卫（恒等数据集无离群）。
- *   - toCSV 的逗号字段双引号转义与 null/undefined → '' 回退。
+ *   - toCSV 的 RFC 4180 转义（逗号/引号/换行 → 双引号包裹并双写内部引号）、
+ *     BOM 前缀、CRLF 行分隔、null/undefined → '' 回退、对象/数组 → JSON 序列化。
  *   - downloadFile 的 `typeof document === 'undefined'` SSR 早退。
  */
 
@@ -654,13 +655,15 @@ describe("exportUtils / src/lib/visualization/utils.ts", () => {
       expect(exportUtils.toCSV([])).toBe("");
     });
 
-    it("默认列取 Object.keys(data[0])", () => {
+    it("默认列取 Object.keys(data[0])，含 BOM 与 CRLF 行分隔", () => {
       const data: DataPoint[] = [
         { name: "a", value: 1 },
         { name: "b", value: 2 },
       ];
       const csv = exportUtils.toCSV(data);
-      const lines = csv.split("\n");
+      // BOM 前缀 + \r\n 行分隔（RFC 4180）
+      expect(csv.startsWith("\uFEFF")).toBe(true);
+      const lines = csv.slice(1).split("\r\n");
       expect(lines[0]).toBe("name,value");
       expect(lines[1]).toBe("a,1");
       expect(lines[2]).toBe("b,2");
@@ -672,28 +675,52 @@ describe("exportUtils / src/lib/visualization/utils.ts", () => {
         { name: "b", value: 2, extra: "y" },
       ];
       const csv = exportUtils.toCSV(data, ["name", "value"]);
-      const lines = csv.split("\n");
+      const lines = csv.slice(1).split("\r\n");
       expect(lines[0]).toBe("name,value");
       expect(lines[1]).toBe("a,1");
       // extra 字段不出现在 CSV
       expect(lines[1]).not.toContain("x");
     });
 
-    it("字符串含逗号 → 双引号包裹（仅逗号转义，不转义引号）", () => {
-      const data: DataPoint[] = [{ name: "a,b", value: 1 }];
+    it("RFC 4180 转义：含逗号/引号/换行的单元格双引号包裹并双写内部引号", () => {
+      const data: DataPoint[] = [
+        { name: 'a,b"c\nd', value: 1 } as any,
+      ];
       const csv = exportUtils.toCSV(data);
-      expect(csv.split("\n")[1]).toBe('"a,b",1');
+      const lines = csv.slice(1).split("\r\n");
+      // 含 , " \n 三种特殊字符 → 包裹且内部 " 双写
+      expect(lines[1]).toBe('"a,b""c\nd",1');
     });
 
-    it("null/undefined 值 → 空字符串（value ?? ''）", () => {
+    it("null/undefined 值 → 空字符串（escapeCell 早退）", () => {
       const data: DataPoint[] = [
         { name: "a", value: null } as any,
         { name: "b", value: undefined } as any,
       ];
       const csv = exportUtils.toCSV(data);
-      const lines = csv.split("\n");
+      const lines = csv.slice(1).split("\r\n");
       expect(lines[1]).toBe("a,");
       expect(lines[2]).toBe("b,");
+    });
+
+    it("对象/数组值 → JSON 序列化（避免 [object Object]）", () => {
+      const data: DataPoint[] = [
+        { name: "a", value: { x: 1 } } as any,
+        { name: "b", value: [1, 2] } as any,
+      ];
+      const csv = exportUtils.toCSV(data);
+      const lines = csv.slice(1).split("\r\n");
+      // 对象 JSON 含逗号与引号 → 整体被双引号包裹且内部 " 双写
+      expect(lines[1]).toBe('a,"{""x"":1}"');
+      expect(lines[2]).toBe('b,"[1,2]"');
+    });
+
+    it("表头列名含特殊字符同样转义", () => {
+      const data: DataPoint[] = [{ "col,1": 1 } as any];
+      const csv = exportUtils.toCSV(data, ["col,1"]);
+      const lines = csv.slice(1).split("\r\n");
+      expect(lines[0]).toBe('"col,1"');
+      expect(lines[1]).toBe("1");
     });
   });
 
