@@ -62,9 +62,9 @@ export async function GET(
         return NextResponse.json({ error: "File not found" }, { status: 404 });
       }
 
-      const uploadDir = path.resolve('./upload');
+      const uploadDir = path.resolve(path.join(process.cwd(), 'upload'));
       const resolvedPath = path.resolve(file.filePath);
-      if (!resolvedPath.startsWith(uploadDir)) {
+      if (!resolvedPath.startsWith(uploadDir + path.sep) && resolvedPath !== uploadDir) {
         return NextResponse.json({ error: 'Invalid file path' }, { status: 400 });
       }
 
@@ -113,9 +113,9 @@ export async function GET(
       return NextResponse.json({ error: "无权访问此文件" }, { status: 403 });
     }
 
-    const uploadDir = path.resolve('./upload');
+    const uploadDir = path.resolve(path.join(process.cwd(), 'upload'));
     const resolvedPath = path.resolve(file.filePath);
-    if (!resolvedPath.startsWith(uploadDir)) {
+    if (!resolvedPath.startsWith(uploadDir + path.sep) && resolvedPath !== uploadDir) {
       return NextResponse.json({ error: 'Invalid file path' }, { status: 400 });
     }
 

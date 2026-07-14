@@ -174,6 +174,10 @@ const ownerAuth = {
 const uploadDir = path.resolve("./upload");
 const safeFilePath = path.join(uploadDir, "user-1", "file-99.txt");
 const evilFilePath = "/etc/passwd"; // 绝对路径，不在 upload 目录下
+// 同级前缀目录：resolvedPath 以 uploadDir 字符串为前缀，但非 uploadDir + path.sep 子树。
+// 旧 startsWith(uploadDir) 误过，新 startsWith(uploadDir + path.sep) 拦截——锁定 path.sep 修复
+const siblingEvilFilePath = path.join(`${uploadDir}-evil`, "secret.txt");
+const siblingEvilVersionPath = path.join(`${uploadDir}-evil`, "v1.txt");
 
 type MockRes = InstanceType<typeof MockNextResponse>;
 
@@ -509,6 +513,25 @@ describe("/api/files/[id] 路由", () => {
       expect(mockTransaction).not.toHaveBeenCalled();
     });
 
+    it("file.filePath 为 upload 同级前缀目录（upload-evil/secret.txt）→ 旧 startsWith(uploadDir) 误过，新 startsWith(uploadDir+path.sep) 拦截 400，不触达 $transaction", async () => {
+      // resolvedPath 以 uploadDir 字符串为前缀但非 uploadDir + path.sep 子树：
+      // 锁定 path.sep 修复（防止 /app/upload-evil/x 在 uploadDir=/app/upload 时误过）
+      mockTenantFileFindFirst.mockResolvedValue({
+        id: "file-99",
+        userId: "user-1",
+        tenantId: "tenant-1",
+        fileName: "evil.pdf",
+        filePath: siblingEvilFilePath,
+      });
+
+      const res = (await DELETE(makeDeleteRequest("file-99"), ctx("file-99"))) as MockRes;
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "Invalid file path" });
+      expect(mockUnlink).not.toHaveBeenCalled();
+      expect(mockTransaction).not.toHaveBeenCalled();
+    });
+
     it("成功 → unlink(filePath) + fileVersion.findMany + $transaction([fileEmbedding/faceInstance/file deleteMany])；返回 { success: true }", async () => {
       const res = (await DELETE(makeDeleteRequest("file-99"), ctx("file-99"))) as MockRes;
 
@@ -551,6 +574,25 @@ describe("/api/files/[id] 路由", () => {
       expect(mockUnlink).toHaveBeenCalledWith(safeFilePath); // 主文件
       expect(mockUnlink).toHaveBeenCalledWith(path.join(uploadDir, "user-1", "v1.txt")); // 合法版本
       // $transaction 仍执行（版本路径越界不阻断级联删除）
+      expect(mockTransaction).toHaveBeenCalledTimes(1);
+    });
+
+    it("version filePath 为 upload 同级前缀目录（upload-evil/v1.txt）→ 旧 startsWith(uploadDir) 误过会误删，新 startsWith(uploadDir+path.sep) 拦截 continue 跳过 unlink", async () => {
+      // 主文件路径合法，仅版本路径为同级前缀目录：
+      // 锁定版本清理路径的 path.sep 修复（防止误删 /app/upload-evil/x 下的版本文件）
+      mockTenantFileVersionFindMany.mockResolvedValue([
+        { filePath: siblingEvilVersionPath }, // 同级前缀 → continue 跳过 unlink
+      ]);
+
+      const res = (await DELETE(makeDeleteRequest("file-99"), ctx("file-99"))) as MockRes;
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ success: true });
+      // 仅主文件 unlink 1 次（同级前缀版本跳过）
+      expect(mockUnlink).toHaveBeenCalledTimes(1);
+      expect(mockUnlink).toHaveBeenCalledWith(safeFilePath);
+      expect(mockUnlink).not.toHaveBeenCalledWith(siblingEvilVersionPath);
+      // $transaction 仍执行
       expect(mockTransaction).toHaveBeenCalledTimes(1);
     });
 

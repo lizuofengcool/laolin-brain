@@ -163,9 +163,9 @@ export async function DELETE(
     }
 
     if (file.filePath) {
-      const uploadDir = path.resolve('./upload');
+      const uploadDir = path.resolve(path.join(process.cwd(), 'upload'));
       const resolvedPath = path.resolve(file.filePath);
-      if (!resolvedPath.startsWith(uploadDir)) {
+      if (!resolvedPath.startsWith(uploadDir + path.sep) && resolvedPath !== uploadDir) {
         return NextResponse.json({ error: 'Invalid file path' }, { status: 400 });
       }
       try {
@@ -180,10 +180,16 @@ export async function DELETE(
       where: { fileId: id },
       select: { filePath: true },
     });
+    const versionUploadDir = path.resolve(path.join(process.cwd(), 'upload'));
     for (const v of versions) {
       if (v.filePath) {
         const resolvedVPath = path.resolve(v.filePath);
-        if (!resolvedVPath.startsWith(path.resolve('./upload'))) continue;
+        if (
+          resolvedVPath !== versionUploadDir &&
+          !resolvedVPath.startsWith(versionUploadDir + path.sep)
+        ) {
+          continue;
+        }
         try { await unlink(v.filePath); } catch { /* file may not exist */ }
       }
     }
