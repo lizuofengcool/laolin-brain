@@ -58,6 +58,9 @@ export interface ReportWidget {
 // 表格配置
 export interface TableConfig {
   columns: TableColumn[];
+  // 行数据：每行为「列 dataIndex → 单元格值」的映射，CSV 导出与表格渲染共用同一来源。
+  // 可选以保持向后兼容——未提供时 CSV 仅导出列标题表头（历史行为）。
+  rows?: Record<string, unknown>[];
   pagination?: boolean;
   pageSize?: number;
   sortable?: boolean;

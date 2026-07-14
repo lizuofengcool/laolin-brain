@@ -29,6 +29,9 @@
  *   deleteSubscription 命中/未命中/跨
  * - exportReport：json/csv(需 table widget)/默认 三分支；filename 默认 report.name；downloadFile 抛错 →
  *   success:false
+ * - exportReport csv 行数据（TableConfig.rows）：按列 dataIndex 取值生成数据行；列定义 format
+ *   优先于原始值；单元格含 ", \n \r 时 RFC 4180 转义；行缺失 dataIndex 留空；rows 为空/未提供
+ *   时仅导出表头（向后兼容）；多 table widget 块间空行分隔
  * - processReportData/generatePreviewData：原样返回 report
  *
  * 状态策略：ReportManager 构造器私有无法 new；每个用例前 vi.resetModules() + await import 取全新单例
@@ -659,6 +662,207 @@ describe('reports/report-manager ReportManager', () => {
       const res = reportManager.exportReport(report, { format: 'csv' });
       expect(res.success).toBe(true);
       expect(mockDownloadFile).not.toHaveBeenCalled();
+    });
+
+    // ── 行数据（TableConfig.rows）──
+    // 历史行为：未提供 rows 时仅导出表头。新增 rows 后按列 dataIndex 取值生成数据行。
+
+    it('csv 行数据：按列 dataIndex 取值生成数据行（表头 + 行，CRLF 分隔）', () => {
+      const report = reportManager.createReport(
+        {
+          layout: {
+            type: 'grid',
+            widgets: [
+              {
+                id: 'w1',
+                type: 'table',
+                title: '热门文件',
+                config: {
+                  columns: [
+                    { key: 'name', title: '文件名', dataIndex: 'name' },
+                    { key: 'views', title: '浏览量', dataIndex: 'views' },
+                  ],
+                  rows: [
+                    { name: 'a.txt', views: 10 },
+                    { name: 'b.png', views: 42 },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+        'u1',
+        't1'
+      );
+      reportManager.exportReport(report, { format: 'csv' });
+      const content = mockDownloadFile.mock.calls[0][0] as string;
+      // 期望：BOM + 注释标题 + 表头 + 两行数据，全部 CRLF
+      expect(content).toBe(
+        '\uFEFF# 热门文件\r\n文件名,浏览量\r\na.txt,10\r\nb.png,42'
+      );
+    });
+
+    it('csv 行数据：列定义 format 优先于原始值', () => {
+      const report = reportManager.createReport(
+        {
+          layout: {
+            type: 'grid',
+            widgets: [
+              {
+                id: 'w1',
+                type: 'table',
+                config: {
+                  columns: [
+                    { key: 'size', title: '大小', dataIndex: 'size', format: (v: unknown) => `${v} KB` },
+                    { key: 'n', title: '数量', dataIndex: 'n' },
+                  ],
+                  rows: [{ size: 1024, n: 3 }],
+                },
+              },
+            ],
+          },
+        },
+        'u1',
+        't1'
+      );
+      reportManager.exportReport(report, { format: 'csv' });
+      const content = mockDownloadFile.mock.calls[0][0] as string;
+      // 无 widget.title → 无注释行；首行表头，次行经 format 后的值
+      const lines = content.replace(/^\uFEFF/, '').split('\r\n');
+      expect(lines[0]).toBe('大小,数量');
+      expect(lines[1]).toBe('1024 KB,3');
+    });
+
+    it('csv 行数据：单元格含逗号/引号/换行时按 RFC 4180 转义', () => {
+      const report = reportManager.createReport(
+        {
+          layout: {
+            type: 'grid',
+            widgets: [
+              {
+                id: 'w1',
+                type: 'table',
+                config: {
+                  columns: [
+                    { key: 'a', title: 'A', dataIndex: 'a' },
+                    { key: 'b', title: 'B', dataIndex: 'b' },
+                    { key: 'c', title: 'C', dataIndex: 'c' },
+                  ],
+                  rows: [
+                    { a: 'x,y', b: '说"嗨"', c: '行1\n行2' },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+        'u1',
+        't1'
+      );
+      reportManager.exportReport(report, { format: 'csv' });
+      const content = mockDownloadFile.mock.calls[0][0] as string;
+      const lines = content.replace(/^\uFEFF/, '').split('\r\n');
+      expect(lines[0]).toBe('A,B,C');
+      // 数据行：含逗号→引号包裹；含引号→引号包裹并双写；含换行→引号包裹（换行保留在引号内）
+      expect(lines[1]).toBe('"x,y","说""嗨""","行1\n行2"');
+    });
+
+    it('csv 行数据：行缺失某列 dataIndex 时该单元格留空', () => {
+      const report = reportManager.createReport(
+        {
+          layout: {
+            type: 'grid',
+            widgets: [
+              {
+                id: 'w1',
+                type: 'table',
+                config: {
+                  columns: [
+                    { key: 'a', title: 'A', dataIndex: 'a' },
+                    { key: 'b', title: 'B', dataIndex: 'b' },
+                  ],
+                  rows: [
+                    { a: '1', b: '2' },
+                    { a: '3' }, // b 缺失
+                  ],
+                },
+              },
+            ],
+          },
+        },
+        'u1',
+        't1'
+      );
+      reportManager.exportReport(report, { format: 'csv' });
+      const content = mockDownloadFile.mock.calls[0][0] as string;
+      const lines = content.replace(/^\uFEFF/, '').split('\r\n');
+      expect(lines[0]).toBe('A,B');
+      expect(lines[1]).toBe('1,2');
+      // 缺失字段 → 空串（escapeCsvCell(undefined) === ''）
+      expect(lines[2]).toBe('3,');
+    });
+
+    it('csv 行数据：rows 为空数组时仅导出表头（与未提供 rows 同）', () => {
+      const report = reportManager.createReport(
+        {
+          layout: {
+            type: 'grid',
+            widgets: [
+              {
+                id: 'w1',
+                type: 'table',
+                config: {
+                  columns: [{ key: 'a', title: 'A', dataIndex: 'a' }],
+                  rows: [],
+                },
+              },
+            ],
+          },
+        },
+        'u1',
+        't1'
+      );
+      reportManager.exportReport(report, { format: 'csv' });
+      const content = mockDownloadFile.mock.calls[0][0] as string;
+      expect(content).toBe('\uFEFFA');
+    });
+
+    it('csv 行数据：多 table widget 各自独立输出行（块间空行分隔）', () => {
+      const report = reportManager.createReport(
+        {
+          layout: {
+            type: 'grid',
+            widgets: [
+              {
+                id: 'w1',
+                type: 'table',
+                title: '表A',
+                config: {
+                  columns: [{ key: 'a', title: 'A', dataIndex: 'a' }],
+                  rows: [{ a: '1' }, { a: '2' }],
+                },
+              },
+              {
+                id: 'w2',
+                type: 'table',
+                title: '表B',
+                config: {
+                  columns: [{ key: 'b', title: 'B', dataIndex: 'b' }],
+                  rows: [{ b: 'x' }],
+                },
+              },
+            ],
+          },
+        },
+        'u1',
+        't1'
+      );
+      reportManager.exportReport(report, { format: 'csv' });
+      const content = mockDownloadFile.mock.calls[0][0] as string;
+      // 两块以空行（\r\n\r\n）分隔，各块含注释标题 + 表头 + 数据行
+      expect(content.replace(/^\uFEFF/, '')).toBe(
+        '# 表A\r\nA\r\n1\r\n2\r\n\r\n# 表B\r\nB\r\nx'
+      );
     });
 
     it('未知格式：返回 success 且不调用 downloadFile', () => {

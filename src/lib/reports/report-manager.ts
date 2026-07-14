@@ -474,13 +474,17 @@ export class ReportManager {
    * - 多个表格组件以空行分隔；组件含 title 时在表头前以 # 注释行标注
    * - 列定义来自 TableConfig.columns 的 title；无列定义的表格组件跳过
    *   （但仍会调用 downloadFile，只要存在 table 类型组件）
+   * - 行数据来自 TableConfig.rows（可选）：每行按列 dataIndex 取值，列定义 format
+   *   优先于原始值（与表格渲染一致）；dataIndex 缺失时单元格留空。未提供 rows
+   *   时仅导出表头（历史行为，向后兼容）。
    */
   private buildTableCsv(widgets: ReportWidget[]): string {
     const BOM = '\uFEFF';
     const blocks: string[] = [];
 
     for (const widget of widgets) {
-      const columns = (widget.config as TableConfig | undefined)?.columns ?? [];
+      const config = widget.config as TableConfig | undefined;
+      const columns = config?.columns ?? [];
       if (columns.length === 0) continue;
 
       const lines: string[] = [];
@@ -488,6 +492,22 @@ export class ReportManager {
         lines.push(`# ${widget.title}`);
       }
       lines.push(columns.map(col => this.escapeCsvCell(col.title)).join(','));
+
+      // 行数据：按列 dataIndex 取值，format 优先；缺失字段留空（escapeCsvCell 对
+      // undefined 返回空串）。rows 为空数组或 undefined 时不追加任何行。
+      const rows = config?.rows ?? [];
+      for (const row of rows) {
+        lines.push(
+          columns
+            .map(col => {
+              const raw = row[col.dataIndex];
+              const value = typeof col.format === 'function' ? col.format(raw) : raw;
+              return this.escapeCsvCell(value);
+            })
+            .join(',')
+        );
+      }
+
       blocks.push(lines.join('\r\n'));
     }
 
