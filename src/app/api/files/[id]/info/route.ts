@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createTenantDb } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
-import fs from "fs";
+import { readFile } from "fs/promises";
+import path from "path";
 
 /**
  * 文件信息API
@@ -103,18 +104,28 @@ export async function GET(
           fileInfo.textContent = file.textContent;
           fileInfo.textLineCount = file.textContent.split("\n").length;
           fileInfo.textCharCount = file.textContent.length;
-        } else if (file.filePath && fs.existsSync(file.filePath)) {
-          // 从文件系统读取
-          const content = fs.readFileSync(file.filePath, "utf-8");
-          // 限制返回大小，最大1MB
-          const maxSize = 1024 * 1024;
-          const truncated = content.length > maxSize;
-          fileInfo.textContent = truncated
-            ? content.substring(0, maxSize)
-            : content;
-          fileInfo.textLineCount = content.split("\n").length;
-          fileInfo.textCharCount = content.length;
-          fileInfo.textTruncated = truncated;
+        } else if (file.filePath) {
+          // 校验文件路径在 upload 目录内，防止路径穿越读取任意文件
+          // （与 download/preview/restore 一致，纵深防御）
+          const resolvedPath = path.resolve(file.filePath);
+          const uploadDir = path.resolve(path.join(process.cwd(), "upload"));
+          const inUploadDir =
+            resolvedPath === uploadDir ||
+            resolvedPath.startsWith(uploadDir + path.sep);
+          if (inUploadDir) {
+            // 异步读取，避免同步 I/O 阻塞事件循环（原 fs.existsSync/readFileSync 为同步）
+            const content = await readFile(file.filePath, "utf-8");
+            // 限制返回大小，最大1MB
+            const maxSize = 1024 * 1024;
+            const truncated = content.length > maxSize;
+            fileInfo.textContent = truncated
+              ? content.substring(0, maxSize)
+              : content;
+            fileInfo.textLineCount = content.split("\n").length;
+            fileInfo.textCharCount = content.length;
+            fileInfo.textTruncated = truncated;
+          }
+          // 路径越界：静默跳过，不回填 textContent（防御性，不泄露路径非法）
         }
       } catch (readError) {
         console.error("Failed to read file content:", readError);
