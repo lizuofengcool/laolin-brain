@@ -19874,8 +19874,8 @@ churn 大，本轮不动）。
 
 ### 推送
 
-- origin (Gitee)：`e42dcf5..e4585c3`（待推送）
-- github (GitHub)：`e42dcf5..e4585c3`（待推送）
+- origin (Gitee)：`e42dcf5..36bfc0c` ✅
+- github (GitHub)：`e42dcf5..36bfc0c` ✅（push protection 未拦截，本次无 sk_ 前缀占位密钥）
 
 ### 下一轮候选
 
