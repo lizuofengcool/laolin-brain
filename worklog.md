@@ -18614,3 +18614,104 @@ OrderHistory「立即支付」复用 pending 订单时，用户可在 alipay↔w
   console），未持久化到 ActivityLog 表。若需可查询的审计 trail，可后续在切换时写一条
   ActivityLog（resourceType='order'、action='pay_method_switch'、details=前后支付方式 JSON），
   但会增加支付路径一次 DB 写，需权衡。
+
+## 2026-07-14 15:00 自动迭代
+
+### 状态评估
+
+- fetch origin/main + github/main：三端（local / origin / github）均停在 `48c04d2`，
+  无远端更新，无需 rebase。工作树干净，无遗留未提交改动。
+- 优先级 1 已知问题复核（grep 当前实现确认）：
+  · tenant-db.ts raw 后门 → `get raw()` getter 软审计（caller 堆栈 console.warn），已解决。
+  · alipay/wechat RSA2 验签「非空即通过」 → 已改 fail-closed，真实 RSA-SHA256 / V3 验签，
+    mock 链接被验签拒绝；真实 SDK 下单/查询仍缺（依赖外部 SDK，功能完整性缺口）。
+  · files/route.ts 绕过 TenantDb → 去重已走 createTenantDb；剩余 raw SQL 聚合带 tenantId
+    过滤、无越权，低优先级延续。
+  · sync-engine keep_both 直接覆盖 bug → 已修（本地重命名「[冲突副本]」+ 云端新 id create）。
+  · api-auth.test.ts 与实现不符 → 测试已对齐 4 字段 / async / 读 tenantUser，已解决。
+  → 优先级 1 全部清零，转向 worklog 上一轮「下一轮候选」。
+
+### 本次开发：reusePendingOrder 切换 payMethod 审计落库 ActivityLog（优先级 2，上轮下一轮候选 #5）
+
+上轮（第一百七十轮）为 reusePendingOrder 切换 payMethod 加了 logger.audit（console +
+内存），但未持久化，管理后台无法查询审计 trail。本轮在切换成功后追加 logActivity，将
+action='pay_method_switch' 落库到 ActivityLog 表。上轮候选 #5 提出的「增加支付路径一次 DB 写」
+顾虑经 logActivity 的 setImmediate 异步落库 + try/catch 兜底消解——不阻塞支付主流程，失败仅
+console.error 不抛错（与 change-password / email-settings / recommendation.ts 既有 ActivityLog
+写入约定一致）。
+
+#### feat — 切换成功后 logActivity 落库（073fa6b）
+
+- **`src/lib/billing/subscription.ts`**（+20/-1）：
+  · 新增 `import { logActivity } from "@/lib/activity-log"`。
+  · `reusePendingOrder` 签名新增第 4 参数 `userId: string`（Order 表无 userId 字段，
+    需经调用方认证上下文透传，用于 ActivityLog.userId）。
+  · 切换分支在既有 `logger.audit(...)` 之后追加 `logActivity({...})`：action='pay_method_switch'、
+    resourceType='order'、resourceId=order.id、details={orderNo, previousPayMethod, newPayMethod,
+    amount}。logActivity 经 setImmediate 异步落库（fire-and-forget），不 await，不阻塞支付。
+  · 语义：双层审计——logger.audit 供运维即时观测（console + 内存），logActivity 供管理后台
+    按 tenant/user/action 检索支付方式变更记录。仅记成功切换（update 抛错由调用方 catch 兜底）；
+    订单不存在 / 非待支付 / payMethod 不变三分支均不触发 logActivity。
+- **`src/app/api/payment/create/route.ts`**（+2/-1）：reusePendingOrder 调用补传 `userId`
+  （来自 authenticateRequest 的 AuthResult.userId）。
+
+#### test — logActivity 落库断言（d71b228）
+
+- **`src/__tests__/lib/billing-subscription-reuse.test.ts`**（+58/-15，7 用例，上轮 6 用例 +1）：
+  · 新增 `vi.mock("@/lib/activity-log")` 隔离 logActivity（避免 setImmediate 真实落库与
+    db.activityLog.create 未 mock 报错），`logActivityMock` 捕获调用断言字段。
+  · 6 用例补传 userId（第 4 参数）；新增 1 用例「logActivity 落库携带 userId」：用
+    user-operator-77 验证 userId 透传非硬编码，便于按用户检索审计 trail。
+  · alipay→wechat 切换用例精确断言 logActivity 全字段（userId/tenantId/action/resourceType/
+    resourceId/details{orderNo,previousPayMethod,newPayMethod,amount}）；wechat→alipay 用例
+    断言 details 方向正确；订单不存在 / 非待支付 / payMethod 不变三用例断言 logActivity 不被调用。
+- **`src/__tests__/api/payment-create-route.test.ts`**（+4/-2）：reusePendingOrder 调用契约
+  断言补第 4 参数 userId='user-1'（alipay / wechat 两条用例），与路由透传 userId 对齐。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，68.1s）。
+- `npx prisma generate`（v6.19.3 客户端）。
+- `npx tsc --noEmit`：**0 错误**（全项目，含 logActivity 签名 / userId 透传类型推断）。
+- `npx vitest run`（全量）：**5194 passed / 190 files**，无回归（上轮 5193/190，本轮 +1 测试：
+  billing-subscription-reuse 新增「logActivity 落库携带 userId」用例）。
+- 定向回归：`vitest run billing-subscription-reuse payment-create-route activity-log OrderHistory`
+  = 66 passed（logActivity mock 隔离生效、路由 4 参数契约对齐、ActivityLog helper 未受影响）。
+
+环境备注：`pnpm-lock.yaml` 与 `node_modules` 均在 .gitignore；`git status` 干净（无入侵）。
+
+### 改动量
+
+4 文件，+85/-17：
+- `src/lib/billing/subscription.ts`（feat，+20/-1：logActivity 落库 + userId 参数）
+- `src/app/api/payment/create/route.ts`（feat，+2/-1：透传 userId）
+- `src/__tests__/lib/billing-subscription-reuse.test.ts`（test，+58/-15：logActivity 断言 +1 用例）
+- `src/__tests__/api/payment-create-route.test.ts`（test，+4/-2：4 参数契约对齐）
+
+2 commit（1 feat + 1 test），符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `073fa6b` feat(billing): reusePendingOrder 切换 payMethod 审计落库 ActivityLog
+- `d71b228` test(billing): reusePendingOrder 审计落库 ActivityLog 单元测试
+
+### 推送
+
+- origin (Gitee)：`48c04d2..d71b228`（待推送，含本轮 2 commit + worklog）
+- github (GitHub)：`48c04d2..d71b228`（待推送）
+- 双端同步校验：`git rev-list --left-right --count origin/main...github/main` = `0 0`（推送后）
+
+### 下一轮候选
+
+- **document-qna AI 模型调用桩**（延续，低优先级）：askQuestion 的 generateMockAnswer 仍为模拟，
+  依赖外部模型 SDK，优先级低。
+- **model-manager.ts 4 处模型 API 桩**（延续，低优先级）：testModel/chat/complete/embeddings，
+  已有单测锁定 mock 边界，模块未被生产代码 import；收益较低。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与 auto-summary
+  db.file.update 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口；验签/解密已真实实现）。
+- **ActivityLog 审计 trail 查询端点/UI**（新增，低优先级）：本轮落库了 pay_method_switch
+  审计，但管理后台尚无按 tenant/user/action 检索 ActivityLog 的专用端点（/api/activity-logs
+  已有通用查询）。可后续补管理后台「支付方式变更记录」视图，但属增量功能、非缺口。
+
