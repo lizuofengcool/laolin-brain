@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getTenantIdFromRequest } from "@/lib/db/tenant-context";
+import { getTenantIdOr401 } from "@/lib/db/tenant-context";
 import { pluginManager } from "@/lib/plugins/plugin-manager";
 import { validateInput } from "@/lib/utils/security";
 
@@ -10,14 +10,8 @@ import { validateInput } from "@/lib/utils/security";
  */
 export async function GET(request: NextRequest) {
   try {
-    const tenantId = await getTenantIdFromRequest(request);
-
-    if (!tenantId) {
-      return NextResponse.json(
-        { error: "未授权访问" },
-        { status: 401 }
-      );
-    }
+    const tenantId = await getTenantIdOr401(request);
+    if (tenantId instanceof NextResponse) return tenantId;
 
     const { searchParams } = new URL(request.url);
     const type = searchParams.get("type");
@@ -110,14 +104,8 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
-    const tenantId = await getTenantIdFromRequest(request);
-
-    if (!tenantId) {
-      return NextResponse.json(
-        { error: "未授权访问" },
-        { status: 401 }
-      );
-    }
+    const tenantId = await getTenantIdOr401(request);
+    if (tenantId instanceof NextResponse) return tenantId;
 
     const body = await request.json();
     const { pluginId, config } = body;

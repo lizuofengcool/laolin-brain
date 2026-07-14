@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getTenantIdFromRequest } from "@/lib/db/tenant-context";
+import { getTenantIdOr401 } from "@/lib/db/tenant-context";
 import { pluginManager } from "@/lib/plugins/plugin-manager";
 
 /**
@@ -13,14 +13,8 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const tenantId = await getTenantIdFromRequest(request);
-
-    if (!tenantId) {
-      return NextResponse.json(
-        { error: "未授权访问" },
-        { status: 401 }
-      );
-    }
+    const tenantId = await getTenantIdOr401(request);
+    if (tenantId instanceof NextResponse) return tenantId;
 
     const { id } = await params;
 
@@ -71,14 +65,8 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const tenantId = await getTenantIdFromRequest(request);
-
-    if (!tenantId) {
-      return NextResponse.json(
-        { error: "未授权访问" },
-        { status: 401 }
-      );
-    }
+    const tenantId = await getTenantIdOr401(request);
+    if (tenantId instanceof NextResponse) return tenantId;
 
     const { id } = await params;
     const body = await request.json();
@@ -146,14 +134,8 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const tenantId = await getTenantIdFromRequest(request);
-
-    if (!tenantId) {
-      return NextResponse.json(
-        { error: "未授权访问" },
-        { status: 401 }
-      );
-    }
+    const tenantId = await getTenantIdOr401(request);
+    if (tenantId instanceof NextResponse) return tenantId;
 
     const { id } = await params;
 
