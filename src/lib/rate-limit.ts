@@ -102,3 +102,91 @@ export function clearRateLimits(identifier?: string): void {
     limiterCache.clear();
   }
 }
+
+// ─── 分享链接密码暴力破解防护（按 token 计失败次数）───
+// 通用 rateLimit 按 IP+路径 计所有请求，无法精准阻止单条分享链接被定向暴破
+// （4 位最短密码仅 10000 种组合，默认 100/min/IP ≈ 6000 猜/小时）。
+// 这里按分享 token 维度累计密码验证失败次数，达阈值后锁定该 token 的验证。
+
+interface SharePasswordLimitOptions {
+  /** 窗口内允许的最大失败次数 */
+  maxFailures: number;
+  /** 时间窗口大小（毫秒） */
+  windowMs: number;
+}
+
+const SHARE_PASSWORD_LIMIT: SharePasswordLimitOptions = {
+  maxFailures: 10,
+  windowMs: 15 * 60 * 1000, // 15 分钟
+};
+
+interface SharePasswordLimitResult {
+  /** 是否允许继续验证 */
+  success: boolean;
+  /** 窗口内剩余可用失败次数 */
+  remaining: number;
+  /** 窗口重置时间（毫秒时间戳） */
+  resetTime: number;
+}
+
+// 按 token 维度的失败计数缓存。key = `share-pwd:${token}`
+const sharePasswordCache = new LRUCache<string, { failures: number; resetTime: number }>({
+  max: 50000,
+  ttl: SHARE_PASSWORD_LIMIT.windowMs,
+});
+
+/**
+ * 检查分享 token 的密码验证是否被限流。
+ * 在比对密码前调用：success=false 时直接返回 429，不触达密码比对。
+ */
+export function checkSharePasswordLimit(token: string): SharePasswordLimitResult {
+  const now = Date.now();
+  const record = sharePasswordCache.get(token);
+
+  if (!record || now > record.resetTime) {
+    return {
+      success: true,
+      remaining: SHARE_PASSWORD_LIMIT.maxFailures,
+      resetTime: now + SHARE_PASSWORD_LIMIT.windowMs,
+    };
+  }
+
+  if (record.failures >= SHARE_PASSWORD_LIMIT.maxFailures) {
+    return { success: false, remaining: 0, resetTime: record.resetTime };
+  }
+
+  return {
+    success: true,
+    remaining: SHARE_PASSWORD_LIMIT.maxFailures - record.failures,
+    resetTime: record.resetTime,
+  };
+}
+
+/**
+ * 记录一次密码验证失败（密码错误时调用）。
+ */
+export function recordSharePasswordFailure(token: string): void {
+  const now = Date.now();
+  let record = sharePasswordCache.get(token);
+
+  if (!record || now > record.resetTime) {
+    record = { failures: 0, resetTime: now + SHARE_PASSWORD_LIMIT.windowMs };
+  }
+
+  record.failures++;
+  sharePasswordCache.set(token, record);
+}
+
+/**
+ * 清除 token 的失败计数（密码验证成功后调用，避免合法用户误输被累积）。
+ */
+export function clearSharePasswordLimit(token: string): void {
+  sharePasswordCache.delete(token);
+}
+
+/**
+ * 清除所有分享密码限流记录（仅用于测试）。
+ */
+export function clearAllSharePasswordLimits(): void {
+  sharePasswordCache.clear();
+}

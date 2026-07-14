@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { db, createTenantDb } from "@/lib/db";
 import { randomUUID, createHash, timingSafeEqual } from "crypto";
 import { authenticateRequest } from "@/lib/api-auth";
+import {
+  checkSharePasswordLimit,
+  recordSharePasswordFailure,
+  clearSharePasswordLimit,
+} from "@/lib/rate-limit";
 
 /** Hash a share password with SHA-256 for secure storage */
 function hashSharePassword(password: string): string {
@@ -47,15 +52,33 @@ export async function POST(
         return NextResponse.json({ error: "该链接不需要密码" }, { status: 400 });
       }
 
+      // 按 token 维度的密码暴破防护：达失败阈值后锁定该 token 的验证
+      const limit = checkSharePasswordLimit(id);
+      if (!limit.success) {
+        return NextResponse.json(
+          { error: "密码错误次数过多，请稍后再试", passwordRequired: true },
+          {
+            status: 429,
+            headers: {
+              'Retry-After': String(Math.ceil((limit.resetTime - Date.now()) / 1000)),
+            },
+          }
+        );
+      }
+
       const hashedInput = hashSharePassword(password);
       const a = Buffer.from(hashedInput);
       const b = Buffer.from(share.password);
       if (a.length !== b.length || !timingSafeEqual(a, b)) {
+        recordSharePasswordFailure(id);
         return NextResponse.json(
           { error: "密码错误", passwordRequired: true },
           { status: 403 }
         );
       }
+
+      // 验证成功，清除该 token 的失败计数，避免合法用户误输被累积
+      clearSharePasswordLimit(id);
 
       const file = share.file;
       const allowedOrigin = request.headers.get("origin") || "";
@@ -155,17 +178,16 @@ export async function POST(
 }
 
 // GET: Access shared file via token
+// 密码验证已移至 POST（避免密码出现在 URL/日志/Referer/历史记录）。
+// GET 仅用于无密码分享；带密码的分享始终返回 passwordRequired，客户端须 POST 密码。
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
-    const { searchParams } = new URL(request.url);
-    const passwordParam = searchParams.get("password") || "";
 
-    // Actually id here is the token, but the route is /api/files/[id]/share
-    // Let's look up by token directly
+    // id 即为分享 token，按 token 直接查询
     const share = await db.fileShare.findUnique({
       where: { token: id },
       include: { file: true },
@@ -183,23 +205,13 @@ export async function GET(
       );
     }
 
-    // Check password using timing-safe comparison
+    // 密码保护的分享：GET 不再接受 ?password= query param（密码会泄漏到
+    // URL/访问日志/Referer/浏览器历史），统一要求 POST 密码验证。
     if (share.password) {
-      if (!passwordParam) {
-        return NextResponse.json(
-          { error: "需要密码", passwordRequired: true },
-          { status: 403 }
-        );
-      }
-      const hashedInput = hashSharePassword(passwordParam);
-      const a = Buffer.from(hashedInput);
-      const b = Buffer.from(share.password);
-      if (a.length !== b.length || !timingSafeEqual(a, b)) {
-        return NextResponse.json(
-          { error: "密码错误", passwordRequired: true },
-          { status: 403 }
-        );
-      }
+      return NextResponse.json(
+        { error: "需要密码", passwordRequired: true },
+        { status: 403 }
+      );
     }
 
     const file = share.file;
