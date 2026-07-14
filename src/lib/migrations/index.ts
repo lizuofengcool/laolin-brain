@@ -8,6 +8,7 @@
  */
 
 import { db } from '@/lib/db';
+import { hashPassword } from '@/lib/auth';
 import { randomUUID } from 'crypto';
 
 // 迁移版本
@@ -288,8 +289,18 @@ export async function initializeDefaultAdmin(): Promise<{
   message: string;
 }> {
   try {
-    const adminEmail = process.env.ADMIN_EMAIL || 'admin@example.com';
-    const adminPassword = process.env.ADMIN_PASSWORD || 'admin123456';
+    // 安全：不提供弱默认凭据（原 admin@example.com/admin123456 为源码公开的可猜凭据）。
+    // ADMIN_EMAIL 必须显式配置，否则跳过管理员初始化而非回退到公开默认值。
+    const adminEmail = process.env.ADMIN_EMAIL;
+    const adminPassword = process.env.ADMIN_PASSWORD;
+
+    if (!adminEmail) {
+      return {
+        success: false,
+        userId: null,
+        message: '未配置 ADMIN_EMAIL 环境变量，跳过默认管理员初始化',
+      };
+    }
 
     // 检查管理员是否已存在
     const existingAdmin = await db.user.findUnique({
@@ -304,13 +315,23 @@ export async function initializeDefaultAdmin(): Promise<{
       };
     }
 
-    // 创建管理员用户
-    // 注意：实际使用时应该使用bcrypt加密密码
+    // 创建管理员用户：ADMIN_PASSWORD 必须显式配置（不回退弱默认）。
+    // 使用 bcrypt 哈希密码——登录路由走 bcrypt.compare，明文存储会导致管理员永远无法登录，
+    // 同时明文落库会在数据库泄露时直接暴露凭据。
+    if (!adminPassword) {
+      return {
+        success: false,
+        userId: null,
+        message: '未配置 ADMIN_PASSWORD 环境变量，跳过默认管理员初始化',
+      };
+    }
+
+    const hashedPassword = await hashPassword(adminPassword);
     const adminUser = await db.user.create({
       data: {
         name: '系统管理员',
         email: adminEmail,
-        password: adminPassword, // 实际应该加密
+        password: hashedPassword,
         storageMode: 'cloud',
       },
     });

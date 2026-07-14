@@ -7,8 +7,8 @@
  *   - migrateToMultiTenant：已迁移早返回（不进事务、不记录）/ 事务内逐用户建 free 租户
  *     + tenantUser(owner) + 迁文件/文件夹（OR: null|空 tenantId）/ 无用户 / 已有租户跳过 / 事务失败 catch。
  *   - initializeDefaultTenant：已有租户早返回 / 创建默认 free 租户(5GB) / 失败 catch。
- *   - initializeDefaultAdmin：已存在早返回 / 建 user + enterprise 租户(100GB) + tenantUser(owner)
- *     / 读取 ADMIN_EMAIL 覆盖默认 / 失败 catch。
+ *   - initializeDefaultAdmin：已存在早返回 / 未配置 ADMIN_EMAIL 或 ADMIN_PASSWORD → success=false
+ *     不回退弱默认 / 建 user(密码经 bcrypt 哈希) + enterprise 租户(100GB) + tenantUser(owner) / 失败 catch。
  *   - runAllMigrations：编排迁移+初始化租户（+可选管理员），INIT_DEFAULT_ADMIN 门控，success = every。
  *
  * 隔离策略：vi.mock('@/lib/db') 暴露 $queryRaw/$executeRaw（tagged template，
@@ -18,7 +18,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-const { mockDb } = vi.hoisted(() => {
+const { mockDb, mockHashPassword } = vi.hoisted(() => {
   const mockDb = {
     $queryRaw: vi.fn(),
     $executeRaw: vi.fn(),
@@ -29,10 +29,14 @@ const { mockDb } = vi.hoisted(() => {
     file: { updateMany: vi.fn() },
     folder: { updateMany: vi.fn() },
   };
-  return { mockDb };
+  return { mockDb, mockHashPassword: vi.fn() };
 });
 
 vi.mock("@/lib/db", () => ({ db: mockDb }));
+
+// hashPassword 走真实 bcrypt 会拖慢单测且耦合实现细节；
+// 此处 mock 为确定性返回值，锁定"密码经 hashPassword 后再落库"契约。
+vi.mock("@/lib/auth", () => ({ hashPassword: mockHashPassword }));
 
 import {
   checkMigrationStatus,
@@ -48,6 +52,8 @@ beforeEach(() => {
   // $transaction 默认把回调的 tx 参数指向 mockDb 自身（与实现中 tx 方法名一致故可复用），
   // 单测可覆盖为 reject 以走错误分支。restoreAllMocks 会清掉实现，故每轮重建。
   mockDb.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(mockDb));
+  // hashPassword 默认返回确定性哈希字符串；走创建路径的测试断言此值被落库。
+  mockHashPassword.mockResolvedValue("hashed-admin-password");
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(console, "log").mockImplementation(() => {});
 });
@@ -389,7 +395,7 @@ describe("initializeDefaultAdmin", () => {
     expect(mockDb.tenant.create).not.toHaveBeenCalled();
   });
 
-  it("管理员不存在 → 创建 user + enterprise 租户(100GB) + tenantUser(owner)", async () => {
+  it("管理员不存在 → 创建 user + enterprise 租户(100GB) + tenantUser(owner)，密码经 bcrypt 哈希落库", async () => {
     process.env.ADMIN_EMAIL = "admin@example.com";
     process.env.ADMIN_PASSWORD = "admin123456";
     mockDb.user.findUnique.mockResolvedValue(null);
@@ -402,6 +408,16 @@ describe("initializeDefaultAdmin", () => {
     expect(result.success).toBe(true);
     expect(result.userId).toBe("u-admin");
     expect(result.message).toBe("默认管理员初始化成功");
+    // 密码必须经 hashPassword 处理后再落库（明文存储会导致登录失败 + 凭据泄露）
+    expect(mockHashPassword).toHaveBeenCalledWith("admin123456");
+    expect(mockDb.user.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        name: "系统管理员",
+        email: "admin@example.com",
+        password: "hashed-admin-password",
+        storageMode: "cloud",
+      }),
+    });
     // 管理员租户契约：enterprise / 100GB / aiQuota 1000
     expect(mockDb.tenant.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -410,20 +426,39 @@ describe("initializeDefaultAdmin", () => {
         aiQuota: 1000,
       }),
     });
-    expect(mockDb.user.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        name: "系统管理员",
-        email: "admin@example.com",
-        password: "admin123456",
-        storageMode: "cloud",
-      }),
-    });
     expect(mockDb.tenantUser.create).toHaveBeenCalledWith({
       data: { tenantId: "t-admin", userId: "u-admin", role: "owner" },
     });
   });
 
-  it("读取 ADMIN_EMAIL 环境变量覆盖默认 admin@example.com", async () => {
+  it("未配置 ADMIN_EMAIL → success=false，不查库不建用户（不回退弱默认 admin@example.com）", async () => {
+    delete process.env.ADMIN_EMAIL;
+
+    const result = await initializeDefaultAdmin();
+
+    expect(result.success).toBe(false);
+    expect(result.userId).toBe(null);
+    expect(result.message).toContain("ADMIN_EMAIL");
+    expect(mockDb.user.findUnique).not.toHaveBeenCalled();
+    expect(mockDb.user.create).not.toHaveBeenCalled();
+    expect(mockHashPassword).not.toHaveBeenCalled();
+  });
+
+  it("配置 ADMIN_EMAIL 但未配置 ADMIN_PASSWORD → success=false，不建用户", async () => {
+    process.env.ADMIN_EMAIL = "admin@example.com";
+    delete process.env.ADMIN_PASSWORD;
+    mockDb.user.findUnique.mockResolvedValue(null);
+
+    const result = await initializeDefaultAdmin();
+
+    expect(result.success).toBe(false);
+    expect(result.userId).toBe(null);
+    expect(result.message).toContain("ADMIN_PASSWORD");
+    expect(mockDb.user.create).not.toHaveBeenCalled();
+    expect(mockHashPassword).not.toHaveBeenCalled();
+  });
+
+  it("读取 ADMIN_EMAIL 环境变量作为管理员邮箱（无默认值，必须显式配置）", async () => {
     process.env.ADMIN_EMAIL = "custom@x.com";
     mockDb.user.findUnique.mockResolvedValue({ id: "u-c", email: "custom@x.com" });
 
@@ -436,6 +471,7 @@ describe("initializeDefaultAdmin", () => {
 
   it("user.create 抛错 → catch 返回 success=false，userId=null", async () => {
     process.env.ADMIN_EMAIL = "admin@example.com";
+    process.env.ADMIN_PASSWORD = "admin123456";
     mockDb.user.findUnique.mockResolvedValue(null);
     mockDb.user.create.mockRejectedValue(new Error("dup email"));
 
@@ -451,10 +487,16 @@ describe("initializeDefaultAdmin", () => {
 
 describe("runAllMigrations", () => {
   const origInitAdmin = process.env.INIT_DEFAULT_ADMIN;
+  const origAdminEmail = process.env.ADMIN_EMAIL;
+  const origAdminPassword = process.env.ADMIN_PASSWORD;
 
   afterEach(() => {
     if (origInitAdmin === undefined) delete process.env.INIT_DEFAULT_ADMIN;
     else process.env.INIT_DEFAULT_ADMIN = origInitAdmin;
+    if (origAdminEmail === undefined) delete process.env.ADMIN_EMAIL;
+    else process.env.ADMIN_EMAIL = origAdminEmail;
+    if (origAdminPassword === undefined) delete process.env.ADMIN_PASSWORD;
+    else process.env.ADMIN_PASSWORD = origAdminPassword;
   });
 
   it("默认（INIT_DEFAULT_ADMIN 未设）→ 仅迁移+初始化租户两步，跳过管理员，success=true", async () => {
@@ -480,6 +522,9 @@ describe("runAllMigrations", () => {
 
   it("INIT_DEFAULT_ADMIN=true → 三步全跑，含初始化管理员", async () => {
     process.env.INIT_DEFAULT_ADMIN = "true";
+    // initializeDefaultAdmin 现要求显式配置 ADMIN_EMAIL/ADMIN_PASSWORD（不回退弱默认）
+    process.env.ADMIN_EMAIL = "admin@example.com";
+    process.env.ADMIN_PASSWORD = "admin123456";
     mockDb.$queryRaw.mockResolvedValue([]);
     mockDb.tenant.count.mockResolvedValue(0);
     mockDb.$executeRaw.mockResolvedValue(1);
