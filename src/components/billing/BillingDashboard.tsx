@@ -5,7 +5,18 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Crown, HardDrive, Sparkles, CreditCard, FileText, ArrowRight, Clock } from 'lucide-react';
+import { toast } from '@/hooks/use-toast';
 
 interface SubscriptionInfo {
   plan: string;
@@ -48,6 +59,10 @@ export function BillingDashboard({ onUpgradeClick, onOrdersClick, onPlanLoaded }
   const [usage, setUsage] = useState<UsageInfo | null>(null);
   const [trial, setTrial] = useState<TrialInfo | null>(null);
   const [loading, setLoading] = useState(true);
+  // 取消订阅确认弹窗 + 提交中状态。「管理订阅」按钮仅对非 free 的 active 订阅展示，
+  // 点击后弹 AlertDialog 二次确认 → POST /api/billing/subscription { action: 'cancel' }。
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
     fetchSubscription();
@@ -68,6 +83,44 @@ export function BillingDashboard({ onUpgradeClick, onOrdersClick, onPlanLoaded }
       console.error('Failed to fetch subscription:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // 取消订阅（到期失效）：cancelAtPeriodEnd=true，当前计费周期内仍保留套餐权益。
+  // 服务端 cancelSubscription 在无活跃订阅时抛错 → 路由返回 400 + error message。
+  const handleCancelSubscription = async () => {
+    setCancelling(true);
+    try {
+      const res = await fetch('/api/billing/subscription', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'cancel' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        toast({
+          title: '取消订阅失败',
+          description: data.error || '请稍后重试',
+          variant: 'destructive',
+        });
+        return;
+      }
+      toast({
+        title: '订阅已取消',
+        description: '将在当前计费周期结束后失效，期间仍保留套餐权益。',
+      });
+      setCancelDialogOpen(false);
+      // 重新拉取订阅状态以刷新 cancelAtPeriodEnd 提示
+      await fetchSubscription();
+    } catch (error) {
+      console.error('取消订阅失败:', error);
+      toast({
+        title: '取消订阅失败',
+        description: '网络错误，请稍后重试',
+        variant: 'destructive',
+      });
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -228,13 +281,45 @@ export function BillingDashboard({ onUpgradeClick, onOrdersClick, onPlanLoaded }
               查看订单
             </Button>
             {subscription?.status === 'active' && subscription.plan !== 'free' && (
-              <Button variant="outline" className="gap-2">
+              <Button
+                variant="outline"
+                className="gap-2"
+                onClick={() => setCancelDialogOpen(true)}
+                disabled={cancelling}
+              >
                 管理订阅
               </Button>
             )}
           </div>
         </CardContent>
       </Card>
+
+      {/* 取消订阅确认弹窗：到期失效，不立即降级 */}
+      <AlertDialog open={cancelDialogOpen} onOpenChange={(open) => {
+        // 提交中时不允许外部点击/ESC 关闭，避免中断请求
+        if (cancelling && open === false) return;
+        setCancelDialogOpen(open);
+      }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>取消订阅</AlertDialogTitle>
+            <AlertDialogDescription>
+              取消后订阅将在当前计费周期结束后失效，期间仍保留当前套餐权益。
+              到期后将自动降级为免费版。此操作不可撤销。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={cancelling}>再想想</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleCancelSubscription}
+              disabled={cancelling}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {cancelling ? '处理中…' : '确认取消订阅'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* 功能特性 */}
       <Card>

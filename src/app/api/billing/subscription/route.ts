@@ -6,6 +6,7 @@ import {
   PLANS,
   checkTrialStatus,
   createSubscription,
+  cancelSubscription,
 } from "@/lib/billing/subscription";
 
 // ─── GET /api/billing/subscription — 获取当前用户订阅信息 ────────────────
@@ -76,10 +77,15 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// ─── POST /api/billing/subscription — 直接变更订阅（仅限免费套餐降级） ────
-// 付费套餐（pro/enterprise）必须经 /api/payment/create 走支付链路，支付回调
-// handlePaymentCallback 内调 createSubscription 完成订阅；本端点仅承接无需支付
-// 的「降级到 free」场景（BillingCenter.handleSelectPlan 在 free 套餐按钮触发）。
+// ─── POST /api/billing/subscription — 直接变更订阅 ─────────────────────
+// 支持两种互斥操作（由 body.action 区分，缺省走 planId 分支以兼容旧调用方）：
+//   1. { action: 'cancel' }
+//        标记当前活跃订阅 cancelAtPeriodEnd=true（到期失效，不立即降级）。
+//        由 BillingDashboard「管理订阅」按钮触发，仅对非 free 的 active 订阅有意义。
+//   2. { planId, interval }（无 action）
+//        仅允许 planId === 'free' 的无需支付降级；付费套餐必须经
+//        /api/payment/create 走支付链路，支付回调 handlePaymentCallback 内调
+//        createSubscription 完成订阅。
 export async function POST(request: NextRequest) {
   try {
     const auth = await authenticateRequest(request);
@@ -87,7 +93,25 @@ export async function POST(request: NextRequest) {
     const { tenantId } = auth;
 
     const body = await request.json().catch(() => ({}));
-    const { planId, interval } = body ?? {};
+    const { planId, interval, action } = body ?? {};
+
+    // 取消订阅分支：action === 'cancel' → 标记 cancelAtPeriodEnd
+    // cancelSubscription 在无活跃订阅时抛 'No active subscription found'，
+    // 这里捕获转为 400，避免暴露 500 让前端误以为是服务端故障。
+    if (action === "cancel") {
+      try {
+        await cancelSubscription(tenantId);
+      } catch (e) {
+        return NextResponse.json(
+          { error: e instanceof Error ? e.message : "取消订阅失败" },
+          { status: 400 }
+        );
+      }
+      return NextResponse.json({
+        success: true,
+        cancelAtPeriodEnd: true,
+      });
+    }
 
     // 参数校验：planId 必填且必须是 free；interval 可选，缺省 month
     if (!planId) {
