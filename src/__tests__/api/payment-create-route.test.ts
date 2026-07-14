@@ -375,8 +375,8 @@ describe('POST /api/payment/create', () => {
 
     // createOrder 不应被调用
     expect(mockCreateOrder).not.toHaveBeenCalled();
-    // reusePendingOrder 调用契约：tenantId + orderId + payMethod
-    expect(mockReusePendingOrder).toHaveBeenCalledWith('tenant-1', 'ord-reuse', 'alipay');
+    // reusePendingOrder 调用契约：tenantId + orderId + payMethod + userId（userId 用于审计落库）
+    expect(mockReusePendingOrder).toHaveBeenCalledWith('tenant-1', 'ord-reuse', 'alipay', 'user-1');
     // createPayment 以 order 的 plan/interval 拼装 subject
     expect(mockCreatePayment).toHaveBeenCalledWith('alipay', {
       orderNo: 'ORD-REUSE',
@@ -408,7 +408,7 @@ describe('POST /api/payment/create', () => {
       makeRequest({ planId: 'pro', interval: 'month', payMethod: 'wechat', orderId: 'ord-reuse' }),
     )) as MockRes;
 
-    expect(mockReusePendingOrder).toHaveBeenCalledWith('tenant-1', 'ord-reuse', 'wechat');
+    expect(mockReusePendingOrder).toHaveBeenCalledWith('tenant-1', 'ord-reuse', 'wechat', 'user-1');
     // createPayment 第一参数为 wechat，notifyUrl 走 wechat provider
     expect(mockCreatePayment).toHaveBeenCalledWith('wechat', expect.objectContaining({
       notifyUrl: 'http://notify/wechat',
