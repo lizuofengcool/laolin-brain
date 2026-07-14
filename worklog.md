@@ -19054,3 +19054,138 @@ mockSign 服务端生成无需转义。
   header，导致页面刷新后重新要求输入密码。属预存 UX 小问题（非安全、非本轮引入），可后续
   改为 GET 读 header 或服务端 session token 机制。
 
+## 2026-07-14 13:00 自动迭代
+
+### 本次目标
+
+修复第一百七十四轮「下一轮候选」中明确列出的 **share 页面 X-Share-Session 刷新失效**
+UX bug，并连带修复密码保护分享下载始终 403 的预存缺陷。
+
+### 问题
+
+1. **刷新被迫重输密码**：前端 `src/app/share/[token]/page.tsx` 在 POST 密码验证成功后
+   存 `share_verified_${token}=true` 并于 GET 携带 `X-Share-Session: "true"` header，
+   但 `src/app/api/files/[id]/share/route.ts` 的 GET **从不读该 header**——密码保护分享
+   一律返回 403 `passwordRequired`。结果 sessionStorage 形同虚设，页面刷新即重新要求输入
+   密码。属预存 UX 问题（非安全、非上轮引入）。
+2. **密码保护分享下载 403**：share route 返回的 `downloadUrl` 只有 `?token=`、无任何凭据；
+   `download/route.ts` 对密码保护分享要求 `?password=`，前端 `handleDownload` 又自行构造
+   `/api/files/${id}/download?token=${token}`（无 password）→ 下载始终 403。即密码验证成功
+   后下载链路实际不可用。
+
+### 方案：服务端签发短期 session 令牌
+
+沿用 `src/lib/auth.ts` 的 HMAC-SHA256 + `TOKEN_SECRET` 范式，新增
+`src/lib/share-session.ts`：
+
+- `issueShareSessionToken(shareToken, shareExpiresAt)`：payload `{ t: shareToken, exp }`，
+  `exp = min(shareExpiresAt, now+24h)`，输出 `base64url(payload).base64url(sig)`。
+- `verifyShareSessionToken(sessionToken, expectedShareToken)`：校验签名 + 过期 + `t` 与
+  `expectedShareToken` 一致；任何失败返回 `false`（不抛异常，调用方按「无令牌」回退到要求密码）。
+
+安全属性：HMAC 不可伪造；令牌绑定到具体 share token（不能跨分享复用）；自带过期（不超过
+分享过期且不超过 24h）；不跳过分享存在性/过期校验（路由先行检查）；不跳过密码暴破限流
+（限流仅在 POST 密码验证触发，session 是验证后凭据）。令牌不落库（无服务端撤销），依赖
+短期过期 + sessionStorage 生命周期——与 rate-limit 内存方案一致，单实例部署足够。
+
+### 改动
+
+- **`src/lib/share-session.ts`**（新增，107 行）：issue/verify + 私有 `getTokenSecret`/
+  `sign`/`timingSafeEqualBuf`（镜像 auth.ts 的 secret getter 范式，保持模块自包含、不动
+  auth.ts 以免影响其既有测试）。
+- **`src/app/api/files/[id]/share/route.ts`**（+37/-7）：
+  · 抽出 `buildDownloadUrl(baseUrl, fileId, shareToken, sessionToken?)`：有 session 则
+    追加 `&session=`，消除 GET/POST 重复构造。
+  · **GET**：密码保护分享在返回 403 前先 `verifyShareSessionToken(request.headers.get
+    ("X-Share-Session"), id)`，通过则返回文件信息且 downloadUrl 带 `&session=`。无密码
+    分支不变（session 被忽略，downloadUrl 不带 session）。
+  · **POST 密码验证成功**：`issueShareSessionToken(id, share.expiresAt)` 随响应返回
+    `sessionToken`，downloadUrl 带 `&session=`。
+- **`src/app/api/files/[id]/download/route.ts`**（+14/-5）：
+  · 密码保护分享优先校验 `?session=` 令牌（绑定到 `?token=`），通过则跳过密码；失败回退
+    到既有 `?password=` 路径（backwards compat 保留）。无密码分享不受影响。
+- **`src/app/share/[token]/page.tsx`**（+22/-16）：
+  · 移除失效的 `passwordVerified` 布尔 state + `share_verified_` flag。
+  · 新增 `getSessionToken()` 读 `share_session_${token}`；`fetchSharedFile` 以令牌为
+    `X-Share-Session` header 值（原为 "true"）；`handlePasswordSubmit` 成功后存 `data
+    .sessionToken`；`handleDownload` 在相对 URL 上追加 `&session=`。
+  · 保持相对 URL 构造（避免服务端 `baseUrl` 在 `APP_URL`/Origin 缺失时回退 localhost 的坑），
+    仅追加 session 参数。
+
+### 测试（+24 例）
+
+- **`src/__tests__/lib/share-session.test.ts`**（新增，10 例，真实 HMAC 非 mock）：
+  roundtrip / 两段格式 / 跨 token 失败（绑定）/ 篡改签名失败 / 篡改 payload 失败 /
+  过期失败 / 空/undefined/格式错误不抛异常 / expectedShareToken 空失败 /
+  exp 不超过 shareExpiresAt / exp 不超过 24h TTL / 错误 TOKEN_SECRET 签发失败。
+- **`src/__tests__/api/files-id-share-route.test.ts`**（+6 例 GET X-Share-Session + 端到端）：
+  · POST 正确密码 → 200 + `sessionToken`（非空字符串）+ downloadUrl 含 `&session=`。
+  · POST 签发的 sessionToken 可被 GET `X-Share-Session` 验证通过（端到端契约）。
+  · GET + 有效 session（同 token）→ 200 + downloadUrl 含 `&session=`。
+  · GET + 无 session → 403；+ 篡改 session → 403；+ 绑定其它 token 的 session → 403。
+  · GET 无密码分享 + 携 session → 200（session 被忽略，downloadUrl 不带 session）。
+  · `makeGetRequest` 扩展 headers 参数。
+- **`src/__tests__/api/files-id-download-route.test.ts`**（新增，8 例）：
+  · 密码保护 + 有效 `?session=`（绑定 `?token=`）→ 200 文件流。
+  · 密码保护 + 无 session 无 password → 403 需要密码。
+  · 密码保护 + 绑定其它 token 的 session → 403。
+  · 密码保护 + 篡改 session + 无 password → 403。
+  · 密码保护 + 正确 `?password=` → 200（backwards compat）。
+  · 无密码 + `?token=` → 200；不存在 token → 404；已过期 → 410。
+  · `fs/promises` mock 对齐仓库 ESM 互操作范式（`default` + named），`readFile` 返回固定
+    Buffer 避免真实磁盘 I/O。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，67.5s）。
+- `npx prisma generate`（v6.19.3 客户端）。
+- `npx tsc --noEmit`：**0 错误**。
+- `npx vitest run`（全量）：**5266 passed / 194 files**，无回归（上轮 5242/192，本轮 +24/+2）。
+
+环境备注：`pnpm-lock.yaml` 与 `node_modules` 均在 .gitignore；改动 7 文件（fix+test 合并）。
+
+### 改动量
+
+7 文件，+602/-37：
+- `src/lib/share-session.ts`（新增 107）
+- `src/app/api/files/[id]/share/route.ts`（+37/-7）
+- `src/app/api/files/[id]/download/route.ts`（+14/-5）
+- `src/app/share/[token]/page.tsx`（+22/-16）
+- `src/__tests__/lib/share-session.test.ts`（新增 10 例）
+- `src/__tests__/api/files-id-share-route.test.ts`（+6 例 + 端到端 + POST 断言）
+- `src/__tests__/api/files-id-download-route.test.ts`（新增 8 例）
+
+1 commit（fix + test 合并）。原因：fix 改变 GET/POST/download 行为契约，配套测试同步锁定
+新契约，合并为单 commit 保证每个 commit 全绿。符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `439ebd0` fix(share): 密码保护分享刷新免重输密码——服务端签发 X-Share-Session 令牌
+
+### 推送
+
+- origin (Gitee)：`7f89185..439ebd0`（待推送，含本轮 fix commit + worklog docs commit）
+- github (GitHub)：`7f89185..439ebd0`（待推送）
+
+### 下一轮候选
+
+- **document-qna AI 模型调用桩**（延续，低优先级）：askQuestion 的 generateMockAnswer 仍为模拟，
+  依赖外部模型 SDK，优先级低。
+- **model-manager.ts 4 处模型 API 桩**（延续，低优先级）：testModel/chat/complete/embeddings，
+  已有单测锁定 mock 边界，模块未被生产代码 import；收益较低。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与 auto-summary
+  db.file.update 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口；验签/解密已真实实现）。
+- **ActivityLog 审计 trail 查询端点/UI**（延续，低优先级）：/api/activity-logs 已有通用查询，
+  可后续补管理后台「支付方式变更记录」视图，属增量功能、非缺口。
+- **share 链接密码限流持久化**（延续，低优先级）：per-token 限流为内存 LRU，单实例重启
+  重置；多实例部署下需 Redis 共享计数。当前 README 定位为个人/小团队单实例，内存方案足够。
+- **download route `?password=` 路径移除**（新增，低优先级）：本轮为 backwards compat 保留
+  `?password=`，其与 share route GET 已移除密码 query 的安全策略不一致（密码可能进 URL/日志）。
+  前端已不使用该路径，可在确认无其它调用方后移除，统一只允许 `?session=` 令牌。
+- **share session 令牌 Redis 持久化 / 服务端撤销**（新增，低优先级）：当前令牌不落库、依赖
+  短期过期 + sessionStorage；多实例部署或需要「分享者主动吊销已验证会话」时，可引入 Redis
+  存有效 session id。单实例个人/小团队场景下当前方案足够。
+
+
