@@ -18173,3 +18173,143 @@ plan（避免父组件重复请求 `/api/billing/subscription`）。
   auto-summary `db.file.update` 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
 - **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
   alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口；验签/解密已真实实现）。
+
+## 2026-07-14 04:00 自动迭代
+
+### 背景
+
+fetch origin/github main 后无远端更新（local/origin/github 三端均 63e79d7），
+working tree 干净，无遗留改动。优先级 1 清单复核：
+
+- **tenant-db.ts raw 后门**：已解（既有审计）——`raw` getter 与 `transaction` 均
+  带 `console.warn` + 调用方堆栈记录（tenant-db.ts:41-47 / 56-62），非空审计。
+- **alipay/wechat RSA2 验签**：已解——alipay `verifyRSA2Sign` 用 `createVerify
+  ('RSA-SHA256')` + 公钥 PEM 规整（alipay.ts:191-221）；wechat `verifyWechatSign`
+  用 HMAC-SHA256 + `timingSafeEqual`，`decryptResource` 用 AES-256-GCM 真实解密
+  （wechat.ts:221-291）。mock 仅在 `!isPaymentConfigured` 时触发，非"非空即通过"。
+- **sync-engine keep_both 覆盖 bug**：已解——keep_both 分支先 rename 本地为
+  `[冲突副本] xxx` + SYNCED，再把云端版本 `db.file.create` 为新 id 新文件
+  （sync-engine.ts:687-728），`fetchCloudFileData` 抽为复用 helper，前置 `owned`
+  归属校验（:669）防跨租户。
+- **api-auth.test.ts 与实现不符**：已解——测试现期望 4 字段
+  （userId/email/tenantId/role）、async、拒绝 query param（test:67-172），
+  与 api-auth.ts 实现一致。
+
+故优先级 1 全部清零，本轮转优先级 2：补 worklog「下一轮候选」中的功能缺口——
+**BillingDashboard「管理订阅」按钮无 onClick**（按钮在 status=active && plan!==free
+时展示，但点击无响应；lib 已有 `cancelSubscription`，缺 cancel 端点 + 前端接线）。
+
+### 决策
+
+单轮 1-3 commit：1 feat（后端 cancel 端点 + 前端按钮接线）+ 1 test（路由 + 组件契约）。
+
+### feat — 取消订阅流程（+115/-6）
+
+- **`src/app/api/billing/subscription/route.ts`**（+34/-7）：
+  POST handler 顶部新增 `action === 'cancel'` 分支：
+  - `authenticateRequest` 鉴权 → 取 `tenantId`。
+  - 调 `cancelSubscription(tenantId)`（标记当前活跃订阅 `cancelAtPeriodEnd=true`，
+    到期失效不立即降级）。
+  - `cancelSubscription` 抛错（如 `No active subscription found`）→ `try/catch`
+    转 **400** + error message（而非 500，避免前端误判服务端故障）。
+  - 成功 → 200 `{ success: true, cancelAtPeriodEnd: true }`。
+  - 与既有 `planId` 降级分支**互斥**：`action==='cancel'` 优先匹配，忽略 body 中的
+    planId；非 cancel 的 action 值不被特殊处理，落入 planId 校验（避免 action 语义
+    被静默扩展）。
+  - 既有 free 降级逻辑零改动，向后兼容。
+- **`src/components/billing/BillingDashboard.tsx`**（+87/-1）：
+  - 新增 `cancelDialogOpen` / `cancelling` state；import `AlertDialog*` + `toast`。
+  - 「管理订阅」按钮（`:283-292`）加 `onClick={() => setCancelDialogOpen(true)}`
+    + `disabled={cancelling}`。
+  - `handleCancelSubscription`：POST `/api/billing/subscription`
+    `{ action: 'cancel' }` → 成功 toast `订阅已取消` + 关弹窗 + `fetchSubscription()`
+    重新拉取刷新 `cancelAtPeriodEnd` 提示（UI 既有 `:196-200` 显示「已取消，到期后失效」）；
+    `!res.ok || !data.success` → destructive toast 带 `data.error` + 留弹窗；
+    fetch reject → destructive toast `网络错误，请稍后重试` + 留弹窗；`finally`
+    复位 `cancelling`。
+  - AlertDialog：`onOpenChange` 在 `cancelling && open===false` 时拦截（提交中不可
+    外部关闭）；Action 按钮文案 `cancelling ? '处理中…' : '确认取消订阅'`，destructive
+    配色；Cancel 按钮 `再想想` 亦 `disabled={cancelling}`。
+
+无安全影响：cancel 端点经 `authenticateRequest` 鉴权 + 仅操作当前 tenantId 的活跃
+订阅（`cancelSubscription` 内 `findFirst where tenantId`），无越权；不涉及支付退款，
+仅标记到期失效。
+
+### test — 取消订阅流程契约（+444/-1）
+
+- **`src/__tests__/api/billing-subscription-route.test.ts`**（+87/-1，新增 POST
+  cancel describe 7 用例）：
+  - `mockCancelSubscription` 经 `vi.hoisted` 注入 `@/lib/billing/subscription` mock；
+    `makePostRequest(body)` helper 构造 POST 请求。
+  - **action=cancel 成功**：调 `cancelSubscription('tenant-1')` → 200
+    `{success, cancelAtPeriodEnd:true}`。
+  - **抛 Error**：`No active subscription found` → 400 + error message。
+  - **抛非 Error**（`'boom'`）→ 400 + 兜底 `取消订阅失败`。
+  - **未认证**：透传 401，`cancelSubscription` 不触达。
+  - **action='resume'**：不走 cancel 分支，落入 planId 校验 → 400 `缺少 planId 参数`
+    （锁定 cancel 严格匹配，避免 action 语义被静默扩展）。
+  - **action=cancel + planId=free**：cancel 优先，忽略 planId（互斥语义）。
+- **`src/__tests__/components/BillingDashboard.test.tsx`**（新增 9 用例）：
+  - **按钮渲染条件**：pro active 渲染 / free 不渲染 / cancelled 不渲染。
+  - **确认 → POST cancel → 成功 toast + 关闭 + 重新 GET**：断言 fetch 入参
+    `{method:'POST', body: JSON.stringify({action:'cancel'})}`；toast title
+    `订阅已取消`；弹窗 `data-open` 由 true→false；GET 调用次数 ≥2（初始 + 刷新）。
+  - **400 失败**：`{error:'No active subscription found'}` → destructive toast
+    带 description + 弹窗保留。
+  - **200 但 success=false**（防御性分支）→ destructive toast + 弹窗保留。
+  - **网络异常**：`mockRejectedValue` → destructive toast `网络错误，请稍后重试`
+    + 弹窗保留。
+  - **提交中**：POST 永久 pending → Action 按钮文案 `处理中…` + disabled。
+  - **onPlanLoaded 回传**：初始 GET 后回传真实 plan `pro`。
+  - AlertDialog 经 `vi.mock` 桩化为受控组件（`open` 驱动渲染、Action/Cancel 暴露
+    `data-testid` 触发按钮），绕开 Radix portal/focus 复杂度；其余 UI 子组件
+    （Card/Button/Badge/Progress）保持真实实现。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，58.2s）。
+- `npx prisma generate`（v6.19.3 客户端，222ms）。
+- `npx tsc --noEmit`：**0 错误**（全项目）。
+- `npx vitest run src/__tests__/api/billing-subscription-route.test.ts
+  src/__tests__/components/BillingDashboard.test.tsx
+  src/__tests__/components/BillingCenter.test.tsx`：**31 passed**（16 + 9 + 6）。
+- `npx vitest run`（全量）：**5167 passed / 187 files**，无回归（上轮 5152/186，
+  本轮 +15 测试 / +1 文件）。
+
+环境备注：`pnpm-lock.yaml` 已在 .gitignore；`git status` 干净。
+
+### 改动量
+
+4 文件，+559/-7：
+- `src/app/api/billing/subscription/route.ts`（feat，+34/-7：cancel action 分支）
+- `src/components/billing/BillingDashboard.tsx`（feat，+87/-1：弹窗 + handler）
+- `src/__tests__/api/billing-subscription-route.test.ts`（test，+87/-1：POST 7 用例）
+- `src/__tests__/components/BillingDashboard.test.tsx`（test，+357：9 用例）
+
+2 commit（1 feat + 1 test），符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `7200e94` feat(billing): 取消订阅流程——POST /api/billing/subscription cancel action + BillingDashboard「管理订阅」按钮
+- `faf75aa` test(billing): 取消订阅流程契约测试——POST cancel 分支 + BillingDashboard 控制流
+
+### 推送
+
+- origin (Gitee)：`63e79d7..faf75aa` 推送成功（含本轮 2 commit）
+- github (GitHub)：`63e79d7..faf75aa` 推送成功
+- 双端同步校验：`git rev-list --left-right --count origin/main...github/main` = `0 0`，
+  三端（local/origin/github）均指向 `faf75aa`
+
+### 下一轮候选
+
+- **OrderHistory pending 订单操作**（新增）：`OrderHistory.tsx:344-349` 的「立即支付」
+  /「取消订单」按钮无 onClick（仅 pending 订单显示）；可接线立即支付跳 PaymentDialog
+  / 取消订单调 POST `/api/billing/orders/:id/cancel`（端点待新增）。
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  依赖外部 SDK，优先级低。
+- **model-manager.ts 4 处模型 API 桩**（延续）：testModel/chat/complete/embeddings，
+  已有单测锁定 mock 边界，模块未被生产代码 import；收益较低。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与
+  auto-summary `db.file.update` 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口；验签/解密已真实实现）。
