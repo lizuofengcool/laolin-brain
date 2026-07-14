@@ -20,6 +20,9 @@ interface PaymentDialogProps {
   planName: string;
   interval: 'month' | 'year';
   amount: number; // 分
+  // 可选：复用既有 pending 订单（OrderHistory「立即支付」路径传入 order.id），
+  // 避免每次支付都创建新订单导致原订单悬挂。缺省时走 createOrder 新建订单。
+  reuseOrderId?: string;
   onSuccess?: () => void;
 }
 
@@ -33,6 +36,7 @@ export function PaymentDialog({
   planName,
   interval,
   amount,
+  reuseOrderId,
   onSuccess,
 }: PaymentDialogProps) {
   const [payMethod, setPayMethod] = useState<PayMethod>('alipay');
@@ -53,7 +57,7 @@ export function PaymentDialog({
       setErrorMsg('');
       setPollingCount(0);
     }
-  }, [open, planId, interval]);
+  }, [open, planId, interval, reuseOrderId]);
 
   // 轮询支付状态
   useEffect(() => {
@@ -107,6 +111,9 @@ export function PaymentDialog({
           planId,
           interval,
           payMethod,
+          // 复用既有 pending 订单时透传 orderId，路由据此走 reusePendingOrder
+          // 而非 createOrder，避免原订单悬挂。缺省时路由创建新订单。
+          ...(reuseOrderId ? { orderId: reuseOrderId } : {}),
         }),
       });
 

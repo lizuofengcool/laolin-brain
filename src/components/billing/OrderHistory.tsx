@@ -52,8 +52,8 @@ export function OrderHistory({ onBack }: OrderHistoryProps) {
   // 点击后弹 AlertDialog 二次确认 → POST /api/billing/orders/:id/cancel。
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  // 立即支付：复用 PaymentDialog（创建新支付订单）。点击后关闭详情弹窗，
-  // 以选中订单的 plan/interval/amount 打开 PaymentDialog。
+  // 立即支付：复用 PaymentDialog 并透传 reuseOrderId 复用既有 pending 订单。
+  // 点击后关闭详情弹窗，以选中订单的 plan/interval/amount 打开 PaymentDialog。
   const [payDialogOpen, setPayDialogOpen] = useState(false);
   const [payOrder, setPayOrder] = useState<Order | null>(null);
 
@@ -145,7 +145,8 @@ export function OrderHistory({ onBack }: OrderHistoryProps) {
   };
 
   // 立即支付：关闭详情弹窗，以选中订单的 plan/interval/amount 打开 PaymentDialog。
-  // PaymentDialog 走 /api/payment/create 创建新支付订单（与套餐升级同一链路）。
+  // 透传 reuseOrderId=order.id，PaymentDialog → /api/payment/create 走 reusePendingOrder
+  // 复用既有 pending 订单，而非 createOrder 新建（避免原订单悬挂）。
   const handlePayNow = (order: Order) => {
     setPayOrder(order);
     setDetailDialogOpen(false);
@@ -449,7 +450,7 @@ export function OrderHistory({ onBack }: OrderHistoryProps) {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* 立即支付：复用 PaymentDialog（创建新支付订单） */}
+      {/* 立即支付：复用 PaymentDialog，透传 reuseOrderId 复用既有 pending 订单 */}
       {payOrder && (
         <PaymentDialog
           open={payDialogOpen}
@@ -458,8 +459,9 @@ export function OrderHistory({ onBack }: OrderHistoryProps) {
           planName={getPlanText(payOrder.plan)}
           interval={payOrder.interval as 'month' | 'year'}
           amount={payOrder.amount}
+          reuseOrderId={payOrder.id}
           onSuccess={() => {
-            // 支付成功后刷新订单列表（新订单经回调变 paid 后会出现在列表中）
+            // 支付成功后刷新订单列表（复用订单经回调变 paid 后会出现在列表中）
             fetchOrders();
           }}
         />

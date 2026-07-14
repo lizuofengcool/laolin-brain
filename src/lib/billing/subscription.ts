@@ -325,6 +325,43 @@ export async function getOrders(tenantId: string, limit: number = 20) {
 }
 
 /**
+ * 复用待支付订单
+ *
+ * 用于 OrderHistory「立即支付」场景：避免 createOrder 创建新 pending 订单导致
+ * 原订单悬挂（dangling）。按 id + tenantId 定位（跨租户 orderId 不会命中 →
+ * 抛"订单不存在"），仅 status==='pending' 可复用（已支付需走退款，已取消/失败
+ * 需重新下单）。复用时若 payMethod 与订单记录不同则刷新支付方式（未支付前可改），
+ * 其余字段（plan/interval/amount/orderNo）保持不变。
+ */
+export async function reusePendingOrder(
+  tenantId: string,
+  orderId: string,
+  payMethod: 'alipay' | 'wechat'
+) {
+  const order = await db.order.findFirst({
+    where: { id: orderId, tenantId },
+  });
+
+  if (!order) {
+    throw new Error('订单不存在');
+  }
+
+  if (order.status !== 'pending') {
+    throw new Error('仅待支付订单可复用');
+  }
+
+  // 切换支付方式时更新订单记录（未支付前可在 alipay/wechat 间切换）
+  if (order.payMethod !== payMethod) {
+    return db.order.update({
+      where: { id: order.id },
+      data: { payMethod },
+    });
+  }
+
+  return order;
+}
+
+/**
  * 取消待支付订单
  *
  * 仅 status==='pending' 的订单可取消（已支付订单需走退款流程）。
