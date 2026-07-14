@@ -233,26 +233,29 @@ describe("EmailService renderTemplate", () => {
 
   it("变量值含 $ 反向引用串时按字面量替换（$& 不展开为匹配文本 {{userName}}）", () => {
     // 旧实现 html.replace(regex, value) 会把 $& 解释为"匹配到的子串"即 {{userName}}，
-    // 导致渲染出 "你好，{{userName}}！"（占位符未被替换）。修复后应输出字面 "$&"。
+    // 导致渲染出 "你好，{{userName}}！"（占位符未被替换）。修复后使用 () => safeValue
+    // 替换函数按字面量替换。注意：变量值经 escapeHtml 转义，$& 中的 & 变为 &amp;，
+    // 故 html 中出现 "$&amp;"（邮件客户端渲染时还原为 "$&"）；text 版本反转义后为 "$&"。
     const rendered = service.renderTemplate("welcome", {
       userName: "$&",
       appUrl: "https://x",
     });
     expect(rendered).not.toBeNull();
-    expect(rendered!.html).toContain("你好，$&！");
+    expect(rendered!.html).toContain("你好，$&amp;！");
     expect(rendered!.html).not.toContain("{{userName}}");
     expect(rendered!.text).toContain("你好，$&！");
   });
 
   it("变量值含 $$ / $1 / $` / $' 时均按字面量原样输出", () => {
     // $$ 旧实现会折叠为单个 $；$1（无捕获组）旧实现会变为空串；
-    // $` / $' 旧实现会插入匹配前/后的文本。修复后全部字面输出。
+    // $` / $' 旧实现会插入匹配前/后的文本。修复后使用 () => safeValue 替换函数全部
+    // 字面输出。注意：值中的 ' 经 escapeHtml 转义为 &#39;（$ 符号本身不转义）。
     const rendered = service.renderTemplate("welcome", {
       userName: "$$,$1,$`,$'",
       appUrl: "https://x",
     });
     expect(rendered).not.toBeNull();
-    expect(rendered!.html).toContain("你好，$$,$1,$`,$'！");
+    expect(rendered!.html).toContain("你好，$$,$1,$`,$&#39;！");
     expect(rendered!.html).not.toContain("{{userName}}");
   });
 
@@ -264,8 +267,115 @@ describe("EmailService renderTemplate", () => {
     });
     expect(rendered).not.toBeNull();
     // subject 整体就是 {{title}}，旧实现会回填匹配文本 {{title}}，修复后为字面 $&
+    // （subject 为纯文本不做 HTML 转义）。html 中 {{title}} 经 escapeHtml 转义，
+    // $& → $&amp;（<h2>...>$&amp;</h2>）。
     expect(rendered!.subject).toBe("$&");
-    expect(rendered!.html).toContain(">$&<");
+    expect(rendered!.html).toContain(">$&amp;<");
+  });
+
+  // ── XSS 防护：变量值经 escapeHtml 转义后再插入 HTML 正文 ──
+  // 防止 tenantName / fileName / commentContent / message 等用户可控字段注入
+  // <script>/<a>/<img onerror> 等标签构成存储型 XSS（邮件正文 HTML 上下文）。
+  it("invitation tenantName 含 <script> → html 转义为 &lt;script&gt;，不含原始 <script>", () => {
+    const rendered = service.renderTemplate("invitation", {
+      email: "a@x.com",
+      tenantName: '<script>alert("xss")</script>',
+      role: "成员",
+      inviteUrl: "https://x/invite?token=t",
+      expiresAt: "2026-07-14T00:00:00.000Z",
+    });
+    expect(rendered).not.toBeNull();
+    expect(rendered!.html).toContain("&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;");
+    expect(rendered!.html).not.toContain("<script>alert");
+    // subject 为纯文本不转义，保留原始 <script>（无 XSS 风险，标题不渲染 HTML）
+    expect(rendered!.subject).toBe('邀请你加入<script>alert("xss")</script>');
+  });
+
+  it("invitation tenantName 含 <a href> 钓鱼链接 → html 转义，不含原始 <a href=", () => {
+    const rendered = service.renderTemplate("invitation", {
+      email: "a@x.com",
+      tenantName: '<a href="https://evil.example.com/phish">点我重置密码</a>',
+      role: "成员",
+      inviteUrl: "https://x/invite?token=t",
+      expiresAt: "2026-07-14T00:00:00.000Z",
+    });
+    expect(rendered).not.toBeNull();
+    expect(rendered!.html).not.toContain('<a href="https://evil.example.com/phish"');
+    expect(rendered!.html).toContain("&lt;a href=");
+    // 钓鱼链接文本仍以纯文本形式可见（转义后），不构成可点击锚点
+    expect(rendered!.html).toContain("点我重置密码");
+  });
+
+  it("comment-notification commentContent 含 <img onerror> → html 转义，不含原始 onerror", () => {
+    const rendered = service.renderTemplate("comment-notification", {
+      userName: "Bob",
+      commenterName: "Alice",
+      fileName: "doc.pdf",
+      commentContent: '<img src=x onerror=alert(1)>',
+      fileUrl: "https://x/files/1",
+    });
+    expect(rendered).not.toBeNull();
+    expect(rendered!.html).not.toContain("<img src=x onerror");
+    expect(rendered!.html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+  });
+
+  it("alert-notification message 含 <script> → html 转义（监控告警真实可达路径）", () => {
+    const rendered = service.renderTemplate("alert-notification", {
+      alertName: "CPU 高",
+      level: "critical",
+      statusText: "触发",
+      message: '<script>steal()</script> CPU 超 90%',
+      value: "92",
+      threshold: "80",
+      ruleId: "r1",
+      timestamp: "2026-07-14T00:00:00.000Z",
+    });
+    expect(rendered).not.toBeNull();
+    expect(rendered!.html).not.toContain("<script>steal()");
+    expect(rendered!.html).toContain("&lt;script&gt;steal()&lt;/script&gt;");
+    expect(rendered!.html).toContain("CPU 超 90%");
+  });
+
+  it("text 版本反转义 HTML 实体：含 < 的变量在 text 中还原为字面 <（纯文本无 XSS 风险）", () => {
+    const rendered = service.renderTemplate("invitation", {
+      email: "a@x.com",
+      tenantName: "a < b & c",
+      role: "成员",
+      inviteUrl: "https://x/invite?token=t",
+      expiresAt: "2026-07-14T00:00:00.000Z",
+    });
+    expect(rendered).not.toBeNull();
+    // html 转义：& → &amp;、< → &lt;
+    expect(rendered!.html).toContain("a &lt; b &amp; c");
+    // text 反转义后还原为原始字符
+    expect(rendered!.text).toContain("a < b & c");
+  });
+
+  it("URL 变量含查询参数 & ：href 中编码为 &amp;（属性正确编码），text 中还原为 &", () => {
+    const rendered = service.renderTemplate("invitation", {
+      email: "a@x.com",
+      tenantName: "团队",
+      role: "成员",
+      inviteUrl: "https://x/invite?token=abc&ref=email",
+      expiresAt: "2026-07-14T00:00:00.000Z",
+    });
+    expect(rendered).not.toBeNull();
+    // href 属性上下文中 & 必须编码为 &amp;（否则 &ref= 会被某些解析器当作实体起始）
+    expect(rendered!.html).toContain('href="https://x/invite?token=abc&amp;ref=email"');
+    // text 版本反转义后链接还原为原始 & 
+    expect(rendered!.text).toContain("https://x/invite?token=abc&ref=email");
+  });
+
+  it("反转义顺序：变量值 '&amp;' → html '&amp;amp;' → text '&amp;'（不双重还原为 &）", () => {
+    // 防止 &amp;lt; 被错误双重还原为 < 。&amp; 必须最后反转义。
+    const rendered = service.renderTemplate("welcome", {
+      userName: "&amp;",
+      appUrl: "https://x",
+    });
+    expect(rendered).not.toBeNull();
+    expect(rendered!.html).toContain("你好，&amp;amp;！");
+    expect(rendered!.text).toContain("你好，&amp;！");
+    expect(rendered!.text).not.toContain("你好，&！");
   });
 });
 

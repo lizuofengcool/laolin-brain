@@ -4,6 +4,7 @@
  */
 
 import nodemailer from "nodemailer";
+import { escapeHtml } from "@/lib/sanitize";
 
 // 邮件配置类型
 export interface EmailConfig {
@@ -462,14 +463,34 @@ export class EmailService {
     // 使用替换函数 () => value 而非直接传 value：String.replace 会把 value 中的
     // $& / $$ / $` / $' / $n 当作反向引用解释（如 value="$&" 会插入匹配文本 "{{key}}"
     // 而非字面 "$&"）。变量值多为用户名/URL/金额，含 $ 时会引发渲染异常，故按字面量替换。
+    //
+    // HTML 正文中的变量值统一经 escapeHtml 转义后再替换，防止 tenantName / fileName /
+    // commentContent / message 等用户可控字段注入 <script>/<a>/<img> 等标签（存储型 XSS）。
+    // URL 变量（resetUrl/shareUrl/inviteUrl 等）插入到 href="..." 属性上下文，escapeHtml
+    // 将 & 转为 &amp;（属性值的正确编码，浏览器跟随链接时还原为 &）、将 " 转为 &quot;
+    // （防止闭合属性），故对 href 同样安全。
+    // subject 为纯文本（RFC 5322），邮件客户端不在标题中渲染 HTML，且 HTML 实体会以
+    // 字面量显示（如 "AT&T" 会变成 "AT&amp;T"），故 subject 不做转义；标题的 CRLF 注入
+    // 由 nodemailer 折叠处理。
     Object.entries(variables).forEach(([key, value]) => {
       const regex = new RegExp(`{{${key}}}`, "g");
-      html = html.replace(regex, () => value);
+      const safeValue = escapeHtml(value);
+      html = html.replace(regex, () => safeValue);
       subject = subject.replace(regex, () => value);
     });
 
-    // 生成纯文本版本（简单去除HTML标签）
-    const text = html.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+    // 生成纯文本版本：去除 HTML 标签后反转义 HTML 实体，使纯文本显示原始字符
+    // （如转义后的 "&amp;" 还原为 "&"），再折叠空白。&amp; 必须最后反转义，避免
+    // "&amp;lt;" 被错误地双重还原为 "<"。
+    const text = html
+      .replace(/<[^>]*>/g, "")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, "&")
+      .replace(/\s+/g, " ")
+      .trim();
 
     return { subject, html, text };
   }
