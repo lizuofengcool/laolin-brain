@@ -9,7 +9,9 @@
  *   - POST 失败（!res.ok || !data.success）→ destructive toast + 弹窗保留。
  *   - 网络异常（fetch reject）→ destructive toast「网络错误，请稍后重试」。
  *   - 提交中（cancelling=true）→ 确认按钮文案「处理中…」+ disabled。
- *   - 「立即支付」→ 关闭详情弹窗 + 打开 PaymentDialog（带 plan/interval/amount）。
+ *   - 「立即支付」→ 关闭详情弹窗 + 打开 PaymentDialog（带 plan/interval/amount +
+ *     reuseOrderId 透传订单 id，使 /api/payment/create 走 reusePendingOrder 复用既有
+ *     pending 订单而非新建，避免原订单悬挂）。
  *
  * Mock 策略：
  *   - @/hooks/use-toast 的 toast 经 vi.hoisted + spy 断言。
@@ -99,12 +101,13 @@ vi.mock("@/components/ui/select", () => ({
 
 // PaymentDialog 桩：暴露入参为 data-*，便于断言立即支付接线。
 vi.mock("@/components/billing/PaymentDialog", () => ({
-  PaymentDialog: ({ open, planId, planName, interval, amount }: {
+  PaymentDialog: ({ open, planId, planName, interval, amount, reuseOrderId }: {
     open: boolean;
     planId: string;
     planName: string;
     interval: string;
     amount: number;
+    reuseOrderId?: string;
   }) => (
     <div
       data-testid="payment-dialog"
@@ -113,6 +116,7 @@ vi.mock("@/components/billing/PaymentDialog", () => ({
       data-plan-name={planName}
       data-interval={interval}
       data-amount={String(amount)}
+      data-reuse-order-id={reuseOrderId ?? ''}
     />
   ),
 }));
@@ -314,13 +318,13 @@ describe("OrderHistory - pending 订单操作", () => {
     });
   });
 
-  it("立即支付：点击 → 打开 PaymentDialog（带 plan/interval/amount）+ 关闭详情弹窗", async () => {
+  it("立即支付：点击 → 打开 PaymentDialog（带 plan/interval/amount/reuseOrderId）+ 关闭详情弹窗", async () => {
     render(<OrderHistory />);
 
     await openDetailForOrder("KB123ABC");
     fireEvent.click(screen.getByText("立即支付"));
 
-    // PaymentDialog 打开且入参正确
+    // PaymentDialog 打开且入参正确，reuseOrderId 透传订单 id（复用而非新建）
     await waitFor(() => {
       const pd = screen.getByTestId("payment-dialog");
       expect(pd.getAttribute("data-open")).toBe("true");
@@ -328,6 +332,7 @@ describe("OrderHistory - pending 订单操作", () => {
       expect(pd.getAttribute("data-plan-name")).toBe("专业版");
       expect(pd.getAttribute("data-interval")).toBe("month");
       expect(pd.getAttribute("data-amount")).toBe("3900");
+      expect(pd.getAttribute("data-reuse-order-id")).toBe("order-1");
     });
     // 详情弹窗关闭
     expect(screen.getByTestId("dialog-root").getAttribute("data-open")).toBe("false");
