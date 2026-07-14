@@ -194,4 +194,49 @@ describe('支付宝 mock 支付页路由', () => {
       expect(String(res.body)).toContain('¥0.00');
     });
   });
+
+  describe('XSS 防护（reflected XSS 转义）', () => {
+    it('orderNo 含 <script> 标签 → HTML 上下文转义为 &lt;script&gt;', async () => {
+      const payload = encodeURIComponent('<script>alert(1)</script>');
+      const res = (await GET(makeGetRequest(`orderNo=${payload}&amount=100`))) as MockRes;
+      const html = String(res.body);
+      // 原始未转义的 payload 不得出现在 order-value 单元格
+      expect(html).not.toContain(
+        '<span class="order-value"><script>alert(1)</script></span>'
+      );
+      // 转义后的 HTML 实体应出现
+      expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    });
+
+    it('orderNo 含单引号 → JS 字符串上下文转义防止截断注入', async () => {
+      const payload = encodeURIComponent("';alert(1);//");
+      const res = (await GET(makeGetRequest(`orderNo=${payload}&amount=100`))) as MockRes;
+      const html = String(res.body);
+      // 不得出现未转义的字符串截断（会执行 alert(1)）
+      expect(html).not.toContain("out_trade_no: '';alert(1);//");
+      // 转义后单引号前有反斜杠
+      expect(html).toContain("out_trade_no: '\\';alert(1);//");
+    });
+
+    it('tradeNo 含 </script> → JS 字符串上下文转义防止 script 标签截断', async () => {
+      const payload = encodeURIComponent('</script><script>alert(1)</script>');
+      const res = (await GET(
+        makeGetRequest(`orderNo=ORD&amount=100&tradeNo=${payload}`)
+      )) as MockRes;
+      const html = String(res.body);
+      // 页面应仅含 1 个 </script> 闭合标签（页面自身），tradeNo 的 < 被转义为 \u003c
+      const scriptCloseCount = (html.match(/<\/script>/g) ?? []).length;
+      expect(scriptCloseCount).toBe(1);
+      expect(html).toContain('\\u003c/script>');
+    });
+
+    it('tradeNo HTML 上下文转义（含 < 与 &）', async () => {
+      const payload = encodeURIComponent('<img src=x>&evil');
+      const res = (await GET(
+        makeGetRequest(`orderNo=ORD&amount=100&tradeNo=${payload}`)
+      )) as MockRes;
+      const html = String(res.body);
+      expect(html).toContain('&lt;img src=x&gt;&amp;evil');
+    });
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeUserHtml, sanitizeMarkdownHtml, stripHtml } from '@/lib/sanitize';
+import { sanitizeUserHtml, sanitizeMarkdownHtml, stripHtml, escapeHtml, escapeJsString } from '@/lib/sanitize';
 
 describe('sanitize', () => {
   describe('sanitizeUserHtml', () => {
@@ -92,6 +92,65 @@ describe('sanitize', () => {
       expect(result).toContain('Link');
       expect(result).toContain('Text');
       expect(result).not.toContain('<');
+    });
+  });
+
+  describe('escapeHtml', () => {
+    it('should escape HTML special characters', () => {
+      expect(escapeHtml('<script>alert("xss")</script>'))
+        .toBe('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
+    });
+
+    it('should escape ampersand first to avoid double-encoding', () => {
+      expect(escapeHtml('a & b')).toBe('a &amp; b');
+      expect(escapeHtml('&lt;')).toBe('&amp;lt;');
+    });
+
+    it('should escape single quotes', () => {
+      expect(escapeHtml("it's")).toBe("it&#39;s");
+    });
+
+    it('should leave alphanumeric strings unchanged', () => {
+      expect(escapeHtml('ORD-20260630-1')).toBe('ORD-20260630-1');
+    });
+
+    it('should return empty string for falsy input', () => {
+      expect(escapeHtml('')).toBe('');
+      expect(escapeHtml(null as any)).toBe('');
+      expect(escapeHtml(undefined as any)).toBe('');
+    });
+  });
+
+  describe('escapeJsString', () => {
+    it('should escape single quotes for JS string context', () => {
+      // 攻击者用 ' 截断字符串注入代码：';alert(1);//
+      expect(escapeJsString("';alert(1);//")).toBe("\\';alert(1);//");
+    });
+
+    it('should escape backslash to prevent escape-sequence injection', () => {
+      expect(escapeJsString('\\')).toBe('\\\\');
+    });
+
+    it('should escape < to prevent </script> tag breakout', () => {
+      expect(escapeJsString('</script>')).toBe('\\u003c/script>');
+      // 转义后浏览器不会将其识别为 script 闭合标签
+    });
+
+    it('should escape newlines and unicode line separators', () => {
+      expect(escapeJsString('a\nb')).toBe('a\\nb');
+      expect(escapeJsString('a\rb')).toBe('a\\rb');
+      expect(escapeJsString('a\u2028b')).toBe('a\\u2028b');
+      expect(escapeJsString('a\u2029b')).toBe('a\\u2029b');
+    });
+
+    it('should leave alphanumeric strings unchanged', () => {
+      expect(escapeJsString('ALIPAY123')).toBe('ALIPAY123');
+      expect(escapeJsString('MOCK1770000000000')).toBe('MOCK1770000000000');
+    });
+
+    it('should return empty string for falsy input', () => {
+      expect(escapeJsString('')).toBe('');
+      expect(escapeJsString(null as any)).toBe('');
     });
   });
 });

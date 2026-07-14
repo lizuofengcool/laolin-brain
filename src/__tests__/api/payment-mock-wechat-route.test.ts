@@ -212,4 +212,45 @@ describe('微信 mock 支付页路由', () => {
       expect(String(res.body)).toContain('¥0.00');
     });
   });
+
+  describe('XSS 防护（reflected XSS 转义）', () => {
+    it('orderNo 含 <script> 标签 → HTML 上下文转义为 &lt;script&gt;', async () => {
+      const payload = encodeURIComponent('<script>alert(1)</script>');
+      const res = (await GET(makeGetRequest(`orderNo=${payload}&amount=100`))) as MockRes;
+      const html = String(res.body);
+      expect(html).not.toContain(
+        '<span class="order-value"><script>alert(1)</script></span>'
+      );
+      expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    });
+
+    it('orderNo 含单引号 → JS 字符串上下文转义防止截断注入', async () => {
+      const payload = encodeURIComponent("';alert(1);//");
+      const res = (await GET(makeGetRequest(`orderNo=${payload}&amount=100`))) as MockRes;
+      const html = String(res.body);
+      // 微信 fetch body 内 out_trade_no 字段
+      expect(html).not.toContain("out_trade_no: '';alert(1);//");
+      expect(html).toContain("out_trade_no: '\\';alert(1);//");
+    });
+
+    it('tradeNo 含 </script> → JS 字符串上下文转义防止 script 标签截断', async () => {
+      const payload = encodeURIComponent('</script><script>alert(1)</script>');
+      const res = (await GET(
+        makeGetRequest(`orderNo=ORD&amount=100&tradeNo=${payload}`)
+      )) as MockRes;
+      const html = String(res.body);
+      const scriptCloseCount = (html.match(/<\/script>/g) ?? []).length;
+      expect(scriptCloseCount).toBe(1);
+      expect(html).toContain('\\u003c/script>');
+    });
+
+    it('tradeNo HTML 上下文转义（含 < 与 &）', async () => {
+      const payload = encodeURIComponent('<img src=x>&evil');
+      const res = (await GET(
+        makeGetRequest(`orderNo=ORD&amount=100&tradeNo=${payload}`)
+      )) as MockRes;
+      const html = String(res.body);
+      expect(html).toContain('&lt;img src=x&gt;&amp;evil');
+    });
+  });
 });
