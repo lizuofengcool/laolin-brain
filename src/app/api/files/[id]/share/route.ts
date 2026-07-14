@@ -7,10 +7,20 @@ import {
   recordSharePasswordFailure,
   clearSharePasswordLimit,
 } from "@/lib/rate-limit";
+import {
+  issueShareSessionToken,
+  verifyShareSessionToken,
+} from "@/lib/share-session";
 
 /** Hash a share password with SHA-256 for secure storage */
 function hashSharePassword(password: string): string {
   return createHash('sha256').update(password).digest('hex');
+}
+
+/** 构造下载 URL；密码保护分享附带 session 令牌（下载是 window.open 导航，无法带 header） */
+function buildDownloadUrl(baseUrl: string, fileId: string, shareToken: string, sessionToken?: string): string {
+  const url = `${baseUrl}/api/files/${fileId}/download?token=${shareToken}`;
+  return sessionToken ? `${url}&session=${encodeURIComponent(sessionToken)}` : url;
 }
 
 // POST: Generate a share link for a file (authenticated) OR verify share password (unauthenticated)
@@ -84,7 +94,10 @@ export async function POST(
       const allowedOrigin = request.headers.get("origin") || "";
       const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:3000").split(",").map(s => s.trim());
       const baseUrl = ALLOWED_ORIGINS.includes(allowedOrigin) ? allowedOrigin : (process.env.APP_URL || "http://localhost:3000");
-      const downloadUrl = `${baseUrl}/api/files/${file.id}/download?token=${id}`;
+
+      // 签发短期 session 令牌：前端存 sessionStorage，后续 GET（刷新）与下载凭此免密
+      const sessionToken = issueShareSessionToken(id, share.expiresAt);
+      const downloadUrl = buildDownloadUrl(baseUrl, file.id, id, sessionToken);
 
       return NextResponse.json({
         id: file.id,
@@ -95,6 +108,7 @@ export async function POST(
         thumbnailUrl: file.thumbnailUrl,
         createdAt: file.createdAt.toISOString(),
         downloadUrl,
+        sessionToken,
       });
     } catch (error) {
       console.error("Share password verification failed:", error);
@@ -179,7 +193,8 @@ export async function POST(
 
 // GET: Access shared file via token
 // 密码验证已移至 POST（避免密码出现在 URL/日志/Referer/历史记录）。
-// GET 仅用于无密码分享；带密码的分享始终返回 passwordRequired，客户端须 POST 密码。
+// GET 用于无密码分享；密码保护分享须 POST 密码验证，验证成功后凭 X-Share-Session
+// 令牌可 GET（页面刷新免重输密码）。
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -207,18 +222,26 @@ export async function GET(
 
     // 密码保护的分享：GET 不再接受 ?password= query param（密码会泄漏到
     // URL/访问日志/Referer/浏览器历史），统一要求 POST 密码验证。
+    // 例外：携带有效 X-Share-Session 令牌（密码验证成功后签发）时跳过密码要求，
+    // 解决页面刷新后被迫重新输入密码的 UX 问题。令牌校验：签名 + 过期 + 绑定到当前 token。
+    // 有效 session 同时用于构造下载 URL（下载是 window.open 导航无法带 header）。
+    let sessionForDownload: string | undefined;
     if (share.password) {
-      return NextResponse.json(
-        { error: "需要密码", passwordRequired: true },
-        { status: 403 }
-      );
+      const sessionToken = request.headers.get("X-Share-Session");
+      if (!verifyShareSessionToken(sessionToken, id)) {
+        return NextResponse.json(
+          { error: "需要密码", passwordRequired: true },
+          { status: 403 }
+        );
+      }
+      sessionForDownload = sessionToken!;
     }
 
     const file = share.file;
     const allowedOrigin = request.headers.get("origin") || "";
     const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:3000").split(",").map(s => s.trim());
     const baseUrl = ALLOWED_ORIGINS.includes(allowedOrigin) ? allowedOrigin : (process.env.APP_URL || "http://localhost:3000");
-    const downloadUrl = `${baseUrl}/api/files/${file.id}/download?token=${id}`;
+    const downloadUrl = buildDownloadUrl(baseUrl, file.id, id, sessionForDownload);
 
     return NextResponse.json({
       id: file.id,

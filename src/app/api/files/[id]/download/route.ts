@@ -10,6 +10,7 @@ function hashSharePassword(password: string): string {
 }
 
 import { authenticateRequest } from "@/lib/api-auth";
+import { verifyShareSessionToken } from "@/lib/share-session";
 
 export async function GET(
   request: NextRequest,
@@ -37,16 +38,22 @@ export async function GET(
       }
 
       // Check password
+      // 优先使用 ?session= 令牌（密码验证成功后签发，绑定到本 share token，
+      // 下载是 window.open 导航无法带 header 故走 query）。令牌无效时回退到 ?password=。
+      const sessionParam = searchParams.get("session");
       const passwordParam = searchParams.get("password") || "";
       if (share.password) {
-        if (!passwordParam) {
-          return NextResponse.json({ error: "需要密码" }, { status: 403 });
-        }
-        const hashedInput = hashSharePassword(passwordParam);
-        const a = Buffer.from(hashedInput);
-        const b = Buffer.from(share.password);
-        if (a.length !== b.length || !timingSafeEqual(a, b)) {
-          return NextResponse.json({ error: "密码错误" }, { status: 403 });
+        const sessionOk = verifyShareSessionToken(sessionParam, shareToken);
+        if (!sessionOk) {
+          if (!passwordParam) {
+            return NextResponse.json({ error: "需要密码" }, { status: 403 });
+          }
+          const hashedInput = hashSharePassword(passwordParam);
+          const a = Buffer.from(hashedInput);
+          const b = Buffer.from(share.password);
+          if (a.length !== b.length || !timingSafeEqual(a, b)) {
+            return NextResponse.json({ error: "密码错误" }, { status: 403 });
+          }
         }
       }
 

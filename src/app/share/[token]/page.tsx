@@ -42,16 +42,22 @@ export default function SharePage() {
   const [passwordRequired, setPasswordRequired] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
   const [passwordError, setPasswordError] = useState("");
-  const [passwordVerified, setPasswordVerified] = useState(false);
+
+  /** 读取已验证分享的 session 令牌（密码验证成功后服务端签发，存 sessionStorage） */
+  const getSessionToken = (): string | null => {
+    if (!token || typeof window === "undefined") return null;
+    return sessionStorage.getItem(`share_session_${token}`);
+  };
 
   const fetchSharedFile = async () => {
     setLoading(true);
     setError("");
     try {
-      // If previously verified, re-fetch with the session token
+      // 若此前已通过密码验证，携带 session 令牌以跳过密码要求（页面刷新免重输密码）
       const headers: Record<string, string> = {};
-      if (passwordVerified) {
-        headers["X-Share-Session"] = "true";
+      const sessionToken = getSessionToken();
+      if (sessionToken) {
+        headers["X-Share-Session"] = sessionToken;
       }
       const url = `/api/files/${token}/share`;
       const res = await fetch(url, { headers });
@@ -82,12 +88,7 @@ export default function SharePage() {
   };
 
   useEffect(() => {
-    // Check sessionStorage for a previously verified share token
-    if (token && typeof window !== "undefined") {
-      const sessionKey = `share_verified_${token}`;
-      if (sessionStorage.getItem(sessionKey)) {
-        setPasswordVerified(true);
-      }
+    if (token) {
       fetchSharedFile();
     }
   }, [token]);
@@ -121,10 +122,9 @@ export default function SharePage() {
         return;
       }
 
-      // Store verification in sessionStorage for subsequent requests
-      setPasswordVerified(true);
-      if (typeof window !== "undefined") {
-        sessionStorage.setItem(`share_verified_${token}`, "true");
+      // 存储 session 令牌：后续 GET（刷新）与下载凭此免密
+      if (typeof window !== "undefined" && typeof data.sessionToken === "string") {
+        sessionStorage.setItem(`share_session_${token}`, data.sessionToken);
       }
       setFileData(data);
     } catch {
@@ -134,7 +134,13 @@ export default function SharePage() {
 
   const handleDownload = () => {
     if (!fileData) return;
-    const downloadUrl = `/api/files/${fileData.id}/download?token=${token}`;
+    // 相对 URL（避免服务端 baseUrl 在 APP_URL/Origin 缺失时回退到 localhost 的坑）；
+    // 密码保护分享附带 session 令牌（下载是 window.open 导航无法带 header）
+    let downloadUrl = `/api/files/${fileData.id}/download?token=${token}`;
+    const sessionToken = getSessionToken();
+    if (sessionToken) {
+      downloadUrl += `&session=${encodeURIComponent(sessionToken)}`;
+    }
     window.open(downloadUrl, "_blank", "noopener,noreferrer");
   };
 
