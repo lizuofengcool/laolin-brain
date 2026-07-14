@@ -18715,3 +18715,112 @@ console.error 不抛错（与 change-password / email-settings / recommendation.
   审计，但管理后台尚无按 tenant/user/action 检索 ActivityLog 的专用端点（/api/activity-logs
   已有通用查询）。可后续补管理后台「支付方式变更记录」视图，但属增量功能、非缺口。
 
+## 2026-07-14 17:00 自动迭代
+
+### 状态评估
+
+- fetch origin/main + github/main：三端（local / origin / github）均停在 `86a0c59`，
+  无远端更新，无需 rebase。工作树干净，无遗留未提交改动。
+- 优先级 1 已知问题复核（grep 当前实现确认）：
+  · tenant-db.ts raw 后门 → get raw() 软审计已解决。
+  · alipay/wechat RSA2 验签 → fail-closed 真实验签已解决。
+  · files/route.ts 绕过 TenantDb → 去重已走 createTenantDb，剩余无越权。
+  · sync-engine keep_both 直接覆盖 bug → 已修（本地重命名「[冲突副本]」+ 云端新 id create）。
+  · api-auth.test.ts 与实现不符 → 测试已对齐。
+  → 优先级 1 全部清零，转向 worklog 上一轮「下一轮候选」。
+- 评估候选时发现 mock 支付页存在 reflected XSS（优先级 1 安全问题），优先修复。
+
+### 本次开发：mock 支付页 reflected XSS 转义（优先级 1，安全）
+
+上轮「下一轮候选」均为低优先级 / 依赖外部 SDK。评估过程中发现
+`src/app/api/payment/mock/alipay/route.ts` 与 `wechat/route.ts` 将 query 参数
+`orderNo` / `tradeNo` 直接插入 HTML 文本节点（`<span class="order-value">`）与
+`<script>` 内 JS 字符串（表单参数 / fetch body），构成 reflected XSS：攻击者可构造
+`orderNo=<script>alert(1)</script>` 或 `orderNo=';alert(1);//` 的恶意链接诱导用户点击，
+在支付页上下文执行任意 JS。虽为 mock 路由（开发测试用），但 README 将「XSS 防护」列为核心
+安全特性，且生产环境若以模拟模式部署即可被利用，属真实安全缺口。
+
+修复采用双层转义（HTML 上下文 + JS 字符串上下文），amount 经 parseInt 已安全、
+mockSign 服务端生成无需转义。
+
+#### fix — escapeHtml / escapeJsString + 双路由转义（968a370）
+
+- **`src/lib/sanitize.ts`**（+31）：
+  · 新增 `escapeHtml(unsafe)`：将 `& < > " '` 转义为 HTML 实体，用于 HTML 文本节点 /
+    属性值插入。`&` 先转义避免双重编码。
+  · 新增 `escapeJsString(unsafe)`：将 `\ ' < \r \n U+2028 U+2029` 转义，用于 `<script>` 内
+    单引号 JS 字符串插入。`<` → `\u003c` 防止 `</script>` 截断标签；`\u2028/2029` 防
+    Unicode 行分隔符在 JS 中意外终止语句。
+- **`src/app/api/payment/mock/alipay/route.ts`**（+12/-4）：
+  · 预计算 `orderNoHtml`/`tradeNoHtml`（escapeHtml）与 `orderNoJs`/`tradeNoJs`（escapeJsString），
+    `tradeNoOrMock = tradeNo || 'MOCK' + Date.now()` 提前求值。
+  · HTML 订单信息区用 `*Html` 变量；confirmPay / cancelPay 表单 `out_trade_no` / `trade_no`
+    用 `*Js` 变量。
+- **`src/app/api/payment/mock/wechat/route.ts`**（+12/-4）：同构修复，fetch body 内
+  `out_trade_no` / `transaction_id`（外层 + resource 内层共 4 处）用 `*Js` 变量。
+
+#### test — escapeHtml / escapeJsString + 双路由 XSS 用例（f91c555）
+
+- **`src/__tests__/lib/sanitize.test.ts`**（+61/-1）：
+  · `escapeHtml` 5 用例：HTML 特殊字符转义、`&` 先转义防双重编码、单引号、字母数字不变、
+    falsy 输入返回空串。
+  · `escapeJsString` 6 用例：单引号截断防护（`';alert(1);//` → `\';alert(1);//`）、反斜杠、
+    `</script>` 截断防护（`<` → `\u003c`）、换行与 Unicode 行分隔符、字母数字不变、falsy。
+- **`src/__tests__/api/payment-mock-alipay-route.test.ts`**（+45）：「XSS 防护」describe
+  新增 4 用例：orderNo `<script>` 标签 HTML 转义、orderNo 单引号 JS 截断防护、tradeNo
+  `</script>` 标签截断（断言页面仅 1 个 `</script>` 闭合）、tradeNo HTML 实体转义（`<` + `&`）。
+- **`src/__tests__/api/payment-mock-wechat-route.test.ts`**（+41）：同构 4 用例（fetch body
+  `out_trade_no` / `transaction_id` 字段）。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，63.7s）。
+- `npx prisma generate`（v6.19.3 客户端）。
+- `npx tsc --noEmit`：**0 错误**（全项目，含 escapeHtml/escapeJsString 签名与路由类型推断）。
+- `npx vitest run`（全量）：**5213 passed / 190 files**，无回归（上轮 5194/190，本轮 +19 测试：
+  sanitize +11、alipay mock +4、wechat mock +4）。
+- 定向回归：`vitest run sanitize payment-mock-alipay payment-mock-wechat` = 93 passed
+  （4 文件，含既有用例 + 新增 XSS 用例全绿）。
+
+环境备注：`pnpm-lock.yaml` 与 `node_modules` 均在 .gitignore；`git status` 干净（无入侵）。
+
+### 改动量
+
+6 文件，+207/-13：
+- `src/lib/sanitize.ts`（fix，+31：escapeHtml + escapeJsString）
+- `src/app/api/payment/mock/alipay/route.ts`（fix，+12/-4：双层转义）
+- `src/app/api/payment/mock/wechat/route.ts`（fix，+12/-4：双层转义）
+- `src/__tests__/lib/sanitize.test.ts`（test，+61/-1：escapeHtml/escapeJsString 单测）
+- `src/__tests__/api/payment-mock-alipay-route.test.ts`（test，+45：XSS 防护 4 用例）
+- `src/__tests__/api/payment-mock-wechat-route.test.ts`（test，+41：XSS 防护 4 用例）
+
+2 commit（1 fix + 1 test），符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `968a370` fix(security): mock 支付页 reflected XSS 转义
+- `f91c555` test(security): mock 支付页 XSS 转义单元测试
+
+### 推送
+
+- origin (Gitee)：`86a0c59..f91c555`（待推送，含本轮 2 commit + worklog）
+- github (GitHub)：`86a0c59..f91c555`（待推送）
+- 双端同步校验：`git rev-list --left-right --count origin/main...github/main` = `0 0`（推送后）
+
+### 下一轮候选
+
+- **document-qna AI 模型调用桩**（延续，低优先级）：askQuestion 的 generateMockAnswer 仍为模拟，
+  依赖外部模型 SDK，优先级低。
+- **model-manager.ts 4 处模型 API 桩**（延续，低优先级）：testModel/chat/complete/embeddings，
+  已有单测锁定 mock 边界，模块未被生产代码 import；收益较低。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与 auto-summary
+  db.file.update 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口；验签/解密已真实实现）。
+- **ActivityLog 审计 trail 查询端点/UI**（延续，低优先级）：/api/activity-logs 已有通用查询，
+  可后续补管理后台「支付方式变更记录」视图，属增量功能、非缺口。
+- **其他 mock 页 / HTML 渲染路由 XSS 审计**（新增，低优先级）：本轮修复了 payment/mock/*
+  的 reflected XSS，可后续 grep 其他直接拼接 query/用户输入到 HTML 响应的路由（如
+  share 链接页、邮件模板等）做同类审计，但需逐一确认是否有 Content-Type: text/html 的
+  直接拼接场景。
+
