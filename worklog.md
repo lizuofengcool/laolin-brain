@@ -19894,3 +19894,92 @@ churn 大，本轮不动）。
   share session Redis 持久化。
 
 
+
+## 2026-07-15 22:00 自动迭代
+
+### 任务评估
+
+fetch origin/main + github/main 后三者同处 `a9f101a`，工作树干净、无未推送 commit、
+无远端更新需 rebase。优先级 1 五项（tenant-db raw 审计 / alipay+wechat RSA2 真实验签 /
+files 等路由 TenantDb 收口 / sync-engine keep_both 保留两端 / api-auth.test.ts 匹配实现）
+本轮 spot-check 复核仍全部闭环：
+
+- `tenant-db.ts`：`raw` getter 与 `transaction` 均带 `new Error().stack` 调用方软审计
+  console.warn，文件末尾注释明确「rawDb 不再无审计导出」。
+- `alipay.ts` / `wechat.ts`：`verifyRSA2Sign` 走 `createVerify('RSA-SHA256')`，注释标注
+  「缺少任一字段或密钥未配置时直接拒绝，不再"非空即通过"」。
+- `files/route.ts`：GET 走 `tenantDb.file.findMany`；POST dedup 走 `dedupTenantDb.file.findFirst`；
+  剩余 `db.$queryRaw` 配额查询 WHERE 同时含 `userId` AND `tenantId`，无跨租户泄漏
+  （worklog 已记为「无越权、churn 大」deferred，本轮维持）。
+- `sync-engine.ts` keep_both：本地文件 rename 为 `[冲突副本] xxx` + 云端版本 create 新 id，两端并存。
+- `api-auth.test.ts`：返回 4 字段 / async / 不读 query param，与实现一致。
+
+本轮从「下一轮候选」选取**自包含、已显式列出**的正确性缺口：**`exportUtils.toCSV` 加固**
+（与上轮 `e4585c3` report-manager RFC 4180 工作配套，消除两处 CSV 转义行为不一致）。
+
+### 改动
+
+**问题**（`src/lib/visualization/utils.ts`）：共享 `exportUtils.toCSV` 存在多处 RFC 4180 偏离：
+1. 仅对「字符串且含逗号」的值加引号，**不双写内部引号**——值含 `"` 时生成的 CSV 无法被
+   任何合规解析器还原（`a"b` → `"a"b"` 破损）。
+2. **不处理换行**——值含 `\n` / `\r` 时直接拼入，会跨行破坏行结构。
+3. **表头完全不转义**——`keys.join(',')`，列名含逗号即错位。
+4. 行分隔符 `\n`（RFC 4180 规定 CRLF）。
+5. 无 BOM——Excel 打开 UTF-8 CSV 中文乱码。
+6. 对象/数组值隐式 `toString()` 落到 `[object Object]`。
+
+**修复**：新增局部 `escapeCell(value)`：
+- null/undefined → 空串（保留原 `value ?? ''` 契约）；
+- 对象/数组 → `JSON.stringify`（避免 `[object Object]`）；
+- 其他 → `String(value)`；
+- 含 `"` `,` `\r` `\n` 任一 → 双引号包裹并将内部 `"` 双写（RFC 4180 §2.7）。
+- 表头与数据行统一走 `escapeCell`；行分隔符 `\n` → `\r\n`；前置 BOM `\uFEFF`。
+
+行为与 `report-manager.ts` 的 `escapeCsvCell` 完全一致，消除两处 CSV 转义分叉。未抽取共享
+util（report-manager 的 `escapeCsvCell` 是 private 方法，抽取需改 report-manager + 其测试，
+churn 与本轮「不铺大摊子」原则相悖，留作后续候选）。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --registry=https://registry.npmmirror.com`（沙箱无
+  node_modules，41.5s）。
+- `npx prisma generate`（v6.19.3 客户端，tsc 前置依赖）。
+- `npx tsc --noEmit`：**0 错误**。
+- `npx vitest run src/__tests__/lib/visualization/utils.test.ts`：**125 passed / 1 file**
+  （visualization 全量，toCSV 原有 4 用例改写为 RFC 4180 断言 + 新增 3 例覆盖引号/换行转义、
+  对象/数组 JSON、表头转义；exportChartData 4 用例仅断言 click/blob 调用不涉内容，不受影响）。
+- `npx vitest run src/__tests__/lib/reports`：**48 passed / 1 file**（report-manager 走自有
+  `buildTableCsv`，不依赖 `toCSV`，回归无影响）。
+
+环境备注：`pnpm-lock.yaml` 与 `node_modules` 均在 .gitignore；本轮改动 2 文件（1 实现 + 1 测试）。
+
+### 改动量
+
+2 文件，+56/-21：
+- `src/lib/visualization/utils.ts`（+24/-12，`toCSV` 重写为 RFC 4180 + BOM + CRLF + escapeCell）
+- `src/__tests__/lib/visualization/utils.test.ts`（+32/-9，原 4 用例改写 + 新增 3 例 + 文件头注释更新）
+
+1 commit（fix(visualization)，单一关切「toCSV → RFC 4180 合规」，测试随实现同属一个特性）。
+
+### Commit
+
+- `0c06df0` fix(visualization): exportUtils.toCSV 升级为 RFC 4180 合规实现
+
+### 推送
+
+- origin (Gitee)：`a9f101a..0c06df0` ✅
+- github (GitHub)：`a9f101a..0c06df0` ✅（push protection 未拦截，本次无 sk_ 前缀占位密钥）
+
+### 下一轮候选
+
+- **escapeCsvCell 共享 util 抽取**（新候选，低优先级，refactor）：report-manager.ts 的
+  `escapeCsvCell` 与本轮 `toCSV` 的 `escapeCell` 逻辑重复。可抽取 `src/lib/csv-utils.ts`
+  统一导出，两处复用。churn 小（2 文件 import 改动 + 测试不变），收益为单一来源。
+- **report CSV 行数据接入**（未变动，中优先级，功能完整性）：当前 CSV 仅导出列标题表头，无行数据。
+  可让 `exportReport` 接受可选 `data: Record<string, any[]>`，或让渲染层回填 widget 行数据。
+- **AiProviderConfig.config 字段加密**（未变动，低优先级）：死字段，加密前需先接线 POST 接受
+  config → 落库 → chat 读取 temperature/maxTokens/topP 传 provider，属较大 feature。
+- 延续项（低优先级，未变动）：document-qna AI 桩 / model-manager 4 处模型 API 桩（依赖外部 SDK）/
+  files/route.ts POST 事务内 tx 与 auto-summary 直连（无越权、churn 大）/ 支付 SDK 真接入
+  （依赖 alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 /
+  share session Redis 持久化。
