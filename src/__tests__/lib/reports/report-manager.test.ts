@@ -543,7 +543,7 @@ describe('reports/report-manager ReportManager', () => {
       expect(mockDownloadFile.mock.calls[0][1]).toBe('export.json');
     });
 
-    it('csv 格式：含 table widget 时调用 downloadFile', () => {
+    it('csv 格式：含 table widget 时调用 downloadFile（无列定义仅输出 BOM）', () => {
       const report = reportManager.createReport(
         {
           layout: {
@@ -557,8 +557,101 @@ describe('reports/report-manager ReportManager', () => {
       const res = reportManager.exportReport(report, { format: 'csv', filename: 'data' });
       expect(res.success).toBe(true);
       expect(mockDownloadFile).toHaveBeenCalledTimes(1);
-      expect(mockDownloadFile.mock.calls[0][1]).toBe('data.csv');
-      expect(mockDownloadFile.mock.calls[0][2]).toBe('text/csv');
+      const [content, filename, mime] = mockDownloadFile.mock.calls[0];
+      expect(filename).toBe('data.csv');
+      expect(mime).toBe('text/csv');
+      // 无列定义 → 仅 BOM，且不再是占位字符串
+      expect(content).toBe('\uFEFF');
+      expect(content).not.toContain('placeholder');
+    });
+
+    it('csv 格式：列定义生成 RFC 4180 表头（BOM + 列标题 + \\r\\n）', () => {
+      const report = reportManager.createReport(
+        {
+          layout: {
+            type: 'grid',
+            widgets: [
+              {
+                id: 'w1',
+                type: 'table',
+                title: '热门文件',
+                config: {
+                  columns: [
+                    { key: 'name', title: '文件名', dataIndex: 'name' },
+                    { key: 'views', title: '浏览量', dataIndex: 'views' },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+        'u1',
+        't1'
+      );
+      reportManager.exportReport(report, { format: 'csv', filename: 'data' });
+      const content = mockDownloadFile.mock.calls[0][0] as string;
+      // BOM 前缀 + 注释标题行 + 表头行
+      expect(content.startsWith('\uFEFF# 热门文件\r\n文件名,浏览量')).toBe(true);
+      expect(content).not.toContain('placeholder');
+    });
+
+    it('csv 格式：列标题含逗号/引号/换行时按 RFC 4180 转义', () => {
+      const report = reportManager.createReport(
+        {
+          layout: {
+            type: 'grid',
+            widgets: [
+              {
+                id: 'w1',
+                type: 'table',
+                config: {
+                  columns: [
+                    { key: 'a', title: '姓,名', dataIndex: 'a' },
+                    { key: 'b', title: '说"嗨"', dataIndex: 'b' },
+                    { key: 'c', title: '多\n行', dataIndex: 'c' },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+        'u1',
+        't1'
+      );
+      reportManager.exportReport(report, { format: 'csv' });
+      const content = mockDownloadFile.mock.calls[0][0] as string;
+      // 去掉 BOM 后首行（无 widget.title → 无注释行）即表头
+      const headerLine = content.replace(/^\uFEFF/, '').split('\r\n')[0];
+      expect(headerLine).toBe('"姓,名","说""嗨""","多\n行"');
+    });
+
+    it('csv 格式：多个 table widget 以空行分隔，各自带注释标题', () => {
+      const report = reportManager.createReport(
+        {
+          layout: {
+            type: 'grid',
+            widgets: [
+              {
+                id: 'w1',
+                type: 'table',
+                title: '表A',
+                config: { columns: [{ key: 'a', title: 'A', dataIndex: 'a' }] },
+              },
+              {
+                id: 'w2',
+                type: 'table',
+                title: '表B',
+                config: { columns: [{ key: 'b', title: 'B', dataIndex: 'b' }] },
+              },
+            ],
+          },
+        },
+        'u1',
+        't1'
+      );
+      reportManager.exportReport(report, { format: 'csv' });
+      const content = mockDownloadFile.mock.calls[0][0] as string;
+      expect(content.replace(/^\uFEFF/, '')).toBe('# 表A\r\nA\r\n\r\n# 表B\r\nB');
     });
 
     it('csv 格式：无 table widget 时不调用 downloadFile（仍返回 success）', () => {

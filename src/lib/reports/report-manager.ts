@@ -9,6 +9,8 @@ import type {
   ReportQueryParams,
   ReportExportOptions,
   ReportSubscription,
+  ReportWidget,
+  TableConfig,
 } from './types';
 import { BUILTIN_REPORT_TEMPLATES } from './types';
 import { exportUtils } from '../visualization';
@@ -304,11 +306,12 @@ export class ReportManager {
           break;
         }
         case 'csv': {
-          // 导出表格数据
+          // 导出表格数据：按表格组件列定义生成 RFC 4180 合规 CSV
+          // （含 BOM 以兼容 Excel UTF-8；单元格含 ", \n \r 时加引号转义）
           const tableWidgets = report.layout.widgets.filter(w => w.type === 'table');
           if (tableWidgets.length > 0) {
             exportUtils.downloadFile(
-              'CSV export placeholder',
+              this.buildTableCsv(tableWidgets),
               `${filename}.csv`,
               'text/csv'
             );
@@ -449,6 +452,47 @@ export class ReportManager {
   public generatePreviewData(report: Report): Report {
     // 生成模拟数据用于预览
     return report;
+  }
+
+  // ==================== 内部工具 ====================
+
+  /**
+   * 将单元格值按 RFC 4180 转义：含 " , \n \r 时用双引号包裹并将内部 " 双写
+   */
+  private escapeCsvCell(value: unknown): string {
+    const str = value === null || value === undefined ? '' : String(value);
+    if (/[",\r\n]/.test(str)) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  }
+
+  /**
+   * 由表格组件列定义生成 CSV 字符串
+   * - 行分隔符使用 \r\n（RFC 4180）
+   * - 前置 BOM（\uFEFF）以兼容 Excel UTF-8 自动识别
+   * - 多个表格组件以空行分隔；组件含 title 时在表头前以 # 注释行标注
+   * - 列定义来自 TableConfig.columns 的 title；无列定义的表格组件跳过
+   *   （但仍会调用 downloadFile，只要存在 table 类型组件）
+   */
+  private buildTableCsv(widgets: ReportWidget[]): string {
+    const BOM = '\uFEFF';
+    const blocks: string[] = [];
+
+    for (const widget of widgets) {
+      const columns = (widget.config as TableConfig | undefined)?.columns ?? [];
+      if (columns.length === 0) continue;
+
+      const lines: string[] = [];
+      if (widget.title) {
+        lines.push(`# ${widget.title}`);
+      }
+      lines.push(columns.map(col => this.escapeCsvCell(col.title)).join(','));
+      blocks.push(lines.join('\r\n'));
+    }
+
+    // 即使所有表格组件均无列定义，也输出 BOM 以保留“有 table 组件即下载”契约
+    return BOM + blocks.join('\r\n\r\n');
   }
 }
 
