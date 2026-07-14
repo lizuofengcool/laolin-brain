@@ -18824,3 +18824,125 @@ mockSign 服务端生成无需转义。
   share 链接页、邮件模板等）做同类审计，但需逐一确认是否有 Content-Type: text/html 的
   直接拼接场景。
 
+## 2026-07-14 19:00 自动迭代
+
+### 状态评估
+
+- 本次为沙箱重建后首轮：`/workspace/laolin-brain` 不存在，从 origin(Gitee) clone 后补齐
+  github remote，`git config user.email/name` 已设。fetch origin/main + github/main：
+  三端均停在 `3d2ef5a`（上一轮 worklog 落库 commit），无远端更新，无需 rebase，工作树干净。
+- 优先级 1 已知问题复核（逐一读实际代码确认，非凭 worklog 结论）：
+  · tenant-db.ts `raw` 后门 → `get raw()` 已加 `new Error().stack` 调用方软审计（L56-62），
+    `transaction(fn)` 同样审计；文件尾注明裸 `rawDb` export 已移除。✅
+  · alipay/wechat RSA2 验签 → 真实 `crypto.createVerify('RSA-SHA256')` + `timingSafeEqual`
+    fail-closed（缺 sign/key 直接返回 false），wechat 另有 AES-256-GCM `decryptResource`
+    解密 V3 resource。✅
+  · files/route.ts 绕过 TenantDb → GET/POST 去重已走 `createTenantDb`，剩余 `db.$queryRaw`
+    / `$transaction` / auto-summary `db.file.update` 均操作已租户校验记录、手动带 tenantId，
+    无越权。✅（延续候选，低收益 churn）
+  · sync-engine keep_both 直接覆盖 bug → 已改为本地重命名「[冲突副本]」+ 云端新 id create，
+    且 keep_both 前有 `findUnique({where:{id,tenantId}})` 租户归属预检。✅
+  · api-auth.test.ts 与实现不符 → 实现返回 4 字段、async、不读 query；测试已全部对齐
+    （含 query param 拒绝、ADMIN_EMAILS fail-closed、大小写无关邮箱匹配）。✅
+  → 优先级 1 全部清零，与上一轮 worklog 结论一致。
+- XSS 审计候选推进：grep 全项目 `Content-Type: text/html` 服务端路由，仅 `payment/mock/*`
+  两个（上一轮已修）。share 链接页 `/share/[token]` 为客户端 React 组件、非服务端拼 HTML。
+  但发现 **邮件模板渲染存在存储型 XSS**（优先级 1 安全缺口），优先修复。
+
+### 本次开发：邮件模板变量 HTML 转义防存储型 XSS（优先级 1，安全）
+
+`src/lib/email/index.ts` 的 `renderTemplate` 将变量值（`tenantName`/`fileName`/
+`commentContent`/`message`/`alertName` 等用户可控字段）以字面量直接 `replace` 进 HTML 邮件
+正文，未做 HTML 转义。可达路径：
+- `src/lib/invitations/index.ts:54` → 投递 invitation 邮件，注入 `tenantName`/`email`/`role`
+  （租户名由租户所有者自设，可设为 `<a href="https://evil">重置密码</a>` 钓鱼锚点或
+  `<img src=https://tracker/leak?u=victim>` 追踪像素）。
+- `src/lib/monitoring/index.ts:555` → 投递 alert-notification，注入 `message`/`alertName`。
+
+影响：邮件正文 HTML 上下文存储型 XSS。多数邮件客户端剥离 `<script>`，但保留 `<a>`/`<img>`
+/CSS，可注入钓鱼链接、追踪像素、伪造按钮。README 将「XSS 防护」列为核心安全特性，属真实缺口。
+
+#### fix — renderTemplate 变量值经 escapeHtml 转义（与 test 合并为单 commit）
+
+- **`src/lib/email/index.ts`**（+27/-3）：
+  · 新增 `import { escapeHtml } from "@/lib/sanitize"`（复用上一轮已落库的工具）。
+  · `renderTemplate` 替换循环：HTML 正文用 `escapeHtml(value)` 转义后替换
+    （`html.replace(regex, () => safeValue)`），保留 `() =>` 替换函数防 `$&`/`$$`/`$1`/
+    `$\``/`$'` 反向引用回填（escapeHtml 后的串仍可能含 `$`，故替换函数不可去掉）。
+  · **subject 不转义**：subject 为纯文本（RFC 5322），邮件客户端不在标题渲染 HTML，
+    HTML 实体会以字面量显示（`AT&T`→`AT&amp;T`），且 CRLF 注入由 nodemailer 折叠处理。
+  · **text 版本反转义**：原 `html.replace(/<[^>]*>/g,"")` 会把转义后的 `&lt;` 原样留在
+    纯文本中（显示 `&lt;` 而非 `<`）。新增 5 个实体反转义（`&lt;`/`&gt;`/`&quot;`/`&#39;`/
+    `&amp;`），`&amp;` 最后反转义避免 `&amp;lt;` 被错误双重还原为 `<`。反转义后纯文本显示
+    原始字符（如 `<`、`&`），纯文本上下文无 XSS 风险。
+  · URL 变量（resetUrl/shareUrl/inviteUrl/fileUrl/upgradeUrl）插入 `href="..."` 属性上下文，
+    escapeHtml 将 `&`→`&amp;`（属性值正确编码，浏览器跟随链接时还原为 `&`）、`"`→`&quot;`
+    （防闭合属性），对 href 同样安全。
+- **`src/__tests__/lib/email.test.ts`**（+120/-8）：
+  · 更新 3 处既有断言以匹配新转义行为：
+    - `$&` 用例：html 由 `你好，$&！` → `你好，$&amp;！`（text 反转义仍为 `$&`）。
+    - `$$,$1,$\`,$'` 用例：值含 `'`，html 由 `...$'！` → `...$&#39;！`。
+    - subject `$&` 用例：html 由 `>$&<` → `>$&amp;<`（subject 仍为 `$&`，不转义）。
+  · 新增「XSS 防护」7 用例：
+    - invitation tenantName `<script>` → html `&lt;script&gt;...`，不含原始 `<script>`；
+      subject 保留原始 `<script>`（纯文本无风险）。
+    - invitation tenantName `<a href>` 钓鱼链接 → html 转义，不含原始 `<a href=`，文本可见。
+    - comment-notification commentContent `<img onerror>` → html 转义。
+    - alert-notification message `<script>` → html 转义（监控告警真实可达路径）。
+    - text 反转义：`a < b & c` → html `a &lt; b &amp; c` → text `a < b & c`。
+    - URL 含查询参数 `&`：href 中 `&amp;`（属性正确编码），text 中还原为 `&`。
+    - 反转义顺序：值 `&amp;` → html `&amp;amp;` → text `&amp;`（不双重还原为 `&`）。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，64.3s）。
+- `npx prisma generate`（v6.19.3 客户端）。
+- `npx tsc --noEmit`：**0 错误**（全项目，含 escapeHtml 复用与 renderTemplate 类型推断）。
+- `npx vitest run src/__tests__/lib/email.test.ts`：**35 passed**（28 既有 + 7 新增 XSS）。
+- 定向回归 `vitest run invitations-route monitoring-index`：**125 passed**（sendEmail 入参
+  断言在 mock 层，不触达 renderTemplate，不受影响）。
+- `npx vitest run`（全量）：**5220 passed / 190 files**，无回归（上轮 5213/190，本轮 +7）。
+
+环境备注：`pnpm-lock.yaml` 与 `node_modules` 均在 .gitignore；改动仅 2 文件（fix + test 合并）。
+
+### 改动量
+
+2 文件，+139/-8：
+- `src/lib/email/index.ts`（fix，+27/-3：import escapeHtml + renderTemplate 转义 + text 反转义）
+- `src/__tests__/lib/email.test.ts`（test，+120/-8：3 断言更新 + 7 新增 XSS 用例）
+
+1 commit（fix + test 合并）。原因：本次 fix 会破坏 3 处既有 html 断言（`$&`/`$'`/`>$&<`），
+若 fix 与 test 分提则 fix commit 处测试红，违反「每次提交后不破坏现有测试」约束，故合并为单 commit
+保证每个 commit 全绿。符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `7b83cd8` fix(security): 邮件模板变量 HTML 转义防存储型 XSS
+
+### 推送
+
+- origin (Gitee)：`3d2ef5a..7b83cd8`（待推送，含本轮 fix commit + worklog docs commit）
+- github (GitHub)：`3d2ef5a..7b83cd8`（待推送）
+- 双端同步校验：推送后 `git rev-list --left-right --count origin/main...github/main` = `0 0`
+
+### 下一轮候选
+
+- **document-qna AI 模型调用桩**（延续，低优先级）：askQuestion 的 generateMockAnswer 仍为模拟，
+  依赖外部模型 SDK，优先级低。
+- **model-manager.ts 4 处模型 API 桩**（延续，低优先级）：testModel/chat/complete/embeddings，
+  已有单测锁定 mock 边界，模块未被生产代码 import；收益较低。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与 auto-summary
+  db.file.update 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口；验签/解密已真实实现）。
+- **ActivityLog 审计 trail 查询端点/UI**（延续，低优先级）：/api/activity-logs 已有通用查询，
+  可后续补管理后台「支付方式变更记录」视图，属增量功能、非缺口。
+- **share 链接密码暴力破解防护**（新增，中低优先级）：`/api/files/[id]/share` GET 接受 `?password=`
+  query param（URL 泄漏到日志/Referer/历史），且无 per-token 限流（默认 100/min/IP ≈ 6000 猜/小时），
+  对 4 位最短密码可暴破。可后续：移除 GET query 密码路径强制 POST-only + 在 share 路由加 per-token
+  失败计数限流。属真实安全增强、非外部 SDK 依赖。
+- **share-notification / comment-notification 邮件触发补全**（新增，低优先级）：本轮修复了邮件
+  模板渲染 XSS，但 share-notification / comment-notification / welcome / password-reset /
+  payment-success / storage-warning / system-announcement 7 个模板目前未被任何生产代码调用
+  （仅 invitation + alert-notification 真实投递）。补全触发属增量功能、非缺口。
+
