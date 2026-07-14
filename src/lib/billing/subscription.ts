@@ -5,6 +5,7 @@
 
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logging";
+import { logActivity } from "@/lib/activity-log";
 
 // ==================== 套餐定义 ====================
 
@@ -337,7 +338,8 @@ export async function getOrders(tenantId: string, limit: number = 20) {
 export async function reusePendingOrder(
   tenantId: string,
   orderId: string,
-  payMethod: 'alipay' | 'wechat'
+  payMethod: 'alipay' | 'wechat',
+  userId: string
 ) {
   const order = await db.order.findFirst({
     where: { id: orderId, tenantId },
@@ -362,6 +364,9 @@ export async function reusePendingOrder(
     // 旧支付页/tradeNo 仍可能在第三方侧 pending（回调验签会拒绝未匹配的 tradeNo，
     // 非阻塞），留审计痕迹便于事后排查重复支付疑议。仅记成功切换，更新失败由
     // 调用方 catch 兜底，不在此记审计。
+    // 双层审计：logger.audit 走 console + 内存（运维即时观测）；
+    // logActivity 持久化到 ActivityLog 表（管理后台可查询的审计 trail），经
+    // setImmediate 异步落库，不阻塞支付主流程，失败仅 console.error 不抛错。
     logger.audit("支付方式切换", {
       tenantId,
       orderId: order.id,
@@ -369,6 +374,19 @@ export async function reusePendingOrder(
       previousPayMethod,
       newPayMethod: payMethod,
       amount: order.amount,
+    });
+    logActivity({
+      userId,
+      tenantId,
+      action: "pay_method_switch",
+      resourceType: "order",
+      resourceId: order.id,
+      details: {
+        orderNo: order.orderNo,
+        previousPayMethod,
+        newPayMethod: payMethod,
+        amount: order.amount,
+      },
     });
     return updated;
   }

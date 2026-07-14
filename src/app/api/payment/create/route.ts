@@ -70,7 +70,8 @@ export async function POST(request: NextRequest) {
         order = await reusePendingOrder(
           tenantId,
           orderId,
-          payMethod as 'alipay' | 'wechat'
+          payMethod as 'alipay' | 'wechat',
+          userId
         );
         effectivePlanId = order.plan;
         effectiveInterval = order.interval as 'month' | 'year';
