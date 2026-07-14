@@ -107,3 +107,57 @@ export function decryptConfig(stored: string): unknown {
   const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   return JSON.parse(plaintext.toString("utf8"));
 }
+
+/**
+ * 加密单个敏感字符串（如 AI Provider API Key）。
+ *
+ * 与 encryptConfig 同范式（AES-256-GCM + "v1:" 前缀 + 随机 IV + 同一密钥派生 +
+ * production fail-closed），但面向字符串而非 JSON 对象——避免对裸字符串做
+ * JSON.stringify 的语义错配（encryptConfig 会对入参 JSON.stringify 再加密）。
+ *
+ * 返回 "v1:" + base64(iv(12) + tag(16) + ciphertext)。每次调用使用随机 IV，
+ * 故相同输入产生不同密文。用于 AiProviderConfig.apiKey 等需可逆读取的密文落库
+ * （对比 api-keys/route.ts 的 apiSecret 为单向 sha256 哈希——后者仅做比对、不可还原）。
+ */
+export function encryptSecret(plaintext: string): string {
+  const key = resolveKey();
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+  const plainBuf = Buffer.from(plaintext, "utf8");
+  const ciphertext = Buffer.concat([cipher.update(plainBuf), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return VERSION_PREFIX + Buffer.concat([iv, tag, ciphertext]).toString("base64");
+}
+
+/**
+ * 解密敏感字符串。
+ * - "v1:" 前缀：AES-256-GCM 解密；密文被篡改时抛错（GCM 认证失败）。
+ * - 非 "v1:" 前缀：视为历史明文，原样返回（向后兼容存量行，下次写入即自动加密）。
+ *
+ * 用于读取 encryptSecret 落库的密文；调用方应在 catch 中回退到环境变量或失败关闭，
+ * 以应对密钥轮换/数据损坏场景。
+ */
+export function decryptSecret(stored: string): string {
+  if (typeof stored !== "string") {
+    throw new Error("密文非字符串，无法解密");
+  }
+
+  // 兼容历史明文（未加密的存量 apiKey）
+  if (!stored.startsWith(VERSION_PREFIX)) {
+    return stored;
+  }
+
+  const key = resolveKey();
+  const payload = Buffer.from(stored.slice(VERSION_PREFIX.length), "base64");
+  if (payload.length < IV_LENGTH + TAG_LENGTH) {
+    throw new Error("密文加密载荷格式无效：数据过短");
+  }
+  const iv = payload.subarray(0, IV_LENGTH);
+  const tag = payload.subarray(IV_LENGTH, IV_LENGTH + TAG_LENGTH);
+  const ciphertext = payload.subarray(IV_LENGTH + TAG_LENGTH);
+
+  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+  decipher.setAuthTag(tag);
+  const plainBuf = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  return plainBuf.toString("utf8");
+}

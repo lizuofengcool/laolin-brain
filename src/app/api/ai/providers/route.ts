@@ -1,6 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
+import { encryptSecret, decryptSecret } from "@/lib/cloud-sync/config-crypto";
+
+/**
+ * 将落库的 apiKey（v1: 密文或历史明文）解密后做脱敏掩码返回。
+ *
+ * 解密失败（密钥轮换/数据损坏）时不抛错、不泄露密文，仅返回 "****" 占位——
+ * 前端通过 hasKey 字段判断是否已配置 key，掩码仅用于展示。
+ */
+function maskApiKey(stored: string | null): string | null {
+  if (!stored) return null;
+  try {
+    const plain = decryptSecret(stored);
+    return `${plain.slice(0, 6)}****${plain.slice(-4)}`;
+  } catch {
+    return "****";
+  }
+}
 
 /** GET /api/ai/providers - 获取用户的 AI 模型配置 */
 export async function GET(request: NextRequest) {
@@ -24,7 +41,7 @@ export async function GET(request: NextRequest) {
 
   const masked = configs.map((c) => ({
     ...c,
-    apiKey: c.apiKey ? `${c.apiKey.slice(0, 6)}****${c.apiKey.slice(-4)}` : null,
+    apiKey: maskApiKey(c.apiKey),
     hasKey: !!c.apiKey,
   }));
 
@@ -53,10 +70,17 @@ export async function POST(request: NextRequest) {
 
     const configName = name || provider;
 
+    // apiKey 落库前 AES-256-GCM 加密（与 storageConfig 同范式），避免数据库泄露时
+    // 第三方 AI 凭据裸露。schema 已标注"加密存储"，此处补齐实现。
+    // 仅在客户端显式传 apiKey 时加密（空值落库为 null）；未传时 update 不覆盖既有 key。
+    // 加密使用随机 IV，故仅调用一次并复用，避免 update/create 产生两份不同密文。
+    const encryptedApiKey =
+      apiKey !== undefined ? (apiKey ? encryptSecret(apiKey) : null) : undefined;
+
     const config = await db.aiProviderConfig.upsert({
       where: { tenantId_name: { tenantId, name: configName } },
       update: {
-        ...(apiKey !== undefined ? { apiKey } : {}),
+        ...(encryptedApiKey !== undefined ? { apiKey: encryptedApiKey } : {}),
         ...(baseUrl !== undefined ? { baseUrl } : {}),
         ...(model !== undefined ? { model } : {}),
       },
@@ -65,7 +89,7 @@ export async function POST(request: NextRequest) {
         userId,
         name: configName,
         provider,
-        apiKey: apiKey || null,
+        apiKey: encryptedApiKey ?? null,
         baseUrl: baseUrl || null,
         model: model || null,
       },
@@ -74,7 +98,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       config: {
         ...config,
-        apiKey: config.apiKey ? `${config.apiKey.slice(0, 6)}****${config.apiKey.slice(-4)}` : null,
+        apiKey: maskApiKey(config.apiKey),
         hasKey: !!config.apiKey,
       },
     });

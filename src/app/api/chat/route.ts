@@ -11,6 +11,7 @@ import { executeTool } from "@/lib/ai/tools/executor";
 import { authenticateRequest } from "@/lib/api-auth";
 import { checkAiUsage } from "@/lib/ai-usage";
 import { db } from "@/lib/db";
+import { decryptSecret } from "@/lib/cloud-sync/config-crypto";
 
 const SYSTEM_PROMPT = `你是"老林大脑"的AI助手，一个智能文件管理助手。你可以帮助用户管理文件、搜索内容、添加标签、生成摘要等。
 
@@ -257,24 +258,35 @@ async function getProviderConfig(type?: AiProviderType, userId?: string, tenantI
     }
   }
 
+  // apiKey 落库为 AES-256-GCM 密文（见 /api/ai/providers POST），使用前解密。
+  // 解密失败（密钥轮换/数据损坏）回退到环境变量，避免阻塞对话。
+  let userApiKey: string | null = null;
+  if (userConfig?.apiKey) {
+    try {
+      userApiKey = decryptSecret(userConfig.apiKey);
+    } catch {
+      userApiKey = null;
+    }
+  }
+
   switch (providerType) {
     case "zhipu":
       return {
         type: "zhipu" as const,
-        apiKey: userConfig?.apiKey || process.env.ZHIPU_API_KEY,
+        apiKey: userApiKey || process.env.ZHIPU_API_KEY,
         model: userConfig?.model || undefined,
       };
     case "deepseek":
       return {
         type: "deepseek" as const,
-        apiKey: userConfig?.apiKey || process.env.DEEPSEEK_API_KEY,
+        apiKey: userApiKey || process.env.DEEPSEEK_API_KEY,
         baseUrl: userConfig?.baseUrl || undefined,
         model: userConfig?.model || process.env.DEEPSEEK_MODEL,
       };
     case "openai":
       return {
         type: "openai" as const,
-        apiKey: userConfig?.apiKey || process.env.OPENAI_API_KEY,
+        apiKey: userApiKey || process.env.OPENAI_API_KEY,
         baseUrl: userConfig?.baseUrl || process.env.OPENAI_BASE_URL,
         model: userConfig?.model || process.env.OPENAI_MODEL,
       };

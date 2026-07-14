@@ -10,7 +10,7 @@
  *   - production 未配置密钥时 encrypt/decrypt fail-closed 抛错
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { encryptConfig, decryptConfig } from "@/lib/cloud-sync/config-crypto";
+import { encryptConfig, decryptConfig, encryptSecret, decryptSecret } from "@/lib/cloud-sync/config-crypto";
 
 const sampleConfig = {
   accountId: "acc-1",
@@ -136,6 +136,118 @@ describe("config-crypto（storageConfig.config 落库加密）", () => {
       const encrypted = encryptConfig(sampleConfig);
       vi.stubEnv("STORAGE_CONFIG_ENCRYPTION_KEY", "key-B-32-chars-minimum-xxxxxxxxxxxxx");
       expect(() => decryptConfig(encrypted)).toThrow();
+    });
+  });
+});
+
+describe("config-crypto（apiKey 等敏感字符串落库加密）", () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const sampleKey = "sk-demo-key-1234567890abcdef";
+
+  describe("encryptSecret / decryptSecret 往返", () => {
+    it("加密结果带 v1: 前缀且不含原始明文 key", () => {
+      const encrypted = encryptSecret(sampleKey);
+      expect(encrypted.startsWith("v1:")).toBe(true);
+      expect(encrypted).not.toContain(sampleKey);
+    });
+
+    it("解密后与原字符串相等", () => {
+      const encrypted = encryptSecret(sampleKey);
+      expect(decryptSecret(encrypted)).toBe(sampleKey);
+    });
+
+    it("相同输入每次产生不同密文（随机 IV）", () => {
+      const a = encryptSecret(sampleKey);
+      const b = encryptSecret(sampleKey);
+      expect(a).not.toBe(b);
+      expect(decryptSecret(a)).toBe(sampleKey);
+      expect(decryptSecret(b)).toBe(sampleKey);
+    });
+
+    it("支持含特殊字符 / Unicode 的字符串", () => {
+      const weird = "p@ss wörd-中文-`~!@#$%^&*()_+-=[]{}|;':\",./<>?";
+      expect(decryptSecret(encryptSecret(weird))).toBe(weird);
+    });
+  });
+
+  describe("历史明文向后兼容", () => {
+    it("非 v1: 前缀的明文字符串原样返回（不 JSON.parse）", () => {
+      // 存量明文 apiKey 不带引号，decryptSecret 不应尝试 JSON.parse
+      const legacy = "sk-legacy-plaintext-key";
+      expect(decryptSecret(legacy)).toBe(legacy);
+    });
+
+    it("明文读取后再加密写入，再次读取仍一致（迁移路径）", () => {
+      const legacy = "sk-legacy-plaintext-key";
+      expect(decryptSecret(legacy)).toBe(legacy);
+      const reEncrypted = encryptSecret(legacy);
+      expect(reEncrypted.startsWith("v1:")).toBe(true);
+      expect(decryptSecret(reEncrypted)).toBe(legacy);
+    });
+  });
+
+  describe("完整性（GCM 认证标签）", () => {
+    it("密文被篡改时解密抛错", () => {
+      const encrypted = encryptSecret(sampleKey);
+      const payload = encrypted.slice(3);
+      const tamperedChar = payload.charAt(0) === "A" ? "B" : "A";
+      const tampered = "v1:" + tamperedChar + payload.slice(1);
+      expect(() => decryptSecret(tampered)).toThrow();
+    });
+
+    it("载荷过短时抛错", () => {
+      expect(() => decryptSecret("v1:" + Buffer.from("short").toString("base64"))).toThrow();
+    });
+
+    it("非字符串入参抛错", () => {
+      expect(() => decryptSecret(undefined as unknown as string)).toThrow();
+    });
+  });
+
+  describe("生产环境 fail-closed", () => {
+    it("production 未配置密钥时 encryptSecret 抛错", () => {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("STORAGE_CONFIG_ENCRYPTION_KEY", "");
+      expect(() => encryptSecret(sampleKey)).toThrow(/STORAGE_CONFIG_ENCRYPTION_KEY 未配置/);
+    });
+
+    it("production 未配置密钥时 decryptSecret 抛错（密文路径）", () => {
+      const encrypted = (() => {
+        vi.unstubAllEnvs();
+        const v = encryptSecret(sampleKey);
+        vi.stubEnv("NODE_ENV", "production");
+        vi.stubEnv("STORAGE_CONFIG_ENCRYPTION_KEY", "");
+        return v;
+      })();
+      expect(() => decryptSecret(encrypted)).toThrow(/STORAGE_CONFIG_ENCRYPTION_KEY 未配置/);
+    });
+
+    it("production 未配置密钥时 decryptSecret 对历史明文仍原样返回（不触发密钥解析）", () => {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("STORAGE_CONFIG_ENCRYPTION_KEY", "");
+      // 历史 plaintext 行无需密钥即可读取，保证密钥轮换/未配置时存量明文不阻断业务
+      expect(decryptSecret("sk-legacy-plaintext")).toBe("sk-legacy-plaintext");
+    });
+
+    it("production 配置密钥后正常工作", () => {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("STORAGE_CONFIG_ENCRYPTION_KEY", "prod-secret-key-32-chars-minimum-xxxxx");
+      const encrypted = encryptSecret(sampleKey);
+      expect(decryptSecret(encrypted)).toBe(sampleKey);
+    });
+
+    it("不同密钥解密对方密文失败（GCM 认证）", () => {
+      vi.stubEnv("STORAGE_CONFIG_ENCRYPTION_KEY", "key-A-32-chars-minimum-xxxxxxxxxxxxx");
+      const encrypted = encryptSecret(sampleKey);
+      vi.stubEnv("STORAGE_CONFIG_ENCRYPTION_KEY", "key-B-32-chars-minimum-xxxxxxxxxxxxx");
+      expect(() => decryptSecret(encrypted)).toThrow();
     });
   });
 });
