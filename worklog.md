@@ -17948,3 +17948,107 @@ fetch origin/github main：双端均无新提交（`origin/main..github/main` = 
 - **InvitationsManager 行内状态快捷操作**（新增，可选 UX）：当前邀请状态变更需进详情
   或下拉；可补行内「重新发送/撤销」按钮的键盘可达性（Enter/Esc），与 TeamMembersManager
   本轮范式对齐。
+
+## 2026-07-14 08:00 自动迭代
+
+第一百六十五轮。fetch origin/github 均无新提交（双端同处 `5c52f82`），工作树
+干净，无遗留未提交改动。
+
+优先级 1 复核——均已在历史轮次修复，本轮未回归（未触碰相关文件）。
+
+按 worklog 上一轮「下一轮候选」选取最高确定性的可选项：**invite 页面登录后自动
+重定向**（候选首位，owner 已预设实现路径「LoginForm 成功后读 sessionStorage 的
+invite_redirect 并 router.push」）。复核现状：invite 页未登录时已内嵌 LoginForm、
+登录后原地拉预览（无需跳转）已工作；但「邮件链接 → 离开 /invite 到根路径登录 →
+自动回 /invite」与「切换账号后回原邀请」两类场景缺失——用户离开本页登录后会丢失
+邀请 URL。本轮补齐该回跳记忆。
+
+实现选型说明： InvitationsManager「行内 Enter/Esc」候选经复核不适用——该组件无
+行内编辑态（重发/撤销为直按钮，非 inline edit），Enter/Esc 范式无处落地；故选
+invite 回跳候选。
+
+### feat — LoginForm 消费 invite_redirect + invite 页管理 key（+42）
+
+- **`src/components/auth/LoginForm.tsx`**：新增 `useRouter`；`login()` 成功后读
+  `sessionStorage.getItem("invite_redirect")`，命中即 `removeItem` 消费（避免后续
+  登录被回跳到过期/已接受邀请）；与 `window.location.pathname+search` 相同则跳过
+  `router.push`（覆盖 /invite 内嵌登录原地生效场景，避免冗余导航）。
+- **`src/app/invite/page.tsx`**：新增 useEffect 管理 invite_redirect——
+  - 无有效 token / `phase==="accepted"` → `removeItem`（避免误跳到无效或已接受邀请）
+  - 未登录（`!isAuthenticated`）或邮箱不匹配（`preview.ok && !emailMatches`）→
+    `setItem("/invite?token=${token}")`
+  - 已登录且邮箱匹配（可立即接受）→ `removeItem`
+  - 顶部 docstring 补「回跳记忆」段说明触发条件与 LoginForm 消费端契约。
+
+无安全影响：token 仍为 randomUUID，接受仍经后端 `/api/invitations/accept` 校验；
+sessionStorage 仅存本页自身 URL，无敏感信息，且读取即消费。
+
+### test — LoginForm + InvitePage 契约测试（+322）
+
+- **`src/__tests__/components/LoginForm.test.tsx`**（4 用例）：
+  - 无 invite_redirect：登录成功不跳转
+  - 有且目标不同于当前页：push 到目标并消费
+  - 目标即当前页（/invite 内嵌登录）：跳过 push 但仍消费
+  - 登录失败：不消费、不跳转（原值保留）
+  - useAppStore 提供 login spy（mockReturnValue）；next/navigation useRouter 提供
+    push spy；global.fetch 经 `vi.stubGlobal` 返回登录响应（沿用项目范式）。
+- **`src/__tests__/components/InvitePage.test.tsx`**（5 用例）：
+  - 无效 token（缺参数）：不设置并显示「无效的邀请链接」
+  - 未登录 + 有效 token：设置 invite_redirect
+  - 已登录 + 邮箱匹配：清理
+  - 已登录 + 邮箱不匹配：设置（佐证文案「当前登录账号不匹配」）
+  - 接受邀请成功：清理
+  - 内嵌 LoginForm 桩避免真实组件 store/router 调用干扰；token 经
+    `window.history.pushState` 注入 `window.location.search`；useAppStore 无 selector
+    调用（invite 页直接解构 `{ isAuthenticated, hydrateAuth }`），故 mockReturnValue
+    返回整对象。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile`（沙箱无 node_modules；pnpm 10.28.1，54.2s）。
+- `npx prisma generate`（v6.19.3 客户端，build 脚本被 pnpm 忽略需手动生成）。
+- `npx tsc --noEmit`：**0 错误**（全项目）。
+- `npx vitest run src/__tests__/components`：**66 passed**（含本轮 9 新增：LoginForm 4
+  + InvitePage 5；既有 57 全绿，无回归）。
+
+环境备注：`pnpm-lock.yaml` 已在 .gitignore；`git status` 干净。
+
+### 改动量
+
+4 文件，+364：
+- `src/components/auth/LoginForm.tsx`（feat，+17：useRouter + 登录成功后消费回跳）
+- `src/app/invite/page.tsx`（feat，+25：管理 invite_redirect 的 useEffect + docstring）
+- `src/__tests__/components/LoginForm.test.tsx`（test，+133：4 用例）
+- `src/__tests__/components/InvitePage.test.tsx`（test，+189：5 用例）
+
+2 commit（1 feat + 1 test），符合单轮 1-3 commit 约束。
+
+### Commit
+
+- `4a3a04d` feat(auth): 邀请页登录后回跳——LoginForm 消费 invite_redirect
+- `775d451` test(auth): 新增 LoginForm 邀请回跳与 InvitePage 回跳记忆契约测试
+
+### 推送
+
+- origin (Gitee)：`5c52f82..775d451` 推送成功（含本轮 2 commit）
+- github (GitHub)：`5c52f82..775d451` 推送成功
+- 双端同步校验：`git rev-list --left-right --count origin/main...github/main` = `0 0`，
+  三端（local/origin/github）均指向 `775d451`
+
+### 下一轮候选
+
+- **InvitationsManager 行内状态快捷操作**（延续，可选 UX）：经本轮复核，该组件无行内
+  编辑态（重发/撤销为直按钮），Enter/Esc 范式不适用；如需改进可考虑把 revoke 的
+  `window.confirm` 替换为样式化确认弹窗（成本较高，需新增 ConfirmationDialog + 改
+  既有 20 用例的 confirm spy 断言），收益中等。
+- **document-qna AI 模型调用桩**（延续）：askQuestion 的 generateMockAnswer 仍为模拟，
+  依赖外部 SDK，优先级低。
+- **model-manager.ts 4 处模型 API 桩**（延续）：testModel/chat/complete/embeddings，
+  已有单测锁定 mock 边界，模块未被生产代码 import；收益较低。
+- **files/route.ts POST TenantDb 全量迁移**（延续，低优先级）：事务内 tx 写与
+  auto-summary `db.file.update` 仍直连，均操作已租户校验记录、无越权；churn 大收益低。
+- **支付 SDK 真接入**（可选，依赖外部 SDK）：alipay/wechat 下单/查询/退款链路未接
+  alipay-sdk / wechatpay-node-v3，属功能完整性缺口（非安全缺口；验签/解密已真实实现）。
+- **BillingCenter 订阅/升级逻辑**（新增）：`src/components/billing/BillingCenter.tsx:27`
+  有 `// TODO: 实现订阅/升级逻辑`，按钮回调为空；可接 `/api/billing/subscription` 等已有
+  后端路由补前端调用（需先核后端契约）。
