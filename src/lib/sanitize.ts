@@ -102,3 +102,34 @@ export function stripHtml(dirty: string): string {
     allowedAttributes: {},
   });
 }
+
+/**
+ * HTML 实体转义：将 &, <, >, ", ' 转义为 HTML 实体。
+ * 用于将不可信文本插入 HTML 文本节点或属性值时的 XSS 防护。
+ * 注意：不适用于 <script> 标签内的 JS 字符串上下文（请用 escapeJsString）。
+ */
+export function escapeHtml(unsafe: string): string {
+  if (!unsafe || typeof unsafe !== 'string') return '';
+  return unsafe
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * JS 字符串字面量转义：将不可信文本安全插入 <script> 内的单引号 JS 字符串。
+ * 转义反斜杠、单引号、< （防止 </script> 截断）、换行与 Unicode 行分隔符。
+ */
+export function escapeJsString(unsafe: string): string {
+  if (!unsafe || typeof unsafe !== 'string') return '';
+  return unsafe
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/</g, '\\u003c')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}

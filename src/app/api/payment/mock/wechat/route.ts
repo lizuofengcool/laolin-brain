@@ -5,6 +5,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { wechatPayProvider } from '@/lib/payment/wechat';
+import { escapeHtml, escapeJsString } from '@/lib/sanitize';
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
@@ -18,6 +19,14 @@ export async function GET(request: NextRequest) {
 
   // 生成模拟签名
   const mockSign = wechatPayProvider.generateMockSign(orderNo);
+
+  // orderNo / tradeNo 来自 query 参数，攻击者可控，插入 HTML 文本节点与 <script> 内
+  // JS 字符串前必须转义，防止 reflected XSS（HTML 上下文 escapeHtml，JS 上下文 escapeJsString）。
+  const tradeNoOrMock = tradeNo || 'MOCK' + Date.now();
+  const orderNoHtml = escapeHtml(orderNo);
+  const tradeNoHtml = escapeHtml(tradeNo || '-');
+  const orderNoJs = escapeJsString(orderNo);
+  const tradeNoJs = escapeJsString(tradeNoOrMock);
 
   // 返回模拟支付页面
   const html = `
@@ -173,11 +182,11 @@ export async function GET(request: NextRequest) {
     <div class="order-info">
       <div class="order-item">
         <span class="order-label">订单号</span>
-        <span class="order-value">${orderNo}</span>
+        <span class="order-value">${orderNoHtml}</span>
       </div>
       <div class="order-item">
         <span class="order-label">交易号</span>
-        <span class="order-value">${tradeNo || '-'}</span>
+        <span class="order-value">${tradeNoHtml}</span>
       </div>
       <div class="order-item">
         <span class="order-label">支付方式</span>
@@ -204,16 +213,16 @@ export async function GET(request: NextRequest) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          out_trade_no: '${orderNo}',
-          transaction_id: '${tradeNo || 'MOCK' + Date.now()}',
+          out_trade_no: '${orderNoJs}',
+          transaction_id: '${tradeNoJs}',
           trade_state: 'SUCCESS',
           amount: {
             total: ${parseInt(amount)},
             currency: 'CNY'
           },
           resource: {
-            out_trade_no: '${orderNo}',
-            transaction_id: '${tradeNo || 'MOCK' + Date.now()}',
+            out_trade_no: '${orderNoJs}',
+            transaction_id: '${tradeNoJs}',
             trade_state: 'SUCCESS',
             amount: {
               total: ${parseInt(amount)}
