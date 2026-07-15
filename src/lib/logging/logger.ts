@@ -2,6 +2,7 @@
  * 日志系统
  * 支持访问日志、错误日志、操作日志、系统日志、审计日志
  */
+import { escapeCsvCell } from "../csv-utils";
 
 // 日志级别
 export type LogLevel = "debug" | "info" | "warn" | "error" | "fatal";
@@ -448,15 +449,15 @@ class Logger {
           headers
             .map((h) => {
               const value = (log as any)[h];
-              if (value === undefined || value === null) return "";
-              if (typeof value === "string" && value.includes(",")) {
-                return `"${value.replace(/"/g, '""')}"`;
-              }
-              return String(value);
+              // timestamp 为 Date 对象，escapeCsvCell 会经 JSON.stringify
+              // 产生带外层引号的串（如 "2026-01-15T10:30:00.000Z"）进而被双包，
+              // 先 toISOString 预 coercion 为裸 ISO 字符串。
+              if (value instanceof Date) return escapeCsvCell(value.toISOString());
+              return escapeCsvCell(value);
             })
             .join(",")
         );
-        return [headers.join(","), ...rows].join("\n");
+        return [headers.map(escapeCsvCell).join(","), ...rows].join("\n");
       }
 
       case "text":

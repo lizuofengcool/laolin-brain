@@ -499,6 +499,38 @@ describe("logger / src/lib/logging/logger.ts", () => {
       expect(commaRow).toBeDefined();
     });
 
+    it("csv：message 含引号但无逗号时仍转义（修复原仅按逗号触发转义的 bug）", () => {
+      logger.clear();
+      logger.info('say "hi"', { type: "system", module: "m" });
+      const out = logger.exportLogs("csv");
+      // message 含 " → 应被双引号包裹且内部 " 双写：`"say ""hi"""`
+      expect(out).toContain('"say ""hi"""');
+      // 不应出现裸未转义的 `say "hi"`（即未被包裹的形态）
+      expect(out).not.toMatch(/[^"]say "hi"[^"]/);
+    });
+
+    it("csv：message 含换行时被引号包裹形成跨行记录（RFC 4180）", () => {
+      logger.clear();
+      logger.info("第一行\n第二行", { type: "system", module: "m" });
+      const out = logger.exportLogs("csv");
+      const lines = out.split("\n");
+      // header + 跨两行记录 = 3 行
+      expect(lines).toHaveLength(3);
+      expect(lines[1]).toContain('"第一行');
+      // 第二行以 `第二行"` 开头（closing quote + 后续空字段的逗号）
+      expect(lines[2]).toMatch(/^第二行"/);
+    });
+
+    it("csv：timestamp 为 Date 对象时输出裸 ISO 串（不被 JSON.stringify 双包）", () => {
+      logger.clear();
+      logger.info("m", { type: "system", module: "m" });
+      const out = logger.exportLogs("csv");
+      // 期望裸 ISO 串 2026-01-15T10:30:00.000Z 出现在首列
+      expect(out).toContain("2026-01-15T10:30:00.000Z");
+      // 不应出现 JSON.stringify(date) 的双引号双包：""2026-01-15T10:30:00.000Z""
+      expect(out).not.toContain('""2026-01-15T10:30:00.000Z""');
+    });
+
     it("text 格式每行 `[ts] [LEVEL] [type] message`", () => {
       const out = logger.exportLogs("text");
       const lines = out.split("\n");
