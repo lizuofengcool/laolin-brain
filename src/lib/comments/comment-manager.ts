@@ -29,6 +29,7 @@ import {
   CommentPaginationResult,
   REACTION_EMOJIS,
 } from './types';
+import { escapeCsvCell } from '../csv-utils';
 
 /**
  * 评论管理器
@@ -814,16 +815,16 @@ export class CommentManager {
   private exportToCsv(comments: Comment[], options: ExportOptions): string {
     const headers = ['ID', '用户ID', '用户名', '内容', '创建时间', '点赞数', '回复数'];
     const rows = comments.map(c => [
-      c.id,
-      c.userId,
-      c.userName,
-      `"${c.content.replace(/"/g, '""')}"`,
-      c.createdAt.toISOString(),
-      options.includeLikes ? String(c.likes) : '0',
-      String(c.replyCount),
+      escapeCsvCell(c.id),
+      escapeCsvCell(c.userId),
+      escapeCsvCell(c.userName),
+      escapeCsvCell(c.content),
+      escapeCsvCell(c.createdAt.toISOString()),
+      escapeCsvCell(options.includeLikes ? c.likes : 0),
+      escapeCsvCell(c.replyCount),
     ]);
 
-    return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    return [headers.map(escapeCsvCell).join(','), ...rows.map(r => r.join(','))].join('\n');
   }
 
   private exportToMarkdown(comments: Comment[], options: ExportOptions): string {

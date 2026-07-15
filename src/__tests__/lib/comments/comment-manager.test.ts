@@ -1363,6 +1363,38 @@ describe('comments/comment-manager CommentManager', () => {
       expect(lines[1]).toContain('"hello, world"');
     });
 
+    it('csv userName/内容含逗号与引号按 RFC 4180 转义（修复 userName 未转义）', () => {
+      // 此前 exportToCsv 仅对 content 转义，userName 等字段裸输出；
+      // 若 userName 含逗号/引号会破坏 CSV 结构。现统一走共享 escapeCsvCell。
+      seedTop({
+        userName: '张,三"侠',
+        params: { content: 'hi "world", bye' },
+      });
+      const out = manager.exportComments('target-1', 'file', 'tenant-a', {
+        format: 'csv', includeReplies: false, includeAttachments: false, includeLikes: true,
+      });
+      const lines = out.split('\n');
+      expect(lines[0]).toBe('ID,用户ID,用户名,内容,创建时间,点赞数,回复数');
+      // 无换行字段 → 单行记录
+      expect(lines).toHaveLength(2);
+      // userName 含逗号与引号 → 双引号包裹并双写内部引号
+      expect(lines[1]).toContain('"张,三""侠"');
+      // content 含逗号与引号 → 包裹并双写引号
+      expect(lines[1]).toContain('"hi ""world"", bye"');
+    });
+
+    it('csv 内容含换行被双引号包裹跨行（RFC 4180 §2.6）', () => {
+      seedTop({ params: { content: '第一行\n第二行' } });
+      const out = manager.exportComments('target-1', 'file', 'tenant-a', {
+        format: 'csv', includeReplies: false, includeAttachments: false, includeLikes: true,
+      });
+      const lines = out.split('\n');
+      // header + 跨两行的单条记录 = 3 行
+      expect(lines).toHaveLength(3);
+      expect(lines[1]).toContain('"第一行');
+      expect(lines[2]).toContain('第二行"');
+    });
+
     it('markdown 格式导出', () => {
       seedTop({ params: { content: 'md content' } });
       const out = manager.exportComments('target-1', 'file', 'tenant-a', {
