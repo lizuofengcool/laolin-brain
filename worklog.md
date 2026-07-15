@@ -20356,3 +20356,88 @@ commit 2（fix(import-export)，2 文件 +227/-8）：
   支付 SDK 真接入（依赖 alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流
   Redis 持久化 / share session Redis 持久化 / backups 路由经 TenantDb 收口（backup 表
   尚无 TenantDb 访问器，且 findFirst 已带 tenantId 无越权，churn 大）。
+
+## 2026-07-15 18:50 自动迭代
+
+### 背景
+
+fetch origin/main 与 github/main：双端同步（766ee88），工作树干净，无遗留改动。
+评估任务清单「优先级 1 剩余项」现状：
+
+- tenant-db.ts raw 后门：已加调用堆栈软审计（`raw` getter / `transaction` 均告警），
+  rawDb 无审计导出已移除 → 已处置。
+- alipay.ts / wechat.ts RSA2 验签占位「非空即通过」：已实现真实验签——alipay 用
+  `createVerify('RSA-SHA256')` + base64 + PKCS1；wechat 用 HMAC-SHA256 + timingSafeEqual
+  + AES-256-GCM 解密 V3 resource，缺字段直接拒绝 → 已处置。
+- sync-engine.ts keep_both「直接覆盖」：已改为本地文件重命名为「[冲突副本]」、云端版本
+  落地为新文件，保留两者 → 已处置。
+- api-auth.test.ts 与实现不符：测试已对齐（4 字段 / async / query param 拒绝）→ 已处置。
+- files/route.ts 绕过 TenantDb：worklog 已记「无越权、churn 大」，延后。
+
+即任务清单所列优先级 1 项均已在前序轮次处置，清单为陈旧描述。本轮按 worklog「下一轮
+候选」首位推进。
+
+### 本次开发
+
+**route.ts generateCsv 接入 escapeCsvCell**（refactor + 低风险 bug，延续 185-188 轮 CSV
+转义统一线）：`src/app/api/export-import/route.ts` 的 `generateCsv` 与 index.ts 近重复
+但列集不同（此处含「更新时间」、不含「文件夹」），故保留本地实现，仅把转义统一交给共享
+`escapeCsvCell`（RFC 4180）。去重为独立关切，不在此混入。
+
+修复的裸输出问题：
+- `fileType` 裸输出 → 含逗号/引号/换行会破坏 CSV（引号提前闭合 / 行被截断）。
+- `createdAt` / `updatedAt` 为 Prisma Date 对象时 `String(value)` 产生 locale 依赖串，
+  且直接喂 escapeCsvCell 会经 `JSON.stringify` 双包；先 `toISOString()` 预 coercion 为
+  裸 ISO 字符串再转义。
+- `fileName` / `tags` 此前已正确双写内部引号，现统一改走 escapeCsvCell（仅在有特殊字符
+  时包裹，与 187/188 轮行为一致）。
+- 表头亦走 escapeCsvCell（静态字面量，输出不变，纯防御性一致）。
+
+行为改进：原 fileName/tags「无特殊字符也强制双引号包裹」→ 现仅在有特殊字符时包裹
+（RFC 合规）。对正常数据输出不变，无 API 契约破坏。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --registry=https://registry.npmmirror.com`（沙箱无
+  node_modules，40s；pnpm-lock.yaml 与 node_modules 均在 .gitignore，不影响已提交的
+  package-lock.json）。
+- `npx prisma generate`（v6.19.3 客户端，tsc 前置依赖）。
+- `npx tsc --noEmit`：**0 错误**。
+- `npx vitest run csv-utils import-export-csv logger`：**88 passed / 3 files**（与 188 轮
+  一致：logger 60 / import-export-csv 11 / csv-utils 17）。
+- `npx vitest run`（全量）：**5405 passed / 204 files**，零回归（与 188 轮一致）。
+- route.ts generateCsv 为本地（非 export）函数，转义现已全权委托给已测的 escapeCsvCell
+  （17 用例），Date coercion 镜像 index.ts generateCsv（11 用例），覆盖为间接。
+
+### 改动量
+
+1 commit，1 文件，+34/-9：
+- `src/app/api/export-import/route.ts`（+34/-9，import escapeCsvCell + generateCsv 重写）
+
+### Commit
+
+- `e0a1631` fix(export-import): route.ts generateCsv 接入 escapeCsvCell 修复 fileType/createdAt/updatedAt 裸输出
+
+### 推送
+
+- origin (Gitee)：`766ee88..e0a1631` ✅
+- github (GitHub)：`766ee88..e0a1631` ✅（push protection 未拦截，无 sk_ 前缀占位密钥）
+
+### 下一轮候选
+
+- **generateCsv 去重**（新候选，低优先级，refactor）：route.ts 与 index.ts 的 generateCsv
+  近重复但列集不同（route.ts 含 updatedAt 无 folderId；index.ts 含 folderId 无 updatedAt）。
+  去重需先决定规范列集（是否同时含 folderId + updatedAt），属行为变更，建议独立轮次推进；
+  可抽 `generateCsv(files, columns)` 共享实现按列配置输出。
+- **TableWidget 渲染层接入 rows**（未变动，中优先级，功能完整性）：前端无表格渲染组件消费
+  rows，reports 模块为纯库。需新建渲染组件 + 挂载页面，超 1-3 commit 单轮范围，建议独立
+  多轮 feature 推进。
+- **AiProviderConfig.config 字段加密**（未变动，低优先级）：死字段，需先接线 POST 接受
+  config → 落库 → chat 读取，较大 feature。
+- **package-lock.json 陈旧**（新观察，低优先级，chore）：package-lock.json 与 package.json
+  不同步（缺 @radix-ui/* 等），`npm ci` 失败；当前用 pnpm --no-frozen-lockfile 绕过。可独立
+  轮次 `npm install` 重生成并提交（churn 大，需确认不引入回归）。
+- 延续项（低优先级，未变动）：document-qna AI 桩 / model-manager 4 处模型 API 桩
+  （依赖外部 SDK）/ files/route.ts POST 事务内 tx 与 auto-summary 直连（无越权、churn 大）/
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化 / backups 路由
+  经 TenantDb 收口（backup 表尚无 TenantDb 访问器，且 findFirst 已带 tenantId 无越权，churn 大）。
