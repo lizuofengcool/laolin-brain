@@ -5,6 +5,7 @@
 
 import type { DataPoint, ChartSeries, ChartConfig, ExportOptions } from './types';
 import { CHART_COLORS } from './types';
+import { escapeCsvCell } from '../csv-utils';
 
 /**
  * 数据格式化工具
@@ -228,27 +229,16 @@ export const chartUtils = {
  */
 export const exportUtils = {
   // 导出为CSV
-  // RFC 4180 合规：含 " , \r \n 的单元格用双引号包裹并将内部 " 双写；
+  // RFC 4180 合规：单元格转义统一走 escapeCsvCell（src/lib/csv-utils.ts）；
   // 行分隔符使用 \r\n；前置 BOM(\uFEFF) 以兼容 Excel UTF-8 自动识别。
-  // 与 report-manager.ts 的 escapeCsvCell 行为保持一致。
   toCSV: (data: DataPoint[], columns?: string[]): string => {
     if (data.length === 0) return '';
 
     const keys = columns || Object.keys(data[0]);
 
-    const escapeCell = (value: unknown): string => {
-      if (value === null || value === undefined) return '';
-      // 对象/数组走 JSON 序列化，避免隐式 toString 落到 [object Object]
-      const str = typeof value === 'object' ? JSON.stringify(value) : String(value);
-      if (/[",\r\n]/.test(str)) {
-        return `"${str.replace(/"/g, '""')}"`;
-      }
-      return str;
-    };
-
-    const header = keys.map(k => escapeCell(k)).join(',');
+    const header = keys.map(k => escapeCsvCell(k)).join(',');
     const rows = data.map(item =>
-      keys.map(key => escapeCell(item[key])).join(',')
+      keys.map(key => escapeCsvCell(item[key])).join(',')
     );
 
     return '\uFEFF' + [header, ...rows].join('\r\n');

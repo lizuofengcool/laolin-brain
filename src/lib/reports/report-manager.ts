@@ -14,6 +14,7 @@ import type {
 } from './types';
 import { BUILTIN_REPORT_TEMPLATES } from './types';
 import { exportUtils } from '../visualization';
+import { escapeCsvCell } from '../csv-utils';
 
 export class ReportManager {
   private static instance: ReportManager;
@@ -457,17 +458,6 @@ export class ReportManager {
   // ==================== 内部工具 ====================
 
   /**
-   * 将单元格值按 RFC 4180 转义：含 " , \n \r 时用双引号包裹并将内部 " 双写
-   */
-  private escapeCsvCell(value: unknown): string {
-    const str = value === null || value === undefined ? '' : String(value);
-    if (/[",\r\n]/.test(str)) {
-      return `"${str.replace(/"/g, '""')}"`;
-    }
-    return str;
-  }
-
-  /**
    * 由表格组件列定义生成 CSV 字符串
    * - 行分隔符使用 \r\n（RFC 4180）
    * - 前置 BOM（\uFEFF）以兼容 Excel UTF-8 自动识别
@@ -477,6 +467,7 @@ export class ReportManager {
    * - 行数据来自 TableConfig.rows（可选）：每行按列 dataIndex 取值，列定义 format
    *   优先于原始值（与表格渲染一致）；dataIndex 缺失时单元格留空。未提供 rows
    *   时仅导出表头（历史行为，向后兼容）。
+   * - 单元格转义统一走 escapeCsvCell（src/lib/csv-utils.ts，RFC 4180 合规）
    */
   private buildTableCsv(widgets: ReportWidget[]): string {
     const BOM = '\uFEFF';
@@ -491,7 +482,7 @@ export class ReportManager {
       if (widget.title) {
         lines.push(`# ${widget.title}`);
       }
-      lines.push(columns.map(col => this.escapeCsvCell(col.title)).join(','));
+      lines.push(columns.map(col => escapeCsvCell(col.title)).join(','));
 
       // 行数据：按列 dataIndex 取值，format 优先；缺失字段留空（escapeCsvCell 对
       // undefined 返回空串）。rows 为空数组或 undefined 时不追加任何行。
@@ -502,7 +493,7 @@ export class ReportManager {
             .map(col => {
               const raw = row[col.dataIndex];
               const value = typeof col.format === 'function' ? col.format(raw) : raw;
-              return this.escapeCsvCell(value);
+              return escapeCsvCell(value);
             })
             .join(',')
         );
