@@ -4,6 +4,7 @@
  */
 
 import { db } from "@/lib/db";
+import { escapeCsvCell } from "../csv-utils";
 
 // 导出选项
 export interface ExportOptions {
@@ -428,16 +429,24 @@ export function generateCsv(files: any[]): string {
   ];
 
   const rows = files.map((file) => [
-    `"${file.fileName?.replace(/"/g, '""') || ""}"`,
-    file.fileType || "",
-    file.fileSize || 0,
-    file.folderId || "",
-    `"${(file.tags || []).join(", ")}"`,
-    file.isFavorite ? "是" : "否",
-    file.createdAt || "",
+    escapeCsvCell(file.fileName ?? ""),
+    escapeCsvCell(file.fileType ?? ""),
+    escapeCsvCell(file.fileSize ?? 0),
+    escapeCsvCell(file.folderId ?? ""),
+    // tags 保留既有「逗号连接成单格」表示，仅把转义交给 escapeCsvCell：
+    // 此前 `"${tags.join(", ")}"` 未双写内部 " → 标签含引号会破坏 CSV。
+    escapeCsvCell((file.tags || []).join(", ")),
+    escapeCsvCell(file.isFavorite ? "是" : "否"),
+    // createdAt 可能为 Date 对象，escapeCsvCell 会 JSON.stringify 后双包，
+    // 先 toISOString 预 coercion 为裸 ISO 字符串。
+    escapeCsvCell(
+      file.createdAt instanceof Date
+        ? file.createdAt.toISOString()
+        : file.createdAt ?? ""
+    ),
   ]);
 
-  return [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+  return [headers.map(escapeCsvCell).join(","), ...rows.map((r) => r.join(","))].join("\n");
 }
 
 // 格式化文件大小
