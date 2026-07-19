@@ -5,28 +5,33 @@ import { generateCsv } from "@/lib/import-export";
  * import-export generateCsv CSV 转义单测
  *
  * 覆盖目标：src/lib/import-export/index.ts 的 generateCsv。
- * 该函数为纯函数（无 db 依赖），此前内联转义存在未转义 bug：
- * - tags 含引号未双写（`"${tags.join(", ")}"` 仅包裹未双写内部 "）→ 标签含 "
- *   会破坏 CSV（如 ["a\"b"] 输出 "a"b" 导致引号提前闭合）
- * - fileType / folderId / createdAt 等字段裸输出（含逗号/引号/换行会破坏 CSV）
- * - createdAt 为 Date 对象时模板字符串隐式 toString 产生 locale 依赖串
  *
- * 修复后统一走 escapeCsvCell（RFC 4180）+ createdAt Date 预 coercion。
+ * 历史：该函数为纯函数（无 db 依赖），此前内联转义存在未转义 bug（tags 含引号未双写、
+ * fileType/createdAt 等字段裸输出、Date 对象 JSON.stringify 双包）。185-189 轮已陆续
+ * 接入共享 escapeCsvCell（RFC 4180）+ Date 预 coercion 修复。
+ *
+ * 2026-07-20：190 轮去重合并——route.ts 本地 generateCsv 已移除，改从此处 import。
+ * 规范列集统一为 route.ts 的 7 列（文件名/文件类型/文件大小/标签/是否收藏/创建时间/更新时间，
+ * 含 updatedAt 无 folderId）。本测试同步更新：
+ * - 表头期望：旧「文件名,类型,大小,文件夹,标签,收藏,创建时间」→ 新「文件名,文件类型,文件大小,标签,是否收藏,创建时间,更新时间」
+ * - 测试入参：旧含 folderId 无 updatedAt → 新含 updatedAt 无 folderId
+ * - 空入参：旧返回尾随换行 `headers\n` → 新无尾随换行 `headers`（与 route.ts 非空路径一致）
+ * - 「缺失字段留空」用例：旧测 createdAt 缺失（末列空）→ 新测 updatedAt 缺失（末列空）
+ * - 新增 updatedAt Date coercion 用例（镜像 createdAt，覆盖末列 Date 双包防御）
  */
 describe("generateCsv / src/lib/import-export/index.ts", () => {
+  // 规范表头（2026-07-20 去重后统一为 route.ts 列集）
+  const HEADERS = "文件名,文件类型,文件大小,标签,是否收藏,创建时间,更新时间";
+
   // ==================== 空入参 ====================
 
-  it("空数组返回表头行（含尾随换行，保留既有行为）", () => {
-    expect(generateCsv([])).toBe("文件名,类型,大小,文件夹,标签,收藏,创建时间\n");
+  it("空数组返回表头行（无尾随换行，2026-07-20 行为变更：与 route.ts 非空路径一致）", () => {
+    expect(generateCsv([])).toBe(HEADERS);
   });
 
-  it("null/undefined 入参同样返回表头行", () => {
-    expect(generateCsv(null as any)).toBe(
-      "文件名,类型,大小,文件夹,标签,收藏,创建时间\n"
-    );
-    expect(generateCsv(undefined as any)).toBe(
-      "文件名,类型,大小,文件夹,标签,收藏,创建时间\n"
-    );
+  it("null/undefined 入参同样返回表头行（库函数对外暴露需自守）", () => {
+    expect(generateCsv(null as any)).toBe(HEADERS);
+    expect(generateCsv(undefined as any)).toBe(HEADERS);
   });
 
   // ==================== 普通字段 ====================
@@ -37,18 +42,19 @@ describe("generateCsv / src/lib/import-export/index.ts", () => {
         fileName: "报告.pdf",
         fileType: "pdf",
         fileSize: 1024,
-        folderId: "f1",
         tags: ["工作", "月报"],
         isFavorite: false,
         createdAt: "2026-01-15T10:30:00.000Z",
+        updatedAt: "2026-01-16T08:00:00.000Z",
       },
     ]);
     const lines = out.split("\n");
-    expect(lines[0]).toBe("文件名,类型,大小,文件夹,标签,收藏,创建时间");
+    expect(lines[0]).toBe(HEADERS);
     expect(lines[1]).toContain("报告.pdf");
     expect(lines[1]).toContain("pdf");
     expect(lines[1]).toContain("1024");
-    expect(lines[1]).toContain("f1");
+    expect(lines[1]).toContain("2026-01-15T10:30:00.000Z"); // createdAt
+    expect(lines[1]).toContain("2026-01-16T08:00:00.000Z"); // updatedAt
     expect(lines[1]).toContain("否");
     // tags 逗号连接后含 , → 应被引号包裹
     expect(lines[1]).toContain('"工作, 月报"');
@@ -62,10 +68,10 @@ describe("generateCsv / src/lib/import-export/index.ts", () => {
         fileName: "x",
         fileType: "t",
         fileSize: 0,
-        folderId: "",
         tags: [],
         isFavorite: true,
         createdAt: "2026-01-15T10:30:00.000Z",
+        updatedAt: "2026-01-15T11:00:00.000Z",
       },
     ]);
     expect(out).toContain("是");
@@ -79,10 +85,10 @@ describe("generateCsv / src/lib/import-export/index.ts", () => {
         fileName: "x",
         fileType: "t",
         fileSize: 0,
-        folderId: "",
         tags: ['tag"with"quote'],
         isFavorite: false,
         createdAt: "2026-01-15T10:30:00.000Z",
+        updatedAt: "2026-01-15T11:00:00.000Z",
       },
     ]);
     // tags join → `tag"with"quote` → escapeCsvCell → `"tag""with""quote"`
@@ -97,10 +103,10 @@ describe("generateCsv / src/lib/import-export/index.ts", () => {
         fileName: "x",
         fileType: "t",
         fileSize: 0,
-        folderId: "",
         tags: ["a,b", 'c"d'],
         isFavorite: false,
         createdAt: "2026-01-15T10:30:00.000Z",
+        updatedAt: "2026-01-15T11:00:00.000Z",
       },
     ]);
     // join → `a,b, c"d` → escapeCsvCell → `"a,b, c""d"`
@@ -115,10 +121,10 @@ describe("generateCsv / src/lib/import-export/index.ts", () => {
         fileName: 'a,b"c\nd',
         fileType: "txt",
         fileSize: 0,
-        folderId: "",
         tags: [],
         isFavorite: false,
         createdAt: "2026-01-15T10:30:00.000Z",
+        updatedAt: "2026-01-15T11:00:00.000Z",
       },
     ]);
     const lines = out.split("\n");
@@ -136,10 +142,10 @@ describe("generateCsv / src/lib/import-export/index.ts", () => {
         fileName: "x",
         fileType: "a,b",
         fileSize: 0,
-        folderId: "",
         tags: [],
         isFavorite: false,
         createdAt: "2026-01-15T10:30:00.000Z",
+        updatedAt: "2026-01-15T11:00:00.000Z",
       },
     ]);
     expect(out).toContain('"a,b"');
@@ -153,10 +159,10 @@ describe("generateCsv / src/lib/import-export/index.ts", () => {
         fileName: "x",
         fileType: "t",
         fileSize: 0,
-        folderId: "",
         tags: [],
         isFavorite: false,
         createdAt: new Date("2026-01-15T10:30:00.000Z"),
+        updatedAt: "2026-01-15T11:00:00.000Z",
       },
     ]);
     expect(out).toContain("2026-01-15T10:30:00.000Z");
@@ -164,16 +170,33 @@ describe("generateCsv / src/lib/import-export/index.ts", () => {
     expect(out).not.toContain('""2026-01-15T10:30:00.000Z""');
   });
 
-  it("createdAt 缺失时单元格留空", () => {
+  it("updatedAt 为 Date 对象时输出裸 ISO 串（不被 JSON.stringify 双包）", () => {
     const out = generateCsv([
       {
         fileName: "x",
         fileType: "t",
         fileSize: 0,
-        folderId: "",
         tags: [],
         isFavorite: false,
-        // createdAt 缺失
+        createdAt: "2026-01-15T10:30:00.000Z",
+        updatedAt: new Date("2026-01-16T08:00:00.000Z"),
+      },
+    ]);
+    expect(out).toContain("2026-01-16T08:00:00.000Z");
+    // 不应出现 JSON.stringify(date) 的双引号双包
+    expect(out).not.toContain('""2026-01-16T08:00:00.000Z""');
+  });
+
+  it("updatedAt 缺失时末列单元格留空（行末以逗号结尾）", () => {
+    const out = generateCsv([
+      {
+        fileName: "x",
+        fileType: "t",
+        fileSize: 0,
+        tags: [],
+        isFavorite: false,
+        createdAt: "2026-01-15T10:30:00.000Z",
+        // updatedAt 缺失（现为末列）
       },
     ]);
     // 末列应为空（行末是空串，即行以逗号结尾）
@@ -189,19 +212,19 @@ describe("generateCsv / src/lib/import-export/index.ts", () => {
         fileName: "a",
         fileType: "t",
         fileSize: 1,
-        folderId: "",
         tags: [],
         isFavorite: false,
         createdAt: "2026-01-15T10:30:00.000Z",
+        updatedAt: "2026-01-15T11:00:00.000Z",
       },
       {
         fileName: "b",
         fileType: "t",
         fileSize: 2,
-        folderId: "",
         tags: [],
         isFavorite: true,
         createdAt: "2026-01-15T11:30:00.000Z",
+        updatedAt: "2026-01-15T12:00:00.000Z",
       },
     ]);
     const lines = out.split("\n");

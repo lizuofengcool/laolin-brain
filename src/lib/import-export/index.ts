@@ -413,36 +413,58 @@ export async function importData(
 }
 
 // 生成CSV内容
+//
+// 2026-07-20：与 src/app/api/export-import/route.ts 的本地 generateCsv 去重合并，
+// 统一规范列集为 route.ts 的 7 列（文件名/文件类型/文件大小/标签/是否收藏/创建时间/更新时间，
+// 含 updatedAt 无 folderId）。route.ts 此前为本地实现，现改从此处 import。
+//
+// 列集决策依据：
+// - route.ts 为实际生效路径（/api/export?format=csv），其列集为用户所见，作为规范；
+// - index.ts 旧实现含 folderId 无 updatedAt，但无任何生产调用方（仅测试 import），
+//   属死代码，其列集变更对用户不可见；
+// - 两版表头标签不同（route.ts「文件类型/文件大小/是否收藏」vs index.ts「类型/大小/收藏」），
+//   以 route.ts 为准。
+//
+// 行为变更（相对旧 index.ts）：
+// - 空入参不再返回尾随换行（旧 `headers\n` → 新 `headers`），与 route.ts 非空路径
+//   `[headers, ...rows].join('\n')` 一致；
+// - 保留 null/undefined 防御（route.ts 调用方传 `files || []` 已兜底，但库函数对外
+//   暴露需自守），返回仅表头行。
 export function generateCsv(files: any[]): string {
-  if (!files || files.length === 0) {
-    return "文件名,类型,大小,文件夹,标签,收藏,创建时间\n";
-  }
-
   const headers = [
     "文件名",
-    "类型",
-    "大小",
-    "文件夹",
+    "文件类型",
+    "文件大小",
     "标签",
-    "收藏",
+    "是否收藏",
     "创建时间",
+    "更新时间",
   ];
+
+  // 空入参防御：返回仅含表头的单行（与 route.ts 非空路径输出一致，无尾随换行）
+  if (!files || files.length === 0) {
+    return headers.map(escapeCsvCell).join(",");
+  }
 
   const rows = files.map((file) => [
     escapeCsvCell(file.fileName ?? ""),
     escapeCsvCell(file.fileType ?? ""),
     escapeCsvCell(file.fileSize ?? 0),
-    escapeCsvCell(file.folderId ?? ""),
     // tags 保留既有「逗号连接成单格」表示，仅把转义交给 escapeCsvCell：
     // 此前 `"${tags.join(", ")}"` 未双写内部 " → 标签含引号会破坏 CSV。
     escapeCsvCell((file.tags || []).join(", ")),
     escapeCsvCell(file.isFavorite ? "是" : "否"),
-    // createdAt 可能为 Date 对象，escapeCsvCell 会 JSON.stringify 后双包，
-    // 先 toISOString 预 coercion 为裸 ISO 字符串。
+    // createdAt/updatedAt 为 Prisma Date 对象时，escapeCsvCell 会经 JSON.stringify
+    // 产生带外层引号的串进而被双包，先 toISOString 预 coercion 为裸 ISO 字符串。
     escapeCsvCell(
       file.createdAt instanceof Date
         ? file.createdAt.toISOString()
         : file.createdAt ?? ""
+    ),
+    escapeCsvCell(
+      file.updatedAt instanceof Date
+        ? file.updatedAt.toISOString()
+        : file.updatedAt ?? ""
     ),
   ]);
 

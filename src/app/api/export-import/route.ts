@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 import { safeJsonParseArray } from "@/lib/safe-json-parse";
-import { escapeCsvCell } from "@/lib/csv-utils";
+import { generateCsv } from "@/lib/import-export";
 
 /**
  * 导入导出API
@@ -338,41 +338,6 @@ export async function POST(request: NextRequest) {
 }
 
 // ─── 生成CSV内容 ─────────────
-// 与 src/lib/import-export/index.ts 的 generateCsv 近重复但列集不同（此处含「更新时间」、
-// 不含「文件夹」），故保留本地实现，仅把转义统一交给共享 escapeCsvCell（RFC 4180）。
-// 去重为独立关切，不在此混入。
-function generateCsv(files: any[]): string {
-  const headers = [
-    '文件名',
-    '文件类型',
-    '文件大小',
-    '标签',
-    '是否收藏',
-    '创建时间',
-    '更新时间',
-  ];
-
-  const rows = files.map(file => [
-    escapeCsvCell(file.fileName ?? ''),
-    escapeCsvCell(file.fileType ?? ''),
-    escapeCsvCell(file.fileSize ?? 0),
-    // tags 保留既有「逗号连接成单格」表示，仅把转义交给 escapeCsvCell：
-    // 此前 `"${tags.join(', ')}"` 未双写内部 " → 标签含引号会破坏 CSV。
-    escapeCsvCell((file.tags || []).join(', ')),
-    escapeCsvCell(file.isFavorite ? '是' : '否'),
-    // createdAt/updatedAt 为 Prisma Date 对象时，escapeCsvCell 会经 JSON.stringify
-    // 产生带外层引号的串进而被双包，先 toISOString 预 coercion 为裸 ISO 字符串。
-    escapeCsvCell(
-      file.createdAt instanceof Date
-        ? file.createdAt.toISOString()
-        : file.createdAt ?? ''
-    ),
-    escapeCsvCell(
-      file.updatedAt instanceof Date
-        ? file.updatedAt.toISOString()
-        : file.updatedAt ?? ''
-    ),
-  ]);
-
-  return [headers.map(escapeCsvCell).join(','), ...rows.map(row => row.join(','))].join('\n');
-}
+// 2026-07-20：本地 generateCsv 已与 src/lib/import-export/index.ts 的 generateCsv
+// 合并去重，统一规范列集为本处的 7 列（含 updatedAt 无 folderId）。route.ts 改从
+// index.ts import，消除近重复实现。详见 index.ts generateCsv 注释。
