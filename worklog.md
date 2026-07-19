@@ -21422,3 +21422,119 @@ ChartWidget，本轮在 /reports/[id] 页面挂载 ReportRenderer，按 ReportLa
   直连（无越权、churn 大）/ 支付 SDK 真接入（依赖 alipay-sdk/wechatpay-node-v3）/
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化 /
   backups 路由经 TenantDb 收口 / package-lock.json 陈旧（chore，与 pnpm 不冲突）。
+
+## 2026-07-20 06:00 自动迭代（第一百九十七轮）
+
+承接第一百九十六轮"下一轮候选"第一条：**/reports/[id] 接入 dataConfig 数据获取**
+（拆 2 轮，本轮做后端数据层：dataConfig 声明 + fetcher + 路由；下一轮做页面
+useEffect 拉取 + 替换 mock）。
+
+### 决策与执行
+
+1. **refactor(stats)**：把 /api/stats/route.ts 中 5 个 stats 查询函数
+   （getOverviewStats / getStatsByType / getTrendStats / getActivityStats /
+   getAiStats）抽离到 src/lib/stats/stats-service.ts，供 /api/reports/[id]/data
+   fetcher 直接 import 复用，避免 HTTP 自调用与重复鉴权。route.ts 改为 import
+   这 5 个函数，GET 行为不变。
+
+2. **chore(lockfile)**：执行 npm ci 时发现 package-lock.json 缺失
+   @radix-ui/react-collapsible@1.1.16（package.json 声明了但 lockfile 漏录），
+   导致 npm ci 失败。经 npm install 补齐嵌套依赖（react-accordion 仍用 1.1.12，
+   顶层用 1.1.16），现在 npm ci 可正常安装。顺带让沙箱环境可跑测试。
+
+3. **feat(reports)**：新增报表数据后端层（3 文件新建 + 1 文件修改 + 2 测试）：
+   - `src/lib/reports/types.ts`：在 BUILTIN_REPORT_TEMPLATES 部分 widget 上声明
+     dataConfig.dataSource，命名空间对齐 lib/stats/stats-service：
+     · storage-overview w1~w6 → stats:overview / stats:trend / stats:by-type
+     · file-activity w1 → stats:trend（w2 下载趋势 / w3 热门文件表暂留 mock）
+     · ai-usage w1~w5 → stats:ai（w6 调用趋势暂留 mock）
+     · user-activity 全部暂留 mock（无对应后端数据源）
+     顶部注释说明 dataSource 取值与未声明 dataConfig 的回退策略。
+   - `src/lib/reports/data-fetcher.ts`（新）：fetchWidgetData /
+     fetchReportData。5 种 dataSource 分支：overview 单字段 metric / by-type
+     types 数组映射 / trend dailyStats 时间序列 / ai 多字段聚合为分布 /
+     activity userActivity top-N。AI_CALL_LABELS 中文标签映射
+     （summaryCalls→摘要 等）。未声明 dataConfig / 未知 dataSource 返回 {}，
+     不抛错。fetchReportData 单 widget 抛错被 catch 不污染其他 widget。
+   - `src/app/api/reports/[id]/data/route.ts`（新）：GET handler。鉴权链：
+     authenticateRequest → role 检查（owner/admin，与 /api/stats 对齐）→
+     空 id 400 → 未知模板 404 → fetchReportData。内置模板适配为 Report 形态
+     （与详情页 templateToReport 一致）。透传 dateFrom/dateTo query。
+     params: Promise<{ id: string }> 对齐 Next.js 16 动态路由签名。
+   - `src/__tests__/lib/reports/data-fetcher.test.ts`（新）：17 用例覆盖
+     5 种 dataSource 与 widget.type 组合的输出形态、未声明/未知 dataSource
+     返回 {}、fetchReportData 仅收集声明 dataConfig 的 widget、单 widget 抛错
+     被 catch 不污染其他 widget。
+   - `src/__tests__/api/reports-id-data-route.test.ts`（新）：9 用例覆盖
+     401 透传、member 403、admin 通过、空 id 400、未知 reportId 404、
+     storage-overview/ai-usage 合法模板、dateFrom/dateTo 透传、fetcher 抛错
+     500。MockNextResponse 真实 class 支持 instanceof，params 以
+     Promise.resolve 提供。修正一处断言：URLSearchParams.get 缺省返回 null
+     而非 undefined（route 透传给 fetcher，fetcher签名已兼容 string | null）。
+
+### 验证
+
+- `npx prisma generate`：✅ Prisma Client v6.19.3 生成
+- `npx tsc --noEmit`：✅ 零类型错误
+- `npx vitest run src/__tests__/lib/reports/data-fetcher.test.ts
+   src/__tests__/api/reports-id-data-route.test.ts
+   src/__tests__/lib/reports/report-manager.test.ts
+   src/__tests__/components/reports-id-page.test.tsx
+   src/__tests__/components/reports-list-page.test.tsx
+   src/__tests__/lib/stats/stats-service.test.ts
+   src/__tests__/api/stats-ai-route.test.ts`：✅ 全过
+  （data-fetcher 17 / reports-id-data-route 9 / report-manager 全量 /
+   reports-id-page 14 / reports-list-page 11 / stats-service / stats-ai-route 5）
+- `npx vitest run`（全量）：**5557 passed / 213 files**，零回归
+  （上轮 5531/211 + 本轮 +26 测试 / +2 files = 5557/213）。
+
+### 改动量
+
+3 commit，8 文件，+1457 / -344：
+- `src/lib/stats/stats-service.ts`（+331，新建）+ `src/app/api/stats/route.ts`
+  （-329 +3，瘦身）= refactor
+- `package-lock.json`（+212 / -11）= chore
+- `src/lib/reports/types.ts`（+12 / -1，dataConfig 声明 + 注释）
+- `src/lib/reports/data-fetcher.ts`（+183，新建）
+- `src/app/api/reports/[id]/data/route.ts`（+109，新建）
+- `src/__tests__/lib/reports/data-fetcher.test.ts`（+373，新建）
+- `src/__tests__/api/reports-id-data-route.test.ts`（+207，新建）
+
+### Commit
+
+- `5155614` refactor(stats): 抽离 stats 查询函数到 lib/stats/stats-service.ts
+- `39c06c4` chore: 修复 package-lock.json 缺失 @radix-ui/react-collapsible 依赖
+- `339554f` feat(reports): 新增 /api/reports/[id]/data 路由 + data-fetcher + 内置模板 dataConfig 声明
+
+### 推送
+
+- origin (Gitee)：`6886c29..339554f` ✅
+- github (GitHub)：`6886c29..339554f` ✅（push protection 未拦截，无 sk_ 前缀
+  占位密钥）
+
+### 下一轮候选
+
+- **/reports/[id] 详情页接入 /api/reports/[id]/data**（直接延续，高优先级）：
+  本轮后端数据层已就绪（fetcher + 路由 + dataConfig 声明），下一轮做页面侧：
+  (1) 详情页 useEffect 拉取 `/api/reports/[id]/data` (2) 用返回的 chartData /
+  metricValue 覆盖 widget.config 的 mock 数据 (3) 未声明 dataConfig 的 widget
+  继续走现有 mock 注入逻辑（向后兼容）。需更新 reports-id-page.test.tsx
+  增加 fetch mock 场景。中改动，1-2 commit。
+- **报表导出按钮**（中改动，中优先级）：列表页或详情页加"导出"按钮，调用
+  reportManager.exportReport（已支持 json/csv/pdf，pdf 为占位）。需评估下载
+  降级（exportUtils.downloadFile 在沙箱环境无 Blob URL 时的兜底）。
+- **MobileNav 添加报表中心入口**（小改动，低优先级）：当前 MobileNav 仅 5 图标
+  精简栏（首页/文件/收藏/搜索/我的），未挂载 reports。可考虑替换"搜索"为
+  "报表"或新增第 6 图标（但需评估 5 → 6 图标对移动端布局的影响）。
+- **/reports 列表页支持搜索/筛选**（小改动，低优先级）：当前列表页直接渲染全部
+  内置模板，无 search input / category filter。可在页面顶部加 search input +
+  category 下拉，过滤 templates（前端纯过滤，无 API 改动）。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格在
+  窄屏会缩窄但不破坏，可加 CSS media query 切到 mobile=1 列 / tablet=12 列 /
+  desktop=24 列。
+- 延续项（低优先级，未变动）：AiProviderConfig.config 字段加密（死字段，需
+  先接线）/ document-qna askQuestion AI 桩（依赖外部 SDK）/ model-manager
+  4 处模型 API 桩（依赖外部 SDK）/ files/route.ts POST 事务内 tx 与 auto-summary
+  直连（无越权、churn 大）/ 支付 SDK 真接入（依赖 alipay-sdk/wechatpay-node-v3）/
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化 /
+  backups 路由经 TenantDb 收口。
