@@ -21115,3 +21115,156 @@ recharts 2.15.4 实现 6 种图表类型真实渲染。
   alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 / share
   session Redis 持久化 / backups 路由经 TenantDb 收口（backup 表尚无 TenantDb 访问器，且
   findFirst 已带 tenantId 无越权，churn 大）。
+
+## 2026-07-20 05:14 自动迭代（第一百九十五轮）
+
+### 背景
+
+- 沙箱初次执行：`/workspace/laolin-brain` 不存在，先 `git clone origin` 并 `git remote add
+  github`，配置 `user.email=uploader@local / user.name=uploader`。
+- 本轮 fetch 后 origin / github 双端均无新提交（`3a2789d` 顶端一致），无未提交改动。
+- 复核用户清单中的优先级 1 已知问题：全部在历史轮次已闭环
+  （tenant-db raw 已加 console.warn 软审计 + 移除 rawDb 无审计导出；
+  alipay/wechat RSA2 已接入 createVerify/HMAC+AES-GCM 真实验签；files/route.ts
+  GET + dedup 已走 createTenantDb；sync-engine keep_both 已重命名为冲突副本 +
+  创建新文件而非覆盖；api-auth.test.ts 已对齐 4 字段/async/仅 Authorization 头实现）。
+- 按 worklog "下一轮候选" 推进 /reports/[id] 页面挂载阶段：上轮已落地 ChartWidget，
+  本轮在详情页挂载 ReportRenderer + 24 列栅格布局 + mock 数据注入；
+  dataConfig 数据获取接入留待下一轮。
+
+### 本次开发内容
+
+**feat(reports): 新增 /reports/[id] 详情页挂载 ReportRenderer + 24 列栅格布局**
+
+补全 worklog 标记的"页面挂载 + 栅格布局（mock 数据）"阶段：上轮已落地
+ChartWidget，本轮在 /reports/[id] 页面挂载 ReportRenderer，按 ReportLayout.widgets
+循环渲染，并实现 widget.width 1-N → grid-column: span N 的 24 列栅格映射。
+
+#### `src/app/(dashboard)/reports/[id]/page.tsx`（+249，新建）
+
+- **路由参数解析**：`useParams()` 取 `[id]`，trim 后查 `reportManager.getTemplate(id)`
+  - 命中 → 适配为 Report 形态渲染（status=published, permission=public, tenantId=builtin）
+  - 未命中 / 空 id / 仅空格 → "报表不存在或已被删除" 占位 + 返回首页按钮
+  - 加载分支：`report === undefined` → Loader2 spinner + sr-only "加载报表中…"
+- **ReportGrid 容器**：内联 style `grid-template-columns: repeat(${columns}, minmax(0, 1fr))`
+  + `gap: ${gap}px`；columns/gap 默认 24/16，与 BUILTIN_REPORT_TEMPLATES 一致。
+- **widget 包裹层**：`grid-column: span ${clampWidth(width, columns)}`
+  - width 缺省 / 非法（NaN/0/负数）→ 回退到 columns（占满整行）
+  - width > columns → clamp 到 columns
+  - 透出 `data-widget-id` / `data-widget-type` / `data-widget-span` 便于测试与调试
+- **injectMockData**：对缺 data 的 chart widget 按 type 注入示例数据
+  - line / bar / area / heatmap / treemap / sankey / funnel / composed → 7 点月度趋势
+  - pie → 4 项文件类型分布
+  - radar → 5 维度雷达
+  - scatter → 6 点散点
+  - 已有 data 的 chart（如未来从 API 拉取）保持原样不动
+  - 不影响 metric / table / text / divider widget
+- **templateToReport**：把内置模板（无 createdBy/tenantId 等运行时字段）适配为
+  Report 形态以供页面渲染。本轮仅接入内置模板；用户自定义报表的拉取
+  （/api/reports/[id] 路由 + tenantId 上下文）留待后续轮。
+- **Header 提示**：标题下方加"模板内置报表 · 当前为示例数据，真实数据源接入待后续迭代"
+  说明文案，避免用户误以为示例数据是真实统计结果。
+
+#### `src/__tests__/components/reports-id-page.test.tsx`（+255，新建 14 用例）
+
+**桩化策略**：
+- `vi.mock("next/navigation")` 桩化 `useParams`（每个用例通过 `mockUseParams.mockReturnValue`
+  注入不同路由参数）+ `Link`（渲染为 `<a>`）。
+- `vi.mock("@/components/reports/ReportRenderer")` 桩化为带 `data-testid="report-renderer"`
+  的 div，透出 `data-widget-id` / `data-widget-type` / `data-chart-type` /
+  `data-chart-data-len` / `data-chart-has-data` 属性。让单测能在不渲染真实 recharts
+  的前提下断言 dispatch 与 mock 注入行为。
+- `vi.mock("lucide-react")` 桩化 ArrowLeft / Loader2 为 `data-testid` span。
+
+**四组用例**：
+1. **模板解析**（5 用例）：storage-overview / file-activity 命中渲染对应 widgets；
+   未知 id / 空 id / 空格 id → not-found 占位 + 返回首页按钮。
+2. **栅格布局**（3 用例）：grid 容器 style 含 `repeat(24, minmax(0, 1fr))` + `gap: 16px`；
+   widget.width=6 → 包裹层 `grid-column: span 6` + `data-widget-span="6"`；
+   widget.width=24 → `grid-column: span 24`；widget.width=8 → `grid-column: span 8`。
+3. **mock 注入**（3 用例）：line chart 注入 7 点趋势数据（data-len > 0, has-data=true）；
+   pie chart 注入 4 项分布；metric widget 不受影响（data-chart-* 属性为空）。
+4. **加载状态**（2 用例）：useEffect resolve 后不再渲染 Loader；
+   not-found 分支也不渲染 Loader。原"初次渲染时显示 Loader2"用例因 RTL 的 `act`
+   同步 flush useEffect 而无法观察 loading 瞬态，改为"resolve 后 Loader 已移除"
+   反向断言状态机正确切换。
+
+### 行为变更影响评估
+
+- **新增页面**：纯前端路由 /reports/[id]，无 API/DB 改动，无现有路由/页面改动，零回归风险。
+- **路由暴露**：新路由放在 (dashboard) 路由组下，需要登录后才能访问（layout.tsx 已
+  对未登录用户渲染 LoginForm）。本轮未在 Sidebar 加导航入口，仅可通过 URL 直接访问
+  （/reports/storage-overview 等）；侧边栏入口可由后续轮接入。
+- **ReportRenderer 调用**：对每个 widget 透传 injectMockData 后的副本，不修改原 widget
+  对象（spread 复制）。已有 data 的 chart widget 保持原样，与未来 dataConfig 接入兼容。
+- **BUILTIN_REPORT_TEMPLATES 兼容**：模板中 chart widget 仅声明 `{ type: 'line' } as ChartConfig`
+  缺 data 字段；本轮 injectMockData 在页面层注入示例数据，模板本身不变。
+  ChartWidget 内部"暂无数据"兜底卡片仍可被未来真实数据触发（如 dataConfig 返回空数组）。
+- **栅格布局响应式**：本轮使用桌面优先的 `repeat(24, minmax(0, 1fr))`，在窄屏
+  会缩窄列宽但不破坏布局；响应式断点适配（mobile → 1 列 / tablet → 12 列 / desktop → 24 列）
+  留待后续轮。
+- **未覆盖**：dataConfig.dataSource 数据获取 / 用户自定义报表 API 拉取 / 侧边栏导航
+  入口 / 响应式断点 / 报表导出按钮 / 报表订阅管理 —— 均属下一阶段。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --registry=https://registry.npmmirror.com`（沙箱无
+  node_modules，42s）。
+- `npx prisma generate`（v6.19.3 客户端，tsc 前置依赖）。
+- `npx tsc --noEmit`：**0 错误**（无类型问题需修复）。
+- `npx vitest run reports-id-page`：**14 passed / 1 file**。初次运行 2 用例失败
+  （`screen.findByTestId("report-renderer")` 在多 widget 场景抛 "Found multiple
+  elements" + "初次渲染显示 Loader2" 因 RTL `act` 同步 flush useEffect 无法观察
+  loading 瞬态）。修复：
+  - 多 widget 场景改用 `screen.findAllByTestId` 后按 `data-widget-id` 筛
+  - Loader 用例改为"resolve 后 Loader 已移除"反向断言状态机切换
+- `npx vitest run reports`（reports 全量）：**160 passed / 7 files**，零回归
+  （上轮 146/6 + 本轮 +14 / +1 file = 160/7）。
+- `npx vitest run`（全量）：**5520 passed / 210 files**，零回归（上轮 5506/209，
+  +14 测试 = reports-id-page 14 / +1 file = reports-id-page 测试文件）。
+
+### 改动量
+
+1 commit，2 文件，+504：
+- `src/app/(dashboard)/reports/[id]/page.tsx`（+249，新建）
+- `src/__tests__/components/reports-id-page.test.tsx`（+255，新建 14 用例）
+
+### Commit
+
+- `c5f439f` feat(reports): 新增 /reports/[id] 详情页挂载 ReportRenderer + 24 列栅格布局
+
+### 推送
+
+- origin (Gitee)：`3a2789d..c5f439f` ✅
+- github (GitHub)：`3a2789d..c5f439f` ✅（push protection 未拦截，无 sk_ 前缀占位密钥）
+
+### 下一轮候选
+
+- **/reports/[id] 接入 dataConfig 数据获取**（直接延续，中优先级）：本轮页面已挂载
+  ReportRenderer + mock 数据注入，下一轮可接入真实数据源：
+  (1) 在页面 useEffect 中按 report.dataConfig.dataSource 调用 report-manager 的
+      data fetcher（或新建 /api/reports/[id]/data 端点）填充 widget.config.data /
+      widget.config.rows；
+  (2) 替换 injectMockData：仅在 dataConfig.dataSource 缺失或 fetcher 返回空时回退
+      到 mock 数据（保留当前演示能力）；
+  (3) 报表模板的 dataConfig 字段当前为 undefined，需要先在 BUILTIN_REPORT_TEMPLATES
+      中为每个模板声明 dataConfig.dataSource（如 'storage-stats' / 'file-activity'）。
+  超 1-3 commit 单轮范围，建议拆 2 轮：先 dataConfig 声明 + 后端 fetcher，
+  再页面接入 + 替换 mock。
+- **侧边栏添加 /reports 导航入口**（小改动，低优先级）：当前 /reports/[id] 仅可通过
+  URL 直接访问，Sidebar 未挂载入口。可添加 /reports 列表页（按 BUILTIN_REPORT_TEMPLATES
+  渲染卡片）+ Sidebar 入口。列表页 + 详情页可作为单独轮次。
+- **响应式栅格断点适配**（小改动，低优先级）：当前 24 列栅格在窄屏会缩窄但不破坏，
+  可加 CSS media query 切到 mobile=1 列 / tablet=12 列 / desktop=24 列。
+- **AiProviderConfig.config 字段加密**（未变动，低优先级）：死字段，需先接线 POST 接受
+  config → 落库 → chat 读取，较大 feature。
+- **package-lock.json 陈旧**（未变动，低优先级，chore）：与 package.json 不同步（缺
+  @radix-ui/* 等），`npm ci` 失败；当前用 pnpm --no-frozen-lockfile 绕过。
+- **document-qna askQuestion AI 桩**（未变动，中优先级，依赖外部 SDK）：会话持久化已落地，
+  但 `askQuestion` 内 `generateMockAnswer` 仍为模拟答案 + `retrieveRelevantDocuments` 为
+  关键词匹配（非向量搜索）。待 model-manager 模型 API 桩接入后，可串联真实 AI 调用。
+- 延续项（低优先级，未变动）：model-manager 4 处模型 API 桩（依赖外部 SDK）/ files/route.ts
+  POST 事务内 tx 与 auto-summary 直连（无越权、churn 大）/ 支付 SDK 真接入（依赖
+  alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 / share
+  session Redis 持久化 / backups 路由经 TenantDb 收口（backup 表尚无 TenantDb 访问器，且
+  findFirst 已带 tenantId 无越权，churn 大）。
