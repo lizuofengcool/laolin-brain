@@ -1,6 +1,11 @@
 /**
  * 文档问答增强模块
  * 支持多文档问答、对话历史、引用来源等功能
+ *
+ * 会话持久化：经 Prisma ChatConversation（type='knowledge_qa'）+ ChatMessage 落库，
+ * fileIds 存于 ChatConversation.metadata（JSON），citations 存于 ChatMessage.metadata
+ * （JSON）。跨用户/租户隔离由查询 where 子句 + 取回后双匹配校验保证。此前为内存 Map
+ * （chatSessionsCache），server 重启即丢、多实例不共享，已替换为 Prisma 持久化。
  */
 
 import { db } from "@/lib/db";
@@ -55,8 +60,86 @@ export interface QnAResult {
   tokensUsed: number;
 }
 
+// ─── Prisma 行映射到公开接口 ─────────────────────────────
+
+// ChatConversation 行（含 messages include）的结构子集，用于映射到 ChatSession
+interface ConversationRow {
+  id: string;
+  tenantId: string;
+  userId: string;
+  title: string;
+  metadata: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  messages?: MessageRow[];
+}
+
+// ChatMessage 行的结构子集，用于映射到 ChatMessage 接口
+interface MessageRow {
+  id: string;
+  role: string;
+  content: string;
+  timestamp: Date;
+  metadata: string | null;
+}
+
+/**
+ * 将 Prisma ChatConversation 行映射为 ChatSession 接口。
+ * fileIds 从 metadata JSON 解析（损坏时回退空数组）；messages 经 mapMessage 映射。
+ */
+function mapConversation(row: ConversationRow): ChatSession {
+  let fileIds: string[] = [];
+  if (row.metadata) {
+    try {
+      const parsed = JSON.parse(row.metadata) as { fileIds?: string[] };
+      fileIds = parsed.fileIds || [];
+    } catch {
+      // metadata 损坏时回退为空数组
+      fileIds = [];
+    }
+  }
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    userId: row.userId,
+    title: row.title,
+    fileIds,
+    messages: (row.messages || []).map(mapMessage),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+/**
+ * 将 Prisma ChatMessage 行映射为 ChatMessage 接口。
+ * citations 从 metadata JSON 解析（损坏时回退 undefined）；role 强制为联合类型。
+ */
+function mapMessage(row: MessageRow): ChatMessage {
+  let citations: Citation[] | undefined;
+  if (row.metadata) {
+    try {
+      const parsed = JSON.parse(row.metadata) as { citations?: Citation[] };
+      citations = parsed.citations;
+    } catch {
+      citations = undefined;
+    }
+  }
+  return {
+    id: row.id,
+    role: row.role as ChatMessage["role"],
+    content: row.content,
+    timestamp: row.timestamp,
+    citations,
+  };
+}
+
 /**
  * 创建新的对话会话
+ *
+ * 落库到 ChatConversation（type='knowledge_qa'），fileIds 存于 metadata JSON。
+ * 标题规则：title 优先透传；无 title 且 fileIds 非空时，查 db.file.findMany（take:3）
+ * 拼接文件名作为标题，fileIds.length>3 时追加 "等N个文件" 后缀；无 title 无 fileIds
+ * 时标题为 "新对话"。
  */
 export async function createChatSession(
   userId: string,
@@ -82,66 +165,78 @@ export async function createChatSession(
     }
   }
 
-  // 创建会话（注意：这里使用内存存储，实际应该用数据库）
-  // 由于Prisma schema可能没有ChatSession模型，我们先使用内存存储
-  // 实际项目中应该添加到Prisma schema中
+  const created = await db.chatConversation.create({
+    data: {
+      tenantId,
+      userId,
+      title: sessionTitle,
+      type: "knowledge_qa",
+      metadata: JSON.stringify({ fileIds }),
+    },
+  });
 
-  const session: ChatSession = {
-    id: generateId(),
-    tenantId,
-    userId,
-    title: sessionTitle,
-    fileIds,
-    messages: [],
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  };
-
-  // 保存到内存缓存（实际应该存数据库）
-  chatSessionsCache.set(session.id, session);
-
-  return session;
+  // 新建会话无消息；mapConversation 对 messages 缺省回退空数组
+  return mapConversation({ ...created, messages: [] });
 }
-
-// 内存缓存（临时方案，实际应该用数据库）
-const chatSessionsCache = new Map<string, ChatSession>();
 
 /**
  * 获取用户的对话列表
+ *
+ * 按 tenantId + userId + type='knowledge_qa' + isArchived=false 过滤，updatedAt 倒序，
+ * take limit（默认 20）。含 messages（timestamp 升序）以便调用方直接渲染历史。
  */
 export async function getChatSessions(
   userId: string,
   tenantId: string,
   limit: number = 20
 ): Promise<ChatSession[]> {
-  // 从缓存中获取（实际应该从数据库查询）
-  const sessions = Array.from(chatSessionsCache.values())
-    .filter((s) => s.userId === userId && s.tenantId === tenantId)
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-    .slice(0, limit);
+  const rows = await db.chatConversation.findMany({
+    where: { tenantId, userId, type: "knowledge_qa", isArchived: false },
+    orderBy: { updatedAt: "desc" },
+    take: limit,
+    include: {
+      messages: {
+        orderBy: { timestamp: "asc" },
+      },
+    },
+  });
 
-  return sessions;
+  return rows.map((row) => mapConversation(row as ConversationRow));
 }
 
 /**
  * 获取对话详情
+ *
+ * 按 id 取回（含 messages），再校验 userId/tenantId 双匹配（跨用户/租户隔离）。
+ * 不匹配或不存在返回 null。
  */
 export async function getChatSession(
   sessionId: string,
   userId: string,
   tenantId: string
 ): Promise<ChatSession | null> {
-  const session = chatSessionsCache.get(sessionId);
+  const row = await db.chatConversation.findUnique({
+    where: { id: sessionId },
+    include: {
+      messages: {
+        orderBy: { timestamp: "asc" },
+      },
+    },
+  });
 
-  if (!session || session.userId !== userId || session.tenantId !== tenantId) {
+  if (!row || row.userId !== userId || row.tenantId !== tenantId) {
     return null;
   }
 
-  return session;
+  return mapConversation(row as ConversationRow);
 }
 
 /**
  * 添加消息到对话
+ *
+ * 先按 id 取回会话（select userId/tenantId）校验归属，再创建 ChatMessage 行
+ * （citations 存于 metadata JSON），最后推进会话 lastMessageAt（updatedAt 由
+ * @updatedAt 自动推进）。归属不匹配返回 null。
  */
 export async function addChatMessage(
   sessionId: string,
@@ -149,39 +244,60 @@ export async function addChatMessage(
   tenantId: string,
   message: Omit<ChatMessage, "id" | "timestamp">
 ): Promise<ChatMessage | null> {
-  const session = chatSessionsCache.get(sessionId);
+  const session = await db.chatConversation.findUnique({
+    where: { id: sessionId },
+    select: { userId: true, tenantId: true },
+  });
 
   if (!session || session.userId !== userId || session.tenantId !== tenantId) {
     return null;
   }
 
-  const newMessage: ChatMessage = {
-    ...message,
-    id: generateId(),
-    timestamp: new Date(),
-  };
+  const now = new Date();
+  const created = await db.chatMessage.create({
+    data: {
+      tenantId,
+      conversationId: sessionId,
+      userId,
+      role: message.role,
+      content: message.content,
+      timestamp: now,
+      metadata: message.citations
+        ? JSON.stringify({ citations: message.citations })
+        : null,
+    },
+  });
 
-  session.messages.push(newMessage);
-  session.updatedAt = new Date();
+  // 推进会话的 lastMessageAt；updatedAt 由 @updatedAt 自动推进到 now
+  await db.chatConversation.update({
+    where: { id: sessionId },
+    data: { lastMessageAt: now },
+  });
 
-  return newMessage;
+  return mapMessage(created as MessageRow);
 }
 
 /**
  * 删除对话
+ *
+ * 先按 id 取回会话（select userId/tenantId）校验归属，再删除会话；ChatMessage 经
+ * schema onDelete: Cascade 级联删除。归属不匹配返回 false。
  */
 export async function deleteChatSession(
   sessionId: string,
   userId: string,
   tenantId: string
 ): Promise<boolean> {
-  const session = chatSessionsCache.get(sessionId);
+  const session = await db.chatConversation.findUnique({
+    where: { id: sessionId },
+    select: { userId: true, tenantId: true },
+  });
 
   if (!session || session.userId !== userId || session.tenantId !== tenantId) {
     return false;
   }
 
-  chatSessionsCache.delete(sessionId);
+  await db.chatConversation.delete({ where: { id: sessionId } });
   return true;
 }
 
@@ -357,15 +473,6 @@ function estimateTokens(text: string): number {
   const chineseChars = (text.match(/[\u4e00-\u9fa5]/g) || []).length;
   const otherChars = text.length - chineseChars;
   return Math.ceil(chineseChars / 1.5 + otherChars / 4);
-}
-
-/**
- * 生成ID
- */
-function generateId(): string {
-  return (
-    Date.now().toString(36) + Math.random().toString(36).substring(2, 10)
-  );
 }
 
 /**

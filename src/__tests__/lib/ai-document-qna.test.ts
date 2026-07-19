@@ -1,15 +1,22 @@
 /**
  * ai/document-qna 文档问答模块直接单测
  *
- * 覆盖目标：src/lib/ai/document-qna.ts。该模块以内存 Map（chatSessionsCache）作为
- * 对话会话的临时存储，并提供文档问答检索能力，含以下关键控制流：
+ * 覆盖目标：src/lib/ai/document-qna.ts。该模块经 Prisma ChatConversation
+ * （type='knowledge_qa'）+ ChatMessage 持久化对话会话与消息，含以下关键控制流：
  * - createChatSession：title 优先透传；无 title 且 fileIds 非空时，查 db.file.findMany
  *   （take:3）拼接文件名作为标题，fileIds.length>3 时追加 "等N个文件" 后缀；
- *   无 title 无 fileIds 时标题为 "新对话"；落库到内存缓存
- * - getChatSessions：按 userId+tenantId 过滤，updatedAt 倒序，slice(limit)，默认 limit=20
- * - getChatSession：命中且 userId/tenantId 双匹配返回会话，否则 null（跨用户/租户隔离）
- * - addChatMessage：双匹配时生成 id+timestamp 并 push 到 messages、更新 updatedAt；否则 null
- * - deleteChatSession：双匹配时从缓存删除返回 true；否则 false
+ *   无 title 无 fileIds 时标题为 "新对话"；落库 db.chatConversation.create（type=
+ *   'knowledge_qa'，metadata 存 fileIds JSON）
+ * - getChatSessions：db.chatConversation.findMany where tenantId+userId+type+
+ *   isArchived=false，orderBy updatedAt desc，take limit，include messages（timestamp
+ *   asc）；默认 limit=20
+ * - getChatSession：db.chatConversation.findUnique by id + include messages，命中且
+ *   userId/tenantId 双匹配返回会话，否则 null（跨用户/租户隔离）
+ * - addChatMessage：先 findUnique（select userId/tenantId）校验归属，再 chatMessage.create
+ *   （metadata 存 citations JSON），最后 chatConversation.update lastMessageAt（updatedAt
+ *   由 @updatedAt 自动推进）；归属不匹配返回 null
+ * - deleteChatSession：先 findUnique 校验归属，再 chatConversation.delete（级联删除消息）；
+ *   归属不匹配返回 false
  * - askQuestion：先经 checkAiQnAQuota 校验租户配额（耗尽抛 "AI配额已用完..."）；
  *   默认 fileIds=[]/includeCitations=true/model="default"；经 retrieveRelevantDocuments
  *   关键词检索（split /\s+/、过滤 len>1、slice 5、OR fileName contains insensitive、take 10）；
@@ -20,12 +27,14 @@
  *   窗口过期/未设置时重置 aiUsed=0 + aiResetDate=now+24h；返回 {available,remaining,limit}
  * - recordAiQnAUsage：经 incrementTenantAiUsage('qna') 原子自增 aiUsed + 写 AiUsageLog 明细
  *
- * 状态策略：模块持有 module-level 的 chatSessionsCache（Map）。每个用例前 vi.resetModules()
- * + await import() 重新求值模块，得到全新 chatSessionsCache，避免用例间缓存串扰；配合
- * vi.useFakeTimers() + vi.setSystemTime() 固定 now，使 createdAt/updatedAt/sort 顺序可断言。
- * @/lib/db 经 vi.hoisted + vi.mock 替换：file.findMany（检索/标题生成）、tenant.findUnique/
- * update（配额校验/重置）、aiUsageLog.create + $transaction（用量记录）可控。askQuestion 默认
- * 走 beforeEach 注入的可用配额租户（aiQuota 1000 / aiUsed 0 / 窗口激活），个别用例按需覆盖。
+ * 状态策略：会话/消息持久化经 stateful mock（convStore Map + msgStore Map）模拟 Prisma
+ * chatConversation/chatMessage 表。每个用例前清空 store + 重置 mock 实现，避免用例间串扰；
+ * 配合 vi.useFakeTimers() + vi.setSystemTime() 固定 now，使 createdAt/updatedAt/sort 顺序
+ * 可断言。@/lib/db 经 vi.hoisted + vi.mock 替换：file.findMany（检索/标题生成）、
+ * tenant.findUnique/update（配额校验/重置）、aiUsageLog.create + $transaction（用量记录）、
+ * chatConversation.create/findMany/findUnique/update/delete（会话 CRUD）、chatMessage.create
+ * （消息写入）可控。askQuestion 默认走 beforeEach 注入的可用配额租户（aiQuota 1000 /
+ * aiUsed 0 / 窗口激活），个别用例按需覆盖。
  *
  * latent 观察（已修复）：
  * - createChatSession 标题拼接原 `if (files.length > 3)` 因 db.file.findMany take:3
@@ -34,6 +43,8 @@
  * - checkAiQnAQuota / recordAiQnAUsage 原为 TODO 桩（固定 mock 数据 / 仅 console.log），
  *   已接入租户级配额机制（Tenant.aiUsed/aiQuota/aiResetDate + AiUsageLog(operation='qna')），
  *   askQuestion 同步启用配额校验（耗尽抛错）与用量记录。
+ * - 会话持久化原为内存 Map（chatSessionsCache），server 重启即丢、多实例不共享。已替换为
+ *   Prisma ChatConversation + ChatMessage 持久化（type='knowledge_qa' 区分通用 chat）。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
@@ -43,13 +54,39 @@ const {
   mockTenantUpdate,
   mockAiUsageLogCreate,
   mockTransaction,
-} = vi.hoisted(() => ({
-  mockFileFindMany: vi.fn(),
-  mockTenantFindUnique: vi.fn(),
-  mockTenantUpdate: vi.fn(),
-  mockAiUsageLogCreate: vi.fn(),
-  mockTransaction: vi.fn(),
-}));
+  mockConvCreate,
+  mockConvFindMany,
+  mockConvFindUnique,
+  mockConvUpdate,
+  mockConvDelete,
+  mockMsgCreate,
+  convStore,
+  msgStore,
+  genId,
+} = vi.hoisted(() => {
+  // Stateful stores：模拟 Prisma chatConversation / chatMessage 表
+  const convStore = new Map<string, Record<string, unknown>>();
+  const msgStore = new Map<string, Record<string, unknown>[]>();
+  let idSeq = 0;
+  // 生成确定性 ID（前缀 + 自增序号），便于断言 typeof/length 而不依赖 cuid 随机性
+  const genId = (prefix: string) => `${prefix}${++idSeq}`;
+  return {
+    mockFileFindMany: vi.fn(),
+    mockTenantFindUnique: vi.fn(),
+    mockTenantUpdate: vi.fn(),
+    mockAiUsageLogCreate: vi.fn(),
+    mockTransaction: vi.fn(),
+    mockConvCreate: vi.fn(),
+    mockConvFindMany: vi.fn(),
+    mockConvFindUnique: vi.fn(),
+    mockConvUpdate: vi.fn(),
+    mockConvDelete: vi.fn(),
+    mockMsgCreate: vi.fn(),
+    convStore,
+    msgStore,
+    genId,
+  };
+});
 
 vi.mock('@/lib/db', () => ({
   db: {
@@ -64,6 +101,16 @@ vi.mock('@/lib/db', () => ({
       create: mockAiUsageLogCreate,
     },
     $transaction: mockTransaction,
+    chatConversation: {
+      create: mockConvCreate,
+      findMany: mockConvFindMany,
+      findUnique: mockConvFindUnique,
+      update: mockConvUpdate,
+      delete: mockConvDelete,
+    },
+    chatMessage: {
+      create: mockMsgCreate,
+    },
   },
 }));
 
@@ -95,6 +142,11 @@ describe('ai/document-qna', () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
     vi.resetModules();
+
+    // 清空 stateful store，避免用例间串扰
+    convStore.clear();
+    msgStore.clear();
+
     mockFileFindMany.mockReset();
     // 默认返回空数组，个别用例按需覆盖
     mockFileFindMany.mockResolvedValue([]);
@@ -117,6 +169,176 @@ describe('ai/document-qna', () => {
     mockTransaction.mockImplementation(async (args: unknown[]) =>
       Promise.all(args as Promise<unknown>[])
     );
+
+    // ─── stateful chatConversation / chatMessage mock 实现 ───
+    mockConvCreate.mockReset();
+    mockConvFindMany.mockReset();
+    mockConvFindUnique.mockReset();
+    mockConvUpdate.mockReset();
+    mockConvDelete.mockReset();
+    mockMsgCreate.mockReset();
+
+    // chatConversation.create：落库到 convStore，补 schema 默认值 + createdAt/updatedAt
+    mockConvCreate.mockImplementation(async (args: { data: Record<string, unknown> }) => {
+      const now = new Date();
+      const record: Record<string, unknown> = {
+        id: genId('conv'),
+        type: 'general',
+        provider: null,
+        modelId: null,
+        systemPrompt: null,
+        lastMessageAt: null,
+        messageCount: 0,
+        tokenUsage: 0,
+        isArchived: false,
+        isPinned: false,
+        metadata: null,
+        ...args.data,
+        createdAt: now,
+        updatedAt: now,
+      };
+      convStore.set(record.id as string, record);
+      msgStore.set(record.id as string, []);
+      return { ...record };
+    });
+
+    // chatConversation.findMany：按 where 过滤 + orderBy 排序 + take 截断 + include messages
+    mockConvFindMany.mockImplementation(async (args: {
+      where?: Record<string, unknown>;
+      orderBy?: Record<string, string>;
+      take?: number;
+      include?: { messages?: { orderBy?: Record<string, string> } };
+    }) => {
+      const { where, orderBy, take, include } = args || {};
+      let results = Array.from(convStore.values());
+      if (where) {
+        results = results.filter((r) => {
+          if (where.tenantId !== undefined && r.tenantId !== where.tenantId) return false;
+          if (where.userId !== undefined && r.userId !== where.userId) return false;
+          if (where.type !== undefined && r.type !== where.type) return false;
+          if (where.isArchived !== undefined && r.isArchived !== where.isArchived) return false;
+          return true;
+        });
+      }
+      if (orderBy?.updatedAt === 'desc') {
+        results.sort(
+          (a, b) =>
+            new Date(b.updatedAt as Date).getTime() - new Date(a.updatedAt as Date).getTime()
+        );
+      } else if (orderBy?.updatedAt === 'asc') {
+        results.sort(
+          (a, b) =>
+            new Date(a.updatedAt as Date).getTime() - new Date(b.updatedAt as Date).getTime()
+        );
+      }
+      if (take !== undefined) {
+        results = results.slice(0, take);
+      }
+      if (include?.messages) {
+        const msgOrder = include.messages.orderBy?.timestamp;
+        results = results.map((r) => {
+          let msgs = (msgStore.get(r.id as string) || []).slice();
+          if (msgOrder === 'asc') {
+            msgs.sort(
+              (a, b) =>
+                new Date(a.timestamp as Date).getTime() - new Date(b.timestamp as Date).getTime()
+            );
+          } else if (msgOrder === 'desc') {
+            msgs.sort(
+              (a, b) =>
+                new Date(b.timestamp as Date).getTime() - new Date(a.timestamp as Date).getTime()
+            );
+          }
+          return { ...r, messages: msgs };
+        });
+      }
+      return results;
+    });
+
+    // chatConversation.findUnique：by id 取回，支持 select（仅返回选中字段）与 include messages
+    mockConvFindUnique.mockImplementation(async (args: {
+      where: { id: string };
+      select?: Record<string, boolean>;
+      include?: { messages?: { orderBy?: Record<string, string> } };
+    }) => {
+      const { where, select, include } = args || {};
+      const record = convStore.get(where.id);
+      if (!record) return null;
+      let result: Record<string, unknown> = { ...record };
+      if (include?.messages) {
+        let msgs = (msgStore.get(where.id) || []).slice();
+        const msgOrder = include.messages.orderBy?.timestamp;
+        if (msgOrder === 'asc') {
+          msgs.sort(
+            (a, b) =>
+              new Date(a.timestamp as Date).getTime() - new Date(b.timestamp as Date).getTime()
+          );
+        } else if (msgOrder === 'desc') {
+          msgs.sort(
+            (a, b) =>
+              new Date(b.timestamp as Date).getTime() - new Date(a.timestamp as Date).getTime()
+          );
+        }
+        result.messages = msgs;
+      }
+      if (select) {
+        const selected: Record<string, unknown> = {};
+        for (const key of Object.keys(select)) {
+          if (select[key]) selected[key] = result[key];
+        }
+        return selected;
+      }
+      return result;
+    });
+
+    // chatConversation.update：合并 data + 推进 updatedAt（模拟 @updatedAt）
+    mockConvUpdate.mockImplementation(async (args: {
+      where: { id: string };
+      data: Record<string, unknown>;
+    }) => {
+      const record = convStore.get(args.where.id);
+      if (!record) throw new Error('Record not found');
+      const now = new Date();
+      Object.assign(record, args.data, { updatedAt: now });
+      convStore.set(args.where.id, record);
+      return { ...record };
+    });
+
+    // chatConversation.delete：从 convStore + msgStore 移除（模拟级联删除）
+    mockConvDelete.mockImplementation(async (args: { where: { id: string } }) => {
+      const id = args.where.id;
+      const existed = convStore.has(id);
+      convStore.delete(id);
+      msgStore.delete(id);
+      if (!existed) throw new Error('Record not found');
+      return { id };
+    });
+
+    // chatMessage.create：落库到 msgStore[conversationId]，补 schema 默认值 + timestamp
+    mockMsgCreate.mockImplementation(async (args: { data: Record<string, unknown> }) => {
+      const now = new Date();
+      const record: Record<string, unknown> = {
+        id: genId('msg'),
+        modelId: null,
+        tokensUsed: 0,
+        durationMs: null,
+        status: 'completed',
+        isStreaming: false,
+        toolResults: null,
+        errorMessage: null,
+        attachments: null,
+        metadata: null,
+        parentId: null,
+        ...args.data,
+        timestamp: args.data.timestamp || now,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const convId = record.conversationId as string;
+      if (!msgStore.has(convId)) msgStore.set(convId, []);
+      msgStore.get(convId)!.push(record);
+      return { ...record };
+    });
 
     const mod = await import('@/lib/ai/document-qna');
     createChatSession = mod.createChatSession;
@@ -241,7 +463,7 @@ describe('ai/document-qna', () => {
       expect(session.title).toBe('a.pdf, b.pdf 等5个文件');
     });
 
-    it('创建后落入缓存：可经 getChatSession 取回同一对象', async () => {
+    it('创建后落入持久化：可经 getChatSession 取回同一会话', async () => {
       const session = await createChatSession('u1', 't1', [], '会话A');
 
       const got = await getChatSession(session.id, 'u1', 't1');
@@ -255,12 +477,28 @@ describe('ai/document-qna', () => {
       expect(typeof session.id).toBe('string');
       expect(session.id.length).toBeGreaterThan(0);
     });
+
+    it('落库 chatConversation.create 以 type=knowledge_qa + metadata 存 fileIds', async () => {
+      const session = await createChatSession('u1', 't1', ['f1', 'f2'], '标题');
+
+      expect(mockConvCreate).toHaveBeenCalledTimes(1);
+      const arg = mockConvCreate.mock.calls[0][0];
+      expect(arg.data).toEqual({
+        tenantId: 't1',
+        userId: 'u1',
+        title: '标题',
+        type: 'knowledge_qa',
+        metadata: JSON.stringify({ fileIds: ['f1', 'f2'] }),
+      });
+      // 返回的 session.id 与 mock 生成的 id 一致
+      expect(session.id).toBeDefined();
+    });
   });
 
   // ─── getChatSessions ────────────────────────────────────
 
   describe('getChatSessions', () => {
-    it('空缓存返回空数组', async () => {
+    it('空存储返回空数组', async () => {
       const list = await getChatSessions('u1', 't1');
       expect(list).toEqual([]);
     });
@@ -304,6 +542,31 @@ describe('ai/document-qna', () => {
       // 倒序 → 最近创建的在前
       expect(limited.map((s) => s.id)).toEqual([ids[4], ids[3]]);
     });
+
+    it('findMany where 含 type=knowledge_qa + isArchived=false（区分通用 chat）', async () => {
+      await createChatSession('u1', 't1', [], '会话');
+
+      await getChatSessions('u1', 't1');
+
+      const arg = mockConvFindMany.mock.calls[0][0];
+      expect(arg.where).toEqual({
+        tenantId: 't1',
+        userId: 'u1',
+        type: 'knowledge_qa',
+        isArchived: false,
+      });
+      expect(arg.orderBy).toEqual({ updatedAt: 'desc' });
+      expect(arg.take).toBe(20);
+      expect(arg.include).toEqual({ messages: { orderBy: { timestamp: 'asc' } } });
+    });
+
+    it('自定义 limit 透传到 findMany take', async () => {
+      await createChatSession('u1', 't1', [], '会话');
+
+      await getChatSessions('u1', 't1', 5);
+
+      expect(mockConvFindMany.mock.calls[0][0].take).toBe(5);
+    });
   });
 
   // ─── getChatSession ─────────────────────────────────────
@@ -331,6 +594,19 @@ describe('ai/document-qna', () => {
       const s = await createChatSession('u1', 't1', [], '会话');
       const got = await getChatSession(s.id, 'u1', 't2');
       expect(got).toBeNull();
+    });
+
+    it('含消息：取回的会话带 messages（timestamp 升序）', async () => {
+      const s = await createChatSession('u1', 't1', [], '会话');
+      vi.setSystemTime(new Date(NOW.getTime() + 1 * MIN));
+      await addChatMessage(s.id, 'u1', 't1', { role: 'user', content: '第一条' });
+      vi.setSystemTime(new Date(NOW.getTime() + 2 * MIN));
+      await addChatMessage(s.id, 'u1', 't1', { role: 'assistant', content: '第二条' });
+
+      const got = await getChatSession(s.id, 'u1', 't1');
+      expect(got!.messages).toHaveLength(2);
+      expect(got!.messages[0].content).toBe('第一条');
+      expect(got!.messages[1].content).toBe('第二条');
     });
   });
 
@@ -389,12 +665,53 @@ describe('ai/document-qna', () => {
       const msg = await addChatMessage(s.id, 'u1', 't2', { role: 'user', content: 'x' });
       expect(msg).toBeNull();
     });
+
+    it('chatMessage.create 以 citations 存入 metadata JSON', async () => {
+      const s = await createChatSession('u1', 't1', [], '会话');
+      await addChatMessage(s.id, 'u1', 't1', {
+        role: 'assistant',
+        content: '回答',
+        citations: [{ fileId: 'f1', fileName: 'a.pdf', snippet: '片段' }],
+      });
+
+      const arg = mockMsgCreate.mock.calls[0][0];
+      expect(arg.data).toMatchObject({
+        tenantId: 't1',
+        conversationId: s.id,
+        userId: 'u1',
+        role: 'assistant',
+        content: '回答',
+        metadata: JSON.stringify({
+          citations: [{ fileId: 'f1', fileName: 'a.pdf', snippet: '片段' }],
+        }),
+      });
+      expect(arg.data.timestamp).toBeInstanceOf(Date);
+    });
+
+    it('无 citations 时 metadata 为 null', async () => {
+      const s = await createChatSession('u1', 't1', [], '会话');
+      await addChatMessage(s.id, 'u1', 't1', { role: 'user', content: '你好' });
+
+      const arg = mockMsgCreate.mock.calls[0][0];
+      expect(arg.data.metadata).toBeNull();
+    });
+
+    it('写消息后推进会话 lastMessageAt', async () => {
+      const s = await createChatSession('u1', 't1', [], '会话');
+      vi.setSystemTime(new Date(NOW.getTime() + 5 * MIN));
+      await addChatMessage(s.id, 'u1', 't1', { role: 'user', content: '你好' });
+
+      expect(mockConvUpdate).toHaveBeenCalledWith({
+        where: { id: s.id },
+        data: { lastMessageAt: expect.any(Date) },
+      });
+    });
   });
 
   // ─── deleteChatSession ──────────────────────────────────
 
   describe('deleteChatSession', () => {
-    it('双匹配：从缓存删除并返回 true', async () => {
+    it('双匹配：从持久化删除并返回 true', async () => {
       const s = await createChatSession('u1', 't1', [], '会话');
       const ok = await deleteChatSession(s.id, 'u1', 't1');
       expect(ok).toBe(true);
@@ -420,6 +737,15 @@ describe('ai/document-qna', () => {
       const ok = await deleteChatSession(s.id, 'u1', 't2');
       expect(ok).toBe(false);
       expect(await getChatSession(s.id, 'u1', 't1')).not.toBeNull();
+    });
+
+    it('删除会话后消息级联清除（addChatMessage 后再删，getChatSession 返回 null）', async () => {
+      const s = await createChatSession('u1', 't1', [], '会话');
+      await addChatMessage(s.id, 'u1', 't1', { role: 'user', content: '消息' });
+
+      const ok = await deleteChatSession(s.id, 'u1', 't1');
+      expect(ok).toBe(true);
+      expect(await getChatSession(s.id, 'u1', 't1')).toBeNull();
     });
   });
 
