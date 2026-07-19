@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { createElement } from 'react';
 import { ReportRenderer } from '@/components/reports/ReportRenderer';
@@ -8,6 +8,7 @@ import type {
   TextConfig,
   TableConfig,
 } from '@/lib/reports/types';
+import type { ChartConfig } from '@/lib/visualization/types';
 
 /**
  * ReportRenderer 分发器单测
@@ -17,11 +18,37 @@ import type {
  * - table  → TableWidget（带 columns/rows 渲染）
  * - text   → TextBlock（无 Card，仅段落）
  * - divider → Separator（有/无 title 两种形态）
- * - chart  → 占位卡片（待 recharts 接入）
+ * - chart  → ChartWidget（含 config 时）/ 兜底卡片（无 config 时）
  *
- * 兜底：metric/table/text 缺 config → "组件缺少配置" 卡片
+ * 兜底：metric/table/text/chart 缺 config → "组件缺少配置" 卡片
  *      未知 type → 同兜底卡片
+ *
+ * ChartWidget 真实渲染（recharts 接入）由 reports-chart-widget.test.tsx 覆盖；
+ * 此处桩化 ChartWidget 仅验证 dispatch 是否正确透传 props。
  */
+
+// 桩化 ChartWidget：仅验证 dispatch 透传，避免在 jsdom 中渲染真实 recharts
+// （recharts 的 ResponsiveContainer 依赖 ResizeObserver，jsdom 默认无实现）
+vi.mock('@/components/reports/ChartWidget', () => ({
+  ChartWidget: (props: {
+    config: ChartConfig;
+    title?: string;
+    description?: string;
+    className?: string;
+  }) => (
+    <div
+      data-testid="chart-widget"
+      data-chart-type={props.config.type}
+      data-has-data={Array.isArray(props.config.data) && props.config.data.length > 0 ? 'true' : 'false'}
+      data-title={props.title ?? ''}
+      data-description={props.description ?? ''}
+      data-classname={props.className ?? ''}
+    >
+      {props.title ? <span>{props.title}</span> : null}
+      {props.description ? <span>{props.description}</span> : null}
+    </div>
+  ),
+}));
 
 describe('ReportRenderer 类型分发', () => {
   it('type=metric → MetricCard 渲染 value/label', () => {
@@ -90,17 +117,26 @@ describe('ReportRenderer 类型分发', () => {
     expect(separators.length).toBe(2);
   });
 
-  it('type=chart → 占位卡片（待 recharts 接入）', () => {
+  it('type=chart 含 config → 渲染 ChartWidget（透传 config/title/description）', () => {
     const widget: ReportWidget = {
       id: 'w6',
       type: 'chart',
       title: '上传趋势',
       description: '近 7 天',
+      config: {
+        type: 'line',
+        data: [{ name: '周一', value: 8 }, { name: '周二', value: 12 }],
+      } as ChartConfig,
     };
     render(createElement(ReportRenderer, { widget }));
+    const chartWidget = screen.getByTestId('chart-widget');
+    expect(chartWidget).toBeInTheDocument();
+    expect(chartWidget.getAttribute('data-chart-type')).toBe('line');
+    expect(chartWidget.getAttribute('data-has-data')).toBe('true');
+    expect(chartWidget.getAttribute('data-title')).toBe('上传趋势');
+    expect(chartWidget.getAttribute('data-description')).toBe('近 7 天');
     expect(screen.getByText('上传趋势')).toBeInTheDocument();
     expect(screen.getByText('近 7 天')).toBeInTheDocument();
-    expect(screen.getByText(/图表渲染待接入/)).toBeInTheDocument();
   });
 });
 
@@ -128,6 +164,20 @@ describe('ReportRenderer 兜底', () => {
     const widget: ReportWidget = { id: 'w3', type: 'text' };
     render(createElement(ReportRenderer, { widget }));
     expect(screen.getByText('组件缺少配置')).toBeInTheDocument();
+  });
+
+  it('type=chart 缺 config → 兜底卡片（与 metric/table/text 一致）', () => {
+    const widget: ReportWidget = {
+      id: 'w6',
+      type: 'chart',
+      title: '上传趋势',
+    };
+    render(createElement(ReportRenderer, { widget }));
+    expect(screen.getByText('上传趋势')).toBeInTheDocument();
+    expect(screen.getByText('组件缺少配置')).toBeInTheDocument();
+    expect(screen.getByText(/widget\.type = chart/)).toBeInTheDocument();
+    // 不应调用 ChartWidget
+    expect(screen.queryByTestId('chart-widget')).not.toBeInTheDocument();
   });
 
   it('未知 type → 兜底卡片', () => {

@@ -8,16 +8,16 @@
  * - table  → TableWidget（自带 title/description 渲染）
  * - text   → TextBlock（无 Card 包装，自然流动）
  * - divider → Separator（可选 title 作为分隔标签）
- * - chart  → 占位卡片（recharts 接入在下一阶段，worklog 已规划拆轮）
+ * - chart  → ChartWidget（line/bar/area/pie/scatter/radar 走 recharts；
+ *            其他类型与空数据由 ChartWidget 内部兜底）
  *
  * 兜底：
- * - metric/table 缺 config → 渲染"组件缺少配置"卡片，避免运行时崩溃
+ * - metric/table/text/chart 缺 config → 渲染"组件缺少配置"卡片，避免运行时崩溃
  * - 未知 type → 同上兜底卡片
  *
  * 不负责：
  * - 数据获取（config 由调用方传入，dataConfig 不在此处执行）
  * - 栅格布局（width/height 由外层 grid 容器决定）
- * - chart 实际渲染（待下一轮接入 recharts）
  */
 import type {
   ReportWidget,
@@ -25,6 +25,7 @@ import type {
   TextConfig,
   TableConfig,
 } from "@/lib/reports/types";
+import type { ChartConfig } from "@/lib/visualization/types";
 import { Separator } from "@/components/ui/separator";
 import {
   Card,
@@ -37,6 +38,7 @@ import { cn } from "@/lib/utils";
 import { TableWidget } from "./TableWidget";
 import { MetricCard } from "./MetricCard";
 import { TextBlock } from "./TextBlock";
+import { ChartWidget } from "./ChartWidget";
 
 export interface ReportRendererProps {
   widget: ReportWidget;
@@ -98,7 +100,17 @@ export function ReportRenderer({ widget, className }: ReportRendererProps) {
   }
 
   if (type === "chart") {
-    return <ChartPlaceholder widget={widget} className={className} />;
+    if (!config) {
+      return <MissingConfig widget={widget} className={className} />;
+    }
+    return (
+      <ChartWidget
+        config={config as ChartConfig}
+        title={title}
+        description={description}
+        className={className}
+      />
+    );
   }
 
   return <MissingConfig widget={widget} className={className} />;
@@ -121,32 +133,6 @@ function MissingConfig({
       </CardHeader>
       <CardContent className="text-xs text-muted-foreground">
         widget.type = {widget.type}
-      </CardContent>
-    </Card>
-  );
-}
-
-function ChartPlaceholder({
-  widget,
-  className,
-}: {
-  widget: ReportWidget;
-  className?: string;
-}) {
-  return (
-    <Card className={cn("h-full", className)}>
-      <CardHeader>
-        {widget.title ? (
-          <CardTitle className="text-sm">{widget.title}</CardTitle>
-        ) : null}
-        {widget.description ? (
-          <CardDescription>{widget.description}</CardDescription>
-        ) : null}
-      </CardHeader>
-      <CardContent>
-        <div className="flex h-32 items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
-          图表渲染待接入（recharts）
-        </div>
       </CardContent>
     </Card>
   );
