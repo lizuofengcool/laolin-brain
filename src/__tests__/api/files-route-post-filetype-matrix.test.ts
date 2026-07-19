@@ -8,8 +8,8 @@
  * 调用契约）+ magic bytes 门（PDF [25 50 44 46] / ZIP [50 4B 03 04]）+ parser 异常容错**。
  *
  * 范围界定：本轮一律传 `skipAi=true` 隔离 doc AI summarize fire-and-forget IIFE（IIFE 触达
- * 条件 + db.file.update 契约已由 ②c-doc 6 例锁定），使本轮专注 fileType/parser/magic 矩阵。
- * skipAi=true 下 IIFE 不启动（`!skipAiParam` 短路），db.file.update 恒不触达（负向）。
+ * 条件 + tenantDb.file.update 契约已由 ②c-doc 6 例锁定），使本轮专注 fileType/parser/magic 矩阵。
+ * skipAi=true 下 IIFE 不启动（`!skipAiParam` 短路），tenantDb.file.update 恒不触达（负向）。
  *
  * 核心契约（文件类型判定矩阵锁定）：
  *   1. **fileType 判定优先级**：file.type 先于 file.name。image/* → image；
@@ -34,7 +34,7 @@
  *   - magic 门不触达 writeFile / createTenantDb / $transaction（三者均在 magic 之后）。
  *   - 非 word/pdf/pptx 类型不触达对应 parser（用例①-④ 互斥断言：当前类型 parser 被调，
  *      其余两 parser 未被调）。
- *   - skipAi=true → doc AI summarize IIFE 不启动 → db.file.update 恒不触达（全轮负向）。
+ *   - skipAi=true → doc AI summarize IIFE 不启动 → tenantDb.file.update 恒不触达（全轮负向）。
  *
  * Mock 策略（沿用 ②a/②b/②c-image/②c-doc 范式）：
  *   - next/server / @/lib/api-auth / fs/promises 隔离同前。
@@ -59,7 +59,7 @@ const {
   // raw db
   mockQueryRaw,       // 早检 $queryRaw（配额预检，正向）
   mockTransaction,    // 新建分支 $transaction（executor，记录 + 回调）
-  mockRawFileUpdate,  // db.file.update（doc AI summarize；skipAi=true → 不触达，负向）
+  mockRawFileUpdate,  // tenantDb.file.update（doc AI summarize；skipAi=true → 不触达，负向）
   // tx（$transaction 回调注入的事务客户端）
   mockTxQueryRaw,     // TOCTOU 配额再检
   mockTxFileCreate,   // 新建 file.create（echo data）
@@ -136,7 +136,8 @@ vi.mock("fs/promises", () => ({
 }));
 vi.mock("@/lib/db", () => ({
   // raw db：$queryRaw（早检）+ $transaction（executor，新建分支 tx=$queryRaw+file.create）
-  // + file.update（doc AI summarize；skipAi=true → 不触达，负向）
+  // file.update 经 createTenantDb().file.update（doc AI summarize；skipAi=true → 不触达，负向），
+  // tenantDb 内部以 updateMany + tenantId 守卫实现租户隔离写。
   db: {
     $queryRaw: (...args: unknown[]) => mockQueryRaw(...args),
     $transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
@@ -149,11 +150,8 @@ vi.mock("@/lib/db", () => ({
       };
       return fn(tx);
     },
-    file: {
-      update: (...args: unknown[]) => mockRawFileUpdate(...args),
-    },
   },
-  // createTenantDb：新建分支下 findFirst 返回 null
+  // createTenantDb：新建分支下 findFirst 返回 null；update 供 IIFE 写回 summary
   createTenantDb: (tenantId: string) => {
     mockCreateTenantDb(tenantId);
     return {
@@ -163,6 +161,7 @@ vi.mock("@/lib/db", () => ({
             ...args,
             where: { ...(args.where || {}), tenantId },
           }),
+        update: (...args: unknown[]) => mockRawFileUpdate(...args),
       },
     };
   },
@@ -255,7 +254,7 @@ describe("/api/files 主路由 POST — 文件类型判定矩阵 + parser 派发
     mockUnlink.mockResolvedValue(undefined);
   });
 
-  it("① .pdf via file.type（application/pdf）+ PDF magic bytes [25 50 44 46] → fileType=pdf → parsePdf(buffer) → textContent=返回值 → 新建 $transaction(file.create fileType=pdf textContent=解析文本) → 200；parseWord/parsePptx 不触达；db.file.update 不触达（skipAi=true）", async () => {
+  it("① .pdf via file.type（application/pdf）+ PDF magic bytes [25 50 44 46] → fileType=pdf → parsePdf(buffer) → textContent=返回值 → 新建 $transaction(file.create fileType=pdf textContent=解析文本) → 200；parseWord/parsePptx 不触达；tenantDb.file.update 不触达（skipAi=true）", async () => {
     mockParsePdf.mockResolvedValue("PDF extracted text");
     const file = new File([PDF_BYTES], "doc.pdf", { type: "application/pdf" });
 
@@ -298,7 +297,7 @@ describe("/api/files 主路由 POST — 文件类型判定矩阵 + parser 派发
       },
     });
 
-    // 负向：skipAi=true → doc AI summarize IIFE 不启动 → db.file.update 不触达
+    // 负向：skipAi=true → doc AI summarize IIFE 不启动 → tenantDb.file.update 不触达
     expect(mockRawFileUpdate).not.toHaveBeenCalled();
   });
 

@@ -5,16 +5,16 @@
  * （fileType="txt" ∈ docTypes）+ textContent 非空（buffer.toString）+ !skipAi +
  * !skipDocAiDueToRateLimit → 新建分支 $transaction（tx.$queryRaw TOCTOU + tx.file.create）
  * 返回 200 后，**后置** fire-and-forget IIFE 异步触达 fetch(/api/ai/summarize) →
- * summaryRes.ok && summaryData.summary → db.file.update(summary/keyPoints/tags)。
+ * summaryRes.ok && summaryData.summary → tenantDb.file.update(summary/keyPoints/tags)。
  *
  * 与子轮②c-image 的关键差异：
  *   - ②c-image 的图片 AI fetch 是**阻塞 await**（路由内 await fetch(process-image)），
  *     fetch 结果在响应前覆盖 textContent/tags，响应直接反映 AI 产物。
  *   - ②c-doc 的文档 AI summarize 是**真 fire-and-forget IIFE**（(async()=>{...})() 未 await），
  *     路由先返回响应（textContent=解析文本、tags=[] 初始、无 summary 字段），IIFE 在响应后
- *     异步更新 DB（db.file.update 写 summary/keyPoints/tags）——**响应不反映 AI 产物**。
- *     故测试需用 vi.waitFor 等待 IIFE 的 db.file.update 触达（正向用例），或 flush microtask
- *     链后断言 db.file.update 未触达（负向用例）。
+ *     异步更新 DB（tenantDb.file.update 写 summary/keyPoints/tags）——**响应不反映 AI 产物**。
+ *     故测试需用 vi.waitFor 等待 IIFE 的 tenantDb.file.update 触达（正向用例），或 flush microtask
+ *     链后断言 tenantDb.file.update 未触达（负向用例）。
  *
  * 核心契约（文档 AI summarize IIFE 锁定）：
  *   1. **IIFE 触达条件**：docTypes.includes(fileType)（word/pdf/pptx/markdown/txt）&&
@@ -24,8 +24,8 @@
  *   2. **fetch URL/method/body 契约**：URL = `${NEXT_PUBLIC_BASE_URL}/api/ai/summarize`，
  *      method="POST"，headers 含 "Content-Type":"application/json" + Authorization（从请求头
  *      透传），body = JSON.stringify({ content: textContent, fileName, fileType })。
- *   3. **summary 覆盖 db.file.update**：summaryRes.ok && summaryData.summary（真值）→
- *      db.file.update({ where:{id:fileRecord.id}, data:{ summary, keyPoints:
+ *   3. **summary 覆盖 tenantDb.file.update**：summaryRes.ok && summaryData.summary（真值）→
+ *      tenantDb.file.update({ where:{id:fileRecord.id}, data:{ summary, keyPoints:
  *      JSON.stringify(keyPoints||[]), tags: suggestedTags?.length>0 ? JSON.stringify([...tags,
  *      ...suggestedTags]) : JSON.stringify(tags) } })。用例①锁 suggestedTags 合并分支，
  *      用例②锁无 suggestedTags 的 else 分支（tags=JSON.stringify([])）。
@@ -33,26 +33,26 @@
  *      文本）、tags=[]（初始，IIFE 的 tags 合并不入响应）、无 summary 字段、thumbnailUrl=undefined
  *      （非 image）、previewUrl=undefined（非 image）、aiSkipped=undefined（rate-limit 未触发）。
  *
- * 负向契约（db.file.update 不触达）：
- *   - fetch rejects（网络错误）→ IIFE try/catch 吞错 → db.file.update 不触达（用例③）。
+ * 负向契约（tenantDb.file.update 不触达）：
+ *   - fetch rejects（网络错误）→ IIFE try/catch 吞错 → tenantDb.file.update 不触达（用例③）。
  *   - summaryRes.ok=false（非 200）→ 跳过 `if (summaryRes.ok)` 块 → 不读 json、不 update（用例④）。
  *   - summaryRes.ok=true 但 summaryData.summary 假值 → 跳过 `if (summaryData.summary)` → 不 update（用例⑤）。
- *   - skipAi=true → IIFE 不启动 → fetch 不触达、db.file.update 不触达（用例⑥）。
+ *   - skipAi=true → IIFE 不启动 → fetch 不触达、tenantDb.file.update 不触达（用例⑥）。
  *
  * Mock 策略（沿用子轮②c-image 范式，txt 无需 parser mock —— buffer.toString 直接取文本）：
  *   - authenticateRequest / next/server / fs/promises / @/lib/db / createTenantDb 隔离同②c-image。
  *   - 不 mock @/lib/parser/image、word、pdf、ppt：txt 路径不经任何 parser（buffer.toString("utf-8")），
  *     且 ②a 已验证这些模块在测试环境可正常加载。
  *   - raw db $queryRaw（早检）+ $transaction（executor，新建分支 tx=$queryRaw+file.create）+
- *     file.update（**db.file.update，本轮正向 —— IIFE 触达**）。
+ *     file.update（**tenantDb.file.update，本轮正向 —— IIFE 触达**）。
  *   - global fetch：vi.stubGlobal('fetch', mockFetch)（沿用 file-helpers.test.ts 范式）。
  *   - process.env.NEXT_PUBLIC_BASE_URL：beforeEach 设为 'http://test-host'，afterEach 恢复。
  *
  * IIFE 时序处理范式（本轮核心提炼）：
- *   - 正向用例（db.file.update 应触达）：`await vi.waitFor(() => expect(mockRawFileUpdate).
+ *   - 正向用例（tenantDb.file.update 应触达）：`await vi.waitFor(() => expect(mockRawFileUpdate).
  *     toHaveBeenCalledTimes(1))` 轮询等待 IIFE 的 microtask 链（fetch→json→update）排空后断言触达，
  *     再断言 update 调用参数。
- *   - 负向用例（db.file.update 不应触达）：先 `await new Promise(r=>setTimeout(r,20))` flush
+ *   - 负向用例（tenantDb.file.update 不应触达）：先 `await new Promise(r=>setTimeout(r,20))` flush
  *     IIFE 的 microtask 链到完成，再断言未触达（不能用 vi.waitFor 轮询 not-called，否则会超时）。
  *   该范式可复用于任何"fire-and-forget IIFE + 后置 DB 写"的 handler 级测试。
  *
@@ -71,7 +71,7 @@ const {
   // raw db
   mockQueryRaw,       // 早检 $queryRaw（配额预检，正向）
   mockTransaction,    // 新建分支 $transaction（executor，记录 + 回调）
-  mockRawFileUpdate,  // db.file.update（**本轮正向 —— IIFE 触达**；负向用例不触达）
+  mockRawFileUpdate,  // tenantDb.file.update（**本轮正向 —— IIFE 触达**；负向用例不触达）
   // tx（$transaction 回调注入的事务客户端）
   mockTxQueryRaw,     // TOCTOU 配额再检
   mockTxFileCreate,   // 新建 file.create
@@ -140,7 +140,8 @@ vi.mock("fs/promises", () => ({
 }));
 vi.mock("@/lib/db", () => ({
   // raw db：$queryRaw（早检）+ $transaction（executor，新建分支 tx=$queryRaw+file.create）
-  // + file.update（db.file.update，**本轮正向 —— doc AI summarize IIFE 触达**）
+  // file.update 经 createTenantDb().file.update（**本轮正向 —— doc AI summarize IIFE 触达**），
+  // tenantDb 内部以 updateMany + tenantId 守卫实现租户隔离写。
   db: {
     $queryRaw: (...args: unknown[]) => mockQueryRaw(...args),
     $transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
@@ -153,11 +154,8 @@ vi.mock("@/lib/db", () => ({
       };
       return fn(tx);
     },
-    file: {
-      update: (...args: unknown[]) => mockRawFileUpdate(...args),
-    },
   },
-  // createTenantDb：新建分支下 findFirst 返回 null
+  // createTenantDb：新建分支下 findFirst 返回 null；update 供 IIFE 写回 summary
   createTenantDb: (tenantId: string) => {
     mockCreateTenantDb(tenantId);
     return {
@@ -167,6 +165,7 @@ vi.mock("@/lib/db", () => ({
             ...args,
             where: { ...(args.where || {}), tenantId },
           }),
+        update: (...args: unknown[]) => mockRawFileUpdate(...args),
       },
     };
   },
@@ -236,7 +235,7 @@ function makePostRequest(opts: {
  * flush fire-and-forget IIFE 的 microtask 链到完成。
  * mockResolvedValue 使 fetch→json→update 全部在 microtask 队列内 resolve，
  * 一个 macrotask（setTimeout）足以排空全部 pending microtasks。
- * 用于负向用例：flush 后断言 db.file.update 未触达（不可用 vi.waitFor 轮询 not-called）。
+ * 用于负向用例：flush 后断言 tenantDb.file.update 未触达（不可用 vi.waitFor 轮询 not-called）。
  */
 async function settleIife(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -252,7 +251,7 @@ describe("/api/files 主路由 POST — 文档 AI summarize fetch（子轮②c-d
     mockTxQueryRaw.mockResolvedValue([{ totalSize: BigInt(0) }]);
     // tx.file.create：echo back args.data 字段，使响应反映路由实际传入 file.create 的值。
     // 路由响应直接返回 fileRecord.{textContent,...}（line 419-430），echo 模式确保响应反映路由数据
-    // 而非 mock 硬编码。fileRecord.id 供 IIFE 的 db.file.update where 子句使用。
+    // 而非 mock 硬编码。fileRecord.id 供 IIFE 的 tenantDb.file.update where 子句使用。
     mockTxFileCreate.mockImplementation(async (args: { data: Record<string, unknown> }) => ({
       id: "file-doc-1",
       fileName: args.data.fileName,
@@ -266,7 +265,7 @@ describe("/api/files 主路由 POST — 文档 AI summarize fetch（子轮②c-d
     mockTenantFileFindFirst.mockResolvedValue(null);
     // generateThumbnail：txt 路径不触达，设默认值仅为完整性（与②c-image 范式一致）
     mockGenerateThumbnail.mockResolvedValue("/thumb/doc.jpg");
-    // db.file.update：默认返回 undefined（IIFE await undefined 立即 resolve，无副作用）
+    // tenantDb.file.update：默认返回 undefined（IIFE await undefined 立即 resolve，无副作用）
     mockRawFileUpdate.mockResolvedValue(undefined);
     mockMkdir.mockResolvedValue(undefined);
     mockWriteFile.mockResolvedValue(undefined);
@@ -289,7 +288,7 @@ describe("/api/files 主路由 POST — 文档 AI summarize fetch（子轮②c-d
     }
   });
 
-  it("① happy path：txt 文档 + 无 skipAi + summarize 返回 {summary, keyPoints, suggestedTags} → 新建 $transaction 返回 200 → 后置 IIFE fetch(/api/ai/summarize) 触达 → db.file.update(summary/keyPoints/合并 tags)；响应不反映 AI 产物（textContent=解析文本、tags=[]、无 summary）", async () => {
+  it("① happy path：txt 文档 + 无 skipAi + summarize 返回 {summary, keyPoints, suggestedTags} → 新建 $transaction 返回 200 → 后置 IIFE fetch(/api/ai/summarize) 触达 → tenantDb.file.update(summary/keyPoints/合并 tags)；响应不反映 AI 产物（textContent=解析文本、tags=[]、无 summary）", async () => {
     // summarize 返回 summary + keyPoints + suggestedTags（触发 tags 合并分支）
     mockFetch.mockResolvedValue({
       ok: true,
@@ -356,11 +355,11 @@ describe("/api/files 主路由 POST — 文档 AI summarize fetch（子轮②c-d
       fileType: "txt",
     });
 
-    // 后置 IIFE：vi.waitFor 等待 db.file.update 触达（fire-and-forget，响应后才异步执行）
+    // 后置 IIFE：vi.waitFor 等待 tenantDb.file.update 触达（fire-and-forget，响应后才异步执行）
     await vi.waitFor(() => {
       expect(mockRawFileUpdate).toHaveBeenCalledTimes(1);
     });
-    // db.file.update 参数：where.id=fileRecord.id、summary 覆盖、keyPoints=JSON.stringify、
+    // tenantDb.file.update 参数：where.id=fileRecord.id、summary 覆盖、keyPoints=JSON.stringify、
     // tags 合并分支（suggestedTags?.length>0 → JSON.stringify([...[], ...suggestedTags])）
     expect(mockRawFileUpdate).toHaveBeenCalledWith({
       where: { id: "file-doc-1" },
@@ -372,7 +371,7 @@ describe("/api/files 主路由 POST — 文档 AI summarize fetch（子轮②c-d
     });
   });
 
-  it("② summarize 返回 summary + keyPoints（无 suggestedTags）→ db.file.update tags 走 else 分支（tags=JSON.stringify([])）；其余同①", async () => {
+  it("② summarize 返回 summary + keyPoints（无 suggestedTags）→ tenantDb.file.update tags 走 else 分支（tags=JSON.stringify([])）；其余同①", async () => {
     // summarize 返回 summary + keyPoints，但**无 suggestedTags** → 锁 else 分支
     mockFetch.mockResolvedValue({
       ok: true,
@@ -403,7 +402,7 @@ describe("/api/files 主路由 POST — 文档 AI summarize fetch（子轮②c-d
     });
   });
 
-  it("③ summarize fetch rejects（网络错误）→ IIFE try/catch 吞错 → db.file.update 不触达；响应仍 200（fire-and-forget 不阻断主流程）", async () => {
+  it("③ summarize fetch rejects（网络错误）→ IIFE try/catch 吞错 → tenantDb.file.update 不触达；响应仍 200（fire-and-forget 不阻断主流程）", async () => {
     mockFetch.mockRejectedValue(new Error("network unreachable"));
 
     const res = (await POST(makePostRequest({ file: DOC_FILE }))) as MockRes;
@@ -418,7 +417,7 @@ describe("/api/files 主路由 POST — 文档 AI summarize fetch（子轮②c-d
     // fetch 已触达（只是抛错被 IIFE catch 吞掉）
     expect(mockFetch).toHaveBeenCalledTimes(1);
 
-    // flush IIFE microtask 链到完成，再断言 db.file.update 未触达
+    // flush IIFE microtask 链到完成，再断言 tenantDb.file.update 未触达
     await settleIife();
     expect(mockRawFileUpdate).not.toHaveBeenCalled();
   });
@@ -431,7 +430,7 @@ describe("/api/files 主路由 POST — 文档 AI summarize fetch（子轮②c-d
     expect(res.status).toBe(200);
     expect(mockFetch).toHaveBeenCalledTimes(1);
 
-    // ok:false → 不进入 json() 读取分支，db.file.update 不触达
+    // ok:false → 不进入 json() 读取分支，tenantDb.file.update 不触达
     await settleIife();
     expect(mockRawFileUpdate).not.toHaveBeenCalled();
   });
@@ -448,12 +447,12 @@ describe("/api/files 主路由 POST — 文档 AI summarize fetch（子轮②c-d
     expect(res.status).toBe(200);
     expect(mockFetch).toHaveBeenCalledTimes(1);
 
-    // summary 假值 → db.file.update 不触达
+    // summary 假值 → tenantDb.file.update 不触达
     await settleIife();
     expect(mockRawFileUpdate).not.toHaveBeenCalled();
   });
 
-  it("⑥ skipAi=true → IIFE 不启动 → fetch 不触达、db.file.update 不触达；响应 200 + aiSkipped=undefined（skipAi 仅 console.log 不设 aiSkipped）", async () => {
+  it("⑥ skipAi=true → IIFE 不启动 → fetch 不触达、tenantDb.file.update 不触达；响应 200 + aiSkipped=undefined（skipAi 仅 console.log 不设 aiSkipped）", async () => {
     const res = (await POST(
       makePostRequest({ file: DOC_FILE, url: "http://localhost/api/files?skipAi=true" })
     )) as MockRes;
@@ -469,7 +468,7 @@ describe("/api/files 主路由 POST — 文档 AI summarize fetch（子轮②c-d
     // aiSkipped=false → 响应 aiSkipped=undefined（skipAi 只 console.log，不设 aiSkipped；
     // 仅 rate-limit 会设 aiSkipped=true，本轮不触发 rate-limit）
     expect(res.body.aiSkipped).toBeUndefined();
-    // db.file.update 不触达（IIFE 未启动）
+    // tenantDb.file.update 不触达（IIFE 未启动）
     await settleIife();
     expect(mockRawFileUpdate).not.toHaveBeenCalled();
   });

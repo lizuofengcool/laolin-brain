@@ -131,7 +131,8 @@ vi.mock("fs/promises", () => ({
 }));
 vi.mock("@/lib/db", () => ({
   // raw db：$queryRaw（早检，正向）+ $transaction（**executor**：记录调用、构造 tx、
-  // 回调 fn(tx)）+ file.update（AI summarize fire-and-forget，dedup 分支提前 return 不触达，负向）。
+  // 回调 fn(tx)）。file.update 经 createTenantDb().file.update（AI summarize fire-and-forget，
+  // dedup 分支提前 return 不触达，负向）；tenantDb 内部以 updateMany + tenantId 守卫实现租户隔离写。
   db: {
     $queryRaw: (...args: unknown[]) => mockQueryRaw(...args),
     $transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
@@ -152,12 +153,9 @@ vi.mock("@/lib/db", () => ({
       // 执行回调（fn 抛错时 $transaction reject，由路由外层 catch → 500）
       return fn(tx);
     },
-    file: {
-      update: (...args: unknown[]) => mockRawFileUpdate(...args),
-    },
   },
   // createTenantDb：hand-written wrapper（dedup file.findFirst 注入 tenantId）。
-  // dedup 分支下 findFirst 返回 existingFile → 进入版本化分支。
+  // dedup 分支下 findFirst 返回 existingFile → 进入版本化分支。update 供 IIFE 写回 summary。
   createTenantDb: (tenantId: string) => {
     mockCreateTenantDb(tenantId);
     return {
@@ -167,6 +165,7 @@ vi.mock("@/lib/db", () => ({
             ...args,
             where: { ...(args.where || {}), tenantId },
           }),
+        update: (...args: unknown[]) => mockRawFileUpdate(...args),
       },
     };
   },

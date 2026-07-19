@@ -64,7 +64,7 @@ const {
   // raw db
   mockQueryRaw,       // 早检 $queryRaw（配额预检，正向）
   mockTransaction,    // 新建分支 $transaction（executor，记录 + 回调）
-  mockRawFileUpdate,  // AI summarize fire-and-forget 的 db.file.update（skipAi=true 下不触达，负向）
+  mockRawFileUpdate,  // AI summarize fire-and-forget 的 tenantDb.file.update（skipAi=true 下不触达，负向）
   // tx（$transaction 回调注入的事务客户端）
   mockTxQueryRaw,     // TOCTOU 配额再检
   mockTxFileCreate,   // 新建 file.create
@@ -122,7 +122,8 @@ vi.mock("fs/promises", () => ({
 }));
 vi.mock("@/lib/db", () => ({
   // raw db：$queryRaw（早检，正向）+ $transaction（**executor**：记录调用、构造 tx、
-  // 回调 fn(tx)）+ file.update（AI summarize fire-and-forget，skipAi=true 下不触达，负向）。
+  // 回调 fn(tx)）。file.update 经 createTenantDb().file.update（AI summarize fire-and-forget，
+  // skipAi=true 下不触达，负向）；tenantDb 内部以 updateMany + tenantId 守卫实现租户隔离写。
   db: {
     $queryRaw: (...args: unknown[]) => mockQueryRaw(...args),
     $transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
@@ -138,12 +139,9 @@ vi.mock("@/lib/db", () => ({
       // 执行回调（fn 抛错时 $transaction reject，由路由外层 catch → 500）
       return fn(tx);
     },
-    file: {
-      update: (...args: unknown[]) => mockRawFileUpdate(...args),
-    },
   },
   // createTenantDb：hand-written wrapper（dedup file.findFirst 注入 tenantId）。
-  // 新建分支下 findFirst 返回 null → 不进入 dedup 分支。
+  // 新建分支下 findFirst 返回 null → 不进入 dedup 分支。update 供 IIFE 写回 summary。
   createTenantDb: (tenantId: string) => {
     mockCreateTenantDb(tenantId);
     return {
@@ -153,6 +151,7 @@ vi.mock("@/lib/db", () => ({
             ...args,
             where: { ...(args.where || {}), tenantId },
           }),
+        update: (...args: unknown[]) => mockRawFileUpdate(...args),
       },
     };
   },
@@ -324,7 +323,7 @@ describe("/api/files 主路由 POST — 新建分支（子轮②a）", () => {
       },
     });
 
-    // AI summarize fire-and-forget 跳过（skipAi=true → 不触达 db.file.update）
+    // AI summarize fire-and-forget 跳过（skipAi=true → 不触达 tenantDb.file.update）
     expect(mockRawFileUpdate).not.toHaveBeenCalled();
   });
 

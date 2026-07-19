@@ -372,6 +372,12 @@ export async function POST(request: NextRequest) {
     const skipDocAiDueToRateLimit = !checkAiRateLimit(userId);
     if (skipDocAiDueToRateLimit) aiSkipped = true;
 
+    // 在 IIFE 之前创建 tenantDb 实例：auto-summary 写回 file 走 TenantDb 隔离层
+    // （tenantDb.file.update 内部以 updateMany + tenantId 过滤实现，防御 fileRecord.id
+    // 来源变更的潜在越权风险；当前 fileRecord.id 由本轮 tx.file.create 生成，实际无越权，
+    // 但补 tenantId 守卫后可与 GET / dedup 路径保持一致的租户隔离契约）。
+    const summaryTenantDb = createTenantDb(tenantId);
+
     if (docTypes.includes(fileType) && textContent && !skipAiParam && !skipDocAiDueToRateLimit) {
       // Run in background without blocking the response
       (async () => {
@@ -394,7 +400,9 @@ export async function POST(request: NextRequest) {
           if (summaryRes.ok) {
             const summaryData = await summaryRes.json();
             if (summaryData.summary) {
-              await db.file.update({
+              // 走 TenantDb：where.id 由调用方传入，tenantDb 内部注入 tenantId 守卫，
+              // 防御未来 fileRecord.id 来源变更（如外部传入）的越权写。
+              await summaryTenantDb.file.update({
                 where: { id: fileRecord.id },
                 data: {
                   summary: summaryData.summary,
