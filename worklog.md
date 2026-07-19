@@ -20951,3 +20951,167 @@ clone 仓库后 fetch origin/main 与 github/main：双端同步（e180136），
   alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 / share
   session Redis 持久化 / backups 路由经 TenantDb 收口（backup 表尚无 TenantDb 访问器，且
   findFirst 已带 tenantId 无越权，churn 大）。
+
+## 2026-07-20 04:00 自动迭代
+
+### 背景
+
+- 沙箱初次执行：`/workspace/laolin-brain` 不存在，先 `git clone origin` 并 `git remote add
+  github`，配置 `user.email=uploader@local / user.name=uploader`。
+- 本轮 fetch 后 origin / github 双端均无新提交（`96cc73e` 顶端一致），无未提交改动。
+- 复核用户清单中的优先级 1 已知问题：全部在历史轮次已闭环（详见上一轮 worklog 复核记录）。
+- 按 worklog "下一轮候选" 推进 ReportRenderer 后的 ChartWidget 阶段：上轮分发器的 chart
+  分支还是占位卡片，本轮接入 recharts 2.15.4 实现 6 种图表类型真实渲染。`/reports/[id]`
+  页面挂载留待下一轮（worklog 已规划拆 2 轮：先 ChartWidget + 测试，再页面挂载）。
+
+### 本次开发内容
+
+**feat(reports): 新增 ChartWidget 渲染层接入 recharts**
+
+补全 worklog 标记的 chart 渲染阶段：上轮 ReportRenderer 的 chart 分支还是占位卡片，本轮接入
+recharts 2.15.4 实现 6 种图表类型真实渲染。
+
+#### `src/components/reports/ChartWidget.tsx`（+327，新建）
+
+- **类型映射**：type → recharts 组件
+  - `line`   → `LineChart` + `Line`（每 series 一条折线，type="monotone", strokeWidth=2, dot=false）
+  - `bar`    → `BarChart` + `Bar`（radius=[4,4,0,0]；mode='stacked' 时 stackId="a"）
+  - `area`   → `AreaChart` + `Area`（与 line 同结构，多 fillOpacity=0.3）
+  - `pie`    → `PieChart` + `Pie` + 按 colors 循环 `Cell`（按 DataPoint.{name, value} 渲染）
+  - `scatter`→ `ScatterChart` + 每 series 一个 `Scatter`（data 按 {x,y} 解析，data 透传）
+  - `radar`  → `RadarChart` + `PolarGrid`/`PolarAngleAxis`/`PolarRadiusAxis` + 每 series 一条 `Radar`
+- **不支持类型**（heatmap/treemap/sankey/funnel/composed）→ "暂不支持 ${type} 图表类型" 兜底卡片。
+- **空数据兜底**：data 缺失或为空数组 → "暂无数据" 卡片。兼容 BUILTIN_REPORT_TEMPLATES 中
+  仅声明 `{ type: 'line' }` 而无 data 的 chart widget（DataPoint[] 必填，但模板用 as 断言绕过）。
+- **series 缺失**：默认 `[{ key: 'value', name: 'value', dataKey: 'value' }]`，与单系列 chart 模板兼容。
+- **mode**：`stacked` → Bar/Area 拿到 `stackId="a"`；`horizontal` → CartesianChart layout="vertical" +
+  XAxis type="number" + YAxis type="category"（参考 StorageCharts 横向 BarChart 用法）。
+- **可见性开关**：grid/legend/tooltip 默认 visible，可通过 `config.{grid,legend,tooltip}.visible=false`
+  显式关闭。radar 类型的 grid 走 `PolarGrid` 而非 `CartesianGrid`。
+- **主题色**：`theme.colors` 优先；`series.color` 优先于 theme.colors；按 series index 循环。
+  `theme.gridColor` 透传到 CartesianGrid/PolarGrid stroke；`theme.textColor` 透传到 Axis stroke。
+- **高度**：`config.height` 优先（>0），否则默认 240px，作用于 ResponsiveContainer 外层 div。
+- **动画**：`animation` 默认 true，子组件 `isAnimationActive` 透传；false 时全关闭。
+- **Card 包装**：title/description 透传到 CardHeader；都缺失时不渲染 header。
+
+#### `src/components/reports/ReportRenderer.tsx`（修改 -35/+11）
+
+- `type='chart'` 含 config → 调用 `ChartWidget`（透传 config/title/description/className）。
+- `type='chart'` 无 config → `MissingConfig`（与 metric/table/text 一致，原 ChartPlaceholder 删除）。
+- 更新顶部 docstring：chart 分支说明从"占位卡片"改为"ChartWidget + 内部兜底"。
+- `ChartConfig` import 从 `@/lib/visualization/types` 直引（reports/types 仅 re-import 未 re-export）。
+
+#### `src/__tests__/components/reports-chart-widget.test.tsx`（+343，新建 29 用例）
+
+**桩化策略**：`vi.mock("recharts", ...)` 把 recharts 组件替换为带 `data-testid` 与 `data-*` 属性
+的 div，避开 `ResponsiveContainer` 对 `ResizeObserver` 的依赖（jsdom 默认无实现）。桩化的 div
+透出关键 props（dataKey / name / color / stackId / layout / data 长度 / isAnimationActive），
+让单测能在不渲染真实 SVG 的前提下断言 dispatch 行为。
+
+七组用例：
+1. **图表类型分发**（6 用例）：line/bar/area/pie/scatter/radar 各自映射到对应 recharts 组件，
+   断言 data 透传 + 默认单 series 渲染数量。
+2. **系列处理**（4 用例）：series 缺失时默认 `{value}` 系列、多 series 多 Line、
+   `series.color` 优先、`theme.colors` 回退。
+3. **mode**（3 用例）：stacked → stackId="a"、horizontal → layout="vertical" + XAxis type=number、
+   mode 缺省 → layout="horizontal"。
+4. **边界兜底**（3 用例）：不支持类型 → "暂不支持 ${type}" 卡片、空数组 → "暂无数据"、
+   data undefined → "暂无数据"（兼容模板仅声明 type 的 chart）。
+5. **可见性开关**（5 用例）：grid/legend/tooltip 默认 visible、各自 visible=false 隐藏、
+   radar 类型 grid.visible=false → 不渲染 PolarGrid。
+6. **主题与高度**（4 用例）：theme.gridColor 透传、theme.colors 按 series index 循环（含
+   取模回绕）、height 透传到外层容器（默认 240px）。
+7. **包装与动画**（4 用例）：title/description 透传、animation 默认 true、animation=false →
+   isAnimationActive=false、title/description 缺失时仍渲染图表。
+
+#### `src/__tests__/components/reports-renderer.test.tsx`（修改 +60）
+
+- **桩化 ChartWidget**：用 `vi.mock("@/components/reports/ChartWidget", ...)` 把 ChartWidget
+  替换为带 `data-testid="chart-widget"` 的 div，透出 `data-chart-type` / `data-has-data` /
+  `data-title` / `data-description` / `data-classname` 属性。title/description 用 `<span>` 包裹，
+  让 `getByText` 能独立匹配。避免在 renderer 单测中渲染真实 recharts。
+- **替换原 chart 占位测试**：原"type=chart → 占位卡片（待 recharts 接入）"改为
+  "type=chart 含 config → 渲染 ChartWidget（透传 config/title/description）"，断言桩化组件
+  的 data-* 属性而非占位文案。
+- **新增 chart 兜底测试**：type=chart 缺 config → 兜底卡片（与 metric/table/text 一致），
+  断言 "组件缺少配置" + "widget.type = chart" + 不调用 ChartWidget。
+- 测试用例总数：12 → 13（+1）。
+
+### 行为变更影响评估
+
+- **新增组件**：纯前端，无 API/DB 改动，无现有路由/页面改动，零回归风险。
+- **recharts 依赖**：recharts 2.15.4 已在 package.json dependencies（dashboard/admin 等已有
+  4 处使用），本轮无新依赖引入。ChartWidget 仅在 ReportRenderer 内调用，未被任何页面挂载，
+  因此本轮不增加任何 SSR/client bundle 实际加载（直到 `/reports/[id]` 接入才会触发）。
+- **数据消费一致性**：ChartWidget 仅消费 ChartConfig.data + series，不与 CSV 导出耦合；
+  与 BUILTIN_REPORT_TEMPLATES 中 `{ type: 'line' }` 等单类型 chart widget 兼容（series 缺失
+  时默认 value 系列，data 缺失时兜底"暂无数据"）。
+- **ReportRenderer 行为变更**：type=chart 无 config 从原 ChartPlaceholder（渲染 title/description
+  + "图表渲染待接入"）改为 MissingConfig（仅 title + "组件缺少配置"）。这是有意收口：与
+  metric/table/text 一致，强制调用方提供 config。BUILTIN_REPORT_TEMPLATES 中所有 chart widget
+  都有 `config: { type: ... } as ChartConfig`，不受影响。
+- **可访问性**：recharts 默认 SVG 输出包含 `<title>` 等可访问性元素；本轮未额外定制。
+- **未覆盖**：`/reports/[id]` 页面挂载、栅格布局（width 1-24 → tailwind grid-cols-24）——
+  属下一阶段。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --registry=https://registry.npmmirror.com`（沙箱无
+  node_modules，37s）。
+- `npx prisma generate`（v6.19.3 客户端，tsc 前置依赖）。
+- `npx tsc --noEmit`：**0 错误**。修复 3 处类型问题：
+  - `ChartWidget.wrapInCard` children 类型 `ReactNode` → `ReactElement`（ResponsiveContainer
+    要求单一 ReactElement 子节点）。
+  - `CartesianChartProps` 增加 `children?: ReactNode`（LineChart/BarChart/AreaChart 接受 children）。
+  - `ReportRenderer` 中 `ChartConfig` import 路径从 `@/lib/reports/types` 改为
+    `@/lib/visualization/types`（reports/types 仅 re-import 未 re-export）。
+- `npx vitest run reports-chart-widget reports-renderer`：**42 passed / 2 files**
+  （ChartWidget 29 + Renderer 13）。
+- `npx vitest run reports`（reports 全量）：**146 passed / 6 files**，零回归
+  （report-manager 54 + chart-widget 29 + table-widget 22 + renderer 13 + metric-card 16 +
+  text-block 12）。
+- `npx vitest run`（全量）：**5506 passed / 209 files**，零回归（上轮 5476/208，
+  +30 测试 = ChartWidget 29 + Renderer +1 / +1 file = ChartWidget 测试文件）。
+
+### 改动量
+
+1 commit，4 文件，+913 / -35：
+- `src/components/reports/ChartWidget.tsx`（+327，新建）
+- `src/components/reports/ReportRenderer.tsx`（-35/+11，修改）
+- `src/__tests__/components/reports-chart-widget.test.tsx`（+343，新建 29 用例）
+- `src/__tests__/components/reports-renderer.test.tsx`（+60，修改：13 用例 = 原 12 + 1 新增；
+  原 chart 占位测试被替换为 chart 含 config + chart 缺 config 两个新用例）
+
+### Commit
+
+- `5cf8787` feat(reports): 新增 ChartWidget 渲染层接入 recharts
+
+### 推送
+
+- origin (Gitee)：`96cc73e..5cf8787` ✅
+- github (GitHub)：`96cc73e..5cf8787` ✅（push protection 未拦截，无 sk_ 前缀占位密钥）
+
+### 下一轮候选
+
+- **`/reports/[id]` 页面挂载 ReportRenderer + 栅格布局**（新阶段，中优先级，依赖本轮 ChartWidget）：
+  本轮已落地 ChartWidget，但报表详情页尚未挂载 ReportRenderer。下一步可：
+  (1) 在 `/reports/[id]` 页面（若不存在则新建）调用 ReportRenderer，按 `ReportLayout.widgets`
+      循环渲染；
+  (2) 实现 `width` 1-24 → tailwind `grid-cols-24` 的栅格映射（`width * (100/24)%` 或
+      `col-span-{width}` 类映射）；
+  (3) 接入数据获取：`dataConfig.dataSource` → 调用 report-manager 的 data fetcher 填充
+      `widget.config.data` / `widget.config.rows`。
+  超 1-3 commit 单轮范围，建议拆 2 轮：先页面挂载 + 栅格布局（mock 数据），再 dataConfig
+  数据获取接入。
+- **AiProviderConfig.config 字段加密**（未变动，低优先级）：死字段，需先接线 POST 接受
+  config → 落库 → chat 读取，较大 feature。
+- **package-lock.json 陈旧**（未变动，低优先级，chore）：与 package.json 不同步（缺
+  @radix-ui/* 等），`npm ci` 失败；当前用 pnpm --no-frozen-lockfile 绕过。
+- **document-qna askQuestion AI 桩**（未变动，中优先级，依赖外部 SDK）：会话持久化已落地，
+  但 `askQuestion` 内 `generateMockAnswer` 仍为模拟答案 + `retrieveRelevantDocuments` 为
+  关键词匹配（非向量搜索）。待 model-manager 模型 API 桩接入后，可串联真实 AI 调用。
+- 延续项（低优先级，未变动）：model-manager 4 处模型 API 桩（依赖外部 SDK）/ files/route.ts
+  POST 事务内 tx 与 auto-summary 直连（无越权、churn 大）/ 支付 SDK 真接入（依赖
+  alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 / share
+  session Redis 持久化 / backups 路由经 TenantDb 收口（backup 表尚无 TenantDb 访问器，且
+  findFirst 已带 tenantId 无越权，churn 大）。
