@@ -21538,3 +21538,83 @@ useEffect 拉取 + 替换 mock）。
   直连（无越权、churn 大）/ 支付 SDK 真接入（依赖 alipay-sdk/wechatpay-node-v3）/
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化 /
   backups 路由经 TenantDb 收口。
+
+## 2026-07-20 07:34 自动迭代（第一百九十八轮）
+
+承接 P1 安全/租户隔离收口任务清单中"files/route.ts 等路由绕过 TenantDb 直接按
+userId 过滤"条目的最后一处已知漏洞：**files/route.ts POST auto-summary 写回
+file 时绕过 TenantDb 直连 raw db.file.update**。
+
+### 决策与执行
+
+通过 Task subagent 完成 11 个 API 路由目录的 cross-tenant isolation 审计，
+结论：**真正的越权风险仅剩 1 处** —— `/api/files/route.ts` POST 中 auto-summary
+fire-and-forget IIFE 内的 `db.file.update({ where: { id: fileRecord.id } })`，
+where 仅含 id 无 tenantId 守卫。其余直接 db 调用均属于"safe-by-association"
+（前置 tenantDb 校验）或"safe-by-post-check"或"public share-token 查询"，
+无实际越权；所有 `$queryRaw` SQL 字符串均显式包含 `"tenantId" = ${tenantId}`。
+
+1. **fix(files)**：在 IIFE 之前创建 `summaryTenantDb = createTenantDb(tenantId)`
+   实例，将 `db.file.update` 改为 `summaryTenantDb.file.update`。tenantDb 内部
+   以 `updateMany + tenantId where` 守卫实现租户隔离写，即使 fileRecord.id
+   被构造恶意传入，跨租户写也会被 Prisma where 守卫拦截（updateMany 返回 0
+   行受影响，不抛错但不写）。注释说明 IIFE 在 `$transaction` 提交后启动、
+   fileRecord.id 已为本轮 tx.file.create 生成（exploitability 低，但走
+   tenantDb 是纵深防御 + 一致性收口）。
+
+2. **test(files)**：迁移 7 个 files-route-post*.test.ts 的 mock 结构，使
+   `createTenantDb().file.update` 触达 `mockRawFileUpdate`，与路由实际调用
+   路径对齐（之前 mock 在 `db.file.update` 上，路由改 tenantDb 后断言失效）。
+   涉及文件：
+   - `files-route-post-ai-doc.test.ts`（本轮唯一正向断言 IIFE 触达的测试）
+   - `files-route-post-newfile.test.ts`
+   - `files-route-post-ratelimit.test.ts`
+   - `files-route-post-dedup.test.ts`（保留 tx.file.update 供 dedup 分支事务
+     内 update，与 auto-summary 无关）
+   - `files-route-post-ai-image.test.ts`
+   - `files-route-post.test.ts`
+   - `files-route-post-filetype-matrix.test.ts`
+   注释统一从 "db.file.update" 改为 "tenantDb.file.update"，描述 tenantDb 内部
+   以 updateMany + tenantId 守卫实现租户隔离写的行为。
+
+### 验证
+
+- `npx tsc --noEmit`：✅ 零类型错误
+- `npx vitest run src/__tests__/api/files-route-post*.test.ts`：✅ 53/53 全过
+- `npx vitest run`（全量）：**5557 passed / 213 files**，零回归
+  （与上轮 5557/213 完全一致，纯 refactor + mock 迁移，无新增用例）
+
+### 改动量
+
+1 commit，8 文件，+86 / -84：
+- `src/app/api/files/route.ts`（+3 / -1，加 summaryTenantDb + 改 update 调用）
+- 7 个测试文件（+83 / -83，mock 迁移 + 注释统一，无新增用例）
+
+### Commit
+
+- `55f8a99` fix(files): auto-summary 写回 file 走 TenantDb 隔离层
+
+### 推送
+
+- origin (Gitee)：待推送（`339554f..55f8a99`）
+- github (GitHub)：待推送（`339554f..55f8a99`）
+
+### 下一轮候选
+
+- **/reports/[id] 详情页接入 /api/reports/[id]/data**（直接延续，高优先级）：
+  上一轮后端数据层已就绪（fetcher + 路由 + dataConfig 声明），本轮又收口了
+  files 路由的最后一处 tenantDb 越权。下一轮回到报表页面侧：(1) 详情页
+  useEffect 拉取 `/api/reports/[id]/data` (2) 用返回的 chartData / metricValue
+  覆盖 widget.config 的 mock 数据 (3) 未声明 dataConfig 的 widget 继续走现有
+  mock 注入逻辑（向后兼容）。需更新 reports-id-page.test.tsx 增加 fetch mock
+  场景。中改动，1-2 commit。
+- **报表导出按钮**（中改动，中优先级）：列表页或详情页加"导出"按钮，调用
+  reportManager.exportReport（已支持 json/csv/pdf，pdf 为占位）。需评估下载
+  降级（exportUtils.downloadFile 在沙箱环境无 Blob URL 时的兜底）。
+- **MobileNav 添加报表中心入口**（小改动，低优先级）。
+- **/reports 列表页支持搜索/筛选**（小改动，低优先级）。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）。
+- 延续项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化 /
+  backups 路由经 TenantDb 收口（files 路由本轮已收口，剩余 backups 路由待审计）。
