@@ -208,6 +208,17 @@ export const REPORT_CATEGORIES = {
 };
 
 // 内置报表模板
+//
+// dataConfig 声明（本轮新增）：每个 widget 可选 dataConfig.dataSource 指向
+// 后端可拉取的真实数据源。当前支持的 dataSource 取值见 src/lib/reports/data-fetcher.ts：
+//   - 'stats:overview'  → lib/stats/stats-service.getOverviewStats（单对象，metric 取字段）
+//   - 'stats:by-type'   → getStatsByType（types 数组，pie/bar 用 count/size 维度）
+//   - 'stats:trend'     → getTrendStats（dailyStats 数组，line/bar/area 按字段取时间序列）
+//   - 'stats:ai'        → getAiStats（metric 取单字段；pie 多字段聚合为分布）
+//   - 'stats:activity'  → getActivityStats（含 userActivity top-N，可做 bar）
+//
+// 未声明 dataConfig 的 widget（如 user-activity 报表的 w1~w4，file-activity 的 w2 下载趋势，
+// ai-usage 的 w6 调用趋势）暂无对应后端数据源，详情页继续走 mock 数据（下一轮替换）。
 export const BUILTIN_REPORT_TEMPLATES: ReportTemplate[] = [
   {
     id: 'storage-overview',
@@ -222,12 +233,12 @@ export const BUILTIN_REPORT_TEMPLATES: ReportTemplate[] = [
       columns: 24,
       gap: 16,
       widgets: [
-        { id: 'w1', type: 'metric', title: '总存储量', width: 6, config: { value: 0, label: '总存储量', suffix: ' GB' } as MetricConfig },
-        { id: 'w2', type: 'metric', title: '文件总数', width: 6, config: { value: 0, label: '文件总数' } as MetricConfig },
-        { id: 'w3', type: 'metric', title: '文件夹数', width: 6, config: { value: 0, label: '文件夹数' } as MetricConfig },
-        { id: 'w4', type: 'metric', title: '存储使用率', width: 6, config: { value: 0, label: '存储使用率', suffix: '%' } as MetricConfig },
-        { id: 'w5', type: 'chart', title: '存储使用趋势', width: 12, config: { type: 'line' } as ChartConfig },
-        { id: 'w6', type: 'chart', title: '文件类型分布', width: 12, config: { type: 'pie' } as ChartConfig },
+        { id: 'w1', type: 'metric', title: '总存储量', width: 6, config: { value: 0, label: '总存储量', suffix: ' GB' } as MetricConfig, dataConfig: { dataSource: 'stats:overview', fields: ['totalStorage'] } },
+        { id: 'w2', type: 'metric', title: '文件总数', width: 6, config: { value: 0, label: '文件总数' } as MetricConfig, dataConfig: { dataSource: 'stats:overview', fields: ['totalFiles'] } },
+        { id: 'w3', type: 'metric', title: '文件夹数', width: 6, config: { value: 0, label: '文件夹数' } as MetricConfig, dataConfig: { dataSource: 'stats:overview', fields: ['totalFolders'] } },
+        { id: 'w4', type: 'metric', title: '存储使用率', width: 6, config: { value: 0, label: '存储使用率', suffix: '%' } as MetricConfig, dataConfig: { dataSource: 'stats:overview', fields: ['storageUsagePercent'] } },
+        { id: 'w5', type: 'chart', title: '存储使用趋势', width: 12, config: { type: 'line' } as ChartConfig, dataConfig: { dataSource: 'stats:trend', fields: ['totalStorage'] } },
+        { id: 'w6', type: 'chart', title: '文件类型分布', width: 12, config: { type: 'pie' } as ChartConfig, dataConfig: { dataSource: 'stats:by-type', fields: ['count'] } },
       ],
     },
   },
@@ -243,7 +254,7 @@ export const BUILTIN_REPORT_TEMPLATES: ReportTemplate[] = [
       columns: 24,
       gap: 16,
       widgets: [
-        { id: 'w1', type: 'chart', title: '上传趋势', width: 12, config: { type: 'bar' } as ChartConfig },
+        { id: 'w1', type: 'chart', title: '上传趋势', width: 12, config: { type: 'bar' } as ChartConfig, dataConfig: { dataSource: 'stats:trend', fields: ['newFiles'] } },
         { id: 'w2', type: 'chart', title: '下载趋势', width: 12, config: { type: 'line' } as ChartConfig },
         { id: 'w3', type: 'table', title: '热门文件', width: 24, config: { columns: [] } as TableConfig },
       ],
@@ -280,11 +291,11 @@ export const BUILTIN_REPORT_TEMPLATES: ReportTemplate[] = [
       columns: 24,
       gap: 16,
       widgets: [
-        { id: 'w1', type: 'metric', title: '总调用次数', width: 6, config: { value: 0, label: '总调用次数' } as MetricConfig },
-        { id: 'w2', type: 'metric', title: '摘要生成', width: 6, config: { value: 0, label: '摘要生成' } as MetricConfig },
-        { id: 'w3', type: 'metric', title: 'OCR识别', width: 6, config: { value: 0, label: 'OCR识别' } as MetricConfig },
-        { id: 'w4', type: 'metric', title: '配额使用', width: 6, config: { value: 0, label: '配额使用', suffix: '%' } as MetricConfig },
-        { id: 'w5', type: 'chart', title: '功能使用分布', width: 12, config: { type: 'pie' } as ChartConfig },
+        { id: 'w1', type: 'metric', title: '总调用次数', width: 6, config: { value: 0, label: '总调用次数' } as MetricConfig, dataConfig: { dataSource: 'stats:ai', fields: ['totalCalls'] } },
+        { id: 'w2', type: 'metric', title: '摘要生成', width: 6, config: { value: 0, label: '摘要生成' } as MetricConfig, dataConfig: { dataSource: 'stats:ai', fields: ['summaryCalls'] } },
+        { id: 'w3', type: 'metric', title: 'OCR识别', width: 6, config: { value: 0, label: 'OCR识别' } as MetricConfig, dataConfig: { dataSource: 'stats:ai', fields: ['ocrCalls'] } },
+        { id: 'w4', type: 'metric', title: '配额使用', width: 6, config: { value: 0, label: '配额使用', suffix: '%' } as MetricConfig, dataConfig: { dataSource: 'stats:ai', fields: ['quotaPercent'] } },
+        { id: 'w5', type: 'chart', title: '功能使用分布', width: 12, config: { type: 'pie' } as ChartConfig, dataConfig: { dataSource: 'stats:ai', fields: ['summaryCalls', 'ocrCalls', 'describeCalls', 'tagCalls', 'qnaCalls'] } },
         { id: 'w6', type: 'chart', title: '调用趋势', width: 12, config: { type: 'line' } as ChartConfig },
       ],
     },
