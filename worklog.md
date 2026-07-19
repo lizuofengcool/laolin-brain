@@ -20566,3 +20566,130 @@ grep `generateCsv` 全仓后确认：
   session Redis 持久化 / backups 路由经 TenantDb 收口（backup 表尚无 TenantDb 访问器，且
   findFirst 已带 tenantId 无越权，churn 大）。
 
+## 2026-07-20 01:00 自动迭代
+
+### 背景
+
+clone 仓库后 fetch origin/main 与 github/main：双端同步（e180136），工作树干净，无遗留
+改动。评估任务清单「优先级 1 剩余项」现状：worklog 第 189 轮已记全部处置（tenant-db raw
+审计 / alipay+wechat 真验签 / sync-engine keep_both / api-auth 测试对齐 / files 路由延后），
+清单为陈旧描述。按 worklog「下一轮候选」首位推进：**document-qna chatSessionsCache 内存
+持久化**（中优先级，可独立推进）。
+
+### 本次开发
+
+**document-qna 会话持久化：内存 Map → Prisma ChatConversation/ChatMessage**（refactor +
+功能完整性，延续 worklog「下一轮候选」中标注「可独立轮次推进」的项）：
+
+`src/lib/ai/document-qna.ts` 的 `chatSessionsCache`（module-level Map）为对话会话的临时
+存储，server 重启即丢、多实例不共享。schema 已有 `ChatConversation` + `ChatMessage` 模型
+（通用 chat 路由 `src/app/api/chat/conversations/route.ts` 在用），项目用 `prisma db push`
+无 migrations 目录，无需迁移，直接复用。
+
+**1. `src/lib/ai/document-qna.ts` 重写 5 个 CRUD 函数走 Prisma**：
+
+- `createChatSession` → `db.chatConversation.create`：type='knowledge_qa' 区分文档问答会话
+  与通用 chat（type='general'）；fileIds 存于 `metadata` JSON（`{ fileIds: [...] }`）。
+- `getChatSessions` → `db.chatConversation.findMany`：where `tenantId+userId+type=
+  'knowledge_qa'+isArchived=false`，orderBy `updatedAt desc`，take limit（默认 20），include
+  `messages`（orderBy `timestamp asc`）。
+- `getChatSession` → `db.chatConversation.findUnique` by id + include messages，取回后校验
+  userId/tenantId 双匹配（跨用户/租户隔离），不匹配返回 null。
+- `addChatMessage` → `db.chatConversation.findUnique`（select userId/tenantId）校验归属 →
+  `db.chatMessage.create`（metadata 存 `{ citations: [...] }` JSON，无 citations 时 null）→
+  `db.chatConversation.update` 推进 `lastMessageAt`（`updatedAt` 由 `@updatedAt` 自动推进）。
+- `deleteChatSession` → `db.chatConversation.findUnique` 校验归属 → `db.chatConversation.delete`
+  （ChatMessage 经 schema `onDelete: Cascade` 级联删除）。
+
+**2. 映射函数 + 清理**：
+
+- 新增 `mapConversation(row)`：fileIds 从 `metadata` JSON 解析（损坏回退空数组）；messages
+  经 `mapMessage` 映射；缺省 messages 回退空数组。
+- 新增 `mapMessage(row)`：citations 从 `metadata` JSON 解析（损坏回退 undefined）；`role`
+  强转联合类型 `"user" | "assistant" | "system"`。
+- 移除 `chatSessionsCache` Map（module-level 状态）与 `generateId()`（Prisma `@default(cuid())`
+  接管 ID 生成）。
+- 公开接口 `ChatSession` / `ChatMessage` / `Citation` 不变，路由层与 route 测试零改动。
+
+**3. `src/__tests__/lib/ai-document-qna.test.ts` 改用 stateful mock**：
+
+- `vi.hoisted` 新增 `convStore`（Map<id, record>）+ `msgStore`（Map<convId, messages[]>）
+  模拟 Prisma `chatConversation` / `chatMessage` 表，`genId(prefix)` 生成确定性 ID。
+- `vi.mock('@/lib/db', ...)` 补 `chatConversation.create/findMany/findUnique/update/delete` +
+  `chatMessage.create`。
+- `beforeEach` 设置 stateful 实现：`create` 落库补 schema 默认值 + `createdAt/updatedAt = new Date()`
+  （配合 `vi.useFakeTimers` 固定时间）；`findMany` 按 where 过滤 + orderBy 排序 + take 截断 +
+  include messages（支持 orderBy timestamp）；`findUnique` 支持 select（仅返回选中字段）与
+  include messages；`update` 合并 data + 推进 updatedAt（模拟 `@updatedAt`）；`delete` 从
+  convStore + msgStore 移除（模拟级联）；`msgCreate` 落库到 msgStore + 补 schema 默认值。
+- `beforeEach` 清空 store + mockReset，避免用例间串扰。
+- 新增 8 个用例锁定 Prisma 调用契约：
+  · `createChatSession` 落库 `chatConversation.create` 以 type=knowledge_qa + metadata 存 fileIds
+  · `getChatSessions` findMany where 含 type=knowledge_qa + isArchived=false + orderBy + take + include
+  · `getChatSessions` 自定义 limit 透传到 findMany take
+  · `getChatSession` 含消息取回带 messages（timestamp 升序）
+  · `addChatMessage` chatMessage.create 以 citations 存入 metadata JSON
+  · `addChatMessage` 无 citations 时 metadata 为 null
+  · `addChatMessage` 写消息后推进会话 lastMessageAt
+  · `deleteChatSession` 删除会话后消息级联清除
+- 原有 49 用例全部保留并通过（stateful mock faithful 模拟 Prisma 行为，行为断言无需改动）。
+
+### 行为变更影响评估
+
+- **document-qna 会话**：从内存（重启即丢）改为 SQLite 持久化（重启保留、多实例共享）。
+  type='knowledge_qa' 与通用 chat（type='general'）隔离，互不干扰。
+- **公开接口**：`ChatSession` / `ChatMessage` 接口签名不变，`/api/ai/chat/sessions` 路由
+  零改动（route 测试 8 用例全绿）。
+- **ID 格式**：原 `generateId()`（Date.now+random）→ Prisma `@default(cuid())`（cuid 格式）。
+  对调用方不可见（route 返回 JSON，不依赖 ID 格式）。
+- **跨用户/租户隔离**：原内存 Map 的 `s.userId !== userId` 校验保留；新增 where 子句前置
+  过滤（findMany）+ 取回后双匹配校验（findUnique），双重保障。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --registry=https://registry.npmmirror.com`（沙箱无
+  node_modules，39.4s）。
+- `npx prisma generate`（v6.19.3 客户端，tsc 前置依赖）。
+- `npx tsc --noEmit`：**0 错误**。
+- `npx vitest run ai-document-qna ai-chat-sessions-route`：**66 passed / 2 files**
+  （document-qna 58 含 8 新增全绿 / route 8 全绿）。
+- `npx vitest run`（全量）：**5414 passed / 204 files**，零回归（上轮 5406/204，+8 测试
+  = 新增 Prisma 调用契约用例）。
+
+### 改动量
+
+1 commit，2 文件，+506/-73：
+- `src/lib/ai/document-qna.ts`（+164/-43，5 函数重写 + mapConversation/mapMessage + 移除
+  chatSessionsCache/generateId）
+- `src/__tests__/lib/ai-document-qna.test.ts`（+342/-30，stateful mock + 8 新增用例 + 头注
+  更新）
+
+### Commit
+
+- `92580b2` refactor(document-qna): chatSessionsCache 内存 Map 替换为 Prisma ChatConversation/ChatMessage 持久化
+
+### 推送
+
+- origin (Gitee)：`e180136..92580b2` ✅
+- github (GitHub)：`e180136..92580b2` ✅（push protection 未拦截，无 sk_ 前缀占位密钥）
+
+### 下一轮候选
+
+- **TableWidget 渲染层接入 rows**（未变动，中优先级，功能完整性）：前端无表格渲染组件消费
+  rows，reports 模块为纯库。需新建渲染组件 + 挂载页面，超 1-3 commit 单轮范围，建议独立
+  多轮 feature 推进。
+- **AiProviderConfig.config 字段加密**（未变动，低优先级）：死字段，需先接线 POST 接受
+  config → 落库 → chat 读取，较大 feature。
+- **package-lock.json 陈旧**（未变动，低优先级，chore）：package-lock.json 与 package.json
+  不同步（缺 @radix-ui/* 等），`npm ci` 失败；当前用 pnpm --no-frozen-lockfile 绕过。可独立
+  轮次 `npm install` 重生成并提交（churn 大，需确认不引入回归）。
+- **document-qna askQuestion AI 桩**（新观察，中优先级，依赖外部 SDK）：会话持久化已落地，
+  但 `askQuestion` 内 `generateMockAnswer` 仍为模拟答案 + `retrieveRelevantDocuments` 为
+  关键词匹配（非向量搜索）。待 model-manager 模型 API 桩接入后，可串联真实 AI 调用。依赖
+  外部 SDK，独立推进。
+- 延续项（低优先级，未变动）：model-manager 4 处模型 API 桩（依赖外部 SDK）/ files/route.ts
+  POST 事务内 tx 与 auto-summary 直连（无越权、churn 大）/ 支付 SDK 真接入（依赖
+  alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 / share
+  session Redis 持久化 / backups 路由经 TenantDb 收口（backup 表尚无 TenantDb 访问器，且
+  findFirst 已带 tenantId 无越权，churn 大）。
+
