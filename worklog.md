@@ -20807,3 +20807,147 @@ clone 仓库后 fetch origin/main 与 github/main：双端同步（e180136），
   alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 / share
   session Redis 持久化 / backups 路由经 TenantDb 收口（backup 表尚无 TenantDb 访问器，且
   findFirst 已带 tenantId 无越权，churn 大）。
+
+
+## 2026-07-20 19:10 自动迭代
+
+### 背景
+
+- 沙箱初次执行：`/workspace/laolin-brain` 不存在，先 `git clone origin` 并 `git remote add
+  github`，配置 `user.email=uploader@local / user.name=uploader`。
+- 本轮 fetch 后 origin / github 双端均无新提交（`d77bfd5` 顶端一致），无未提交改动。
+- 复核用户清单中的优先级 1 已知问题：全部在历史轮次已闭环（详见上一轮 worklog 复核记录）。
+- 按 worklog "下一轮候选" 推进 TableWidget 后的第二阶段：**ReportWidget 渲染分发器 +
+  MetricCard + TextBlock + Divider**。chart 接入 recharts 与 `/reports/[id]` 页面挂载留待
+  下一轮（worklog 已规划拆 2 轮：先分发器 + 文本/指标，再图表与页面）。
+
+### 本次开发内容
+
+**feat(reports): 新增 ReportRenderer 分发器与 MetricCard/TextBlock 渲染层**
+
+补全 worklog 标记的前端缺口：上轮落地的 TableWidget 是单组件，需要一个统一分发器将
+`ReportWidget.type` 路由到具体渲染组件。本轮覆盖 metric / text / divider 三种类型，chart
+留占位待下轮接入 recharts（避免单 commit 过大）。
+
+#### `src/components/reports/MetricCard.tsx`（+96，新建）
+
+- **value 数值格式化**：`number` 走 `toLocaleString`（千分位，如 `1,234,567`），字符串原样输出。
+- **trendDirection 优先级**：显式 `trendDirection` 优先；缺失时从 `trend` 符号推断（>0 → up、
+  <0 → down、=0 → none），与 BUILTIN_REPORT_TEMPLATES 中 "存储使用率" 等指标语义一致。
+- **趋势行渲染策略**：`trend === undefined` 时**不渲染**趋势行（避免空趋势行噪声）；
+  `trend === 0` 时渲染（none + 灰色 + MinusIcon，表示无变化）。
+- **颜色映射**：up → `text-green-600`、down → `text-red-600`、none → `text-muted-foreground`；
+  `trend.toFixed(1)` 保留 1 位小数；`Math.abs(trend)` 避免负号重复。
+- **color 透传**：仅作用于 value 行 inline style，不污染 label / trend 颜色。
+- **Card 包装**：title/description 透传到 `CardHeader`；都缺失时不渲染 header（仅 value + label）。
+- **可访问性**：趋势行 `aria-label="趋势 ${direction} ${abs}%"`，图标 `aria-hidden`。
+
+#### `src/components/reports/TextBlock.tsx`（+55，新建）
+
+- **字号映射**：sm/md/lg/xl → `text-sm` / `text-base` / `text-lg` / `text-xl`；默认 md。
+- **对齐映射**：left/center/right → `text-left` / `text-center` / `text-right`；默认 left。
+- **color 透传**：inline style，与 MetricCard 一致。
+- **leading-relaxed 顺序修正**：Tailwind v4 的 `text-*` 同时设置 font-size 与 line-height，
+  tailwind-merge 会把前置的 `leading-relaxed` 视为冲突被剥离。修复方式：把 `leading-relaxed`
+  放在字号类**之后**（last-wins），并加注释说明 tailwind-merge 行为。
+- **无 Card 包装**：文本块应在布局中自然流动，标题/描述由 ReportRenderer 统一处理。
+
+#### `src/components/reports/ReportRenderer.tsx`（+135，新建）
+
+- **类型分发**：按 `widget.type` 路由：
+  - `metric` → `MetricCard`（带 Card 包装 + title/description 透传）
+  - `table` → `TableWidget`（沿用上轮实现的内部 title/description 渲染）
+  - `text` → `TextBlock`（无包装，自然流动）
+  - `divider` → `Separator`：有 title 时渲染"居中标题 + 两侧 Separator"（分组标签语义），
+    无 title 时仅渲染单条 Separator
+  - `chart` → 占位卡片：渲染标题/描述 + dashed border + "图表渲染待接入（recharts）"
+- **兜底**：metric/table/text 缺 config 或未知 type → 统一渲染"组件缺少配置"卡片，
+  显示 `widget.type = xxx`，避免运行时崩溃。
+- **可访问性**：divider 容器 `role="separator" aria-orientation="horizontal"`。
+
+#### `src/__tests__/components/reports-metric-card.test.tsx`（+165，16 用例）
+
+三组用例：
+1. **渲染层契约**（6 用例）：数值 toLocaleString、字符串原样、label 副标题、prefix/suffix
+   围绕 value、title/description 透传、无 title 时不渲染 CardHeader。
+2. **trend 渲染**（7 用例）：trendDirection=up/down 显式、缺失时从 trend>0/<0/=0 推断、
+   trend undefined 不渲染、toFixed(1) 保留 1 位小数。
+3. **边界**（3 用例）：color 透传 inline style（jsdom 标准化为 rgb，断言相应调整）、
+   无 color 不设置 inline style、label 缺失时不渲染副标题。
+
+#### `src/__tests__/components/reports-text-block.test.tsx`（+108，12 用例）
+
+三组用例：
+1. **渲染层契约**（8 用例）：content 段落渲染、4 种 fontSize 类映射、3 种 align 类映射、
+   align 缺省 text-left。
+2. **color 透传**（2 用例）：color 设置 inline style（rgb 标准化）、缺省不设置。
+3. **边界**（2 用例）：空字符串 content、leading-relaxed 始终应用。
+
+#### `src/__tests__/components/reports-renderer.test.tsx`（+156，12 用例）
+
+三组用例：
+1. **类型分发**（6 用例）：metric → MetricCard、table → TableWidget、text → TextBlock
+   （无 Card，段落标签）、divider 有/无 title 两种形态、chart 占位卡片。
+2. **兜底**（4 用例）：metric/table/text 缺 config、未知 type → "组件缺少配置"卡片。
+3. **透传**（2 用例）：title/description 透传给 MetricCard 与 TableWidget。
+
+### 行为变更影响评估
+
+- **新增组件**：纯前端，无 API/DB 改动，无现有路由/页面改动，零回归风险。
+- **数据消费一致性**：MetricCard 与 TextBlock 仅消费各自 config，不与 CSV 导出耦合；
+  TableWidget 的数据消费契约由上轮测试已锁定，本轮 ReportRenderer 仅透传 config。
+- **可访问性**：趋势行 aria-label、divider role="separator"、图标 aria-hidden 齐全。
+- **未覆盖**：chart 实际渲染（recharts）、`/reports/[id]` 页面挂载、栅格布局（width/height）——
+  属下一阶段。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --registry=https://registry.npmmirror.com`（沙箱无
+  node_modules，41s）。
+- `npx prisma generate`（v6.19.3 客户端，tsc 前置依赖）。
+- `npx tsc --noEmit`：**0 错误**。
+- `npx vitest run reports-metric-card reports-text-block reports-renderer reports-table-widget`：
+  **62 passed / 4 files**（16 + 12 + 12 + 22）。
+- `npx vitest run`（全量）：**5476 passed / 208 files**，零回归（上轮 5436/205，
+  +40 测试 = MetricCard 16 + TextBlock 12 + Renderer 12 / +3 files = 3 个新测试文件）。
+
+### 改动量
+
+1 commit，6 文件，+730：
+- `src/components/reports/MetricCard.tsx`（+96，新建）
+- `src/components/reports/TextBlock.tsx`（+55，新建）
+- `src/components/reports/ReportRenderer.tsx`（+135，新建）
+- `src/__tests__/components/reports-metric-card.test.tsx`（+165，新建 16 用例）
+- `src/__tests__/components/reports-text-block.test.tsx`（+108，新建 12 用例）
+- `src/__tests__/components/reports-renderer.test.tsx`（+156，新建 12 用例）
+
+### Commit
+
+- `50041d2` feat(reports): 新增 ReportRenderer 分发器与 MetricCard/TextBlock 渲染层
+
+### 推送
+
+- origin (Gitee)：`d77bfd5..50041d2` ✅
+- github (GitHub)：`d77bfd5..50041d2` ✅（push protection 未拦截，无 sk_ 前缀占位密钥）
+
+### 下一轮候选
+
+- **chart 渲染接入 + 报表页面挂载**（新阶段，中优先级，依赖本轮 ReportRenderer）：
+  本轮已落地分发器，chart 类型仍是占位卡片。下一步可：
+  (1) 实现 `ChartWidget` 组件，把 `ChartConfig` 映射到 recharts 的 Line/Bar/Pie/Area
+      等（recharts 2.15.4 已在 dependencies），接入 `ChartConfig.data` + `series`；
+  (2) 在 `/reports/[id]` 页面挂载 ReportRenderer，按 `ReportLayout.widgets` 渲染栅格
+      （width 1-24 映射到 tailwind grid-cols-24）。
+  超 1-3 commit 单轮范围，建议拆 2 轮：先 ChartWidget + 测试，再页面挂载。
+- **AiProviderConfig.config 字段加密**（未变动，低优先级）：死字段，需先接线 POST 接受
+  config → 落库 → chat 读取，较大 feature。
+- **package-lock.json 陈旧**（未变动，低优先级，chore）：与 package.json 不同步（缺
+  @radix-ui/* 等），`npm ci` 失败；当前用 pnpm --no-frozen-lockfile 绕过。
+- **document-qna askQuestion AI 桩**（未变动，中优先级，依赖外部 SDK）：会话持久化已落地，
+  但 `askQuestion` 内 `generateMockAnswer` 仍为模拟答案 + `retrieveRelevantDocuments` 为
+  关键词匹配（非向量搜索）。待 model-manager 模型 API 桩接入后，可串联真实 AI 调用。
+- 延续项（低优先级，未变动）：model-manager 4 处模型 API 桩（依赖外部 SDK）/ files/route.ts
+  POST 事务内 tx 与 auto-summary 直连（无越权、churn 大）/ 支付 SDK 真接入（依赖
+  alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 / share
+  session Redis 持久化 / backups 路由经 TenantDb 收口（backup 表尚无 TenantDb 访问器，且
+  findFirst 已带 tenantId 无越权，churn 大）。
