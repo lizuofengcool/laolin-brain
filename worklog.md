@@ -21268,3 +21268,157 @@ ChartWidget，本轮在 /reports/[id] 页面挂载 ReportRenderer，按 ReportLa
   alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 / share
   session Redis 持久化 / backups 路由经 TenantDb 收口（backup 表尚无 TenantDb 访问器，且
   findFirst 已带 tenantId 无越权，churn 大）。
+
+## 2026-07-20 06:00 自动迭代（第一百九十六轮）
+
+### 背景
+
+延续第一百九十五轮的 /reports/[id] 详情页挂载工作。本轮按上轮"下一轮候选"
+中的"侧边栏添加 /reports 导航入口"分支推进，新增 /reports 列表页 + Sidebar
+入口，把详情页从"仅可 URL 直接访问"升级为"侧边栏可点击进入"。
+
+### 本次开发内容
+
+#### 新增：`src/app/(dashboard)/reports/page.tsx`（+122，新建）
+
+报表中心列表页，渲染 `BUILTIN_REPORT_TEMPLATES` 为响应式卡片网格：
+
+- **数据源**：`reportManager.getTemplates()`（返回内置 4 模板，按 isRecommended
+  优先 + sortOrder 升序）
+- **响应式栅格**：`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4`
+  （mobile 1 列 / tablet 2 列 / desktop 3 列），与详情页的 24 列栅格语义不同
+  （列表页用 CSS responsive grid，详情页用 24 列 layout.columns 计算 span）
+- **卡片结构**（`<Card>` + CardHeader + CardContent）：
+  - 标题：`<PieChart>` 图标 + 模板 name（truncate 防溢出）
+  - 描述：`<CardDescription>` + `line-clamp-2`（限制 2 行防卡片高度不齐）
+  - 推荐徽章：`isRecommended` 为 true 时显示 `<Badge variant="secondary">`
+    + `<Star>` 图标 + "推荐"文案；当前仅 storage-overview 命中
+  - 分类徽章：`<Badge variant="outline">` + 中文标签（REPORT_CATEGORIES 映射：
+    storage → 存储分析 / files → 文件分析 / users → 用户分析 / ai → AI 分析）
+  - 组件数量：`${widgets.length} 个组件`（如 storage-overview 6 个组件）
+  - 查看按钮：`<Button asChild variant="outline" size="sm">` + `<Link>` 跳转
+    到 `/reports/${template.id}`
+- **空状态**：`templates.length === 0` → 渲染 `<PieChart>` 图标 + "暂无报表模板"
+  占位（虽然当前 BUILTIN_REPORT_TEMPLATES 永远非空，但留作未来 user-defined
+  templates 为空时的兜底）
+- **页面框架**：顶部"返回"按钮（链接到 `/`） + 标题"报表中心" + 说明"选择一个
+  内置报表模板查看详情 · 真实数据源接入待后续迭代" + 卡片网格
+- **data-testid 透出**：`reports-list-page`（根）/ `reports-grid`（网格容器）/
+  `report-template-card`（每张卡片，含 `data-template-id`）/ `report-view-link`
+  （查看链接）/ `reports-empty`（空状态），便于单测与端到端测试定位
+
+#### 修改：`src/components/layout/Sidebar.tsx`（+2 行）
+
+- 在 `lucide-react` import 中加入 `PieChart`（未被现有 navItems 使用，避免与
+  `BarChart3`（分析）/`Network`（知识图谱）混淆）
+- 在 `productivityNavItems` 数组中第 2 位插入 `{ icon: PieChart, label: "报表中心",
+  path: "/reports" }`，位于"知识库"与"笔记"之间，与同类生产力工具归组
+
+#### 新建：`src/__tests__/components/reports-list-page.test.tsx`（+133，11 用例）
+
+**桩化策略**：
+- `vi.mock("next/navigation")`：桩化 `Link` 为 `<a href data-href>`（注意：Radix
+  Slot 的 `Button asChild` 会递归把 Slot 自己的 props 合并到内层 host element，
+  所以 `Link` 元素自身的 `data-testid` prop 会被透传到 `<a>`，但 mock 函数内部
+  硬编码的 `data-testid="nav-link"` 不会被透传 → 测试中改按可见文本定位 `<a>`
+  而非依赖 mock 的 testid）
+- `vi.mock("lucide-react")`：桩化 `ArrowLeft` / `PieChart` / `Star` 为 `<span>`
+  避免 SVG 渲染
+- 不桩化 `reportManager`：BUILTIN_REPORT_TEMPLATES 是纯内存常量，单测直接消费
+  真实数据（4 个内置模板）
+
+**11 个用例**：
+1. 渲染页面标题 + 说明（"报表中心" + "选择一个内置报表模板"）
+2. 渲染所有内置模板为卡片（数量 = BUILTIN_REPORT_TEMPLATES.length）
+3. 每个卡片透出 data-template-id（4 个 id 都命中）
+4. 每个卡片显示模板名称（4 个 name 都渲染）
+5. 每个卡片有指向 /reports/[id] 的查看链接（4 个 href 都命中）
+6. 推荐模板显示推荐徽章（数量 = recommendedCount，当前 = 1）
+7. 显示分类徽章（中文标签，4 个都命中）
+8. 显示组件数量（按 template.id 定位具体卡片，避免多模板 widget 数相同导致
+   getByText 抛"Found multiple elements"）
+9. grid 容器使用响应式断点（grid-cols-1 / md:grid-cols-2 / lg:grid-cols-3）
+10. 返回按钮链接到首页 /（用 `screen.getByText("返回").closest("a")` 定位，
+    绕过 Radix Slot 的 testid 覆盖问题）
+11. 页面根容器透出 data-testid=reports-list-page
+
+**调试记录**：初版 2 用例失败
+- "显示组件数量"：`getByText("6 个组件")` 在 storage-overview / ai-usage 都是 6
+  个组件时抛"Found multiple elements" → 改用 `querySelector([data-template-id])`
+  按 template.id 定位卡片再断言 textContent
+- "返回按钮链接到首页"：mock 的 `data-testid="nav-link"` 在 Button asChild +
+  Radix Slot 递归合并后丢失 → 改用 `screen.getByText("返回").closest("a")`
+  按可见文本定位，再断言 `href`
+
+### 行为变更影响评估
+
+- **新增路由**：`/reports` 列表页（无动态参数，SSR 友好），与上轮 `/reports/[id]`
+  详情页配套，无 API/DB 改动，零回归风险。
+- **Sidebar 改动**：仅在 productivityNavItems 数组中插入 1 项，不改 navItems
+  主体（dashboard/files/albums/...）。Sidebar 渲染逻辑未动，新项复用现有
+  `map + Button variant=isActive` 模式，自动获得 active 高亮 / collapse 适配。
+- **导航暴露**：原本只能通过 URL 直接访问 /reports/[id]，现在可经 Sidebar →
+  /reports 列表 → 点击卡片查看详情。MobileNav（底部 5 图标）未改动，移动端
+  仍需通过 URL 访问（MobileNav 是 5 图标精简栏，添加 reports 会破坏布局，
+  留作未来评估）。
+- **零 API 改动**：列表页直接消费 reportManager.getTemplates()（内存单例），
+  不调用任何 API；详情页也未变动，仍走 reportManager.getTemplate(id)。
+- **未覆盖**：用户自定义报表的列表展示（依赖 /api/reports 路由 + tenantId
+  上下文，留待后续轮）；dataConfig 数据获取（仍走 mock，下一轮候选）；
+  报表创建/订阅管理（依赖 POST /api/reports 等，未排期）。
+
+### 验证
+
+- `npx prisma generate`（v6.19.3 客户端，tsc 前置依赖）。
+- `npx tsc --noEmit`：**0 错误**（无类型问题需修复）。
+- `npx vitest run reports-list-page`：**11 passed / 1 file**。初次运行 2 用例
+  失败（"显示组件数量" getByText 抛多元素 + "返回按钮" Slot testid 覆盖），
+  已按上述"调试记录"修复。
+- `npx vitest run reports`（reports 全量）：**171 passed / 8 files**，零回归
+  （上轮 160/7 + 本轮 +11 / +1 file = 171/8）。
+- `npx vitest run`（全量）：**5531 passed / 211 files**，零回归（上轮 5520/210，
+  +11 测试 = reports-list-page 11 / +1 file）。
+
+### 改动量
+
+1 commit，3 文件，+255：
+- `src/app/(dashboard)/reports/page.tsx`（+122，新建）
+- `src/components/layout/Sidebar.tsx`（+2，加 PieChart import + 1 项 navItem）
+- `src/__tests__/components/reports-list-page.test.tsx`（+133，新建 11 用例）
+
+### Commit
+
+- `7806ef1` feat(reports): 新增 /reports 列表页 + Sidebar 报表中心导航入口
+
+### 推送
+
+- origin (Gitee)：`2764572..7806ef1` ✅
+- github (GitHub)：`2764572..7806ef1` ✅（push protection 未拦截，无 sk_ 前缀
+  占位密钥）
+
+### 下一轮候选
+
+- **/reports/[id] 接入 dataConfig 数据获取**（直接延续，中优先级）：本轮列表页
+  + Sidebar 入口已就绪，下一轮可推进真实数据源接入（上轮候选已列出 3 步拆分：
+  (1) 在 BUILTIN_REPORT_TEMPLATES 声明 dataConfig.dataSource (2) 后端 fetcher
+  或 /api/reports/[id]/data 端点 (3) 详情页 useEffect 拉取 + 替换 mock）。
+  超 1-3 commit 单轮范围，建议拆 2 轮：先 dataConfig 声明 + 后端 fetcher，
+  再页面接入 + 替换 mock。
+- **MobileNav 添加报表中心入口**（小改动，低优先级）：当前 MobileNav 仅 5 图标
+  精简栏（首页/文件/收藏/搜索/我的），未挂载 reports。可考虑替换"搜索"为
+  "报表"或新增第 6 图标（但需评估 5 → 6 图标对移动端布局的影响）。
+- **/reports 列表页支持搜索/筛选**（小改动，低优先级）：当前列表页直接渲染全部
+  内置模板，无 search input / category filter。可在页面顶部加 search input +
+  category 下拉，过滤 templates（前端纯过滤，无 API 改动）。
+- **报表导出按钮**（中改动，中优先级）：列表页或详情页加"导出"按钮，调用
+  reportManager.exportReport（已支持 json/csv/pdf，pdf 为占位）。需评估下载
+  降级（exportUtils.downloadFile 在沙箱环境无 Blob URL 时的兜底）。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格在
+  窄屏会缩窄但不破坏，可加 CSS media query 切到 mobile=1 列 / tablet=12 列 /
+  desktop=24 列。
+- 延续项（低优先级，未变动）：AiProviderConfig.config 字段加密（死字段，需
+  先接线）/ document-qna askQuestion AI 桩（依赖外部 SDK）/ model-manager
+  4 处模型 API 桩（依赖外部 SDK）/ files/route.ts POST 事务内 tx 与 auto-summary
+  直连（无越权、churn 大）/ 支付 SDK 真接入（依赖 alipay-sdk/wechatpay-node-v3）/
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化 /
+  backups 路由经 TenantDb 收口 / package-lock.json 陈旧（chore，与 pnpm 不冲突）。
