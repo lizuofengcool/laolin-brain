@@ -23,6 +23,7 @@ import {
   CheckSquare,
   Calendar,
   Lightbulb,
+  PieChart,
 } from "lucide-react";
 
 import { useMemo } from "react";
@@ -51,6 +52,7 @@ const navItems: { icon: typeof LayoutDashboard; label: string; view: ViewType; p
 // 生产力工具导航项
 const productivityNavItems = [
   { icon: BookOpen, label: "知识库", path: "/knowledge" },
+  { icon: PieChart, label: "报表中心", path: "/reports" },
   { icon: StickyNote, label: "笔记", path: "/notes" },
   { icon: CheckSquare, label: "待办事项", path: "/todos" },
   { icon: Calendar, label: "日历", path: "/calendar" },
