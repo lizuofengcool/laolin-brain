@@ -20693,3 +20693,117 @@ clone 仓库后 fetch origin/main 与 github/main：双端同步（e180136），
   session Redis 持久化 / backups 路由经 TenantDb 收口（backup 表尚无 TenantDb 访问器，且
   findFirst 已带 tenantId 无越权，churn 大）。
 
+
+## 2026-07-20 18:11 自动迭代
+
+### 背景
+
+- 本轮 fetch 后 origin / github 双端均无新提交（`e5639d0` 顶端一致），无未提交改动。
+- 复核用户清单中的优先级 1 已知问题：全部在历史轮次已闭环——
+  · tenant-db raw 后门 → `574cc97 fix(tenant-db)` 已关闭 rawDb 无审计导出 + transaction 软审计
+  · alipay/wechat 验签占位 → `ed3dc00 test(payment)` 与 `0ee92ec fix(payment)` 已接入真
+    实 RSA-SHA256（alipay）/ HMAC-SHA256 + AES-256-GCM（wechat V3）验签，"非空即通过"已删
+  · files/route.ts 绕过 TenantDb → GET 已走 `tenantDb.file.findMany`；POST 走 `dedupTenantDb`
+    做版本去重；tx/auto-summary 直连仅是无越权下的架构 churn（worklog 已标记低优先级）
+  · sync-engine keep_both 覆盖 bug → `ef4c361 fix(sync)` 已重命名本地为 [冲突副本] + 新建
+    云端版本作为新文件，保留两端
+  · api-auth.test 与实现不符 → `7f9a404 test(auth)` 已重写为 4 字段 / async / 拒 query param
+- 转向 worklog "下一轮候选" 列表，按优先级与 1-3 commit 单轮可控范围筛选：
+  · **TableWidget 渲染层接入 rows**（中优先级，功能完整性）入选——worklog 显式标"超 1-3 commit
+    单轮范围"指的是"渲染组件 + 挂载页面"整体推进，本次仅落地渲染组件本身（不含页面挂载），
+    1 commit 即可，是该多轮 feature 的第一阶段。
+
+### 本次开发内容
+
+**feat(reports): 新增 TableWidget 渲染层消费 TableConfig.rows**
+
+补全 worklog 标记的前端缺口：reports 模块为纯库，`report-manager.buildTableCsv` 已消费
+`TableConfig.rows` 导出 CSV，但前端无组件消费同一份 rows 渲染 HTML 表格。
+
+#### `src/components/reports/TableWidget.tsx`（+250）
+
+- **数据消费契约对齐 buildTableCsv**：行按列 `dataIndex` 取值，列 `format` 优先于原始值；
+  缺失字段留空（与 CSV 导出语义一致，"所见即所导"）。
+- **渲染层**：复用 shadcn/ui 的 `Table/TableHeader/TableBody/TableHead/TableRow/TableCell`
+  原子组件，列 `width` 透传为 inline style，列 `align` 映射到 `text-left/center/right` 类。
+- **排序**：`config.sortable` 或列级 `column.sortable` 启用后点击表头循环 asc→desc→null；
+  数值列按数值比较（避免 "10" < "9" 的字符串字典序陷阱），null/undefined 视为最小排到 asc
+  最前；表头 `aria-sort` 标注 ascending/descending 无障碍语义；箭头单独 span 渲染（不污染
+  标题文本，便于测试断言）。
+- **搜索**：`config.searchable` 渲染 Input，按所有列 `dataIndex` 的展示文本（format 后）
+  模糊匹配（大小写不敏感），搜索后自动回首页避免空页。
+- **分页**：`config.pagination` + `pageSize` 切片展示，提供"上一页/下一页"按钮与"第 X / Y
+  页 · 共 Z 条"统计；行数 ≤ pageSize 时不渲染分页控件；pageSize ≤ 0 回退到 10。
+- **边界空态**：
+  · `columns.length === 0` → "无列定义"（避免 Prisma 取不到 dataIndex 时崩溃）
+  · `rows` 缺失或过滤后为空 → tbody 渲染单行单 cell "暂无数据"（colSpan = 列数）
+  · 对象类型单元格值 JSON 序列化展示（避免 `[object Object]`）
+  · null 值单元格渲染为空字符串（避免显示 "null"）
+
+#### `src/__tests__/components/reports-table-widget.test.tsx`（+388，22 用例）
+
+四组用例：
+
+1. **渲染层契约**（7 用例）：列标题/行数据按 dataIndex 取值；列 format 优先；缺失字段留空；
+   rows undefined → "暂无数据"；columns 空 → "无列定义"；标题/描述渲染；align 类应用到
+   表头与单元格。
+2. **排序**（5 用例）：点击 asc / 再点 desc / 三击取消回到原始顺序；列级 sortable 覆盖
+   config.sortable=false；未启用时点击无效。
+3. **搜索**（4 用例）：渲染搜索框；按所有列 dataIndex 模糊匹配过滤；无匹配显示空态；
+   匹配列 format 后的文本（与 CSV 数据源一致）。
+4. **分页**（3 用例）：切片展示 + 翻页；首页/末页按钮禁用边界；行数不足时不渲染分页。
+5. **边界数据**（3 用例）：对象 JSON 序列化避免 `[object Object]`；null 渲染为空字符串
+   非 "null"；数值列排序按数值（避免字符串字典序）。
+
+### 行为变更影响评估
+
+- **新增组件**：纯前端组件，无 API/DB 改动，无现有路由/页面改动，零回归风险。
+- **数据消费一致性**：与 `report-manager.buildTableCsv` 共用 `TableConfig.rows` 数据源与
+  `column.format` 优先级规则，确保前端展示与 CSV 导出内容一致。
+- **可访问性**：表头 `aria-sort`、搜索框 `aria-label`、按钮 disabled 语义齐全。
+- **未覆盖**：报表页面挂载（ReportWidget 类型分发器：chart/table/metric/text/divider
+  统一渲染）、数据获取（rows 仍由调用方传入，未接 dataConfig 查询）——属下一阶段。
+
+### 验证
+
+- `pnpm install --no-frozen-lockfile --registry=https://registry.npmmirror.com`（沙箱无
+  node_modules，1m2s）。
+- `npx prisma generate`（v6.19.3 客户端，tsc 前置依赖）。
+- `npx tsc --noEmit`：**0 错误**。
+- `npx vitest run reports-table-widget`：**22 passed / 1 file**。
+- `npx vitest run`（全量）：**5436 passed / 205 files**，零回归（上轮 5414/204，
+  +22 测试 = TableWidget 全部用例 / +1 file = reports-table-widget.test.tsx）。
+
+### 改动量
+
+1 commit，2 文件，+638：
+- `src/components/reports/TableWidget.tsx`（+250，新建）
+- `src/__tests__/components/reports-table-widget.test.tsx`（+388，新建 22 用例）
+
+### Commit
+
+- `68f148d` feat(reports): 新增 TableWidget 渲染层消费 TableConfig.rows
+
+### 推送
+
+- origin (Gitee)：`e5639d0..68f148d` ✅
+- github (GitHub)：`e5639d0..68f148d` ✅（push protection 未拦截，无 sk_ 前缀占位密钥）
+
+### 下一轮候选
+
+- **ReportWidget 渲染分发器 + 报表页面挂载**（新阶段，中优先级，依赖本次 TableWidget）：
+  本次落地 TableWidget 单组件，下一步可建 `ReportRenderer` 按 `ReportWidget.type` 分发到
+  TableWidget / 图表（recharts）/ MetricCard / TextBlock，并挂在 `/reports/[id]` 页面。
+  超 1-3 commit 单轮范围，建议拆 2 轮：先分发器 + MetricCard/TextBlock，再图表接入与页面。
+- **AiProviderConfig.config 字段加密**（未变动，低优先级）：死字段，需先接线 POST 接受
+  config → 落库 → chat 读取，较大 feature。
+- **package-lock.json 陈旧**（未变动，低优先级，chore）：与 package.json 不同步（缺
+  @radix-ui/* 等），`npm ci` 失败；当前用 pnpm --no-frozen-lockfile 绕过。
+- **document-qna askQuestion AI 桩**（未变动，中优先级，依赖外部 SDK）：会话持久化已落地，
+  但 `askQuestion` 内 `generateMockAnswer` 仍为模拟答案 + `retrieveRelevantDocuments` 为
+  关键词匹配（非向量搜索）。待 model-manager 模型 API 桩接入后，可串联真实 AI 调用。
+- 延续项（低优先级，未变动）：model-manager 4 处模型 API 桩（依赖外部 SDK）/ files/route.ts
+  POST 事务内 tx 与 auto-summary 直连（无越权、churn 大）/ 支付 SDK 真接入（依赖
+  alipay-sdk/wechatpay-node-v3）/ ActivityLog 审计 UI / share 限流 Redis 持久化 / share
+  session Redis 持久化 / backups 路由经 TenantDb 收口（backup 表尚无 TenantDb 访问器，且
+  findFirst 已带 tenantId 无越权，churn 大）。
