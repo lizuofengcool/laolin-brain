@@ -13,7 +13,7 @@
  *   - 非法 width（0/负数/NaN）→ 跨整行
  * - chart widget 缺 data → 注入按 type 生成的 mock 数据；已有 data 保持不变
  *
- * 数据拉取轮（本轮新增）：
+ * 数据拉取轮（198 轮）：
  * - 模板命中后异步 fetch /api/reports/[id]/data，响应 data[widgetId] 覆盖 config
  * - chart：chartData 非空 → 覆盖 config.data（data-chart-data-len 与响应一致）
  * - metric：metricValue 非 null/undefined → 覆盖 config.value（data-metric-value）
@@ -21,13 +21,29 @@
  * - fetch HTTP 401 / 500 / reject → data-state="error" + 错误提示 + mock 数据保留
  * - 切换 id（卸载旧 effect）→ AbortController 取消旧请求，不当作错误
  *
+ * 报表导出轮（本轮新增）：
+ * - 详情页 header 渲染 "导出" 下拉按钮（trigger + menu + json/csv item）
+ * - 加载中 / not-found 不渲染导出按钮（report 未 resolve）
+ * - 点击 "导出 JSON" → reportManager.exportReport(report, { format: 'json' })
+ * - 点击 "导出 CSV" 含 table widget → reportManager.exportReport(report, { format: 'csv' })
+ * - 点击 "导出 CSV" 无 table widget → info 反馈"暂无可导出的表格数据"，不调 exportReport
+ * - exportReport 返回 success → success 反馈"已导出 JSON/CSV 文件"
+ * - exportReport 返回 success:false → error 反馈展示后端 error 文案
+ * - 反馈 3s 后自动消失（useEffect timer 控制）
+ *
  * 桩化 ReportRenderer：避免在 jsdom 中触发 recharts 的 ResponsiveContainer（依赖
  * ResizeObserver）。透出 `data-widget-id` / `data-chart-type` / `data-chart-data-len`
  * / `data-chart-has-data` / `data-metric-value` 让单测可以断言分发、mock 注入与真实
  * 数据覆盖行为。
+ *
+ * 桩化 DropdownMenu：Radix 在 jsdom 下走 Portal + pointer 事件难以稳定触发 onSelect，
+ * 替换为 trigger 始终渲染 + 点击 item 同步触发 onSelect 的最朴素实现。
+ *
+ * 桩化 reportManager.exportReport：用 mockExportReport 替换，保留真实 getTemplate 供
+ * templateToReport 解析内置模板（importActual 部分 override）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, fireEvent } from "@testing-library/react";
 import type { ReportWidget, MetricConfig } from "@/lib/reports/types";
 import type { ChartConfig } from "@/lib/visualization/types";
 
@@ -79,7 +95,96 @@ vi.mock("lucide-react", () => ({
   ArrowLeft: () => <span data-testid="icon-arrow-left" />,
   Loader2: () => <span data-testid="icon-loader" />,
   AlertCircle: () => <span data-testid="icon-alert" />,
+  Download: () => <span data-testid="icon-download" />,
+  ChevronDown: () => <span data-testid="icon-chevron-down" />,
+  CheckCircle2: () => <span data-testid="icon-check-circle" />,
 }));
+
+// ---- 桩化 DropdownMenu：Radix 在 jsdom 下走 Portal + pointer 事件，难以稳定
+// 触发 item.onSelect。这里替换为最朴素的"trigger 按钮 + 始终渲染 content + 点击
+// item 时同步触发 onSelect"实现，便于 fireEvent.click 直接命中。
+// 保留 data-testid 透出以让用例按真实 UI 路径断言。
+vi.mock("@/components/ui/dropdown-menu", () => {
+  const DropdownMenu = ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="dropdown-menu-root">{children}</div>
+  );
+  const DropdownMenuTrigger = ({
+    children,
+  }: {
+    children: React.ReactNode;
+  }) => <>{children}</>;
+  const DropdownMenuContent = ({
+    children,
+    align,
+  }: {
+    children: React.ReactNode;
+    align?: string;
+  }) => (
+    <div data-testid="dropdown-menu-content" data-align={align ?? "start"}>
+      {children}
+    </div>
+  );
+  // 透传 ...rest 以保留 data-testid 等属性，便于用例按 testid 直接定位 item。
+  const DropdownMenuItem = ({
+    children,
+    onSelect,
+    ...rest
+  }: {
+    children: React.ReactNode;
+    onSelect?: (e: Event) => void;
+    [key: string]: unknown;
+  }) => (
+    <div
+      role="menuitem"
+      // 模拟 Radix onSelect 行为：点击时构造一个最小 Event 触发回调
+      onClick={() => {
+        if (onSelect) {
+          const evt = new Event("radix-select", { bubbles: false });
+          Object.defineProperty(evt, "preventDefault", {
+            value: () => {
+              /* noop */
+            },
+            writable: false,
+          });
+          onSelect(evt);
+        }
+      }}
+      {...rest}
+    >
+      {children}
+    </div>
+  );
+  return {
+    DropdownMenu,
+    DropdownMenuTrigger,
+    DropdownMenuContent,
+    DropdownMenuItem,
+  };
+});
+
+// ---- 桩化 reportManager.exportReport：默认返回 success；用例可通过
+// mockExportReport.mockImplementation 自定义返回值或抛错。
+// 保留真实 getTemplate（templateToReport 依赖它解析内置模板）。
+// 注意：不能用 `{ ...actual.reportManager, exportReport: mockExportReport }` ——
+// 类实例的展开只复制 own enumerable 属性，prototype 上的方法（getTemplate /
+// getTemplates 等）会丢失。这里用 Object.create 保留原型链，再覆盖 exportReport。
+const { mockExportReport } = vi.hoisted(() => ({
+  mockExportReport: vi.fn(),
+}));
+vi.mock("@/lib/reports", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/reports")>();
+  const reportManagerMock = Object.create(
+    Object.getPrototypeOf(actual.reportManager),
+  ) as typeof actual.reportManager;
+  Object.assign(reportManagerMock, actual.reportManager, {
+    exportReport: mockExportReport,
+  });
+  return {
+    ...actual,
+    reportManager: reportManagerMock,
+  };
+});
 
 import ReportDetailPage from "@/app/(dashboard)/reports/[id]/page";
 import { BUILTIN_REPORT_TEMPLATES } from "@/lib/reports/types";
@@ -87,6 +192,9 @@ import { BUILTIN_REPORT_TEMPLATES } from "@/lib/reports/types";
 beforeEach(() => {
   mockUseParams.mockReset();
   mockFetch.mockReset();
+  mockExportReport.mockReset();
+  // 默认 exportReport 返回 success（与生产路径一致；SSR 早退也走 success 分支）
+  mockExportReport.mockReturnValue({ success: true });
   // 默认 fetch 返回空数据：既有用例验证 mock 注入行为，不被真实数据覆盖
   mockFetch.mockImplementation(async (url: string) => {
     if (typeof url === "string" && url.startsWith("/api/reports/")) {
@@ -531,6 +639,134 @@ describe("报表详情页 /reports/[id]", () => {
           "拉取报表数据失败",
         );
       });
+    });
+  });
+
+  // ─── 报表导出（本轮新增）─────────────────────────────────
+  describe("报表导出", () => {
+    it("模板命中 → 渲染导出按钮 + JSON / CSV 两个菜单项", async () => {
+      mockUseParams.mockReturnValue({ id: "storage-overview" });
+      render(<ReportDetailPage />);
+      await screen.findByText("存储概览");
+
+      const trigger = screen.getByTestId("report-export-trigger");
+      expect(trigger).toBeInTheDocument();
+      expect(trigger.textContent).toContain("导出");
+
+      const jsonItem = screen.getByTestId("report-export-json");
+      const csvItem = screen.getByTestId("report-export-csv");
+      expect(jsonItem.textContent).toContain("导出 JSON");
+      expect(csvItem.textContent).toContain("导出 CSV");
+    });
+
+    it("加载中（report === undefined）→ loader 分支不渲染导出按钮", () => {
+      // 首次渲染时 report === undefined → 渲染 loader（仅 Loader2 + sr-only 文案）。
+      // 这里同步断言：loader 分支不会出现导出按钮。useEffect 同步执行后状态会
+      // 立即变为 resolved 或 null，所以本用例用同步 queryByTestId 在第一次
+      // 渲染的微任务窗口内断言；当组件未挂载完成时 query 返回 null 即符合预期。
+      mockUseParams.mockReturnValue({ id: "no-such-report" });
+      const { container } = render(<ReportDetailPage />);
+      // loader 分支只渲染一个 div + Loader2 icon + sr-only span，无导出按钮
+      expect(container.querySelector('[data-testid="report-export-trigger"]')).toBeNull();
+    });
+
+    it("not-found（模板未命中）→ 不渲染导出按钮", async () => {
+      mockUseParams.mockReturnValue({ id: "no-such-report" });
+      render(<ReportDetailPage />);
+      await screen.findByText("报表不存在或已被删除");
+      expect(screen.queryByTestId("report-export-trigger")).toBeNull();
+      expect(screen.queryByTestId("report-export-json")).toBeNull();
+      expect(screen.queryByTestId("report-export-csv")).toBeNull();
+    });
+
+    it("点击'导出 JSON' → reportManager.exportReport 被以 format:'json' 调用 + success 反馈", async () => {
+      mockUseParams.mockReturnValue({ id: "storage-overview" });
+      render(<ReportDetailPage />);
+      await screen.findByText("存储概览");
+
+      fireEvent.click(screen.getByTestId("report-export-json"));
+
+      expect(mockExportReport).toHaveBeenCalledTimes(1);
+      const [reportArg, optsArg] = mockExportReport.mock.calls[0];
+      expect(reportArg.id).toBe("storage-overview");
+      expect(optsArg).toEqual({ format: "json" });
+
+      const feedback = await screen.findByTestId("report-export-feedback");
+      expect(feedback.getAttribute("data-feedback-kind")).toBe("success");
+      expect(feedback.textContent).toContain("已导出 JSON 文件");
+    });
+
+    it("点击'导出 CSV' 含 table widget（file-activity）→ exportReport format:'csv' + success 反馈", async () => {
+      mockUseParams.mockReturnValue({ id: "file-activity" });
+      render(<ReportDetailPage />);
+      await screen.findByText("文件活跃度");
+
+      fireEvent.click(screen.getByTestId("report-export-csv"));
+
+      expect(mockExportReport).toHaveBeenCalledTimes(1);
+      const [, optsArg] = mockExportReport.mock.calls[0];
+      expect(optsArg).toEqual({ format: "csv" });
+
+      const feedback = await screen.findByTestId("report-export-feedback");
+      expect(feedback.getAttribute("data-feedback-kind")).toBe("success");
+      expect(feedback.textContent).toContain("已导出 CSV 文件");
+    });
+
+    it("点击'导出 CSV' 无 table widget（storage-overview）→ info 反馈 + 不调 exportReport", async () => {
+      mockUseParams.mockReturnValue({ id: "storage-overview" });
+      render(<ReportDetailPage />);
+      await screen.findByText("存储概览");
+
+      fireEvent.click(screen.getByTestId("report-export-csv"));
+
+      expect(mockExportReport).not.toHaveBeenCalled();
+      const feedback = await screen.findByTestId("report-export-feedback");
+      expect(feedback.getAttribute("data-feedback-kind")).toBe("info");
+      expect(feedback.textContent).toContain("暂无可导出的表格数据");
+    });
+
+    it("exportReport 返回 success:false → error 反馈展示后端 error 文案", async () => {
+      mockUseParams.mockReturnValue({ id: "storage-overview" });
+      mockExportReport.mockReturnValue({
+        success: false,
+        error: "Blob 不可用（SSR 环境）",
+      });
+      render(<ReportDetailPage />);
+      await screen.findByText("存储概览");
+
+      fireEvent.click(screen.getByTestId("report-export-json"));
+
+      const feedback = await screen.findByTestId("report-export-feedback");
+      expect(feedback.getAttribute("data-feedback-kind")).toBe("error");
+      expect(feedback.textContent).toContain("Blob 不可用（SSR 环境）");
+      expect(feedback.getAttribute("role")).toBe("alert");
+    });
+
+    it("反馈 3s 后自动消失（useEffect timer 控制）", async () => {
+      mockUseParams.mockReturnValue({ id: "storage-overview" });
+      render(<ReportDetailPage />);
+      await screen.findByText("存储概览");
+
+      fireEvent.click(screen.getByTestId("report-export-json"));
+      const feedback = await screen.findByTestId("report-export-feedback");
+      expect(feedback).toBeInTheDocument();
+
+      // 推进 < 3s → 反馈仍可见（用 setTimeout 真实等待 500ms）
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(screen.getByTestId("report-export-feedback")).toBeInTheDocument();
+
+      // 推进到 > 3s → 反馈自动消失（额外 500ms 容忍 React 重渲染调度）
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      await waitFor(() => {
+        expect(screen.queryByTestId("report-export-feedback")).toBeNull();
+      });
+    });
+
+    it("not-found 分支不渲染反馈节点（避免上一张报表的提示残留）", async () => {
+      mockUseParams.mockReturnValue({ id: "no-such-report" });
+      render(<ReportDetailPage />);
+      await screen.findByText("报表不存在或已被删除");
+      expect(screen.queryByTestId("report-export-feedback")).toBeNull();
     });
   });
 });

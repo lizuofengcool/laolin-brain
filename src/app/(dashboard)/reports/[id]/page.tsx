@@ -12,7 +12,7 @@
  * - widget.width 1-N → `grid-column: span N`（缺省或越界回退到 N，与"占满整行"语义一致）
  * - layout.gap（默认 16）→ `gap: ${gap}px`
  *
- * 数据加载（本轮接入）：
+ * 数据加载（198 轮接入）：
  * - 模板解析后异步 fetch `/api/reports/[id]/data`，按 widget.id 取回 chartData /
  *   metricValue / tableRows 覆盖 widget.config 的初始值。
  * - 未声明 dataConfig 的 widget 不在响应 data 中 → 继续走 mock 注入（向后兼容）。
@@ -20,16 +20,39 @@
  * - fetch 失败（401/500/网络异常）→ 页面顶部展示错误提示，但保留 mock 数据可见，不阻塞渲染。
  * - 加载中：页面立即以 mock 数据呈现，header 显示"正在拉取真实数据…"，加载完成后替换。
  *
+ * 报表导出（本轮接入）：
+ * - 详情页 header 增加"导出"下拉按钮，提供 JSON / CSV 两种格式。
+ * - JSON：调用 reportManager.exportReport(report, { format: 'json' })，导出报表元信息
+ *   + layout（与 report-manager 单测对齐）。
+ * - CSV：仅当 layout 含 table widget 时生成（report-manager 内置过滤）；无 table 时
+ *   在 UI 层提前提示"暂无可导出的表格数据"，避免用户点击后无声无息。
+ * - PDF 暂未实现（report-manager 中为占位 console.log），不暴露在 UI。
+ * - 导出失败（downloadFile 抛错或 SSR 环境 typeof document === 'undefined'）→ 顶部
+ *   错误提示；成功 → 顶部成功提示（3s 自动消失）。
+ *
  * 不负责：
  * - 用户自定义报表的拉取（依赖 /api/reports/[id] 路由 + tenantId 上下文，留待后续轮）
  * - 日期范围筛选 UI（API 已支持 dateFrom/dateTo query，但本轮不接入筛选器）
  * - 响应式断点适配（栅格在小屏会缩窄但不会破坏，由后续轮处理）
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ArrowLeft, Loader2, AlertCircle } from "lucide-react";
+import {
+  ArrowLeft,
+  Loader2,
+  AlertCircle,
+  Download,
+  ChevronDown,
+  CheckCircle2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ReportRenderer } from "@/components/reports/ReportRenderer";
 import { reportManager } from "@/lib/reports";
 import type { Report, ReportLayout, ReportWidget } from "@/lib/reports/types";
@@ -42,6 +65,9 @@ import type {
   MetricConfig,
   TableConfig,
 } from "@/lib/reports/types";
+
+/** 导出反馈提示自动消失时长（ms）。 */
+const EXPORT_FEEDBACK_TIMEOUT_MS = 3_000;
 
 /** 模板内置 chart widget 的 mock 数据条数（覆盖典型趋势/分布图） */
 const MOCK_TREND: DataPoint[] = [
@@ -265,6 +291,11 @@ export default function ReportDetailPage() {
   >({});
   const [dataState, setDataState] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [dataError, setDataError] = useState<string | null>(null);
+  // 导出反馈：成功 / 失败 / 无可导出数据（CSV 无 table widget 时）。3s 后自动清空。
+  const [exportFeedback, setExportFeedback] = useState<
+    | { kind: "success" | "error" | "info"; message: string }
+    | null
+  >(null);
 
   useEffect(() => {
     if (!id) {
@@ -348,6 +379,63 @@ export default function ReportDetailPage() {
     };
   }, [id]);
 
+  // 导出反馈 3s 自动消失：每次 feedback 变化时启一个 timer，到点清空。
+  // 切换 id / 卸载组件时也清空，避免上一张报表的提示残留到下一张。
+  useEffect(() => {
+    if (!exportFeedback) return;
+    const t = setTimeout(
+      () => setExportFeedback(null),
+      EXPORT_FEEDBACK_TIMEOUT_MS,
+    );
+    return () => clearTimeout(t);
+  }, [exportFeedback]);
+
+  /**
+   * 触发报表导出。仅当 report 已 resolve（非 undefined/null）时调用。
+   *
+   * 实现要点：
+   * - CSV 在 UI 层提前判断 layout 是否含 table widget；无 table 时直接提示
+   *   "暂无可导出的表格数据"，不调 reportManager（其内部对无 table 的 CSV 静默
+   *   success 但不下载，对用户而言等价于点击无反应，体验差）。
+   * - JSON 始终可导出（仅元信息 + layout，无数据依赖）。
+   * - reportManager.exportReport 返回 { success, error }：成功时也可能是 SSR 环境
+   *   downloadFile 早退（typeof document === 'undefined' → return），UI 层无法区分，
+   *   统一展示"导出已触发"成功提示；downloadFile 抛错 → error。
+   */
+  const handleExport = useCallback(
+    (format: "json" | "csv") => {
+      if (!report) return;
+      if (format === "csv") {
+        const hasTable = report.layout.widgets.some(
+          (w) => w.type === "table",
+        );
+        if (!hasTable) {
+          setExportFeedback({
+            kind: "info",
+            message: "此报表暂无可导出的表格数据（CSV 仅导出表格组件）",
+          });
+          return;
+        }
+      }
+      const result = reportManager.exportReport(report, { format });
+      if (result.success) {
+        setExportFeedback({
+          kind: "success",
+          message:
+            format === "json"
+              ? "已导出 JSON 文件"
+              : "已导出 CSV 文件",
+        });
+      } else {
+        setExportFeedback({
+          kind: "error",
+          message: result.error || "导出失败，请稍后重试",
+        });
+      }
+    },
+    [report],
+  );
+
   if (report === undefined) {
     return (
       <div className="flex items-center justify-center min-h-[40vh]">
@@ -383,6 +471,39 @@ export default function ReportDetailPage() {
             返回
           </Link>
         </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="report-export-trigger"
+            >
+              <Download className="h-4 w-4 mr-2" aria-hidden="true" />
+              导出
+              <ChevronDown className="h-3.5 w-3.5 ml-1.5" aria-hidden="true" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" data-testid="report-export-menu">
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                handleExport("json");
+              }}
+              data-testid="report-export-json"
+            >
+              导出 JSON
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                handleExport("csv");
+              }}
+              data-testid="report-export-csv"
+            >
+              导出 CSV
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">{report.name}</h1>
@@ -407,6 +528,30 @@ export default function ReportDetailPage() {
           >
             <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
             <span>{dataError}</span>
+          </p>
+        ) : null}
+        {exportFeedback ? (
+          <p
+            className={
+              "mt-2 flex items-center gap-1.5 text-xs " +
+              (exportFeedback.kind === "error"
+                ? "text-destructive"
+                : exportFeedback.kind === "success"
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : "text-muted-foreground")
+            }
+            data-testid="report-export-feedback"
+            data-feedback-kind={exportFeedback.kind}
+            role={
+              exportFeedback.kind === "error" ? "alert" : "status"
+            }
+          >
+            {exportFeedback.kind === "success" ? (
+              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+            ) : (
+              <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            <span>{exportFeedback.message}</span>
           </p>
         ) : null}
       </div>
