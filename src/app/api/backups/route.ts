@@ -1,13 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import path from "path";
 import { mkdir, writeFile } from "fs/promises";
-import { db } from "@/lib/db";
+import { createTenantDb } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 
 /**
  * 备份管理API
  * GET /api/backups - 获取备份列表
  * POST /api/backups - 创建备份（同步导出租户文件/文件夹元数据为 JSON 落盘）
+ *
+ * 第二百零一轮：从 raw db.backup.* 收口至 TenantDb 隔离层（与 files 路由同范式）。
+ *   - 所有 backup / file / folder CRUD 经 tenantDb.{model}.* 调用，prisma 调用前
+ *     自动注入 tenantId 守卫，不再依赖调用方手动 where.tenantId。
+ *   - tenantDb.backup.update 内部走 updateMany + tenantId 守卫，返回 { count }；
+ *     completed 转换响应数据由 backup（created 记录）+ 本次写入字段直接构造，
+ *     避免依赖 update 返回的完整记录（与 file.update 同范式契约）。
  */
 
 // ─── GET /api/backups — 获取备份列表 ─────────────
@@ -42,20 +49,21 @@ export async function GET(request: NextRequest) {
     }
     const pageSize = Math.min(100, pageSizeRaw);
 
-    // 构建查询条件
-    const where: any = {
-      tenantId,
-    };
+    // 走 TenantDb 租户隔离层：tenantDb.backup.count / findMany 自动注入 tenantId
+    // 过滤，跨租户查询恒返回空集（与 files GET 路由同范式，参见 198 轮）。
+    const tenantDb = createTenantDb(tenantId);
 
+    // 构建查询条件（status 过滤合并进 where，tenantId 由 wrapper 注入）
+    const where: any = {};
     if (status) {
       where.status = status;
     }
 
     // 计算总数
-    const total = await db.backup.count({ where });
+    const total = await tenantDb.backup.count({ where });
 
     // 分页查询备份列表
-    const backups = await db.backup.findMany({
+    const backups = await tenantDb.backup.findMany({
       where,
       orderBy: { createdAt: 'desc' },
       skip: (page - 1) * pageSize,
@@ -116,6 +124,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 走 TenantDb 租户隔离层：backup / file / folder 操作均自动注入 tenantId 守卫，
+    // 不再依赖调用方手动 where.tenantId（与 files POST 路由同范式）。
+    const tenantDb = createTenantDb(tenantId);
+
     // 增量备份需要基准备份：校验 baseBackupId 归属（租户隔离）与状态（须已完成），
     // 据其 createdAt 过滤 updatedAt >= sinceDate 的新增/变更文件。
     // 全量备份忽略 baseBackupId，sinceDate 保持 null（不过滤，与原全量行为一致）。
@@ -127,9 +139,10 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
-      // findFirst 按 { id, tenantId } 过滤，跨租户 baseBackupId 返回 null（等价于不存在）
-      const baseBackup = await db.backup.findFirst({
-        where: { id: baseBackupId, tenantId },
+      // tenantDb.backup.findFirst 自动注入 tenantId，跨租户 baseBackupId 返回 null
+      // （等价于不存在，与原 raw db.backup.findFirst({ where: { id, tenantId } }) 行为一致）
+      const baseBackup = await tenantDb.backup.findFirst({
+        where: { id: baseBackupId },
       });
       if (!baseBackup) {
         return NextResponse.json(
@@ -146,10 +159,9 @@ export async function POST(request: NextRequest) {
       sinceDate = baseBackup.createdAt;
     }
 
-    // 检查是否有正在运行的备份
-    const runningBackup = await db.backup.findFirst({
+    // 检查是否有正在运行的备份（tenantDb.backup.findFirst 自动注入 tenantId）
+    const runningBackup = await tenantDb.backup.findFirst({
       where: {
-        tenantId,
         status: 'running',
       },
     });
@@ -161,10 +173,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 创建备份记录
-    const backup = await db.backup.create({
+    // 创建备份记录（tenantDb.backup.create 自动注入 tenantId 到 data）
+    const backup = await tenantDb.backup.create({
       data: {
-        tenantId,
         userId,
         name,
         type,
@@ -173,7 +184,9 @@ export async function POST(request: NextRequest) {
     });
 
     // 标记为 running（保持与既有状态机一致：pending → running → completed/failed）
-    await db.backup.update({
+    // tenantDb.backup.update 走 updateMany + tenantId 守卫，返回 { count }，
+    // 不需要返回值，仅状态推进。
+    await tenantDb.backup.update({
       where: { id: backup.id },
       data: { status: 'running' },
     });
@@ -185,22 +198,25 @@ export async function POST(request: NextRequest) {
     // 落地做好前向准备（filePath 落 ./backups 即可被清理）。
     try {
       // 增量备份按 sinceDate 过滤 updatedAt >= sinceDate 的新增/变更记录；
-      // 全量备份 sinceDate 为 null，where 仅含 tenantId（与原全量行为一致）。
-      const fileWhere: { tenantId: string; updatedAt?: { gte: Date } } = { tenantId };
-      const folderWhere: { tenantId: string; updatedAt?: { gte: Date } } = { tenantId };
+      // 全量备份 sinceDate 为 null，where 仅含 tenantId（由 wrapper 注入）。
+      // tenantDb.file / folder.findMany 自动注入 tenantId，此处 where 不再手写。
+      const fileWhere: { updatedAt?: { gte: Date } } = {};
+      const folderWhere: { updatedAt?: { gte: Date } } = {};
       if (sinceDate) {
         fileWhere.updatedAt = { gte: sinceDate };
         folderWhere.updatedAt = { gte: sinceDate };
       }
 
       const [files, folders] = await Promise.all([
-        db.file.findMany({ where: fileWhere }),
-        db.folder.findMany({ where: folderWhere }),
+        tenantDb.file.findMany({ where: fileWhere }),
+        tenantDb.folder.findMany({ where: folderWhere }),
       ]);
+
+      const completedAt = new Date();
 
       const backupContent = {
         version: '1.0.0',
-        createdAt: new Date().toISOString(),
+        createdAt: completedAt.toISOString(),
         type,
         tenantId,
         data: { files, folders },
@@ -224,28 +240,32 @@ export async function POST(request: NextRequest) {
       await mkdir(backupDir, { recursive: true });
       await writeFile(filePath, jsonStr, 'utf8');
 
-      const completed = await db.backup.update({
+      // tenantDb.backup.update 走 updateMany + tenantId 守卫，返回 { count }。
+      // 响应数据由 backup（created 记录）+ 本次写入字段（size/fileCount/filePath/
+      // completedAt）直接构造，避免依赖 update 返回的完整记录（与 file.update
+      // 同范式契约，参见 tenant-db.ts file getter 注释）。
+      await tenantDb.backup.update({
         where: { id: backup.id },
         data: {
           status: 'completed',
           size,
           fileCount: files.length,
           filePath,
-          completedAt: new Date(),
+          completedAt,
         },
       });
 
       return NextResponse.json({
         success: true,
         data: {
-          id: completed.id,
-          name: completed.name,
-          type: completed.type,
+          id: backup.id,
+          name: backup.name,
+          type: backup.type,
           status: 'completed',
-          size: completed.size,
-          fileCount: completed.fileCount,
-          createdAt: completed.createdAt,
-          completedAt: completed.completedAt,
+          size,
+          fileCount: files.length,
+          createdAt: backup.createdAt,
+          completedAt,
         },
         message: '备份已完成',
       });
@@ -254,7 +274,7 @@ export async function POST(request: NextRequest) {
       const errorMessage =
         backupError instanceof Error ? backupError.message : String(backupError);
       try {
-        await db.backup.update({
+        await tenantDb.backup.update({
           where: { id: backup.id },
           data: {
             status: 'failed',

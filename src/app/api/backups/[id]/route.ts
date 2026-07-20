@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import path from "path";
 import { unlink } from "fs/promises";
-import { db } from "@/lib/db";
+import { createTenantDb } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 
 /**
@@ -9,6 +9,12 @@ import { authenticateRequest } from "@/lib/api-auth";
  * GET /api/backups/[id] - 获取备份详情
  * DELETE /api/backups/[id] - 删除备份
  * POST /api/backups/[id]/restore - 恢复备份
+ *
+ * 第二百零一轮：从 raw db.backup.* 收口至 TenantDb 隔离层（与 files/[id] 路由同范式）。
+ *   - findFirst / delete 经 tenantDb.backup.* 调用，prisma 调用前自动注入 tenantId
+ *     守卫，不再依赖调用方手动 where.tenantId。
+ *   - tenantDb.backup.delete 内部走 deleteMany + tenantId 守卫，跨租户 id 删除
+ *     影响行数为 0（与原 findFirst + delete 组合等价，但少一道手动 where 越权风险）。
  */
 
 // ─── GET /api/backups/[id] — 获取备份详情 ─────────────
@@ -19,7 +25,7 @@ export async function GET(
   const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId, tenantId, role } = auth;
+  const { tenantId, role } = auth;
   const { id: backupId } = await params;
 
   try {
@@ -31,11 +37,14 @@ export async function GET(
       );
     }
 
+    // 走 TenantDb 租户隔离层：tenantDb.backup.findFirst 自动注入 tenantId，
+    // 跨租户 id 查询恒返回 null（等价于不存在，与原 raw db + 手动 where 行为一致）。
+    const tenantDb = createTenantDb(tenantId);
+
     // 查询备份详情
-    const backup = await db.backup.findFirst({
+    const backup = await tenantDb.backup.findFirst({
       where: {
         id: backupId,
-        tenantId,
       },
     });
 
@@ -78,7 +87,7 @@ export async function DELETE(
   const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
-  const { userId, tenantId, role } = auth;
+  const { tenantId, role } = auth;
   const { id: backupId } = await params;
 
   try {
@@ -90,11 +99,13 @@ export async function DELETE(
       );
     }
 
+    // 走 TenantDb 租户隔离层：tenantDb.backup.findFirst / delete 自动注入 tenantId
+    const tenantDb = createTenantDb(tenantId);
+
     // 检查备份是否存在
-    const existingBackup = await db.backup.findFirst({
+    const existingBackup = await tenantDb.backup.findFirst({
       where: {
         id: backupId,
-        tenantId,
       },
     });
 
@@ -127,8 +138,9 @@ export async function DELETE(
       }
     }
 
-    // 删除备份记录
-    await db.backup.delete({
+    // 删除备份记录（tenantDb.backup.delete 走 deleteMany + tenantId 守卫，
+    // 即使 backupId 被构造为跨租户 id，tenantId 守卫会拦截实际删除）
+    await tenantDb.backup.delete({
       where: { id: backupId },
     });
 

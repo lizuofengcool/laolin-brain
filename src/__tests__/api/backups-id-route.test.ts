@@ -26,9 +26,15 @@
  *     文件缺失不应阻断响应）。
  *   - delete 抛错 → 500 { error: '删除备份失败' }。
  *
- * 隔离策略：vi.hoisted 共享 MockNextResponse / mockAuthenticate / mockBackupFindFirst /
- * mockBackupDelete / mockUnlink，使 `auth instanceof NextResponse` 命中且 fs/promises.unlink
- * 可断言。复用第三十轮 cloud-sync-config-route 与 backups-route GET 的 mock 范式。
+ * 第二百零一轮：路由从 raw db.backup.* 收口至 TenantDb 隔离层（与 files-id-route
+ * 同范式）。mock 策略同步迁移：createTenantDb 用 hand-written wrapper 模拟真实
+ * TenantDb 的 tenantId 注入行为（backup where 末尾追加 tenantId）；raw db.backup
+ * 独立 mock 供"路由不绕过 tenantDb"负向断言。delete where 子句追加 tenantId
+ * （wrapper 注入），与原 { id } 调用契约略变，但语义等价（deleteMany + tenantId
+ * 守卫比 findFirst + delete 多一道防御）。
+ *
+ * 隔离策略：vi.hoisted 共享 MockNextResponse / mockAuthenticate / mockCreateTenantDb /
+ * mockTenantBackupFindFirst / mockTenantBackupDelete / mockUnlink + raw db 负向断言 mock。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { NextRequest } from "next/server";
@@ -37,8 +43,13 @@ import path from "path";
 const {
   MockNextResponse,
   mockAuthenticate,
-  mockBackupFindFirst,
-  mockBackupDelete,
+  mockCreateTenantDb,
+  // raw db（供"路由不绕过 tenantDb"负向断言：GET/DELETE 不应触达 raw db.backup.*）
+  mockRawBackupFindFirst,
+  mockRawBackupDelete,
+  // tenantDb wrapper 注入 tenantId 后的实际承接方
+  mockTenantBackupFindFirst,
+  mockTenantBackupDelete,
   mockUnlink,
 } = vi.hoisted(() => {
   class MockNextResponse {
@@ -55,8 +66,11 @@ const {
   return {
     MockNextResponse,
     mockAuthenticate: vi.fn(),
-    mockBackupFindFirst: vi.fn(),
-    mockBackupDelete: vi.fn(),
+    mockCreateTenantDb: vi.fn(),
+    mockRawBackupFindFirst: vi.fn(),
+    mockRawBackupDelete: vi.fn(),
+    mockTenantBackupFindFirst: vi.fn(),
+    mockTenantBackupDelete: vi.fn(),
     mockUnlink: vi.fn(),
   };
 });
@@ -66,11 +80,32 @@ vi.mock("@/lib/api-auth", () => ({
   authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
 }));
 vi.mock("@/lib/db", () => ({
+  // raw db：GET/DELETE 不应触达（负向断言）。保留 backup.findFirst / delete 供
+  // "路由不绕过 tenantDb"断言。
   db: {
     backup: {
-      findFirst: (...args: unknown[]) => mockBackupFindFirst(...args),
-      delete: (...args: unknown[]) => mockBackupDelete(...args),
+      findFirst: (...args: unknown[]) => mockRawBackupFindFirst(...args),
+      delete: (...args: unknown[]) => mockRawBackupDelete(...args),
     },
+  },
+  // createTenantDb：hand-written wrapper 模拟真实 TenantDb 的 tenantId 注入行为
+  // （backup where 末尾追加 tenantId），与 tenant-db.ts backup getter 行为一致。
+  createTenantDb: (tenantId: string) => {
+    mockCreateTenantDb(tenantId);
+    return {
+      backup: {
+        findFirst: (args: { where?: Record<string, unknown> }) =>
+          mockTenantBackupFindFirst({
+            ...args,
+            where: { ...(args.where || {}), tenantId },
+          }),
+        delete: (args: { where?: Record<string, unknown> }) =>
+          mockTenantBackupDelete({
+            ...args,
+            where: { ...(args.where || {}), tenantId },
+          }),
+      },
+    };
   },
 }));
 vi.mock("fs/promises", () => ({
@@ -130,8 +165,8 @@ describe("/api/backups/[id] 路由 DELETE", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthenticate.mockResolvedValue({ ...ownerAuth });
-    mockBackupFindFirst.mockResolvedValue(makeBackup());
-    mockBackupDelete.mockResolvedValue(undefined);
+    mockTenantBackupFindFirst.mockResolvedValue(makeBackup());
+    mockTenantBackupDelete.mockResolvedValue({ count: 1 });
     mockUnlink.mockResolvedValue(undefined);
   });
 
@@ -144,9 +179,13 @@ describe("/api/backups/[id] 路由 DELETE", () => {
 
     expect(res.status).toBe(401);
     expect(res.body).toEqual({ error: "未提供身份认证令牌" });
-    expect(mockBackupFindFirst).not.toHaveBeenCalled();
-    expect(mockBackupDelete).not.toHaveBeenCalled();
+    expect(mockCreateTenantDb).not.toHaveBeenCalled();
+    expect(mockTenantBackupFindFirst).not.toHaveBeenCalled();
+    expect(mockTenantBackupDelete).not.toHaveBeenCalled();
     expect(mockUnlink).not.toHaveBeenCalled();
+    // 负向断言：路由不绕过 tenantDb 直接走 raw db
+    expect(mockRawBackupFindFirst).not.toHaveBeenCalled();
+    expect(mockRawBackupDelete).not.toHaveBeenCalled();
   });
 
   it("member 角色 → 403 { error: '没有权限管理备份' }，不触达 findFirst", async () => {
@@ -161,69 +200,79 @@ describe("/api/backups/[id] 路由 DELETE", () => {
 
     expect(res.status).toBe(403);
     expect(res.body).toEqual({ error: "没有权限管理备份" });
-    expect(mockBackupFindFirst).not.toHaveBeenCalled();
-    expect(mockBackupDelete).not.toHaveBeenCalled();
+    expect(mockCreateTenantDb).not.toHaveBeenCalled();
+    expect(mockTenantBackupFindFirst).not.toHaveBeenCalled();
+    expect(mockTenantBackupDelete).not.toHaveBeenCalled();
   });
 
   it("findFirst 返回 null → 404 { error: '备份不存在' }，不触达 delete/unlink", async () => {
-    mockBackupFindFirst.mockResolvedValue(null);
+    mockTenantBackupFindFirst.mockResolvedValue(null);
 
     const res = (await DELETE(makeDeleteRequest("bk-99"), ctx("bk-99"))) as MockRes;
 
     expect(res.status).toBe(404);
     expect(res.body).toEqual({ error: "备份不存在" });
-    // findFirst 以 { id, tenantId } 作用域（租户隔离）
-    expect(mockBackupFindFirst).toHaveBeenCalledWith({
+    // findFirst 以 { id } + tenantId（wrapper 注入）作用域（租户隔离）
+    expect(mockTenantBackupFindFirst).toHaveBeenCalledWith({
       where: { id: "bk-99", tenantId: "tenant-1" },
     });
-    expect(mockBackupDelete).not.toHaveBeenCalled();
+    expect(mockTenantBackupDelete).not.toHaveBeenCalled();
     expect(mockUnlink).not.toHaveBeenCalled();
   });
 
   it("status === 'running' → 400 { error: '备份正在进行中，无法删除' }，不触达 delete/unlink", async () => {
-    mockBackupFindFirst.mockResolvedValue(makeBackup({ status: "running" }));
+    mockTenantBackupFindFirst.mockResolvedValue(makeBackup({ status: "running" }));
 
     const res = (await DELETE(makeDeleteRequest("bk-1"), ctx("bk-1"))) as MockRes;
 
     expect(res.status).toBe(400);
     expect(res.body).toEqual({ error: "备份正在进行中，无法删除" });
-    expect(mockBackupDelete).not.toHaveBeenCalled();
+    expect(mockTenantBackupDelete).not.toHaveBeenCalled();
     expect(mockUnlink).not.toHaveBeenCalled();
   });
 
   it("filePath 越界（不在 ./backups 下）→ 400 { error: 'Invalid file path' }，不触达 delete/unlink（前置阻断）", async () => {
-    mockBackupFindFirst.mockResolvedValue(makeBackup({ filePath: evilFilePath }));
+    mockTenantBackupFindFirst.mockResolvedValue(makeBackup({ filePath: evilFilePath }));
 
     const res = (await DELETE(makeDeleteRequest("bk-1"), ctx("bk-1"))) as MockRes;
 
     expect(res.status).toBe(400);
     expect(res.body).toEqual({ error: "Invalid file path" });
-    expect(mockBackupDelete).not.toHaveBeenCalled();
+    expect(mockTenantBackupDelete).not.toHaveBeenCalled();
     expect(mockUnlink).not.toHaveBeenCalled();
   });
 
-  it("成功（filePath=null）→ delete 以 { id } 调用，unlink 不触达，200", async () => {
+  it("成功（filePath=null）→ delete 以 { id, tenantId } 调用（wrapper 注入），unlink 不触达，200", async () => {
     const res = (await DELETE(makeDeleteRequest("bk-1"), ctx("bk-1"))) as MockRes;
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true, message: "备份已删除" });
-    expect(mockBackupDelete).toHaveBeenCalledWith({ where: { id: "bk-1" } });
+    // 第二百零一轮：delete where 追加 tenantId（wrapper 注入），比原 { id } 多一道
+    // 租户守卫，语义等价但更安全（deleteMany + tenantId 守卫）
+    expect(mockTenantBackupDelete).toHaveBeenCalledWith({
+      where: { id: "bk-1", tenantId: "tenant-1" },
+    });
     expect(mockUnlink).not.toHaveBeenCalled();
+    // 负向断言：路由不绕过 tenantDb 直接走 raw db
+    expect(mockRawBackupFindFirst).not.toHaveBeenCalled();
+    expect(mockRawBackupDelete).not.toHaveBeenCalled();
   });
 
   it("成功（filePath 合法）→ delete + unlink(filePath)，200", async () => {
-    mockBackupFindFirst.mockResolvedValue(makeBackup({ filePath: safeFilePath }));
+    mockTenantBackupFindFirst.mockResolvedValue(makeBackup({ filePath: safeFilePath }));
 
     const res = (await DELETE(makeDeleteRequest("bk-1"), ctx("bk-1"))) as MockRes;
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true, message: "备份已删除" });
-    expect(mockBackupDelete).toHaveBeenCalledWith({ where: { id: "bk-1" } });
+    expect(mockTenantBackupDelete).toHaveBeenCalledWith({
+      where: { id: "bk-1", tenantId: "tenant-1" },
+    });
     expect(mockUnlink).toHaveBeenCalledWith(safeFilePath);
   });
 
   it("unlink 抛错（ENOENT 等）→ best-effort catch，仍 200（DB 记录已删除，文件缺失不阻断响应）", async () => {
-    mockBackupFindFirst.mockResolvedValue(makeBackup({ filePath: safeFilePath }));
+    mockTenantBackupFindFirst.mockResolvedValue(makeBackup({ filePath: safeFilePath }));
     mockUnlink.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
 
     const res = (await DELETE(makeDeleteRequest("bk-1"), ctx("bk-1"))) as MockRes;
@@ -231,12 +280,14 @@ describe("/api/backups/[id] 路由 DELETE", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true, message: "备份已删除" });
     // delete 仍执行（unlink 错误被吞）
-    expect(mockBackupDelete).toHaveBeenCalledWith({ where: { id: "bk-1" } });
+    expect(mockTenantBackupDelete).toHaveBeenCalledWith({
+      where: { id: "bk-1", tenantId: "tenant-1" },
+    });
     expect(mockUnlink).toHaveBeenCalledWith(safeFilePath);
   });
 
   it("delete 抛错 → 500 { error: '删除备份失败' }", async () => {
-    mockBackupDelete.mockRejectedValue(new Error("db down"));
+    mockTenantBackupDelete.mockRejectedValue(new Error("db down"));
 
     const res = (await DELETE(makeDeleteRequest("bk-1"), ctx("bk-1"))) as MockRes;
 
@@ -251,7 +302,7 @@ describe("/api/backups/[id] 路由 GET", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthenticate.mockResolvedValue({ ...ownerAuth });
-    mockBackupFindFirst.mockResolvedValue(makeBackup());
+    mockTenantBackupFindFirst.mockResolvedValue(makeBackup());
   });
 
   it("未认证 → 401 透传 authenticateRequest 的响应，不触达 DB", async () => {
@@ -263,7 +314,9 @@ describe("/api/backups/[id] 路由 GET", () => {
 
     expect(res.status).toBe(401);
     expect(res.body).toEqual({ error: "未提供身份认证令牌" });
-    expect(mockBackupFindFirst).not.toHaveBeenCalled();
+    expect(mockCreateTenantDb).not.toHaveBeenCalled();
+    expect(mockTenantBackupFindFirst).not.toHaveBeenCalled();
+    expect(mockRawBackupFindFirst).not.toHaveBeenCalled();
   });
 
   it("member 角色 → 403 { error: '没有权限管理备份' }，不触达 findFirst", async () => {
@@ -278,17 +331,18 @@ describe("/api/backups/[id] 路由 GET", () => {
 
     expect(res.status).toBe(403);
     expect(res.body).toEqual({ error: "没有权限管理备份" });
-    expect(mockBackupFindFirst).not.toHaveBeenCalled();
+    expect(mockCreateTenantDb).not.toHaveBeenCalled();
+    expect(mockTenantBackupFindFirst).not.toHaveBeenCalled();
   });
 
   it("findFirst 返回 null → 404 { error: '备份不存在' }，findFirst 以 { id, tenantId } 调用（租户隔离）", async () => {
-    mockBackupFindFirst.mockResolvedValue(null);
+    mockTenantBackupFindFirst.mockResolvedValue(null);
 
     const res = (await GET(makeGetRequest("bk-99"), ctx("bk-99"))) as MockRes;
 
     expect(res.status).toBe(404);
     expect(res.body).toEqual({ error: "备份不存在" });
-    expect(mockBackupFindFirst).toHaveBeenCalledWith({
+    expect(mockTenantBackupFindFirst).toHaveBeenCalledWith({
       where: { id: "bk-99", tenantId: "tenant-1" },
     });
   });
@@ -299,7 +353,7 @@ describe("/api/backups/[id] 路由 GET", () => {
       error: "上次错误信息",
     });
 
-    mockBackupFindFirst.mockResolvedValue(backup);
+    mockTenantBackupFindFirst.mockResolvedValue(backup);
 
     const res = (await GET(makeGetRequest("bk-1"), ctx("bk-1"))) as MockRes;
 
@@ -319,9 +373,11 @@ describe("/api/backups/[id] 路由 GET", () => {
         completedAt: backup.completedAt,
       },
     });
-    expect(mockBackupFindFirst).toHaveBeenCalledWith({
+    expect(mockTenantBackupFindFirst).toHaveBeenCalledWith({
       where: { id: "bk-1", tenantId: "tenant-1" },
     });
+    // 负向断言：路由不绕过 tenantDb 直接走 raw db
+    expect(mockRawBackupFindFirst).not.toHaveBeenCalled();
   });
 
   it("admin 角色同样允许获取详情（与 owner 同级权限）", async () => {
@@ -336,11 +392,11 @@ describe("/api/backups/[id] 路由 GET", () => {
 
     expect(res.status).toBe(200);
     expect((res.body as { success: boolean }).success).toBe(true);
-    expect(mockBackupFindFirst).toHaveBeenCalled();
+    expect(mockTenantBackupFindFirst).toHaveBeenCalled();
   });
 
   it("findFirst 抛错 → 500 { error: '获取备份详情失败' }", async () => {
-    mockBackupFindFirst.mockRejectedValue(new Error("db down"));
+    mockTenantBackupFindFirst.mockRejectedValue(new Error("db down"));
 
     const res = (await GET(makeGetRequest("bk-1"), ctx("bk-1"))) as MockRes;
 

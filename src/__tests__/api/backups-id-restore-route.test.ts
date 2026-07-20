@@ -24,8 +24,13 @@
  *   - 成功（body.conflictStrategy='overwrite'）→ 200，策略透传。
  *   - admin 角色同样允许恢复（与 owner 同级权限）。
  *
- * 隔离策略：vi.hoisted 共享 MockNextResponse / mockAuthenticate / mockBackupFindFirst /
- * mockReadFile / mockRestoreBackup，复用 backups-id-route.test.ts 的 mock 范式。
+ * 第二百零一轮：路由从 raw db.backup.* 收口至 TenantDb 隔离层（与 backups/[id] 路由
+ * 同范式）。mock 策略同步迁移：createTenantDb 用 hand-written wrapper 模拟真实
+ * TenantDb 的 tenantId 注入行为（backup where 末尾追加 tenantId）；raw db.backup
+ * 独立 mock 供"路由不绕过 tenantDb"负向断言。
+ *
+ * 隔离策略：vi.hoisted 共享 MockNextResponse / mockAuthenticate / mockCreateTenantDb /
+ * mockTenantBackupFindFirst / mockReadFile / mockRestoreBackup + raw db 负向断言 mock。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { NextRequest } from "next/server";
@@ -34,7 +39,11 @@ import path from "path";
 const {
   MockNextResponse,
   mockAuthenticate,
-  mockBackupFindFirst,
+  mockCreateTenantDb,
+  // raw db（供"路由不绕过 tenantDb"负向断言：POST 不应触达 raw db.backup.*）
+  mockRawBackupFindFirst,
+  // tenantDb wrapper 注入 tenantId 后的实际承接方
+  mockTenantBackupFindFirst,
   mockReadFile,
   mockRestoreBackup,
 } = vi.hoisted(() => {
@@ -52,7 +61,9 @@ const {
   return {
     MockNextResponse,
     mockAuthenticate: vi.fn(),
-    mockBackupFindFirst: vi.fn(),
+    mockCreateTenantDb: vi.fn(),
+    mockRawBackupFindFirst: vi.fn(),
+    mockTenantBackupFindFirst: vi.fn(),
     mockReadFile: vi.fn(),
     mockRestoreBackup: vi.fn(),
   };
@@ -63,10 +74,25 @@ vi.mock("@/lib/api-auth", () => ({
   authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
 }));
 vi.mock("@/lib/db", () => ({
+  // raw db：POST 不应触达（负向断言）。保留 backup.findFirst 供"路由不绕过 tenantDb"断言。
   db: {
     backup: {
-      findFirst: (...args: unknown[]) => mockBackupFindFirst(...args),
+      findFirst: (...args: unknown[]) => mockRawBackupFindFirst(...args),
     },
+  },
+  // createTenantDb：hand-written wrapper 模拟真实 TenantDb 的 tenantId 注入行为
+  // （backup where 末尾追加 tenantId），与 tenant-db.ts backup getter 行为一致。
+  createTenantDb: (tenantId: string) => {
+    mockCreateTenantDb(tenantId);
+    return {
+      backup: {
+        findFirst: (args: { where?: Record<string, unknown> }) =>
+          mockTenantBackupFindFirst({
+            ...args,
+            where: { ...(args.where || {}), tenantId },
+          }),
+      },
+    };
   },
 }));
 vi.mock("fs/promises", () => ({
@@ -150,7 +176,7 @@ describe("/api/backups/[id]/restore 路由 POST", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthenticate.mockResolvedValue({ ...ownerAuth });
-    mockBackupFindFirst.mockResolvedValue(makeBackup());
+    mockTenantBackupFindFirst.mockResolvedValue(makeBackup());
     mockReadFile.mockResolvedValue(sampleJson);
     mockRestoreBackup.mockResolvedValue(makeRestoreResult());
   });
@@ -167,9 +193,12 @@ describe("/api/backups/[id]/restore 路由 POST", () => {
 
     expect(res.status).toBe(401);
     expect(res.body).toEqual({ error: "未提供身份认证令牌" });
-    expect(mockBackupFindFirst).not.toHaveBeenCalled();
+    expect(mockCreateTenantDb).not.toHaveBeenCalled();
+    expect(mockTenantBackupFindFirst).not.toHaveBeenCalled();
     expect(mockReadFile).not.toHaveBeenCalled();
     expect(mockRestoreBackup).not.toHaveBeenCalled();
+    // 负向断言：路由不绕过 tenantDb 直接走 raw db
+    expect(mockRawBackupFindFirst).not.toHaveBeenCalled();
   });
 
   it("member 角色 → 403 { error: '没有权限管理备份' }，不触达 findFirst", async () => {
@@ -187,11 +216,12 @@ describe("/api/backups/[id]/restore 路由 POST", () => {
 
     expect(res.status).toBe(403);
     expect(res.body).toEqual({ error: "没有权限管理备份" });
-    expect(mockBackupFindFirst).not.toHaveBeenCalled();
+    expect(mockCreateTenantDb).not.toHaveBeenCalled();
+    expect(mockTenantBackupFindFirst).not.toHaveBeenCalled();
   });
 
   it("findFirst 返回 null → 404 { error: '备份不存在' }，findFirst 以 { id, tenantId } 调用（租户隔离）", async () => {
-    mockBackupFindFirst.mockResolvedValue(null);
+    mockTenantBackupFindFirst.mockResolvedValue(null);
 
     const res = (await POST(
       makeRestoreRequest("bk-99"),
@@ -200,7 +230,7 @@ describe("/api/backups/[id]/restore 路由 POST", () => {
 
     expect(res.status).toBe(404);
     expect(res.body).toEqual({ error: "备份不存在" });
-    expect(mockBackupFindFirst).toHaveBeenCalledWith({
+    expect(mockTenantBackupFindFirst).toHaveBeenCalledWith({
       where: { id: "bk-99", tenantId: "tenant-1" },
     });
     expect(mockReadFile).not.toHaveBeenCalled();
@@ -208,7 +238,7 @@ describe("/api/backups/[id]/restore 路由 POST", () => {
   });
 
   it("status !== 'completed'（running）→ 400 { error: '仅已完成的备份可恢复' }，不触达 readFile", async () => {
-    mockBackupFindFirst.mockResolvedValue(makeBackup({ status: "running" }));
+    mockTenantBackupFindFirst.mockResolvedValue(makeBackup({ status: "running" }));
 
     const res = (await POST(
       makeRestoreRequest("bk-1"),
@@ -222,7 +252,7 @@ describe("/api/backups/[id]/restore 路由 POST", () => {
   });
 
   it("status='failed' 同样拒绝恢复 → 400", async () => {
-    mockBackupFindFirst.mockResolvedValue(makeBackup({ status: "failed" }));
+    mockTenantBackupFindFirst.mockResolvedValue(makeBackup({ status: "failed" }));
 
     const res = (await POST(
       makeRestoreRequest("bk-1"),
@@ -234,7 +264,7 @@ describe("/api/backups/[id]/restore 路由 POST", () => {
   });
 
   it("filePath 缺失（null）→ 400 { error: '备份文件路径缺失，无法恢复' }", async () => {
-    mockBackupFindFirst.mockResolvedValue(makeBackup({ filePath: null }));
+    mockTenantBackupFindFirst.mockResolvedValue(makeBackup({ filePath: null }));
 
     const res = (await POST(
       makeRestoreRequest("bk-1"),
@@ -247,7 +277,7 @@ describe("/api/backups/[id]/restore 路由 POST", () => {
   });
 
   it("filePath 越界（不在 ./backups 下）→ 400 { error: 'Invalid file path' }，不触达 readFile（前置阻断）", async () => {
-    mockBackupFindFirst.mockResolvedValue(makeBackup({ filePath: evilFilePath }));
+    mockTenantBackupFindFirst.mockResolvedValue(makeBackup({ filePath: evilFilePath }));
 
     const res = (await POST(
       makeRestoreRequest("bk-1"),
@@ -329,7 +359,8 @@ describe("/api/backups/[id]/restore 路由 POST", () => {
     expect(res.body).toEqual({
       error: "conflictStrategy 必须为 skip / overwrite / rename 之一",
     });
-    expect(mockBackupFindFirst).not.toHaveBeenCalled();
+    expect(mockCreateTenantDb).not.toHaveBeenCalled();
+    expect(mockTenantBackupFindFirst).not.toHaveBeenCalled();
   });
 
   it("成功（空 body）→ 200，restoreBackup 以 conflictStrategy='skip' 调用，readFile 以 resolvedPath+utf8 调用", async () => {
@@ -344,6 +375,12 @@ describe("/api/backups/[id]/restore 路由 POST", () => {
       data: makeRestoreResult(),
       message: "备份恢复已完成",
     });
+    // createTenantDb 以 auth.tenantId 调用
+    expect(mockCreateTenantDb).toHaveBeenCalledWith("tenant-1");
+    // findFirst 以 { id } + tenantId（wrapper 注入）调用
+    expect(mockTenantBackupFindFirst).toHaveBeenCalledWith({
+      where: { id: "bk-1", tenantId: "tenant-1" },
+    });
     // readFile 以解析后的绝对路径调用（路径遍历防护已通过）
     expect(mockReadFile).toHaveBeenCalledWith(safeFilePath, "utf8");
     // restoreBackup 以 parse 后的 JSON 对象 + skip 策略调用
@@ -351,6 +388,8 @@ describe("/api/backups/[id]/restore 路由 POST", () => {
       JSON.parse(sampleJson),
       { conflictStrategy: "skip", includeFiles: true, includeFolders: true }
     );
+    // 负向断言：路由不绕过 tenantDb 直接走 raw db
+    expect(mockRawBackupFindFirst).not.toHaveBeenCalled();
   });
 
   it("成功（body.conflictStrategy='overwrite'）→ 200，策略透传至 restoreBackup", async () => {

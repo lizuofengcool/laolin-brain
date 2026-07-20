@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import path from "path";
 import { readFile } from "fs/promises";
-import { db } from "@/lib/db";
+import { createTenantDb } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 import { restoreBackup, type RestoreOptions } from "@/lib/backup/backup-tool";
 
@@ -13,6 +13,9 @@ import { restoreBackup, type RestoreOptions } from "@/lib/backup/backup-tool";
  * 路径遍历防护与 backups/[id] DELETE 同范式（前置阻断，不读盘越界路径）。
  * 冲突策略默认 skip（安全：已存在记录跳过，不覆盖线上数据），可在 body 中传
  * overwrite/rename。
+ *
+ * 第二百零一轮：从 raw db.backup.* 收口至 TenantDb 隔离层（与 backups/[id] 路由
+ * 同范式），findFirst 经 tenantDb.backup.* 调用自动注入 tenantId 守卫。
  */
 
 const VALID_CONFLICT_STRATEGIES = ["skip", "overwrite", "rename"] as const;
@@ -68,11 +71,11 @@ export async function POST(
       // body 为空或非 JSON：使用默认 skip，不阻断流程
     }
 
-    // 查询备份记录（租户隔离）
-    const backup = await db.backup.findFirst({
+    // 查询备份记录（走 TenantDb 租户隔离层，自动注入 tenantId 守卫）
+    const tenantDb = createTenantDb(tenantId);
+    const backup = await tenantDb.backup.findFirst({
       where: {
         id: backupId,
-        tenantId,
       },
     });
 

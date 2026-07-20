@@ -974,6 +974,132 @@ export class TenantDb {
       },
     };
   }
+
+  // ==================== Backup 相关操作 ====================
+  // 注意：Backup 表有 tenantId 字段（prisma/schema.prisma），按 tenantId 直接过滤。
+  // backups 路由（route.ts / [id]/route.ts / [id]/restore/route.ts）原直接用
+  // db.backup.* 手动 where.tenantId 过滤，第二百零一轮统一收口至 TenantDb 隔离层，
+  // 与 files 路由（第四十一轮 / 198 轮）保持一致的租户隔离契约。
+  // update / delete 内部用 updateMany / deleteMany + tenantId 守卫，返回 { count }
+  // 而非完整记录（与 file / folder 同范式），调用方需返回值时自行 findFirst 回读
+  // 或从入参构造响应。
+
+  get backup() {
+    const tenantId = this.tenantId;
+    const prisma = this.prisma;
+    return {
+      findMany: (args: any = {}) => {
+        return prisma.backup.findMany({
+          ...args,
+          where: {
+            ...args.where,
+            tenantId,
+          },
+        });
+      },
+
+      findFirst: (args: any = {}) => {
+        return prisma.backup.findFirst({
+          ...args,
+          where: {
+            ...args.where,
+            tenantId,
+          },
+        });
+      },
+
+      findUnique: (args: any) => {
+        return prisma.backup.findFirst({
+          ...args,
+          where: {
+            ...args.where,
+            tenantId,
+          },
+        });
+      },
+
+      create: (args: any) => {
+        return prisma.backup.create({
+          ...args,
+          data: {
+            ...args.data,
+            tenantId,
+          },
+        });
+      },
+
+      createMany: (args: any) => {
+        const data = Array.isArray(args.data)
+          ? args.data.map((item: any) => ({ ...item, tenantId }))
+          : { ...args.data, tenantId };
+        return prisma.backup.createMany({
+          ...args,
+          data,
+        });
+      },
+
+      update: (args: any) => {
+        return prisma.backup.updateMany({
+          ...args,
+          where: {
+            ...args.where,
+            tenantId,
+          },
+          data: args.data,
+        });
+      },
+
+      updateMany: (args: any) => {
+        return prisma.backup.updateMany({
+          ...args,
+          where: {
+            ...args.where,
+            tenantId,
+          },
+        });
+      },
+
+      delete: (args: any) => {
+        return prisma.backup.deleteMany({
+          ...args,
+          where: {
+            ...args.where,
+            tenantId,
+          },
+        });
+      },
+
+      deleteMany: (args: any = {}) => {
+        return prisma.backup.deleteMany({
+          ...args,
+          where: {
+            ...args.where,
+            tenantId,
+          },
+        });
+      },
+
+      count: (args: any = {}) => {
+        return prisma.backup.count({
+          ...args,
+          where: {
+            ...args.where,
+            tenantId,
+          },
+        });
+      },
+
+      aggregate: (args: any) => {
+        return prisma.backup.aggregate({
+          ...args,
+          where: {
+            ...args.where,
+            tenantId,
+          },
+        });
+      },
+    };
+  }
 }
 
 /**
