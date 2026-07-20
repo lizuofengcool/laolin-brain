@@ -21618,3 +21618,92 @@ where 仅含 id 无 tenantId 守卫。其余直接 db 调用均属于"safe-by-as
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化 /
   backups 路由经 TenantDb 收口（files 路由本轮已收口，剩余 backups 路由待审计）。
+
+## 2026-07-20 08:25 自动迭代（第一百九十九轮）
+
+承接第一百九十八轮 worklog "下一轮候选" 中的高优先级项：**`/reports/[id]`
+详情页接入 `/api/reports/[id]/data`**。上一轮后端数据层（fetcher + 路由 +
+dataConfig 声明）已就绪，本轮回到前端页面侧完成数据接线。
+
+### 决策与执行
+
+P1 安全/租户隔离清单中的 4 项遗留问题经核对全部已在历史轮次修复（tenant-db.ts
+raw getter 软审计 / alipay.ts verifyRSA2Sign 真实 RSA-SHA256 / wechat.ts
+verifyWechatSign HMAC-SHA256 + AES-256-GCM 解密 / sync-engine.ts keep_both
+分支重命名+新文件落地 / api-auth.test.ts 与实现对齐）。本轮专注 P2 报表页面
+数据接入。
+
+**feat(reports)**：详情页 useEffect 模板命中后异步 fetch
+`/api/reports/[id]/data`，按 widget.id 取回 chartData / metricValue /
+tableRows 覆盖 widget.config 初始值。实现要点：
+
+1. **三态管理**：新增 `widgetData` / `dataState`（idle/loading/success/error）
+   / `dataError` 三态。useEffect 中以 `AbortController + 15s 超时` 发起 fetch，
+   token 来自 `localStorage.getItem("kb_token")` 作为 `Bearer` 头透传（与
+   `lib/storage/server.ts` 一致）。
+2. **mergeWidgetData 优先级**：先 `injectMockData` 填充 chart 示例数据，
+   再用真实 `chartData/metricValue/tableRows` 覆盖对应字段。空数组/undefined
+   不覆盖，避免"暂无数据"卡片。未声明 dataConfig 的 widget 不在响应 data 中
+   → 继续 mock 注入（向后兼容）。
+3. **切换 id 隔离**：useEffect 重置 `widgetData` + AbortController 取消旧
+   请求，避免上一张报表的数据泄漏到下一张。AbortError 不当作错误展示。
+4. **错误兜底**：fetch 失败（HTTP 401/500 / 网络异常 / `success:false`）→
+   `data-state=error` + 页面顶部 `AlertCircle` 错误提示，mock 数据保留可见，
+   不阻塞渲染。header 状态文案随 data-state 切换：loading「正在拉取真实数据…」
+   / success「数据来自统计服务」/ error「数据拉取失败，当前为示例数据」。
+5. **ReportGrid 包裹层**新增 `data-widget-has-real-data` 标记，便于断言。
+
+**test(reports)**：迁移 `reports-id-page.test.tsx`，默认 fetch mock 返回
+`{success:true, data:{}}` 使既有 13 用例（mock 注入/栅格/not-found/loader）
+全部不受影响；新增 11 用例覆盖：fetch url+Authorization 头、未登录无 token、
+chartData 覆盖 mock、metricValue 覆盖 value=0、空 chartData 回退 mock、
+success 状态文案、HTTP 401 error 兜底、network reject 兜底、success:false
+兜底、未知 id 不发起 fetch、空 id 不发起 fetch。ReportRenderer 桩新增
+`data-metric-value` 透出，断言 metric 真实值覆盖。
+
+### 验证
+
+- `npx tsc --noEmit`：✅ 零类型错误
+- `npx vitest run src/__tests__/components/reports-id-page.test.tsx`：✅ 25/25
+  （13 既有 + 11 新增）
+- `npx vitest run`（全量）：**5568 passed / 213 files**，零回归
+  （与上轮 5557/213 相比 +11 用例，均为本轮新增）
+
+### 改动量
+
+1 commit，2 文件，+470 / -22：
+- `src/app/(dashboard)/reports/[id]/page.tsx`（+198 / -22，新增 widgetData
+  三态 + mergeWidgetData + fetch 流程 + 状态文案 + 错误提示）
+- `src/__tests__/components/reports-id-page.test.tsx`（+294 / 0，新增 11 用例
+  + fetch mock 桩 + ReportRenderer 桩扩展 data-metric-value）
+
+### Commit
+
+- `a9cf32a` feat(reports): /reports/[id] 详情页接入 /api/reports/[id]/data
+
+### 推送
+
+- origin (Gitee)：待推送（`58be6f5..a9cf32a`）
+- github (GitHub)：待推送（`58be6f5..a9cf32a`）
+
+### 下一轮候选
+
+- **报表导出按钮**（中改动，中优先级）：列表页或详情页加"导出"按钮，调用
+  `reportManager.exportReport`（已支持 json/csv/pdf，pdf 为占位）。需评估下载
+  降级（`exportUtils.downloadFile` 在沙箱环境无 Blob URL 时的兜底）。
+- **MobileNav 添加报表中心入口**（小改动，低优先级）：当前 MobileNav 仅 5 图标
+  精简栏（首页/文件/收藏/搜索/我的），未挂载 reports。可考虑替换"搜索"为
+  "报表"或新增第 6 图标（需评估 5→6 图标对移动端布局的影响）。
+- **/reports 列表页支持搜索/筛选**（小改动，低优先级）：当前列表页直接渲染全部
+  内置模板，无 search input / category filter。可在页面顶部加 search input +
+  category 下拉，过滤 templates（前端纯过滤，无 API 改动）。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格在
+  窄屏会缩窄但不破坏，可加 CSS media query 切到 mobile=1 列 / tablet=12 列 /
+  desktop=24 列。
+- **日期范围筛选 UI**（中改动，低优先级）：`/api/reports/[id]/data` 已支持
+  `dateFrom`/`dateTo` query，详情页可加 daterange picker 让用户筛选趋势数据
+  的时间范围。需评估与 stats-service 的 dateFrom/dateTo 解析格式对齐。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化 /
+  backups 路由经 TenantDb 收口（files 路由 198 轮已收口，剩余 backups 路由待审计）。
