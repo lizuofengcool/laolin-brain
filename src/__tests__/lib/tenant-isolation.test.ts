@@ -38,6 +38,19 @@ vi.mock('@/lib/db', () => ({
       deleteMany: vi.fn(),
       count: vi.fn(),
     },
+    backup: {
+      findMany: vi.fn(),
+      findFirst: vi.fn(),
+      findUnique: vi.fn(),
+      create: vi.fn(),
+      createMany: vi.fn(),
+      update: vi.fn(),
+      updateMany: vi.fn(),
+      delete: vi.fn(),
+      deleteMany: vi.fn(),
+      count: vi.fn(),
+      aggregate: vi.fn(),
+    },
     $transaction: vi.fn(),
   },
 }));
@@ -193,6 +206,152 @@ describe('多租户数据隔离 - TenantDb', () => {
         })
       );
       expect(result).toEqual(mockFolder);
+    });
+  });
+
+  /**
+   * Backup 模型测试（第二百零二轮补）：
+   * 第二百零一轮将 backups 路由收口至 TenantDb，新增 backup 模型访问器，
+   * 但未在本文件补对应单测。此处补 findMany / findFirst / create / update /
+   * delete / count 六方法的 tenantId 注入断言，与 file / folder 同范式。
+   * 注意：tenant-db.ts 中 backup.update 内部走 updateMany（返回 { count }），
+   * backup.delete 内部走 deleteMany（返回 { count }），断言需以底层
+   * updateMany / deleteMany 为期望调用对象。
+   */
+  describe('Backup 模型', () => {
+    it('findMany 应该自动添加 tenantId 过滤条件', async () => {
+      const tenantDb = createTenantDb(tenantId1);
+      const mockBackups = [{ id: 'bk-1', tenantId: tenantId1, status: 'completed' }];
+
+      const { db } = await import('@/lib/db');
+      (db.backup.findMany as any).mockResolvedValue(mockBackups);
+
+      const result = await tenantDb.backup.findMany({
+        where: { status: 'completed' },
+      });
+
+      expect(db.backup.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            tenantId: tenantId1,
+            status: 'completed',
+          }),
+        })
+      );
+      expect(result).toEqual(mockBackups);
+    });
+
+    it('findFirst 应该自动添加 tenantId 过滤条件', async () => {
+      const tenantDb = createTenantDb(tenantId1);
+      const mockBackup = { id: 'bk-1', tenantId: tenantId1, status: 'completed' };
+
+      const { db } = await import('@/lib/db');
+      (db.backup.findFirst as any).mockResolvedValue(mockBackup);
+
+      const result = await tenantDb.backup.findFirst({
+        where: { id: 'bk-1' },
+      });
+
+      expect(db.backup.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            tenantId: tenantId1,
+            id: 'bk-1',
+          }),
+        })
+      );
+      expect(result).toEqual(mockBackup);
+    });
+
+    it('create 应该自动带上 tenantId', async () => {
+      const tenantDb = createTenantDb(tenantId1);
+      const mockBackup = { id: 'bk-1', tenantId: tenantId1, status: 'completed' };
+
+      const { db } = await import('@/lib/db');
+      (db.backup.create as any).mockResolvedValue(mockBackup);
+
+      const result = await tenantDb.backup.create({
+        data: {
+          userId: 'user-1',
+          status: 'completed',
+          filePath: '/tmp/bk.zip',
+        },
+      });
+
+      expect(db.backup.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            tenantId: tenantId1,
+            userId: 'user-1',
+            status: 'completed',
+            filePath: '/tmp/bk.zip',
+          }),
+        })
+      );
+      expect(result).toEqual(mockBackup);
+    });
+
+    it('update 应内部走 updateMany 并注入 tenantId 守卫', async () => {
+      const tenantDb = createTenantDb(tenantId1);
+
+      const { db } = await import('@/lib/db');
+      (db.backup.updateMany as any).mockResolvedValue({ count: 1 });
+
+      await tenantDb.backup.update({
+        where: { id: 'bk-1' },
+        data: { status: 'failed' },
+      });
+
+      expect(db.backup.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            tenantId: tenantId1,
+            id: 'bk-1',
+          }),
+          data: { status: 'failed' },
+        })
+      );
+    });
+
+    it('delete 应内部走 deleteMany 并注入 tenantId 守卫', async () => {
+      const tenantDb = createTenantDb(tenantId1);
+
+      const { db } = await import('@/lib/db');
+      (db.backup.deleteMany as any).mockResolvedValue({ count: 1 });
+
+      await tenantDb.backup.delete({
+        where: { id: 'bk-1' },
+      });
+
+      expect(db.backup.deleteMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            tenantId: tenantId1,
+            id: 'bk-1',
+          }),
+        })
+      );
+    });
+
+    it('count 应该只统计当前租户的数据', async () => {
+      const tenantDb = createTenantDb(tenantId1);
+
+      const { db } = await import('@/lib/db');
+      (db.backup.count as any).mockResolvedValue(7);
+
+      const result = await tenantDb.backup.count({
+        where: { status: 'completed' },
+      });
+
+      expect(db.backup.count).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            tenantId: tenantId1,
+            status: 'completed',
+          }),
+        })
+      );
+      expect(result).toBe(7);
     });
   });
 
