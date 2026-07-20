@@ -21707,3 +21707,120 @@ success 状态文案、HTTP 401 error 兜底、network reject 兜底、success:f
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化 /
   backups 路由经 TenantDb 收口（files 路由 198 轮已收口，剩余 backups 路由待审计）。
+
+## 2026-07-20 13:56 自动迭代（第二百轮）
+
+承接第一百九十九轮 worklog "下一轮候选" 中的中优先级首项：**报表导出按钮**。
+199 轮完成了 `/reports/[id]` 详情页对 `/api/reports/[id]/data` 的数据接线，
+本轮回到详情页侧补全导出能力，让用户能把报表元信息（JSON）和表格数据（CSV）
+下载到本地，闭环内置报表的"查看 + 拉数据 + 导出"工作流。
+
+### 决策与执行
+
+P1 安全/租户隔离清单中的 5 项遗留问题经核对全部已在历史轮次修复（tenant-db.ts
+raw getter 软审计 / alipay.ts verifyRSA2Sign 真实 RSA-SHA256 / wechat.ts
+verifyWechatSign HMAC-SHA256 + AES-256-GCM 解密 / sync-engine.ts keep_both
+分支重命名+新文件落地 / api-auth.test.ts 与实现对齐）。本轮专注 P2 报表导出
+功能补全。
+
+**feat(reports)**：详情页 header 新增"导出"下拉按钮（`DropdownMenu` + `Download`
+/ `ChevronDown` 图标），提供"导出 JSON"和"导出 CSV"两个菜单项；PDF 暂未实现
+（`report-manager` 中为 `console.log` 占位）不暴露在 UI。实现要点：
+
+1. **handleExport 走 reportManager.exportReport**：复用 198 轮已测试的导出能力
+   （JSON 导出 report 元信息 + layout；CSV 按 RFC 4180 + BOM 导出 table widget
+   的 rows）。filename 默认 `report.name`（与 report-manager 单测一致）。
+2. **CSV 提前判断 table widget**：`report-manager` 内部对无 table 的 CSV 静默
+   `success: true` 但不下载，对用户而言等价于点击无反应。UI 层在调 exportReport
+   前先 `report.layout.widgets.some(w => w.type === 'table')`，无 table 时直接
+   `info` 反馈"此报表暂无可导出的表格数据（CSV 仅导出表格组件）"，不调
+   exportReport，体验更明确。
+3. **exportFeedback 三态 + 3s 自动消失**：新增 `exportFeedback` state
+   （`{ kind: 'success' | 'error' | 'info'; message }`），独立 useEffect 在
+   feedback 变化时启 3s timer 自动清空。切换 id / 卸载组件时也清空，避免上一张
+   报表的提示残留到下一张。error 用 `role="alert"`、success/info 用 `role="status"`
+   满足 a11y。
+4. **分支隔离**：加载中（`report === undefined`）走 loader 分支不渲染导出按钮；
+   `report === null` 走 not-found 分支也不渲染导出按钮和反馈节点。仅 detail
+   分支渲染完整 header（返回 + 导出 + 标题/描述/状态/反馈 + ReportGrid）。
+5. **SSR 兜底**：`exportUtils.downloadFile` 在 `typeof document === 'undefined'`
+   时早退（返回 undefined），UI 层无法区分这种"成功但不下载"和真实下载，统一展示
+   "已导出 JSON/CSV 文件"成功提示。仅当 exportReport 返回 `success: false` 时才
+   展示 error 反馈（如 downloadFile 内部抛错被 report-manager 的 try/catch 捕获）。
+
+**test(reports)**：迁移 `reports-id-page.test.tsx`，新增 9 用例覆盖导出按钮全
+路径：
+
+- 模板命中 → 渲染"导出"trigger + JSON / CSV 两个菜单项
+- 加载中（loader 分支）→ 不渲染导出按钮（同步 queryByTestId）
+- not-found（模板未命中）→ 不渲染导出按钮 / 菜单项
+- 点击"导出 JSON" → `reportManager.exportReport` 被以 `{ format: 'json' }` 调用，
+  入参 report.id 等于 url id，success 反馈"已导出 JSON 文件"
+- 点击"导出 CSV" 含 table widget（file-activity 模板）→ `format: 'csv'` 调用 +
+  success 反馈"已导出 CSV 文件"
+- 点击"导出 CSV" 无 table widget（storage-overview 模板）→ 不调 exportReport +
+  info 反馈"暂无可导出的表格数据"
+- `exportReport` 返回 `success: false` → error 反馈展示后端 error 文案 + role=alert
+- 反馈 3s 后自动消失（真实 timer setTimeout 等待 500ms 仍可见 + 3000ms 后消失）
+- not-found 分支不渲染反馈节点（验证切换 id 清空反馈）
+
+**桩化策略**：
+
+- `DropdownMenu` 全套桩化（Radix 在 jsdom 下走 Portal + pointer 事件难以稳定触发
+  onSelect）：trigger 始终渲染 + content 始终渲染 + 点击 item 同步触发 onSelect。
+  DropdownMenuItem 透传 `...rest` 以保留 `data-testid` 等属性。
+- `reportManager` 经 `importOriginal` 保留原型方法（getTemplate / getTemplates 等
+  真实实现），仅覆盖 `exportReport` 为 `mockExportReport`。注意：类实例的展开
+  `{ ...actual.reportManager }` 只复制 own enumerable 属性会丢失 prototype 方法，
+  改用 `Object.create(Object.getPrototypeOf(actual.reportManager))` + `Object.assign`
+  保留原型链。
+
+### 验证
+
+- `npx tsc --noEmit`：✅ 零类型错误
+- `npx vitest run src/__tests__/components/reports-id-page.test.tsx`：✅ 34/34
+  （25 既有 + 9 新增）
+- `npx vitest run`（全量）：**5577 passed / 213 files**，零回归
+  （与上轮 5568/213 相比 +9 用例，均为本轮新增）
+
+### 改动量
+
+1 commit，2 文件，+386 / -5：
+- `src/app/(dashboard)/reports/[id]/page.tsx`（+151 / -5，新增 DropdownMenu 导出
+  按钮 + handleExport useCallback + exportFeedback 三态 + 3s 自动消失 useEffect
+  + 反馈 UI 节点）
+- `src/__tests__/components/reports-id-page.test.tsx`（+240 / 0，新增 9 用例 +
+  DropdownMenu 桩 + reportManager importActual 部分覆盖桩 + lucide-react 新增
+  3 图标桩）
+
+### Commit
+
+- `2a3fcf4` feat(reports): /reports/[id] 详情页接入导出按钮（JSON/CSV）
+
+### 推送
+
+- origin (Gitee)：待推送（`90dd301..2a3fcf4`）
+- github (GitHub)：待推送（`90dd301..2a3fcf4`）
+
+### 下一轮候选
+
+- **MobileNav 添加报表中心入口**（小改动，低优先级）：当前 MobileNav 仅 5 图标
+  精简栏（首页/文件/收藏/搜索/我的），未挂载 reports。可考虑替换"搜索"为
+  "报表"或新增第 6 图标（需评估 5→6 图标对移动端布局的影响）。
+- **/reports 列表页支持搜索/筛选**（小改动，低优先级）：当前列表页直接渲染全部
+  内置模板，无 search input / category filter。可在页面顶部加 search input +
+  category 下拉，过滤 templates（前端纯过滤，无 API 改动）。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格在
+  窄屏会缩窄但不破坏，可加 CSS media query 切到 mobile=1 列 / tablet=12 列 /
+  desktop=24 列。
+- **日期范围筛选 UI**（中改动，低优先级）：`/api/reports/[id]/data` 已支持
+  `dateFrom`/`dateTo` query，详情页可加 daterange picker 让用户筛选趋势数据
+  的时间范围。需评估与 stats-service 的 dateFrom/dateTo 解析格式对齐。
+- **backups 路由经 TenantDb 收口**（中改动，低优先级）：files 路由 198 轮已收口，
+  剩余 backups/route.ts 与 backups/[id]/route.ts 仍直接用 `db.backup.findFirst`
+  （虽已手动按 tenantId 过滤，但未走 TenantDb 隔离层，缺一道防御）。需先在
+  tenant-db.ts 增加 backup 模型代理。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
+
