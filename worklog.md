@@ -21824,3 +21824,120 @@ verifyWechatSign HMAC-SHA256 + AES-256-GCM 解密 / sync-engine.ts keep_both
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
 
+
+## 2026-07-20 15:00 自动迭代（第二百零一轮）
+
+承接第二百轮 worklog "下一轮候选" 中的 P1 安全/租户隔离遗留项：**backups 路由
+经 TenantDb 收口**。files 路由已于第一百九十八轮收口至 TenantDb 隔离层，本轮将
+剩余的 backups 路由（route.ts / [id]/route.ts / [id]/restore/route.ts）从 raw
+db.backup.* / db.file.* / db.folder.* 统一迁移至 tenantDb.{backup,file,folder}.*，
+prisma 调用前自动注入 tenantId 守卫，不再依赖调用方手动 where.tenantId（与 files
+路由同范式）。这是用户 P1 清单"src/app/api/files/route.ts 等路由绕过 TenantDb 直接
+按 userId 过滤 → 改走 TenantDb"的最后一项收尾。
+
+### 决策与执行
+
+P1 安全/租户隔离清单中的 5 项遗留问题经核对全部已在历史轮次修复（tenant-db.ts
+raw getter 软审计 / alipay.ts verifyRSA2Sign 真实 RSA-SHA256 / wechat.ts
+verifyWechatSign HMAC-SHA256 + AES-256-GCM 解密 / sync-engine.ts keep_both 分支
+重命名+新文件落地 / api-auth.test.ts 与实现对齐）。files 路由 198 轮收口后，剩余
+backups 路由仍直接用 `db.backup.*` 手动 where.tenantId 过滤（虽已手动过滤，但未走
+TenantDb 隔离层，缺一道防御）。本轮专注 backups 路由的 TenantDb 收口。
+
+**refactor(backups)**：tenant-db.ts 新增 backup 模型访问器 + 3 个 backups 路由文件
+统一收口 + 4 个测试文件迁移 mock 范式。实现要点：
+
+1. **tenant-db.ts 新增 backup 模型访问器**：与 file / folder 同范式，提供 findMany /
+   findFirst / findUnique / create / createMany / update / updateMany / delete /
+   deleteMany / count / aggregate 共 11 个方法。update / delete 内部走 updateMany /
+   deleteMany + tenantId 守卫，返回 `{ count }` 而非完整记录（与 file / folder 同
+   范式契约）。
+
+2. **backups/route.ts GET + POST 重写**：
+   - GET: `tenantDb.backup.count / findMany` 替代 `db.backup.*`，where 不再手写
+     tenantId（由 wrapper 注入），status 过滤合并进 where。
+   - POST: `tenantDb.backup.findFirst / create / update` + `tenantDb.file.findMany` +
+     `tenantDb.folder.findMany` 替代 `db.*`。completed 转换响应数据由 `backup`
+     （created 记录）+ 本次写入字段（size/fileCount/completedAt）直接构造，不再依赖
+     `db.backup.update` 返回的完整记录（与 file.update 同范式契约）。failed 转换
+     同理，仅状态推进，不读返回值。
+
+3. **backups/[id]/route.ts GET + DELETE 重写**：
+   - `tenantDb.backup.findFirst / delete` 替代 `db.backup.*`。
+   - delete where 追加 tenantId（wrapper 注入），比原 `{ id }` 多一道租户守卫，
+     语义等价但更安全（deleteMany + tenantId 守卫比 findFirst + delete 多一道防御）。
+
+4. **backups/[id]/restore/route.ts POST 重写**：
+   - `tenantDb.backup.findFirst` 替代 `db.backup.findFirst`。
+   - filePath / status / conflictStrategy 校验逻辑保持不变（与 DELETE 同范式的路径
+     遍历防护、状态校验、冲突策略校验）。
+
+5. **4 个 backups 测试文件同步迁移至 createTenantDb mock 范式**（与 files-route /
+   files-id-route 同范式）：
+   - hand-written wrapper 模拟真实 TenantDb 的 tenantId 注入行为（backup where / data
+     末尾追加 tenantId，file/folder where 末尾追加 tenantId）。
+   - raw db.* 独立 mock 供"路由不绕过 tenantDb"负向断言（GET/POST/DELETE/restore
+     不应触达 raw db.backup.* / db.file.* / db.folder.*，若未来重构回 raw db 手动
+     where，负向断言立即失败）。
+   - POST 测试 `body.data.size` 由"mockBackupUpdate 返回值的 size"改为"路由计算的
+     jsonStr 字节长度"，断言改为 `toBeGreaterThan(0)`（路由不再读 update 返回值）。
+   - `mockBackupUpdate / mockBackupDelete` 的 where 子句追加 tenantId（wrapper 注入），
+     where 期望由 `{ id }` 改为 `{ id, tenantId }`。
+   - 删除 `makeCompletedBackup` helper（不再需要 update 返回值的完整记录）。
+   - 新增 `mockCreateTenantDb` 断言（验证路由以 `auth.tenantId` 调用 createTenantDb）。
+
+### 验证
+
+- `npx tsc --noEmit`：✅ 零类型错误
+- `npx vitest run src/__tests__/api/backups-*.test.ts`：✅ 58/58 通过
+  （12 GET + 16 POST + 15 [id] GET/DELETE + 16 [id]/restore POST，含原全部用例
+  + 负向断言）
+- `npx vitest run`（全量）：✅ **5577 passed / 213 files**，零回归
+  （与第二百轮 5577/213 一致，无新增用例，纯迁移）
+
+### 改动量
+
+1 commit，8 文件，+614 / -228：
+- `src/lib/db/tenant-db.ts`（+126 / 0，新增 backup 模型访问器 11 方法 + 注释）
+- `src/app/api/backups/route.ts`（+86 / -86 重写，GET + POST 收口至 tenantDb）
+- `src/app/api/backups/[id]/route.ts`（+30 / -30 重写，GET + DELETE 收口至 tenantDb）
+- `src/app/api/backups/[id]/restore/route.ts`（+11 / -11 重写，POST 收口至 tenantDb）
+- `src/__tests__/api/backups-route.test.ts`（+110 / -110 重写，createTenantDb mock +
+  负向断言）
+- `src/__tests__/api/backups-route-post.test.ts`（+276 / -276 重写，createTenantDb
+  mock + 负向断言 + size 断言调整）
+- `src/__tests__/api/backups-id-route.test.ts`（+134 / -134 重写，createTenantDb
+  mock + 负向断言 + delete where 期望调整）
+- `src/__tests__/api/backups-id-restore-route.test.ts`（+69 / -69 重写，createTenantDb
+  mock + 负向断言）
+
+### Commit
+
+- `c4c16f0` refactor(backups): backups 路由从 raw db 收口至 TenantDb 隔离层
+
+### 推送
+
+- origin (Gitee)：✅ 已推送（`150766b..c4c16f0`）
+- github (GitHub)：✅ 已推送（`150766b..c4c16f0`）
+
+### 下一轮候选
+
+- **MobileNav 添加报表中心入口**（小改动，低优先级）：当前 MobileNav 仅 5 图标
+  精简栏（首页/文件/收藏/搜索/我的），未挂载 reports。可考虑替换"搜索"为
+  "报表"或新增第 6 图标（需评估 5→6 图标对移动端布局的影响）。
+- **/reports 列表页支持搜索/筛选**（小改动，低优先级）：当前列表页直接渲染全部
+  内置模板，无 search input / category filter。可在页面顶部加 search input +
+  category 下拉，过滤 templates（前端纯过滤，无 API 改动）。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格在
+  窄屏会缩窄但不破坏，可加 CSS media query 切到 mobile=1 列 / tablet=12 列 /
+  desktop=24 列。
+- **日期范围筛选 UI**（中改动，低优先级）：`/api/reports/[id]/data` 已支持
+  `dateFrom`/`dateTo` query，详情页可加 daterange picker 让用户筛选趋势数据
+  的时间范围。需评估与 stats-service 的 dateFrom/dateTo 解析格式对齐。
+- **tenant-isolation.test.ts 补 backup 模型用例**（小改动，低优先级）：本轮新增
+  backup 模型访问器但未在 tenant-isolation.test.ts 补对应单测（与 file / folder
+  模型同范式）。可补 findMany / findFirst / create / update / delete / count 的
+  tenantId 注入断言。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
