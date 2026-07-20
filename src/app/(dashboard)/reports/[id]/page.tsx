@@ -12,27 +12,36 @@
  * - widget.width 1-N → `grid-column: span N`（缺省或越界回退到 N，与"占满整行"语义一致）
  * - layout.gap（默认 16）→ `gap: ${gap}px`
  *
- * Mock 数据：
- * - 当前轮仅接入页面挂载 + 栅格布局，dataConfig 数据获取留待下一轮。
- * - 内置模板的 chart widget 仅声明 `{ type: 'line' }` 等无 data 配置，ChartWidget 会兜底
- *   "暂无数据"。为让页面有可见图表占位，对 data 缺失/空数组的 chart widget 注入按 type
- *   生成的示例数据（line/bar/area/pie/scatter/radar 各一组），dataConfig 接入后会被真实
- *   数据覆盖。
+ * 数据加载（本轮接入）：
+ * - 模板解析后异步 fetch `/api/reports/[id]/data`，按 widget.id 取回 chartData /
+ *   metricValue / tableRows 覆盖 widget.config 的初始值。
+ * - 未声明 dataConfig 的 widget 不在响应 data 中 → 继续走 mock 注入（向后兼容）。
+ * - 声明 dataConfig 但响应返回空（如统计服务无数据）→ 同样回退 mock 注入，避免空白卡片。
+ * - fetch 失败（401/500/网络异常）→ 页面顶部展示错误提示，但保留 mock 数据可见，不阻塞渲染。
+ * - 加载中：页面立即以 mock 数据呈现，header 显示"正在拉取真实数据…"，加载完成后替换。
  *
  * 不负责：
  * - 用户自定义报表的拉取（依赖 /api/reports/[id] 路由 + tenantId 上下文，留待后续轮）
- * - dataConfig.dataSource 数据获取（下一轮）
+ * - 日期范围筛选 UI（API 已支持 dateFrom/dateTo query，但本轮不接入筛选器）
  * - 响应式断点适配（栅格在小屏会缩窄但不会破坏，由后续轮处理）
  */
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { ArrowLeft, Loader2, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ReportRenderer } from "@/components/reports/ReportRenderer";
 import { reportManager } from "@/lib/reports";
 import type { Report, ReportLayout, ReportWidget } from "@/lib/reports/types";
-import type { ChartConfig, ChartType, DataPoint } from "@/lib/visualization/types";
+import type {
+  ChartConfig,
+  ChartType,
+  DataPoint,
+} from "@/lib/visualization/types";
+import type {
+  MetricConfig,
+  TableConfig,
+} from "@/lib/reports/types";
 
 /** 模板内置 chart widget 的 mock 数据条数（覆盖典型趋势/分布图） */
 const MOCK_TREND: DataPoint[] = [
@@ -97,7 +106,7 @@ function generateMockChartData(type: ChartType): DataPoint[] {
  * 缺 `data` 字段。ChartWidget 已对此兜底"暂无数据"卡片，但页面挂载阶段希望让
  * 用户看到实际图表占位以验证栅格布局与类型分发，故对缺 data 的 chart 注入示例数据。
  *
- * 已有 data 的 chart（如未来从 API 拉取）保持原样不动。
+ * 已有 data 的 chart（如从 API 拉取的真实数据）保持原样不动。
  */
 function injectMockData(widget: ReportWidget): ReportWidget {
   if (widget.type !== "chart" || !widget.config) return widget;
@@ -112,6 +121,63 @@ function injectMockData(widget: ReportWidget): ReportWidget {
   };
 }
 
+/** 单个 widget 拉取结果（与 /api/reports/[id]/data 响应 data[id] 形态对齐）。 */
+interface FetchedWidgetData {
+  chartData?: DataPoint[];
+  metricValue?: number | string;
+  tableRows?: Record<string, unknown>[];
+}
+
+/**
+ * 把 fetch 返回的真实数据合并进 widget.config，未覆盖字段保留 mock 注入结果。
+ *
+ * 优先级（高 → 低）：
+ *   1. 真实数据（fetched 非空）：chartData / metricValue / tableRows 覆盖对应字段
+ *   2. mock 注入（chart 缺 data 时填充示例数据）
+ *   3. 模板原始 config（metric 的 value=0 等）
+ *
+ * 真实数据为空数组/undefined 时不覆盖，避免用空数据替换 mock 后渲染"暂无数据"卡片。
+ */
+function mergeWidgetData(
+  widget: ReportWidget,
+  fetched?: FetchedWidgetData,
+): ReportWidget {
+  const merged = injectMockData(widget);
+  if (!fetched || !merged.config) return merged;
+
+  if (
+    widget.type === "chart" &&
+    Array.isArray(fetched.chartData) &&
+    fetched.chartData.length > 0
+  ) {
+    const config = merged.config as ChartConfig;
+    return { ...merged, config: { ...config, data: fetched.chartData } };
+  }
+
+  if (
+    widget.type === "metric" &&
+    fetched.metricValue !== undefined &&
+    fetched.metricValue !== null
+  ) {
+    const config = merged.config as MetricConfig;
+    return {
+      ...merged,
+      config: { ...config, value: fetched.metricValue },
+    };
+  }
+
+  if (
+    widget.type === "table" &&
+    Array.isArray(fetched.tableRows) &&
+    fetched.tableRows.length > 0
+  ) {
+    const config = merged.config as TableConfig;
+    return { ...merged, config: { ...config, rows: fetched.tableRows } };
+  }
+
+  return merged;
+}
+
 /** 限定 width 到 [1, columns] 区间；缺省/非法值回退到 columns（占满整行）。 */
 function clampWidth(width: number | undefined, columns: number): number {
   if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) {
@@ -120,7 +186,13 @@ function clampWidth(width: number | undefined, columns: number): number {
   return Math.min(Math.max(1, Math.floor(width)), columns);
 }
 
-function ReportGrid({ layout }: { layout: ReportLayout }) {
+function ReportGrid({
+  layout,
+  widgetData,
+}: {
+  layout: ReportLayout;
+  widgetData: Record<string, FetchedWidgetData>;
+}) {
   const columns = layout.columns ?? 24;
   const gap = layout.gap ?? 16;
   return (
@@ -134,15 +206,17 @@ function ReportGrid({ layout }: { layout: ReportLayout }) {
     >
       {layout.widgets.map((widget) => {
         const span = clampWidth(widget.width, columns);
+        const fetched = widgetData[widget.id];
         return (
           <div
             key={widget.id}
             data-widget-id={widget.id}
             data-widget-type={widget.type}
             data-widget-span={span}
+            data-widget-has-real-data={fetched ? "true" : "false"}
             style={{ gridColumn: `span ${span}` }}
           >
-            <ReportRenderer widget={injectMockData(widget)} />
+            <ReportRenderer widget={mergeWidgetData(widget, fetched)} />
           </div>
         );
       })}
@@ -186,15 +260,92 @@ export default function ReportDetailPage() {
   const id = rawId?.trim() ?? "";
 
   const [report, setReport] = useState<Report | null | undefined>(undefined);
+  const [widgetData, setWidgetData] = useState<
+    Record<string, FetchedWidgetData>
+  >({});
+  const [dataState, setDataState] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [dataError, setDataError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) {
       setReport(null);
+      setWidgetData({});
+      setDataState("idle");
+      setDataError(null);
       return;
     }
     // 本轮仅接入内置模板；用户自定义报表的拉取（/api/reports/[id]）留待后续轮
     const resolved = templateToReport(id);
     setReport(resolved);
+    // 重置数据状态：切换报表时避免上一张的数据泄漏到下一张
+    setWidgetData({});
+    setDataError(null);
+
+    if (!resolved) {
+      setDataState("idle");
+      return;
+    }
+
+    // 模板命中后异步拉取真实数据，不阻塞首屏（先以 mock 数据呈现）
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    let cancelled = false;
+
+    const token =
+      typeof window !== "undefined" ? localStorage.getItem("kb_token") : null;
+    const headers: Record<string, string> = token
+      ? { Authorization: `Bearer ${token}` }
+      : {};
+
+    setDataState("loading");
+
+    const runFetch = async () => {
+      try {
+        const res = await fetch(
+          `/api/reports/${encodeURIComponent(id)}/data`,
+          { headers, signal: controller.signal },
+        );
+        if (cancelled) return;
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(
+            (body && typeof body === "object" && "error" in body
+              ? String((body as { error?: unknown }).error)
+              : "") || `HTTP ${res.status}`,
+          );
+        }
+        const json = (await res.json()) as {
+          success?: boolean;
+          data?: Record<string, FetchedWidgetData>;
+          error?: string;
+        };
+        if (cancelled) return;
+        if (!json.success) {
+          throw new Error(json.error || "拉取报表数据失败");
+        }
+        setWidgetData(json.data ?? {});
+        setDataState("success");
+      } catch (err: unknown) {
+        if (cancelled) return;
+        // AbortController 触发的 abort 不当作错误展示（组件已卸载或 id 已切换）
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        console.error("[reports/detail] 拉取数据失败:", err);
+        setDataError(
+          err instanceof Error ? err.message : "拉取报表数据失败",
+        );
+        setDataState("error");
+      } finally {
+        if (!cancelled) clearTimeout(timer);
+      }
+    };
+
+    runFetch();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      clearTimeout(timer);
+    };
   }, [id]);
 
   if (report === undefined) {
@@ -238,11 +389,28 @@ export default function ReportDetailPage() {
         {report.description ? (
           <p className="mt-1 text-sm text-muted-foreground">{report.description}</p>
         ) : null}
-        <p className="mt-2 text-xs text-muted-foreground">
-          模板内置报表 · 当前为示例数据，真实数据源接入待后续迭代
+        <p
+          className="mt-2 text-xs text-muted-foreground"
+          data-testid="report-data-status"
+          data-data-state={dataState}
+        >
+          {dataState === "loading" && "模板内置报表 · 正在拉取真实数据…"}
+          {dataState === "success" && "模板内置报表 · 数据来自统计服务"}
+          {dataState === "error" && "模板内置报表 · 数据拉取失败，当前为示例数据"}
+          {dataState === "idle" && "模板内置报表 · 当前为示例数据"}
         </p>
+        {dataState === "error" && dataError ? (
+          <p
+            className="mt-2 flex items-center gap-1.5 text-xs text-destructive"
+            data-testid="report-data-error"
+            role="alert"
+          >
+            <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>{dataError}</span>
+          </p>
+        ) : null}
       </div>
-      <ReportGrid layout={report.layout} />
+      <ReportGrid layout={report.layout} widgetData={widgetData} />
     </div>
   );
 }
