@@ -21941,3 +21941,103 @@ TenantDb 隔离层，缺一道防御）。本轮专注 backups 路由的 TenantD
 - 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
+
+## 2026-07-20 16:00 自动迭代
+
+### 背景
+
+第二百零一轮已将 backups 路由（route.ts / [id]/route.ts / [id]/restore/route.ts）
+从 raw db 收口至 TenantDb 隔离层，新增 backup 模型访问器 11 方法。但当时未在
+`src/__tests__/lib/tenant-isolation.test.ts` 补对应单测（worklog 下一轮候选已
+明确列出该缺口）。本轮补全 backup 模型 tenantId 注入断言。
+
+### 评估
+
+- fetch origin / github 后 local / origin / github 三端均在 `24f7d58`，无远端
+  更新需 rebase。
+- 工作树干净，无遗留未提交改动。
+- 优先级 1 清单（user 输入的 5 项）经核查**全部已在历史轮次解决**：
+  · tenant-db raw 后门 → 已加 `console.warn` 调用方堆栈审计（见 tenant-db.ts
+    L41-47 / L56-62 + 越权审计测试块 L268-313）
+  · alipay/wechat RSA2 验签 → alipay.ts L191-221 已实现 RSA-SHA256 + PEM
+    normalize，wechat.ts L221-242 已实现 HMAC-SHA256 + timingSafeEqual +
+    AES-256-GCM resource 解密
+  · alipay/wechat mock 默认 → createPayment/queryPayment/refund 在已配置时
+    均显式返回失败，不再静默返回 mock
+  · files/route.ts 走 TenantDb → GET / POST dedup / summary update 已走
+    createTenantDb（files/route.ts L271, L379, L480）
+  · sync-engine.ts keep_both bug → L687-728 已重写为"先取云端数据 → 重命名
+    本地为冲突副本 → create 新文件落地云端版本"，不再直接覆盖
+  · api-auth.test.ts 与实现匹配 → 测试期望 4 字段 / async / 拒绝 query param，
+    与 api-auth.ts 实现一致
+- 转向优先级 2/3：worklog 下一轮候选中"tenant-isolation.test.ts 补 backup
+  模型用例"是最高 ROI 项（小改动 + 测试覆盖缺口 + 与既定范式一致），决定本次
+  执行。
+
+### 改动
+
+1. **`src/__tests__/lib/tenant-isolation.test.ts`（+159 / 0）**：
+   - 在 `vi.mock('@/lib/db')` 块中新增 `backup` model mock（11 方法 +
+     aggregate，与 tenant-db.ts 中 backup 访问器方法集对齐）。
+   - 在 Folder 模型 describe 块与数据隔离验证 describe 块之间插入
+     `describe('Backup 模型')` 块，含 6 用例：
+     · `findMany 应该自动添加 tenantId 过滤条件`：mock db.backup.findMany
+       返回 backups 列表，期望底层调用 where 含 `tenantId: tenantId1` +
+       `status: 'completed'`。
+     · `findFirst 应该自动添加 tenantId 过滤条件`：mock db.backup.findFirst
+       返回单 backup，期望 where 含 `tenantId` + `id`。
+     · `create 应该自动带上 tenantId`：调用 tenantDb.backup.create 传入
+       userId/status/filePath，期望 data 含 tenantId 注入。
+     · `update 应内部走 updateMany 并注入 tenantId 守卫`：tenant-db.ts 中
+       backup.update 实现为 `prisma.backup.updateMany({ ...args, where: { ...args.where, tenantId } })`，
+       期望 where 含 tenantId + id，data 透传。
+     · `delete 应内部走 deleteMany 并注入 tenantId 守卫`：同上，期望
+       db.backup.deleteMany 被调用且 where 含 tenantId + id。
+     · `count 应该只统计当前租户的数据`：mock 返回 7，期望 where 含
+       tenantId + status，结果为 7。
+   - 用例注释明确指出 backup.update / delete 内部走 updateMany / deleteMany
+     （与 file 模型同范式），断言需以底层方法为期望调用对象。
+
+### 验证
+
+- `npx vitest run src/__tests__/lib/tenant-isolation.test.ts`：✅ 17/17 通过
+  （原 11 用例 + 新增 6 用例）
+- `npx vitest run src/__tests__/api/backups-*.test.ts`：✅ 58/58 通过
+  （与第二百零一轮一致，无回归）
+- `npx vitest run`（全量）：✅ **5583 passed / 213 files**，零回归
+  （第二百零一轮 5577/213 → 本轮 5583/213，+6 用例，无失败）
+- `npx tsc --noEmit`：✅ 零类型错误
+
+### 改动量
+
+1 commit，1 文件，+159 / 0：
+- `src/__tests__/lib/tenant-isolation.test.ts`（+159 / 0，backup mock +
+  describe 6 用例）
+
+### Commit
+
+- `e030291` test(tenant-isolation): 补 backup 模型 tenantId 注入断言
+
+### 推送
+
+- origin (Gitee)：✅ 已推送（`24f7d58..e030291`）
+- github (GitHub)：✅ 已推送（`24f7d58..e030291`）
+
+### 下一轮候选
+
+- **MobileNav 添加报表中心入口**（小改动，低优先级）：当前 MobileNav 仅 5 图标
+  精简栏（首页/文件/收藏/搜索/我的），未挂载 reports。可考虑替换"搜索"为
+  "报表"或新增第 6 图标（需评估 5→6 图标对移动端布局的影响）。
+- **/reports 列表页支持搜索/筛选**（小改动，低优先级）：当前列表页直接渲染全部
+  内置模板，无 search input / category filter。可在页面顶部加 search input +
+  category 下拉，过滤 templates（前端纯过滤，无 API 改动）。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格在
+  窄屏会缩窄但不破坏，可加 CSS media query 切到 mobile=1 列 / tablet=12 列 /
+  desktop=24 列。
+- **日期范围筛选 UI**（中改动，低优先级）：`/api/reports/[id]/data` 已支持
+  `dateFrom`/`dateTo` query，详情页可加 daterange picker 让用户筛选趋势数据
+  的时间范围。需评估与 stats-service 的 dateFrom/dateTo 解析格式对齐。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
+
