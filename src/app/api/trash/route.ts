@@ -128,14 +128,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 如果指定了目标文件夹，验证目标文件夹存在
+    // 如果指定了目标文件夹，验证目标文件夹存在且属于当前用户/租户
+    // 走 DB 层三键作用域化：findFirst 以 {id, userId, tenantId} 过滤，跨用户/跨租户
+    // targetFolderId 直接返回 null → 404，不将他人/他租户文件夹行载入内存。
+    // 与 files/batch move、faces/groups/merge 同模式（findUnique+post-check → findFirst）。
     if (targetFolderId) {
-      const targetFolder = await db.folder.findUnique({
-        where: { id: targetFolderId },
-        select: { id: true, userId: true, tenantId: true },
+      const targetFolder = await db.folder.findFirst({
+        where: { id: targetFolderId, userId, tenantId },
+        select: { id: true },
       });
 
-      if (!targetFolder || targetFolder.userId !== userId || targetFolder.tenantId !== tenantId) {
+      if (!targetFolder) {
         return NextResponse.json(
           { error: '目标文件夹不存在或无权访问' },
           { status: 404 }

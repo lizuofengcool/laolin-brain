@@ -6,10 +6,12 @@
  * 核心安全契约：回收站是个人级软删数据，所有 db.file / tx.file 调用的 where 恒以
  * (userId, tenantId, isDeleted:true) 三键作用域——双租户键防跨用户/跨租户越权，
  * isDeleted:true 维度锁定"仅回收站文件可被列/恢复/永久删"语义（活跃文件 isDeleted:false
- * 不可被本路由触达）。folder.findUnique 的 targetFolder 校验亦显式比对 userId+tenantId
- * 双键，防恢复到他人/他租户文件夹。路由 `const { userId, tenantId, role } = auth` 解构
- * role 但全文未引用，故 member 亦可操作自己的回收站——与 storage 一致（个人数据按用户
- * 归属，admin 也不应恢复/删除他人回收站），测试通过"member 仍可恢复"用例显式锁定。
+ * 不可被本路由触达）。folder.findFirst 的 targetFolder 校验以 {id, userId, tenantId}
+ * 三键 DB 层作用域化（第二百一十轮由 findUnique+post-check 收口），跨用户/跨租户
+ * targetFolderId 直接返回 null → 404，不将他人/他租户文件夹行载入内存。路由
+ * `const { userId, tenantId, role } = auth` 解构 role 但全文未引用，故 member 亦可操作
+ * 自己的回收站——与 storage 一致（个人数据按用户归属，admin 也不应恢复/删除他人回收站），
+ * 测试通过"member 仍可恢复"用例显式锁定。
  *
  *   - GET（列回收站）：
  *     · 未认证 401 透传，不触达 DB。
@@ -19,11 +21,12 @@
  *     · pageSize 上限 100 截断；分页 skip=(page-1)*pageSize。
  *   - POST（按 URL pathname 分发 restore / empty）：
  *     · pathname 不含 '/restore' → action='empty' → emptyTrash（不读 body、不触达
- *       folder.findUnique / $transaction restore 路径）。**核心契约：URL 路径分发**。
+ *       folder.findFirst / $transaction restore 路径）。**核心契约：URL 路径分发**。
  *     · pathname 含 '/restore' → restore：fileIds 必填非空数组（400）；targetFolderId
- *       存在时 folder.findUnique 校验归属（404）；$transaction 内 tx.file.findMany
- *       验证 id∈fileIds 且三键+isDeleted:true，数量不匹配抛错→500；tx.file.updateMany
- *       where 三键+in、data {isDeleted:false,deletedAt:null}（+folderId 当指定目标）。
+ *       存在时 folder.findFirst 以三键作用域化查询，不存在/跨租户/跨用户 → null → 404；
+ *       $transaction 内 tx.file.findMany 验证 id∈fileIds 且三键+isDeleted:true，数量不匹配
+ *       抛错→500；tx.file.updateMany where 三键+in、data {isDeleted:false,deletedAt:null}
+ *       （+folderId 当指定目标）。
  *     · emptyTrash：db.file.count where 三键；db.file.deleteMany where 三键；返回 deletedCount=count。
  *   - DELETE（永久删除）：
  *     · fileIds 必填非空数组（400）；$transaction 内 tx.file.findMany 验证三键+in+isDeleted:true，
@@ -43,7 +46,7 @@ const {
   mockFileAggregate,
   mockFileFindMany,
   mockFileDeleteMany,
-  mockFolderFindUnique,
+  mockFolderFindFirst,
   mockTransaction,
   mockTxFindMany,
   mockTxUpdateMany,
@@ -67,7 +70,7 @@ const {
     mockFileAggregate: vi.fn(),
     mockFileFindMany: vi.fn(),
     mockFileDeleteMany: vi.fn(),
-    mockFolderFindUnique: vi.fn(),
+    mockFolderFindFirst: vi.fn(),
     mockTransaction: vi.fn(),
     mockTxFindMany: vi.fn(),
     mockTxUpdateMany: vi.fn(),
@@ -88,7 +91,7 @@ vi.mock("@/lib/db", () => ({
       deleteMany: (...args: unknown[]) => mockFileDeleteMany(...args),
     },
     folder: {
-      findUnique: (...args: unknown[]) => mockFolderFindUnique(...args),
+      findFirst: (...args: unknown[]) => mockFolderFindFirst(...args),
     },
     $transaction: (...args: unknown[]) => mockTransaction(...args),
   },
@@ -358,7 +361,7 @@ describe("/api/trash 路由", () => {
   });
 
   describe("POST /api/trash — URL pathname 分发", () => {
-    it("pathname /api/trash（不含 /restore）→ action='empty' → 走 emptyTrash，不读 body、不触达 folder.findUnique / $transaction restore 路径", async () => {
+    it("pathname /api/trash（不含 /restore）→ action='empty' → 走 emptyTrash，不读 body、不触达 folder.findFirst / $transaction restore 路径", async () => {
       mockFileCount.mockResolvedValue(3);
       mockFileDeleteMany.mockResolvedValue({ count: 3 });
 
@@ -378,7 +381,7 @@ describe("/api/trash 路由", () => {
         where: { userId: "user-1", tenantId: "tenant-1", isDeleted: true },
       });
       // restore 路径不应触达
-      expect(mockFolderFindUnique).not.toHaveBeenCalled();
+      expect(mockFolderFindFirst).not.toHaveBeenCalled();
       expect(mockTransaction).not.toHaveBeenCalled();
       expect(mockTxFindMany).not.toHaveBeenCalled();
       expect(mockTxUpdateMany).not.toHaveBeenCalled();
@@ -417,8 +420,11 @@ describe("/api/trash 路由", () => {
       expect(mockTransaction).not.toHaveBeenCalled();
     });
 
-    it("targetFolderId 指定但文件夹不存在 → 404 { error: '目标文件夹不存在或无权访问' }", async () => {
-      mockFolderFindUnique.mockResolvedValue(null);
+    it("targetFolderId 指定但文件夹不存在/跨用户/跨租户 → findFirst 返回 null → 404 { error: '目标文件夹不存在或无权访问' }", async () => {
+      // DB 层三键作用域化后，"不存在 / userId 不匹配 / tenantId 不匹配" 三种场景在
+      // DB 层统一收敛为 findFirst 返回 null（不将错配行载入内存），路由仅做 null 检查 → 404。
+      // 与 faces/groups/merge targetGroupId、files/batch move folderId 同范式。
+      mockFolderFindFirst.mockResolvedValue(null);
 
       const res = (await POST(
         makePostRequest("/api/trash/restore", {
@@ -429,48 +435,11 @@ describe("/api/trash 路由", () => {
 
       expect(res.status).toBe(404);
       expect(res.body).toEqual({ error: "目标文件夹不存在或无权访问" });
-      // folder.findUnique where 单键 + select 3 字段
-      expect(mockFolderFindUnique.mock.calls[0][0]).toEqual({
-        where: { id: "folder-missing" },
-        select: { id: true, userId: true, tenantId: true },
+      // folder.findFirst where 三键 {id, userId, tenantId} + select {id}
+      expect(mockFolderFindFirst.mock.calls[0][0]).toEqual({
+        where: { id: "folder-missing", userId: "user-1", tenantId: "tenant-1" },
+        select: { id: true },
       });
-      expect(mockTransaction).not.toHaveBeenCalled();
-    });
-
-    it("targetFolderId 指定但文件夹 userId 不属于当前用户 → 404", async () => {
-      mockFolderFindUnique.mockResolvedValue({
-        id: "folder-1",
-        userId: "other-user",
-        tenantId: "tenant-1",
-      });
-
-      const res = (await POST(
-        makePostRequest("/api/trash/restore", {
-          fileIds: ["f-1"],
-          targetFolderId: "folder-1",
-        })
-      )) as MockRes;
-
-      expect(res.status).toBe(404);
-      expect(res.body).toEqual({ error: "目标文件夹不存在或无权访问" });
-      expect(mockTransaction).not.toHaveBeenCalled();
-    });
-
-    it("targetFolderId 指定但文件夹 tenantId 不匹配 → 404", async () => {
-      mockFolderFindUnique.mockResolvedValue({
-        id: "folder-1",
-        userId: "user-1",
-        tenantId: "other-tenant",
-      });
-
-      const res = (await POST(
-        makePostRequest("/api/trash/restore", {
-          fileIds: ["f-1"],
-          targetFolderId: "folder-1",
-        })
-      )) as MockRes;
-
-      expect(res.status).toBe(404);
       expect(mockTransaction).not.toHaveBeenCalled();
     });
 
@@ -525,11 +494,8 @@ describe("/api/trash 路由", () => {
     });
 
     it("成功（有 targetFolderId）→ updateMany data 含 folderId", async () => {
-      mockFolderFindUnique.mockResolvedValue({
-        id: "folder-1",
-        userId: "user-1",
-        tenantId: "tenant-1",
-      });
+      // findFirst select {id}，返回 {id} 即可（路由仅做 null 检查，不读 userId/tenantId）
+      mockFolderFindFirst.mockResolvedValue({ id: "folder-1" });
       mockTxFindMany.mockResolvedValue([{ id: "f-1", folderId: null }]);
       mockTxUpdateMany.mockResolvedValue({ count: 1 });
 

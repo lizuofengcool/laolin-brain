@@ -115,13 +115,16 @@ export async function POST(request: NextRequest) {
             throw new Error('folderId is required for move operation');
           }
 
-          // 验证目标文件夹存在且属于当前用户
-          const targetFolder = await tx.folder.findUnique({
-            where: { id: folderId },
-            select: { id: true, userId: true, tenantId: true },
+          // 验证目标文件夹存在且属于当前用户/租户
+          // 走 DB 层三键作用域化：findFirst 以 {id, userId, tenantId} 过滤，跨用户/跨租户
+          // folderId 直接返回 null → 抛错，不将他人/他租户文件夹行载入内存。
+          // 与 trash restore、faces/groups/merge 同模式（findUnique+post-check → findFirst）。
+          const targetFolder = await tx.folder.findFirst({
+            where: { id: folderId, userId, tenantId },
+            select: { id: true },
           });
 
-          if (!targetFolder || targetFolder.userId !== userId || targetFolder.tenantId !== tenantId) {
+          if (!targetFolder) {
             throw new Error('目标文件夹不存在或无权访问');
           }
 
