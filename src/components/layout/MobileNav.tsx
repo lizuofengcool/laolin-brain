@@ -6,6 +6,7 @@ import {
   Search,
   Star,
   User,
+  PieChart,
 } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAppStore } from "@/stores/app-store";
@@ -16,6 +17,7 @@ const mainNavItems: { icon: typeof LayoutDashboard; label: string; path: string 
   { icon: FolderOpen, label: "文件", path: "/files" },
   { icon: Star, label: "收藏", path: "/favorites" },
   { icon: Search, label: "搜索", path: "/search" },
+  { icon: PieChart, label: "报表", path: "/reports" },
   { icon: User, label: "我的", path: "/profile" },
 ];
 
