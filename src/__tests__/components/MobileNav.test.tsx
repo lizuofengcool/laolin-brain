@@ -164,6 +164,56 @@ describe("MobileNav", () => {
     });
   });
 
+  describe("active 态前缀匹配（本轮新增）", () => {
+    it("pathname === '/reports/[id]' → 「报表」高亮、其余不高亮（修复详情页不高亮）", () => {
+      mockUsePathname.mockReturnValue("/reports/abc-123");
+      render(<MobileNav />);
+
+      const reportsBtn = getNavButton("报表");
+      expect(reportsBtn.className).toContain("text-primary");
+      expect(reportsBtn.className).not.toContain("text-muted-foreground");
+
+      // 其余 5 项均为 inactive
+      ["首页", "文件", "收藏", "搜索", "我的"].forEach((label) => {
+        const btn = getNavButton(label);
+        expect(btn.className).toContain("text-muted-foreground");
+        expect(btn.className).not.toContain("text-primary");
+      });
+    });
+
+    it("pathname === '/files/[id]' → 「文件」高亮、其余不高亮", () => {
+      mockUsePathname.mockReturnValue("/files/some-file-id");
+      render(<MobileNav />);
+
+      expect(getNavButton("文件").className).toContain("text-primary");
+      ["首页", "收藏", "搜索", "报表", "我的"].forEach((label) => {
+        expect(getNavButton(label).className).toContain("text-muted-foreground");
+      });
+    });
+
+    it("前缀边界：'/files-extra' 不命中「文件」（path + '/' 边界守卫）", () => {
+      // 若用裸 startsWith(item.path)，/files-extra 会误命中 /files。
+      // 现以 item.path + "/" 为前缀，/files-extra 不含 /files/ → 全部 inactive。
+      mockUsePathname.mockReturnValue("/files-extra");
+      render(<MobileNav />);
+
+      EXPECTED_LABELS.forEach((label) => {
+        expect(getNavButton(label).className).toContain("text-muted-foreground");
+        expect(getNavButton(label).className).not.toContain("text-primary");
+      });
+    });
+
+    it("无前缀冲突：'/favorites' 仅高亮「收藏」，不误高亮「文件」", () => {
+      // /favorites 与 /files 共享首段 /f，需确保分段边界不串扰
+      mockUsePathname.mockReturnValue("/favorites");
+      render(<MobileNav />);
+
+      expect(getNavButton("收藏").className).toContain("text-primary");
+      expect(getNavButton("文件").className).toContain("text-muted-foreground");
+      expect(getNavButton("文件").className).not.toContain("text-primary");
+    });
+  });
+
   describe("active 态（回归）", () => {
     it("pathname === '/dashboard' → 仅「首页」高亮", () => {
       mockUsePathname.mockReturnValue("/dashboard");

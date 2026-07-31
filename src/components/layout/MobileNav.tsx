@@ -31,7 +31,11 @@ export function MobileNav() {
       <div className="flex items-center justify-around h-14">
         {mainNavItems.map((item) => {
           const Icon = item.icon;
-          const isActive = pathname === item.path;
+          // 前缀匹配：详情页（如 /reports/[id]、/files/[id]）也高亮其所属导航项。
+          // 以 item.path + "/" 作为前缀边界，避免 /files-extra 误命中 /files；
+          // 当前 6 个 path 互不为前缀，至多一项 active。
+          const isActive =
+            pathname === item.path || pathname.startsWith(item.path + "/");
           return (
             <button
               key={item.path}
