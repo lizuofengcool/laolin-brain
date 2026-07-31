@@ -22623,3 +22623,84 @@ origin/github 均在 484f9fe、local 在 601db67（领先 1 commit、worklog 改
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
 
+## 2026-08-01 05:00 自动迭代
+
+### 背景
+
+- 仓库本地缺失，从 origin（Gitee）重新 clone；补 github remote。
+- `git fetch origin/github` 后两端均在 `0bc7d94`，与本地一致，无远端新提交、无未提交
+  改动、无遗留未推送 commit，直接进入新开发。
+- 决策执行：`faces/groups/merge 目标分组查询 DB 层作用域化收口`（上轮候选清单第 1 项，
+  与上轮 faces/detect `file.findFirst` 同模式：原
+  `db.faceGroup.findUnique({ where: { id: targetGroupId } })` 仅按 id 取回分组行再 JS 层
+  `userId/tenantId` 逐字段比对，DB 层未作用域化；有现成 faces-groups-merge-route.test.ts
+  范式、风险低、属纯防御收紧非可利用越权）。
+
+### 改动
+
+1. `src/app/api/faces/groups/merge/route.ts`（+8 / -3）：
+   - `db.faceGroup.findUnique({ where: { id: targetGroupId }, include: { faces: true } })` +
+     JS 层 `targetGroup.userId !== userId || targetGroup.tenantId !== tenantId` 比对 →
+     `db.faceGroup.findFirst({ where: { id: targetGroupId, tenantId, userId }, include: { faces: true } })`
+     + 仅 null 检查。
+   - DB 层即按 id+tenantId+userId 三键过滤，跨租户/跨用户 targetGroupId 直接返回 null，
+     不将他人分组行载入内存。与 faces/detect 路由 `file.findFirst` 同模式收口；后续
+     `$transaction` 内对 `targetGroup.name` / `targetGroup.thumbnail` 的引用不变（findFirst
+     返回完整行含 include.faces）。
+
+2. `src/__tests__/api/faces-groups-merge-route.test.ts`（+13 / -32）：
+   - hoisted mock 与 db mock 的 `findUnique` → `findFirst`（`mockGroupFindUnique` →
+     `mockGroupFindFirst`），所有引用同步重命名。
+   - 原「目标分组不存在 / userId 不匹配 / tenantId 不匹配」三例（findUnique 取回错配行后
+     JS 比对 → 404）合并为单例 `findFirst 返回 null（不存在/跨租户/跨用户）→ 404`，
+     断言 findFirst 以 `{ where: { id, tenantId, userId }, include: { faces: true } }` 三键
+     调用、不触达 findMany / $transaction。三场景在 DB 层统一收敛为 findFirst 返回 null，
+     与上轮 faces-detect 测试同范式。
+   - 头部 docstring 同步：目标分组契约由「双键校验」改为「findFirst DB 层三键作用域化」。
+   - 用例数 18 → 16（-2，纯合并非删覆盖）。
+
+### 验证
+
+- 环境：沙箱无 node_modules，仓库用 package-lock.json + bun.lock；以 `npm ci`
+  （严格读 package-lock、不 mutate lockfile）装 986 包 / 27s。`git status` 确认仅 2 目标
+  文件改动，package-lock.json 未变。
+- `npx vitest run src/__tests__/api/faces-groups-merge-route.test.ts`：✅ 16/16 通过
+  （500 用例的 stderr 为路由 catch 内 console.error，非失败）。
+- `npx tsc --noEmit`：✅ EXIT=0 零类型错误。
+- `npx vitest run`（全量）：✅ **5636 passed / 215 files**，零回归
+  （第二百零八轮 5638/215 → 本轮 5636/215，-2 用例，即上述三合一合并，文件数不变）。
+
+### 改动量
+
+1 commit，2 文件，+26 / -43：
+- `src/app/api/faces/groups/merge/route.ts`（+8 / -3）
+- `src/__tests__/api/faces-groups-merge-route.test.ts`（+13 / -32）
+
+### Commit
+
+- `7e361cc` fix(faces-groups-merge): 目标分组查询收紧为 DB 层 tenantId+userId 作用域
+
+### 推送
+
+- origin (Gitee)：✅ 已推送（`0bc7d94..7e361cc`）
+- github (GitHub)：✅ 已推送（`0bc7d94..7e361cc`）
+- 三端对齐：local / origin / github 均在 `7e361cc`，正常 push 未 force。
+
+### 下一轮候选
+
+- **comments/trash/files-batch 同模式收口**（小改动，低优先级）：`trash/route.ts` /
+  `files/batch/route.ts` 的 `targetFolder` 取回后再 `userId/tenantId` 比对、
+  `saas/orders/route.ts` 的 `order.tenantId !== tenantId` 同属 findUnique+post-check 范式，
+  可逐个下推到 where 使 DB 层作用域化（纯防御收紧，非可利用越权）。本轮 faces/groups/merge
+  收口后，该系列为 findUnique+post-check 收口的自然延续。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格窄屏缩窄
+  但不破坏，可加 CSS media query 切 mobile=1 / tablet=12 / desktop=24 列。jsdom
+  不模拟媒体查询，需以 className/断点标记断言而非实际布局。
+- **日期范围筛选器增强**（小改动，低优先级）：当前预设仅近 7 天/近 30 天，可加
+  "本月/上月/本季度"；或把"应用"按钮改为输入即应用（debounce）。
+- **MobileNav 收藏角标与详情页共存验证**（极小，低优先级）：前缀匹配已落地，可补
+  `/favorites/[id]` 时「收藏」高亮 + 角标同时渲染的复合断言（当前用例分别覆盖）。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
+
