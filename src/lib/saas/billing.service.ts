@@ -54,10 +54,31 @@ export async function createOrder(
 
 /**
  * 获取订单信息
+ *
+ * 按裸 id 查询（findUnique where.id），供 getPaymentParams 在 createOrder
+ * 同事务上下文内复用——订单刚由认证租户创建，id 来源可信，无需二次 tenantId 校验。
  */
 export async function getOrder(orderId: string): Promise<Order | null> {
   return prisma.order.findUnique({
     where: { id: orderId },
+  });
+}
+
+/**
+ * 获取本租户的订单信息（DB 层租户作用域化）
+ *
+ * 与 getOrder(orderId) 的区别：本函数以 findFirst({ where: { id, tenantId } })
+ * 在 DB 层收紧租户作用域，供 saas/orders 路由 GET 单订单读取使用。
+ * query 的 orderId 不可信，原 getOrder(orderId) + order.tenantId !== tenantId
+ * 的 post-check 范式会先以 findUnique 按裸 id 命中他租户同 id 订单再 JS 比对，
+ * 此处改为 DB 层过滤：不存在 / 跨租户统一收敛为 findFirst 返回 null。
+ */
+export async function getOrderForTenant(
+  orderId: string,
+  tenantId: string
+): Promise<Order | null> {
+  return prisma.order.findFirst({
+    where: { id: orderId, tenantId },
   });
 }
 

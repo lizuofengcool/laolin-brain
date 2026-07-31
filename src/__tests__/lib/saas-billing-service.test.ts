@@ -17,7 +17,9 @@
  *   3. handlePaymentSuccess 订阅周期计算：续费同套餐 / 换套餐 / 新订阅三分支；
  *      baseDate 选择（currentPeriodEnd>now 用旧周期尾，否则用 now）；
  *      months = year?12:1 × quantity；已支付幂等；订单不存在；事务抛错回退
- *   4. getOrder/getOrderByNo/getTenantOrders 透传与 limit/offset/total
+ *   4. getOrder/getOrderByNo/getTenantOrders 透传与 limit/offset/total；
+ *      getOrderForTenant 以 findFirst({ id, tenantId }) DB 层收紧租户作用域（与 getOrder
+ *      的 findUnique where.id 区别锁定，供 saas/orders 路由 GET 单订单读取使用）
  *   5. cancelSubscription/reactivateSubscription 无订阅→false、前置条件校验
  *   6. getPaymentParams 订单不存在/已支付/委托 createPayment 创建支付订单（参数拼装 + 结果映射）
  *
@@ -35,6 +37,7 @@ const { mockPrisma, mockGetCurrentSubscription, mockCreatePayment, mockGetNotify
     order: {
       create: vi.fn(),
       findUnique: vi.fn(),
+      findFirst: vi.fn(),
       findMany: vi.fn(),
       count: vi.fn(),
       update: vi.fn(),
@@ -84,6 +87,7 @@ vi.mock('@/lib/payment', () => ({
 import {
   createOrder,
   getOrder,
+  getOrderForTenant,
   getOrderByNo,
   getTenantOrders,
   handlePaymentSuccess,
@@ -483,6 +487,42 @@ describe('saas/billing.service - 订单查询', () => {
     const args = mockPrisma.order.findMany.mock.calls[0][0];
     expect(args.take).toBe(20);
     expect(args.skip).toBe(0);
+  });
+});
+
+describe('saas/billing.service - getOrderForTenant 租户作用域化', () => {
+  it('按 id+tenantId 调 order.findFirst 并透传结果', async () => {
+    const order = { id: 'o1', tenantId: TENANT_ID, status: 'pending' };
+    mockPrisma.order.findFirst.mockResolvedValue(order);
+
+    const res = await getOrderForTenant('o1', TENANT_ID);
+
+    expect(mockPrisma.order.findFirst).toHaveBeenCalledWith({ where: { id: 'o1', tenantId: TENANT_ID } });
+    expect(res).toEqual(order);
+  });
+
+  it('订单不存在 / 跨租户返回 null（DB 层 tenantId 过滤）', async () => {
+    // findFirst 以 { id, tenantId } 在 DB 层过滤，跨租户同 id 订单不会被取回，
+    // 统一收敛为 null（与 getOrder 的 findUnique where.id 区别在此）。
+    mockPrisma.order.findFirst.mockResolvedValue(null);
+
+    const res = await getOrderForTenant('o-other', TENANT_ID);
+
+    expect(res).toBeNull();
+    expect(mockPrisma.order.findFirst).toHaveBeenCalledWith({ where: { id: 'o-other', tenantId: TENANT_ID } });
+  });
+
+  it('getOrderForTenant 与 getOrder 查询范式不同（findFirst 两键 vs findUnique 裸 id）', async () => {
+    // 契约锁定：getOrderForTenant 走 findFirst + { id, tenantId }；
+    // getOrder 走 findUnique + { id }（供 getPaymentParams 在 createOrder 同事务上下文复用）。
+    mockPrisma.order.findFirst.mockResolvedValue({ id: 'o1', tenantId: TENANT_ID });
+    mockPrisma.order.findUnique.mockResolvedValue({ id: 'o1', tenantId: TENANT_ID });
+
+    await getOrderForTenant('o1', TENANT_ID);
+    await getOrder('o1');
+
+    expect(mockPrisma.order.findFirst).toHaveBeenCalledWith({ where: { id: 'o1', tenantId: TENANT_ID } });
+    expect(mockPrisma.order.findUnique).toHaveBeenCalledWith({ where: { id: 'o1' } });
   });
 });
 

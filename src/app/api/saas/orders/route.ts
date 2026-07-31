@@ -3,7 +3,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createOrder, getOrder, getTenantOrders, getPaymentParams } from '@/lib/saas/billing.service';
+import { createOrder, getOrderForTenant, getTenantOrders, getPaymentParams } from '@/lib/saas/billing.service';
 import { authenticateRequest } from '@/lib/api-auth';
 
 // 获取订单列表
@@ -18,15 +18,12 @@ export async function GET(request: NextRequest) {
 
     // 如果指定了订单 ID，获取单个订单
     if (orderId) {
-      const order = await getOrder(orderId);
+      // 走 DB 层租户作用域化查询：findFirst({ where: { id, tenantId } }) 在 DB 层
+      // 过滤跨租户订单，替代原 getOrder(orderId) + order.tenantId !== tenantId 的
+      // post-check 范式（findUnique 按裸 id 命中他租户同 id 订单后 JS 比对）。
+      // query 的 orderId 不可信，须在 DB 层收紧；不存在 / 跨租户统一收敛为 null → 404。
+      const order = await getOrderForTenant(orderId, tenantId);
       if (!order) {
-        return NextResponse.json(
-          { error: '订单不存在' },
-          { status: 404 }
-        );
-      }
-      // 纵深防御：仅允许读取本租户订单，防止跨租户越权
-      if (order.tenantId !== tenantId) {
         return NextResponse.json(
           { error: '订单不存在' },
           { status: 404 }

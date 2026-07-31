@@ -3,9 +3,9 @@
  *
  * 锁定 /api/saas/orders 两个 handler 的安全与控制流契约：
  *   - GET：未认证 401 透传；无 orderId → getTenantOrders(auth.tenantId) 列表；有 orderId →
- *     getOrder(orderId)（用 query 的 orderId 非 tenantId），订单不存在 → 404；订单存在但
- *     属于他租户（order.tenantId !== auth.tenantId）→ 404（纵深防御，不泄漏跨租户订单存在性）；
- *     任一服务抛错 → 500
+ *     getOrderForTenant(orderId, auth.tenantId)（DB 层以 { id, tenantId } 收紧作用域，替代
+ *     原 getOrder(orderId) + order.tenantId !== tenantId 的 post-check 范式），findFirst
+ *     返回 null（订单不存在 / 跨租户）→ 404（不泄漏跨租户订单存在性）；任一服务抛错 → 500
  *   - POST：未认证 401 透传；校验顺序为 !plan||!interval（400 缺少必要参数）→ plan 合法性
  *     （400 无效的套餐类型）→ interval 合法性（400 无效的订阅周期）→ quantity 值域（400 quantity
  *     必须为 1-100 的正整数，挡 0/负数/小数/超 100，避免透传金额计算与 setMonth 月份推进），
@@ -26,7 +26,7 @@ const {
   MockNextResponse,
   mockAuthenticate,
   mockCreateOrder,
-  mockGetOrder,
+  mockGetOrderForTenant,
   mockGetTenantOrders,
   mockGetPaymentParams,
 } = vi.hoisted(() => {
@@ -45,7 +45,7 @@ const {
     MockNextResponse,
     mockAuthenticate: vi.fn(),
     mockCreateOrder: vi.fn(),
-    mockGetOrder: vi.fn(),
+    mockGetOrderForTenant: vi.fn(),
     mockGetTenantOrders: vi.fn(),
     mockGetPaymentParams: vi.fn(),
   };
@@ -57,7 +57,7 @@ vi.mock("@/lib/api-auth", () => ({
 }));
 vi.mock("@/lib/saas/billing.service", () => ({
   createOrder: (...args: unknown[]) => mockCreateOrder(...args),
-  getOrder: (...args: unknown[]) => mockGetOrder(...args),
+  getOrderForTenant: (...args: unknown[]) => mockGetOrderForTenant(...args),
   getTenantOrders: (...args: unknown[]) => mockGetTenantOrders(...args),
   getPaymentParams: (...args: unknown[]) => mockGetPaymentParams(...args),
 }));
@@ -99,7 +99,7 @@ describe("saas/orders 路由", () => {
 
       expect(res.status).toBe(401);
       expect(res.body).toEqual({ error: "未提供身份认证令牌" });
-      expect(mockGetOrder).not.toHaveBeenCalled();
+      expect(mockGetOrderForTenant).not.toHaveBeenCalled();
       expect(mockGetTenantOrders).not.toHaveBeenCalled();
     });
 
@@ -116,10 +116,10 @@ describe("saas/orders 路由", () => {
       expect(res.body).toEqual({ orders });
       // 列表路径以 auth.tenantId 作用域，不读 query 的 orderId
       expect(mockGetTenantOrders).toHaveBeenCalledWith("tenant-1");
-      expect(mockGetOrder).not.toHaveBeenCalled();
+      expect(mockGetOrderForTenant).not.toHaveBeenCalled();
     });
 
-    it("有 orderId 且订单存在且属本租户 → getOrder(orderId) 调用，返回 { order }", async () => {
+    it("有 orderId 且订单存在且属本租户 → getOrderForTenant(orderId, tenantId) 调用，返回 { order }", async () => {
       const order = {
         id: "order-99",
         tenantId: "tenant-1",
@@ -129,7 +129,7 @@ describe("saas/orders 路由", () => {
         status: "pending",
         currentPeriodEnd: FIXED_END,
       };
-      mockGetOrder.mockResolvedValue(order);
+      mockGetOrderForTenant.mockResolvedValue(order);
 
       const res = (await GET(
         makeRequest("http://localhost/api/saas/orders?orderId=order-99")
@@ -137,13 +137,15 @@ describe("saas/orders 路由", () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ order });
-      // getOrder 用 query 的 orderId（非 tenantId）——单订单读取按订单号定位
-      expect(mockGetOrder).toHaveBeenCalledWith("order-99");
+      // getOrderForTenant 以 query 的 orderId + auth.tenantId 两键定位，DB 层收紧作用域
+      expect(mockGetOrderForTenant).toHaveBeenCalledWith("order-99", "tenant-1");
       expect(mockGetTenantOrders).not.toHaveBeenCalled();
     });
 
-    it("有 orderId 但订单不存在 → 404 订单不存在", async () => {
-      mockGetOrder.mockResolvedValue(null);
+    it("有 orderId 但 findFirst 返回 null（订单不存在 / 跨租户）→ 404 订单不存在", async () => {
+      // getOrderForTenant 以 { id, tenantId } 在 DB 层过滤，跨租户订单不会返回，
+      // 统一收敛为 null → 404（不泄漏跨租户订单存在性，替代原 post-check 范式）。
+      mockGetOrderForTenant.mockResolvedValue(null);
 
       const res = (await GET(
         makeRequest("http://localhost/api/saas/orders?orderId=order-missing")
@@ -151,28 +153,7 @@ describe("saas/orders 路由", () => {
 
       expect(res.status).toBe(404);
       expect(res.body).toEqual({ error: "订单不存在" });
-      expect(mockGetOrder).toHaveBeenCalledWith("order-missing");
-    });
-
-    it("有 orderId 订单存在但属他租户 → 404（纵深防御，不泄漏跨租户订单）", async () => {
-      // 订单存在但 tenantId 是另一个租户——路由须以 404 拒绝而非返回订单数据
-      const crossTenantOrder = {
-        id: "order-77",
-        tenantId: "tenant-other",
-        plan: "pro",
-        interval: "month",
-        amount: 9900,
-      };
-      mockGetOrder.mockResolvedValue(crossTenantOrder);
-
-      const res = (await GET(
-        makeRequest("http://localhost/api/saas/orders?orderId=order-77")
-      )) as MockRes;
-
-      expect(res.status).toBe(404);
-      // 关键：不返回他租户订单数据，统一以"订单不存在"措辞拒绝（不泄漏存在性）
-      expect(res.body).toEqual({ error: "订单不存在" });
-      expect(mockGetOrder).toHaveBeenCalledWith("order-77");
+      expect(mockGetOrderForTenant).toHaveBeenCalledWith("order-missing", "tenant-1");
     });
 
     it("getTenantOrders 抛错 → 500 获取订单失败", async () => {
@@ -184,8 +165,8 @@ describe("saas/orders 路由", () => {
       expect(res.body).toEqual({ error: "获取订单失败" });
     });
 
-    it("getOrder 抛错 → 500 获取订单失败", async () => {
-      mockGetOrder.mockRejectedValue(new Error("db down"));
+    it("getOrderForTenant 抛错 → 500 获取订单失败", async () => {
+      mockGetOrderForTenant.mockRejectedValue(new Error("db down"));
 
       const res = (await GET(
         makeRequest("http://localhost/api/saas/orders?orderId=order-99")
