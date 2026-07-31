@@ -2,14 +2,15 @@
  * faces/groups/merge 路由 handler 级集成测试（POST 合并人脸分组）
  *
  * 锁定租户隔离契约 + 合并事务控制流。该路由使用 `db` 直接访问（未走 createTenantDb），
- * 但目标分组与源分组均以 `userId + tenantId` 双键校验，多租户用户无法越权合并他租户分组。
+ * 但目标分组以 `findFirst({ where: { id, tenantId, userId } })` DB 层三键作用域化，
+ * 源分组以 `findMany` 的 `userId + tenantId` 双键过滤，多租户用户无法越权合并他租户分组。
  * 审计确认无跨租户越权 bug；本测试守护该契约防回归。
  *
  * 覆盖：
  *   - 未认证 → 401 透传 authenticateRequest，不触达 DB。
  *   - 参数校验：sourceGroupIds 缺失/非数组/空数组 → 400；targetGroupId 缺失/非字符串 → 400；
  *     targetGroupId ∈ sourceGroupIds → 400。
- *   - 租户隔离：目标分组不存在 / userId 不匹配 / tenantId 不匹配 → 404，不触达 findMany/$transaction。
+ *   - 租户隔离：目标分组 findFirst 返回 null（不存在/跨租户/跨用户）→ 404，不触达 findMany/$transaction。
  *   - 源分组校验：findMany 返回数量与 sourceGroupIds 不一致 → 404 含缺失 id，不触达 $transaction。
  *   - 成功：$transaction 回调以 tx 执行；每源分组 updateMany({where:{groupId:src.id},data:{groupId:target}})
  *     + delete({where:{id:src.id}})；totalMovedFaces 聚合 updateMany.count；响应字段透传。
@@ -27,7 +28,7 @@ import type { NextRequest } from "next/server";
 const {
   MockNextResponse,
   mockAuthenticate,
-  mockGroupFindUnique,
+  mockGroupFindFirst,
   mockGroupFindMany,
   mockTx,
   mockInstanceUpdateMany,
@@ -61,7 +62,7 @@ const {
   return {
     MockNextResponse,
     mockAuthenticate: vi.fn(),
-    mockGroupFindUnique: vi.fn(),
+    mockGroupFindFirst: vi.fn(),
     mockGroupFindMany: vi.fn(),
     mockTx: tx,
     mockInstanceUpdateMany: vi.fn(),
@@ -79,7 +80,7 @@ vi.mock("@/lib/api-auth", () => ({
 vi.mock("@/lib/db", () => ({
   db: {
     faceGroup: {
-      findUnique: (...args: unknown[]) => mockGroupFindUnique(...args),
+      findFirst: (...args: unknown[]) => mockGroupFindFirst(...args),
       findMany: (...args: unknown[]) => mockGroupFindMany(...args),
     },
     $transaction: (fn: (t: typeof mockTx) => Promise<unknown>) => mockTransaction(fn),
@@ -137,7 +138,7 @@ describe("/api/faces/groups/merge 路由 POST（合并人脸分组）", () => {
     mockTransaction.mockImplementation(
       async (fn: (t: typeof mockTx) => Promise<unknown>) => fn(mockTx)
     );
-    mockGroupFindUnique.mockResolvedValue({ ...targetGroup, faces: [] });
+    mockGroupFindFirst.mockResolvedValue({ ...targetGroup, faces: [] });
     mockGroupFindMany.mockResolvedValue([{ ...sourceGroupA, faces: [] }]);
     mockInstanceUpdateMany.mockResolvedValue({ count: 0 });
     mockGroupDelete.mockResolvedValue(undefined);
@@ -158,7 +159,7 @@ describe("/api/faces/groups/merge 路由 POST（合并人脸分组）", () => {
 
     expect(res.status).toBe(401);
     expect(res.body).toEqual({ error: "未提供身份认证令牌" });
-    expect(mockGroupFindUnique).not.toHaveBeenCalled();
+    expect(mockGroupFindFirst).not.toHaveBeenCalled();
     expect(mockTransaction).not.toHaveBeenCalled();
   });
 
@@ -168,7 +169,7 @@ describe("/api/faces/groups/merge 路由 POST（合并人脸分组）", () => {
     const res = (await POST(makeRequest({ targetGroupId: "grp-target" }))) as MockRes;
     expect(res.status).toBe(400);
     expect(res.body).toEqual({ error: "源分组ID列表不能为空" });
-    expect(mockGroupFindUnique).not.toHaveBeenCalled();
+    expect(mockGroupFindFirst).not.toHaveBeenCalled();
   });
 
   it("sourceGroupIds 非数组 → 400 '源分组ID列表不能为空'", async () => {
@@ -209,13 +210,13 @@ describe("/api/faces/groups/merge 路由 POST（合并人脸分组）", () => {
     )) as MockRes;
     expect(res.status).toBe(400);
     expect(res.body).toEqual({ error: "目标分组不能在源分组列表中" });
-    expect(mockGroupFindUnique).not.toHaveBeenCalled();
+    expect(mockGroupFindFirst).not.toHaveBeenCalled();
   });
 
-  // ---- 租户隔离：目标分组校验 ----
+  // ---- 租户隔离：目标分组校验（DB 层三键作用域化）----
 
-  it("目标分组不存在（findUnique 返回 null）→ 404，不触达 findMany/$transaction", async () => {
-    mockGroupFindUnique.mockResolvedValue(null);
+  it("目标分组不存在/跨租户/跨用户（findFirst 返回 null）→ 404，DB 层三键作用域化", async () => {
+    mockGroupFindFirst.mockResolvedValue(null);
 
     const res = (await POST(
       makeRequest({ sourceGroupIds: ["grp-src-a"], targetGroupId: "grp-target" })
@@ -223,36 +224,15 @@ describe("/api/faces/groups/merge 路由 POST（合并人脸分组）", () => {
 
     expect(res.status).toBe(404);
     expect(res.body).toEqual({ error: "目标分组不存在或无权访问" });
-    expect(mockGroupFindUnique).toHaveBeenCalledWith({
-      where: { id: "grp-target" },
+    // 核心：findFirst 以 { id, tenantId, userId } 三键调用，DB 层即不返回跨租户/跨用户行，
+    // 原 findUnique+JS 逐字段比对的三种 miss 场景（不存在/userId 不匹配/tenantId 不匹配）
+    // 在 DB 层统一收敛为 findFirst 返回 null
+    expect(mockGroupFindFirst).toHaveBeenCalledWith({
+      where: { id: "grp-target", tenantId: "tenant-1", userId: "user-1" },
       include: { faces: true },
     });
     expect(mockGroupFindMany).not.toHaveBeenCalled();
     expect(mockTransaction).not.toHaveBeenCalled();
-  });
-
-  it("目标分组 userId 不匹配 → 404（租户隔离）", async () => {
-    mockGroupFindUnique.mockResolvedValue({ ...targetGroup, userId: "other-user" });
-
-    const res = (await POST(
-      makeRequest({ sourceGroupIds: ["grp-src-a"], targetGroupId: "grp-target" })
-    )) as MockRes;
-
-    expect(res.status).toBe(404);
-    expect(res.body).toEqual({ error: "目标分组不存在或无权访问" });
-    expect(mockGroupFindMany).not.toHaveBeenCalled();
-  });
-
-  it("目标分组 tenantId 不匹配 → 404（跨租户隔离）", async () => {
-    mockGroupFindUnique.mockResolvedValue({ ...targetGroup, tenantId: "tenant-other" });
-
-    const res = (await POST(
-      makeRequest({ sourceGroupIds: ["grp-src-a"], targetGroupId: "grp-target" })
-    )) as MockRes;
-
-    expect(res.status).toBe(404);
-    expect(res.body).toEqual({ error: "目标分组不存在或无权访问" });
-    expect(mockGroupFindMany).not.toHaveBeenCalled();
   });
 
   // ---- 源分组校验 ----
@@ -334,7 +314,7 @@ describe("/api/faces/groups/merge 路由 POST（合并人脸分组）", () => {
   // ---- 名称继承 ----
 
   it("目标 name 为空且某源分组有 name → tx.faceGroup.update 写入源名称", async () => {
-    mockGroupFindUnique.mockResolvedValue({ ...targetGroup, name: null });
+    mockGroupFindFirst.mockResolvedValue({ ...targetGroup, name: null });
     mockGroupFindMany.mockResolvedValue([
       { ...sourceGroupA, name: "继承名称", faces: [] },
     ]);

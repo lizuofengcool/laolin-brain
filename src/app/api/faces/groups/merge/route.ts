@@ -42,13 +42,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 验证目标分组存在且属于当前用户
-    const targetGroup = await db.faceGroup.findUnique({
-      where: { id: targetGroupId },
+    // 验证目标分组存在且属于当前用户（DB 层即按 id+tenantId+userId 过滤，
+    // 跨租户/跨用户 targetGroupId 直接返回 null，不将他人分组行载入内存；纵深防御收紧，
+    // 与 faces/detect 路由 file.findFirst 同模式，原 findUnique 仅按 id 取回后再逐字段比对，
+    // DB 层未作用域化）
+    const targetGroup = await db.faceGroup.findFirst({
+      where: { id: targetGroupId, tenantId, userId },
       include: { faces: true },
     });
 
-    if (!targetGroup || targetGroup.userId !== userId || targetGroup.tenantId !== tenantId) {
+    if (!targetGroup) {
       return NextResponse.json(
         { error: '目标分组不存在或无权访问' },
         { status: 404 }
