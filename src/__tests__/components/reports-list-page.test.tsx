@@ -282,4 +282,104 @@ describe("报表列表页 /reports", () => {
     expect(cards).toHaveLength(1);
     expect(cards[0].getAttribute("data-template-id")).toBe("file-activity");
   });
+
+  // ---- 搜索结果高亮（<mark> 标签，大小写无关）----
+
+  it("无搜索关键词时不渲染任何高亮 <mark>", () => {
+    render(<ReportsListPage />);
+    expect(screen.queryAllByTestId("report-highlight")).toHaveLength(0);
+  });
+
+  it("搜索命中 name 时高亮对应子串", () => {
+    render(<ReportsListPage />);
+    fireEvent.change(screen.getByTestId("reports-search-input"), {
+      target: { value: "存储" },
+    });
+    // storage-overview name="存储概览" 命中"存储"；description 也含"存储"→ 2 个 mark
+    const marks = screen.getAllByTestId("report-highlight");
+    expect(marks.length).toBeGreaterThanOrEqual(1);
+    expect(marks.every((m) => m.textContent === "存储")).toBe(true);
+  });
+
+  it("搜索命中 description 时高亮对应子串", () => {
+    render(<ReportsListPage />);
+    // "登录" 仅出现在 user-activity description，name="用户活跃度" 不含
+    fireEvent.change(screen.getByTestId("reports-search-input"), {
+      target: { value: "登录" },
+    });
+    const marks = screen.getAllByTestId("report-highlight");
+    expect(marks).toHaveLength(1);
+    expect(marks[0].textContent).toBe("登录");
+  });
+
+  it("高亮大小写无关（输入 ai 命中 AI）", () => {
+    render(<ReportsListPage />);
+    // ai-usage name="AI使用分析" + description="AI功能使用情况..." 均含 "AI"
+    fireEvent.change(screen.getByTestId("reports-search-input"), {
+      target: { value: "ai" },
+    });
+    const marks = screen.getAllByTestId("report-highlight");
+    expect(marks.length).toBeGreaterThanOrEqual(1);
+    // 高亮保留原文本大小写（"AI"），不被关键词小写化
+    expect(marks.every((m) => m.textContent === "AI")).toBe(true);
+  });
+
+  it("单卡片 name 与 description 同时命中时渲染多个 <mark>", () => {
+    render(<ReportsListPage />);
+    // "存储" 同时命中 storage-overview 的 name(存储概览) 与 description
+    // (存储使用情况总览，包含存储趋势...)——description 中 "存储" 出现 2 次，
+    // 加上 name 1 次 → 共 3 个 mark。此处仅断言 "多 mark"（>=2）以验证 name 与
+    // description 同时命中会渲染多个高亮，不绑定 description 文案的精确出现次数。
+    fireEvent.change(screen.getByTestId("reports-search-input"), {
+      target: { value: "存储" },
+    });
+    const card = document.querySelector('[data-template-id="storage-overview"]');
+    expect(card).not.toBeNull();
+    const marksInCard = card?.querySelectorAll('[data-testid="report-highlight"]');
+    expect(marksInCard?.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("每个通过过滤的卡片至少有 1 个高亮", () => {
+    render(<ReportsListPage />);
+    // "活跃" 命中 file-activity + user-activity 的 name，各 1 个 mark
+    fireEvent.change(screen.getByTestId("reports-search-input"), {
+      target: { value: "活跃" },
+    });
+    const cards = screen.getAllByTestId("report-template-card");
+    expect(cards).toHaveLength(2);
+    cards.forEach((card) => {
+      const marks = card.querySelectorAll('[data-testid="report-highlight"]');
+      expect(marks.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it("关键词中的正则元字符按字面量匹配（'.' 不被当通配符）", () => {
+    render(<ReportsListPage />);
+    // "使用." 含字面量点：无模板 name/description 含 "使用." → 应 0 命中 → 空态。
+    // 若未转义正则，"." 会匹配任意字符，"使用." 会命中 "使用情"/"使用情" 等。
+    fireEvent.change(screen.getByTestId("reports-search-input"), {
+      target: { value: "使用." },
+    });
+    expect(screen.getByTestId("reports-empty")).toBeInTheDocument();
+    expect(screen.queryAllByTestId("report-highlight")).toHaveLength(0);
+  });
+
+  it("高亮不破坏完整文本可读性（textContent 仍含原 name）", () => {
+    render(<ReportsListPage />);
+    fireEvent.change(screen.getByTestId("reports-search-input"), {
+      target: { value: "存储" },
+    });
+    // mark("存储") + 文本("概览") 合并后 card.textContent 仍包含完整 name "存储概览"
+    const card = document.querySelector('[data-template-id="storage-overview"]');
+    expect(card?.textContent).toContain("存储概览");
+  });
+
+  it("清空搜索框后高亮消失", () => {
+    render(<ReportsListPage />);
+    const input = screen.getByTestId("reports-search-input");
+    fireEvent.change(input, { target: { value: "存储" } });
+    expect(screen.getAllByTestId("report-highlight").length).toBeGreaterThanOrEqual(1);
+    fireEvent.change(input, { target: { value: "" } });
+    expect(screen.queryAllByTestId("report-highlight")).toHaveLength(0);
+  });
 });

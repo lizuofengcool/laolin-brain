@@ -7,6 +7,7 @@
  * - 顶部提供搜索框（按 name / description 过滤）+ 分类下拉（按 category 过滤）
  *   过滤为前端纯过滤，无 API 改动
  * - 每个卡片显示模板 name / description / category / widget count / 推荐徽章
+ *   name / description 命中搜索关键词的子串以 <mark> 高亮（大小写无关）
  * - 点击卡片"查看"按钮跳转到 /reports/[id] 详情页（沿用上轮的 ReportRenderer + 24 列栅格）
  *
  * 不负责：
@@ -14,7 +15,7 @@
  * - 报表创建/订阅管理（留待后续轮）
  * - dataConfig 数据获取（详情页层面处理，下一轮）
  */
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { ArrowLeft, PieChart, Search, Star } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -51,7 +52,54 @@ function widgetCountLabel(template: ReportTemplate): string {
   return `${n} 个组件`;
 }
 
-function TemplateCard({ template }: { template: ReportTemplate }) {
+/** 转义正则元字符，避免关键词被当正则解释（如 "a.b" 应匹配字面量".")。 */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 高亮 text 中命中关键词的子串（<mark> 标签，大小写无关）。
+ *
+ * 与列表页过滤逻辑保持一致：
+ * - 关键词先 trim；trim 后为空（无搜索）直接返回原文本，不渲染任何 <mark>
+ * - 大小写无关匹配（正则 gi），多次命中全部高亮
+ * - 关键词中的正则元字符会被转义，按字面量匹配
+ *
+ * 返回 ReactNode：字符串（无命中）或字符串与 <mark> 交替的数组（有命中），
+ * 调用方直接嵌入 JSX 即可。用 mark 元素而非纯样式 span，便于辅助技术与测试断言。
+ */
+function highlightMatch(text: string, keyword: string): ReactNode {
+  const kw = keyword.trim();
+  if (!kw) return text;
+  const re = new RegExp(`(${escapeRegExp(kw)})`, "gi");
+  const parts = text.split(re);
+  if (parts.length === 1) {
+    // split 未产生分隔段 → 无命中，避免渲染无谓的 <span> 包裹
+    return text;
+  }
+  const lowered = kw.toLowerCase();
+  return parts.map((part, i) =>
+    part.toLowerCase() === lowered ? (
+      <mark
+        key={i}
+        data-testid="report-highlight"
+        className="bg-yellow-200 dark:bg-yellow-900/50 rounded px-0.5"
+      >
+        {part}
+      </mark>
+    ) : (
+      <span key={i}>{part}</span>
+    )
+  );
+}
+
+function TemplateCard({
+  template,
+  keyword,
+}: {
+  template: ReportTemplate;
+  keyword: string;
+}) {
   return (
     <Card
       data-testid="report-template-card"
@@ -63,11 +111,11 @@ function TemplateCard({ template }: { template: ReportTemplate }) {
           <div className="min-w-0 flex-1">
             <CardTitle className="text-base flex items-center gap-2">
               <PieChart className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-              <span className="truncate">{template.name}</span>
+              <span className="truncate">{highlightMatch(template.name, keyword)}</span>
             </CardTitle>
             {template.description ? (
               <CardDescription className="mt-1 line-clamp-2">
-                {template.description}
+                {highlightMatch(template.description, keyword)}
               </CardDescription>
             ) : null}
           </div>
@@ -197,7 +245,7 @@ export default function ReportsListPage() {
           className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
         >
           {filtered.map((template) => (
-            <TemplateCard key={template.id} template={template} />
+            <TemplateCard key={template.id} template={template} keyword={search} />
           ))}
         </div>
       )}
