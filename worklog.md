@@ -22367,3 +22367,79 @@ getActivityStats 缩小统计窗口），但详情页一直未接入筛选器，
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
 
+## 2026-08-01 02:00 自动迭代
+
+### 背景
+
+第二百零五轮完成报表详情页日期范围筛选器（commit 601db67），但该轮 worklog
+commit (3aac4ac) 因会话中断未推送至双端。本轮首要任务清理遗留：fetch 确认
+origin/github 均在 484f9fe、local 在 601db67（领先 1 commit、worklog 改动未提交），
+随后 push 601db67 + 提交并 push worklog 3aac4ac，三端对齐。清理完毕后执行上一轮
+候选首项「MobileNav 添加报表中心入口」。
+
+### 评估
+
+- fetch origin/github 后两端均在 484f9fe（204 轮 worklog），无远端更新需 rebase。
+- 优先级 1 清单 5 项经核查全部已在历史轮次解决（与 205 轮 worklog 记录一致），
+  本轮无待修安全/逻辑问题。
+- 上一轮遗留：601db67 未推送、worklog.md 未提交 → 本轮先清理（见上）。
+- 决定执行：MobileNav 新增报表中心入口（小改动、cohesion 高、有现成组件可改）。
+
+### 改动
+
+1. `src/components/layout/MobileNav.tsx`（+2 / 0）：
+   - mainNavItems 新增第 6 项 `{ icon: PieChart, label: "报表", path: "/reports" }`，
+     插入「搜索」与「我的」之间，保持「我的」末位惯例。
+   - 图标选用 PieChart，与桌面端 Sidebar「报表中心」（productivityNavItems）一致，
+     跨端视觉对齐。
+   - 6 项 flex-1 自动均分，375px 屏宽下每项约 62px，图标 20px + 标签 10px（2 字），
+     无溢出；不影响既有收藏角标逻辑（仅 /favorites 项渲染角标）。
+
+2. `src/__tests__/components/MobileNav.test.tsx`（+184 / 0，新增）：
+   - 桩化 useAppStore（拦截 selector 返回 favCount）、next/navigation
+     （usePathname/useRouter）；lucide-react 保留真实渲染。
+   - 11 用例覆盖：6 项渲染与顺序、报表导航跳转、active 高亮（text-primary vs
+     text-muted-foreground）、收藏角标渲染/封顶 99+/隔离非收藏项、未命中 pathname
+     全 inactive。
+
+### 验证
+
+- `npx vitest run src/__tests__/components/MobileNav.test.tsx`：✅ 11/11 通过。
+  （首轮 it 标题内嵌 ASCII 双引号导致 oxc 解析失败，改为中文角括号「」后通过。）
+- `npx tsc --noEmit`：✅ 零类型错误。
+- `npx vitest run`（全量）：✅ **5623 passed / 214 files**，零回归
+  （第二百零五轮 5612/213 → 本轮 5623/214，+11 用例 / +1 文件）。
+
+### 改动量
+
+1 commit，2 文件，+186 / 0：
+- `src/components/layout/MobileNav.tsx`（+2 / 0）
+- `src/__tests__/components/MobileNav.test.tsx`（+184 / 0，新增）
+
+### Commit
+
+- `d40d946` feat(mobile-nav): 移动端底部导航新增报表中心入口
+
+### 推送
+
+- origin (Gitee)：✅ 已推送（`3aac4ac..d40d946`）
+- github (GitHub)：✅ 已推送（`3aac4ac..d40d946`）
+- 三端对齐：local / origin / github 均在 `d40d946`。
+- 遗留清理：601db67（205 轮 feature）+ 3aac4ac（205 轮 worklog）已于本轮先行
+  push 至双端，205 轮 worklog 中「已推送」声明现已属实。
+
+### 下一轮候选
+
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格在
+  窄屏会缩窄但不破坏，可加 CSS media query 切到 mobile=1 列 / tablet=12 列 /
+  desktop=24 列。注意 jsdom 不模拟媒体查询，需以 className/断点标记断言而非
+  实际布局。
+- **日期范围筛选器增强**（小改动，低优先级）：当前预设仅近 7 天/近 30 天，可加
+  "本月/上月/本季度"等预设；或把"应用"按钮改为输入即应用（debounce）。
+- **MobileNav active 态前缀匹配**（小改动，低优先级）：当前 isActive 用
+  pathname === item.path 严格相等，/reports/[id] 详情页不会高亮「报表」项。
+  可改 startsWith 但需注意 /files vs /favorites 等前缀冲突（用分段匹配）。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
+
