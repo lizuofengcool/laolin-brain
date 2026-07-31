@@ -22813,3 +22813,111 @@ origin/github 均在 484f9fe、local 在 601db67（领先 1 commit、worklog 改
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
 
+## 2026-08-01 07:00 自动迭代
+
+### 背景
+
+- 仓库本地缺失（`/workspace/laolin-brain` 不存在），从 origin（Gitee）重新 clone，
+  补 github remote。`git fetch origin main` / `git fetch github main` 均成功，
+  origin/main 与 github/main 同在 `2fa376c`，与本地 HEAD 一致；无未提交改动、
+  无遗留未推送 commit，直接进入新开发。
+- 复核优先级 1「剩余问题」清单，逐项核验均已在历史轮次落地（与第二百一十轮核验
+  结论一致，本轮未重做）：
+  · `tenant-db.ts` raw 后门 → `raw`/`transaction` getter 已加调用堆栈 `console.warn`
+    软审计，rawDb 无审计导出已移除。
+  · `payment/alipay.ts` & `wechat.ts` RSA2 验签占位 → alipay 真 RSA-SHA256
+    `createVerify` + PEM 规整；wechat HMAC-SHA256 `timingSafeEqual` + AES-256-GCM
+    resource 解密；两提供者「已配置但未接入 SDK」分支显式失败，mock 仅未配置时返回。
+  · `api/files/route.ts` 绕过 TenantDb → GET / dedup / auto-summary 已走
+    `tenantDb.file.*`，仅 `db.$queryRaw` 配额聚合与 `db.$transaction` 版本化保留
+    （含 tenantId where，跨表原子操作必需）。
+  · `cloud-sync/sync-engine.ts` keep_both bug → 已修：本地 rename `[冲突副本]`，
+    云端版本新 id create；resolveConflict 入口已加 `findUnique({id,tenantId})` 守卫。
+  · `api-auth.test.ts` 与实现不符 → 已对齐：4 字段 / async / query param 被拒。
+- 决策执行：上轮候选清单第 1 项 `saas/orders findUnique+post-check 收口`，与上数轮
+  faces/detect、faces/groups/merge、trash、files-batch 同模式（findUnique 取回行后
+  JS 层 tenantId 比对 → findFirst DB 层作用域化）。Order 模型仅 tenantId 无 userId，
+  故为两键（id+tenantId）而非三键；`getOrder` 保留供 getPaymentParams 在 createOrder
+  同事务上下文复用。
+
+### 改动
+
+1. `src/lib/saas/billing.service.ts`（+21 / 0）：
+   - 新增 `getOrderForTenant(orderId, tenantId)`：`prisma.order.findFirst({ where:
+     { id: orderId, tenantId } })`，DB 层两键收紧租户作用域。
+   - `getOrder(orderId)` 保留（findUnique where.id），docstring 注明供 getPaymentParams
+     在 createOrder 同事务上下文复用（订单刚由认证租户创建，id 来源可信）。
+
+2. `src/app/api/saas/orders/route.ts`（+5 / -10）：
+   - GET 单订单：`getOrder(orderId)` + `order.tenantId !== tenantId` post-check →
+     `getOrderForTenant(orderId, tenantId)` + 仅 null 检查。import 由 `getOrder` 改为
+     `getOrderForTenant`。不存在/跨租户统一收敛为 findFirst 返回 null → 404。
+
+3. `src/__tests__/api/saas-orders-route.test.ts`（+19 / -38）：
+   - hoisted mock `mockGetOrder` → `mockGetOrderForTenant`，vi.mock 工厂同步替换
+     `getOrder` → `getOrderForTenant`。
+   - 原「订单不存在」+「订单存在但属他租户」两例（mock 返回他租户 order 后 post-check
+     → 404）合并为单例 `findFirst 返回 null（订单不存在/跨租户）→ 404`，断言
+     `mockGetOrderForTenant` 以 `("order-missing", "tenant-1")` 调用。与第二百一十轮
+     trash-route 测试同范式（DB 层统一收敛为 null）。
+   - 「成功」用例 mock 由 `mockGetOrder` → `mockGetOrderForTenant`，断言调用参为
+     `("order-99", "tenant-1")`；「抛错 → 500」用例同步重命名。
+   - 头部 docstring 同步：getOrder 契约 → getOrderForTenant DB 层 { id, tenantId }。
+   - 用例数：GET 7 → 6（-1，纯合并非删覆盖），POST 不变，文件总 23 → 22。
+
+4. `src/__tests__/lib/saas-billing-service.test.ts`（+42 / -1）：
+   - mockPrisma.order 补 `findFirst: vi.fn()`（原仅有 findUnique/findMany/count/update）。
+   - import 补 `getOrderForTenant`。
+   - 新增 describe 块 `getOrderForTenant 租户作用域化` 三例：按 id+tenantId 调
+     findFirst 透传；不存在/跨租户返回 null；与 getOrder 查询范式区别锁定
+     （findFirst 两键 vs findUnique 裸 id）。
+   - 头部 docstring 第 4 项补 getOrderForTenant 契约说明。
+
+### 验证
+
+- 环境：沙箱无 node_modules，仓库用 package-lock.json + bun.lock；以 `npm ci`
+  （严格读 package-lock、不 mutate lockfile）装 986 包 / 49s。`git status` 确认仅 4 目标
+  文件改动，package-lock.json / bun.lock 未变。
+- `npx vitest run src/__tests__/api/saas-orders-route.test.ts
+  src/__tests__/lib/saas-billing-service.test.ts`：✅ 70/70 通过
+  （stderr 为路由 catch 内 console.error，非失败）。
+- `npx tsc --noEmit`：✅ EXIT=0 零类型错误。
+- `npx vitest run`（全量）：✅ **5636 passed / 215 files**，零回归
+  （第二百一十轮 5634/215 → 本轮 5636/215，+2 用例：GET -1 合并 + billing-service +3
+  新增，文件数不变）。
+
+### 改动量
+
+1 commit，4 文件，+87 / -48：
+- `src/lib/saas/billing.service.ts`（+21 / 0）
+- `src/app/api/saas/orders/route.ts`（+5 / -10）
+- `src/__tests__/api/saas-orders-route.test.ts`（+19 / -38）
+- `src/__tests__/lib/saas-billing-service.test.ts`（+42 / -1）
+
+### Commit
+
+- `1bd3441` fix(saas-orders): 单订单查询收紧为 DB 层 tenantId 作用域
+
+### 推送
+
+- origin (Gitee)：✅ 已推送（`2fa376c..1bd3441`）
+- github (GitHub)：✅ 已推送（`2fa376c..1bd3441`）
+- 三端对齐：local / origin / github 均在 `1bd3441`，正常 push 未 force。
+
+### 下一轮候选
+
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格窄屏缩窄
+  但不破坏，可加 CSS media query 切 mobile=1 / tablet=12 / desktop=24 列。jsdom
+  不模拟媒体查询，需以 className/断点标记断言而非实际布局。
+- **日期范围筛选器增强**（小改动，低优先级）：当前预设仅近 7 天/近 30 天，可加
+  "本月/上月/本季度"；或把"应用"按钮改为输入即应用（debounce）。
+- **MobileNav 收藏角标与详情页共存验证**（极小，低优先级）：前缀匹配已落地，可补
+  `/favorites/[id]` 时「收藏」高亮 + 角标同时渲染的复合断言（当前用例分别覆盖）。
+- **saas/subscription 路由查询作用域化审计**（小改动，低优先级）：saas/orders 收口
+  后，可顺带审 saas/subscription 路由是否存在同类 findUnique + post-check 范式
+  （getCurrentSubscription 已按 tenantId 作用域，但 GET 单订阅 / 历史订单读取路径
+  需复核）。本轮未触达，留作独立审计。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
+
