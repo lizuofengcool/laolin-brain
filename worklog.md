@@ -22704,3 +22704,112 @@ origin/github 均在 484f9fe、local 在 601db67（领先 1 commit、worklog 改
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
 
+## 2026-08-01 06:00 自动迭代
+
+### 背景
+
+- 仓库本地缺失，从 origin（Gitee）重新 clone；补 github remote。
+- `git fetch origin main` 命中 Gitee 429（rate limit），但本地 main 即 clone 自 origin
+  的 `35d02d7`，与 origin/main 一致；`git fetch github main` 成功，github/main 亦在
+  `35d02d7`，两端无新提交、无未提交改动、无遗留未推送 commit，直接进入新开发。
+- 评估优先级 1「剩余问题」清单，逐项核验均已在历史轮次落地（非本轮需重做）：
+  · `tenant-db.ts` raw 后门 → 已加 `raw`/`transaction` getter 的调用堆栈 `console.warn`
+    软审计，并移除 rawDb 无审计导出（文件末注释说明）。
+  · `payment/alipay.ts` & `wechat.ts` RSA2 验签占位 → alipay 已实现真 RSA-SHA256
+    `createVerify` + PEM 公钥规整；wechat 已实现 HMAC-SHA256 `timingSafeEqual` +
+    AES-256-GCM resource 解密；两提供者「已配置但未接入 SDK」分支均改为显式失败，
+    mock 仅在未配置时返回。
+  · `api/files/route.ts` 绕过 TenantDb → GET 已走 `tenantDb.file.findMany`，POST
+    dedup / auto-summary 已走 `tenantDb.file.findFirst`/`update`；仅 `db.$queryRaw`
+    配额聚合与 `db.$transaction` 版本化保留（含 tenantId where，跨表原子操作必需）。
+  · `cloud-sync/sync-engine.ts` keep_both bug → 已修：本地文件 rename 为
+    `[冲突副本]` 保留，云端版本以新 id create 落地（注释明示「之前直接覆盖会丢失
+    本地版本」）；resolveConflict 入口已加 `findUnique({id,tenantId})` 归属守卫。
+  · `api-auth.test.ts` 与实现不符 → 测试已对齐：期望 4 字段 / async / query param
+    被拒（仅读 Authorization 头），并补 `requirePlatformAdmin` fail-closed 用例集。
+- 决策执行：`trash + files-batch targetFolder DB 层作用域化收口`（上轮候选清单第 1
+  项的自然延续，与上两轮 faces/detect、faces/groups/merge 同模式：`findUnique({where:
+  {id}})` 取回行后 JS 层 `userId/tenantId` 比对 → `findFirst({where:{id,userId,
+  tenantId}})` DB 层三键作用域化）。`saas/orders` 同属 findUnique+post-check 范式但
+  走服务层 `getOrder`，需改服务签名 + 2 个测试文件，留作下轮独立提交，本轮不铺摊子。
+
+### 改动
+
+1. `src/app/api/trash/route.ts`（+9 / -4）：
+   - POST `/restore` 的 targetFolderId 校验：`db.folder.findUnique({ where: { id:
+     targetFolderId }, select: { id, userId, tenantId } })` + JS 层
+     `!targetFolder || targetFolder.userId !== userId || targetFolder.tenantId !==
+     tenantId` 比对 → `db.folder.findFirst({ where: { id: targetFolderId, userId,
+     tenantId }, select: { id } })` + 仅 null 检查。
+   - DB 层即按 id+tenantId+userId 三键过滤，跨租户/跨用户 targetFolderId 直接返回
+     null → 404，不将他人/他租户文件夹行载入内存。404 响应措辞与状态码不变。
+
+2. `src/app/api/files/batch/route.ts`（+9 / -4）：
+   - `move` 分支的 folderId 校验（`$transaction` 内）：`tx.folder.findUnique({ where:
+     { id: folderId }, select: { id, userId, tenantId } })` + post-check →
+     `tx.folder.findFirst({ where: { id: folderId, userId, tenantId }, select: { id } })`
+     + 仅 null 检查。抛错语义（`throw new Error('目标文件夹不存在或无权访问')` → 500）不变。
+
+3. `src/__tests__/api/trash-route.test.ts`（+22 / -60）：
+   - hoisted mock 与 db mock 的 `folder.findUnique` → `findFirst`
+     （`mockFolderFindUnique` → `mockFolderFindFirst`），所有引用同步重命名。
+   - 原「目标文件夹不存在 / userId 不匹配 / tenantId 不匹配」三例（findUnique 取回
+     错配行后 JS 比对 → 404）合并为单例 `findFirst 返回 null（不存在/跨租户/跨用户）
+     → 404`，断言 findFirst 以 `{ where: { id, userId, tenantId }, select: { id } }`
+     三键 + select{id} 调用、不触达 $transaction。三场景在 DB 层统一收敛为 findFirst
+     返回 null，与上轮 faces-groups-merge 测试同范式。
+   - 「成功（有 targetFolderId）」用例 mock 返回由 `{id,userId,tenantId}` 改为 `{id}`
+     （select 仅 {id}，路由不读 userId/tenantId）。
+   - 头部 docstring 同步：targetFolder 契约由「findUnique 双键校验」改为「findFirst
+     DB 层三键作用域化」。
+   - 用例数 33 → 31（-2，纯合并非删覆盖）。
+
+### 验证
+
+- 环境：沙箱无 node_modules，仓库用 package-lock.json + bun.lock；以 `npm ci`
+  （严格读 package-lock、不 mutate lockfile）装 986 包 / 33s。`git status` 确认仅 3 目标
+  文件改动，package-lock.json 未变。
+- `npx vitest run src/__tests__/api/trash-route.test.ts`：✅ 31/31 通过
+  （stderr 为路由 catch 内 console.error，非失败）。
+- `npx tsc --noEmit`：✅ EXIT=0 零类型错误。
+- `npx vitest run`（全量）：✅ **5634 passed / 215 files**，零回归
+  （第二百零九轮 5636/215 → 本轮 5634/215，-2 用例，即上述三合一合并，文件数不变）。
+
+### 改动量
+
+1 commit，3 文件，+43 / -71：
+- `src/app/api/trash/route.ts`（+9 / -4）
+- `src/app/api/files/batch/route.ts`（+9 / -4）
+- `src/__tests__/api/trash-route.test.ts`（+22 / -60）
+
+### Commit
+
+- `6e5bb7d` fix(trash,files-batch): 目标文件夹查询收紧为 DB 层 tenantId+userId 作用域
+
+### 推送
+
+- origin (Gitee)：✅ 已推送（`35d02d7..6e5bb7d`）
+- github (GitHub)：✅ 已推送（`35d02d7..6e5bb7d`）
+- 三端对齐：local / origin / github 均在 `6e5bb7d`，正常 push 未 force。
+
+### 下一轮候选
+
+- **saas/orders findUnique+post-check 收口**（小-中改动，低优先级）：`saas/orders/route.ts`
+  GET 的 `getOrder(orderId)` + `order.tenantId !== tenantId` post-check 属同范式，但走
+  服务层 `getOrder`（billing.service.ts，被 getPaymentParams 复用）。收口方案：新增
+  `getOrderForTenant(orderId, tenantId)`（findFirst 三键），路由改用它 + null 检查；
+  `getOrder` 保留供 getPaymentParams（同事务内刚 createOrder 的订单）。需同步改
+  saas-orders-route.test.ts（mockGetOrder → mockGetOrderForTenant，跨租户用例由
+  mock 返回他租户 order 改为 mock 返回 null）与 saas-billing-service.test.ts（新增
+  getOrderForTenant 用例）。涉及 3 源 + 2 测试，宜独立提交。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格窄屏缩窄
+  但不破坏，可加 CSS media query 切 mobile=1 / tablet=12 / desktop=24 列。jsdom
+  不模拟媒体查询，需以 className/断点标记断言而非实际布局。
+- **日期范围筛选器增强**（小改动，低优先级）：当前预设仅近 7 天/近 30 天，可加
+  "本月/上月/本季度"；或把"应用"按钮改为输入即应用（debounce）。
+- **MobileNav 收藏角标与详情页共存验证**（极小，低优先级）：前缀匹配已落地，可补
+  `/favorites/[id]` 时「收藏」高亮 + 角标同时渲染的复合断言（当前用例分别覆盖）。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
+
