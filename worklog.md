@@ -22443,3 +22443,91 @@ origin/github 均在 484f9fe、local 在 601db67（领先 1 commit、worklog 改
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
 
+## 2026-08-01 03:00 自动迭代
+
+### 状态评估
+
+- 首轮 fetch：local / origin / github 三端均在 `6a976c3`（第二百零六轮），0/0 对齐，
+  无远端更新需 rebase，工作树干净，无遗留未提交改动。
+- 优先级 1 复核（任务清单"剩余"项实际已在历史轮次修复，清单已过期）：
+  - `tenant-db.ts` raw 后门 → `raw` getter 与 `transaction` 已加调用堆栈 console.warn
+    软审计，rawDb 无审计导出已移除（line 41-62 / 1114-1118）。✅ 已修
+  - `alipay.ts` / `wechat.ts` RSA2 验签占位 → alipay `verifyRSA2Sign` 用真实
+    `createVerify('RSA-SHA256')` + `normalizePublicKey`，缺 sign/key 即 false；
+    wechat `verifyWechatSign` 用 HMAC-SHA256 + `timingSafeEqual`，`decryptResource`
+    用 AES-256-GCM；已配置未接入 SDK 时 createPayment/queryPayment/refund 显式失败，
+    不再静默返回 mock。✅ 已修
+  - `files/route.ts` 绕过 TenantDb → GET 走 `createTenantDb`（line 480），POST 走
+    dedup/summary tenantDb；`$queryRaw` 配额统计含 `tenantId`。✅ 已修
+  - `sync-engine.ts` keep_both 直接覆盖 → 已改为先取云端数据、本地重命名 `[冲突副本]`、
+    云端版本以新 id 落地（line 687-728）。✅ 已修
+  - `api-auth.test.ts` 与实现不符 → 测试已改为期望 4 字段 / async / 拒绝 query param，
+    与 `api-auth.ts` 一致。✅ 已修
+- 残留 `db.*` 直查复核（grep src/app/api）：comments/faces-detect 等均在 where 含
+  tenantId 或取回后 `file.tenantId !== tenantId` 拒绝（纵深防御，非可利用泄露），
+  非本轮可收口的新缺口；AI/payment SDK TODO 需外部密钥，沙箱不可落地。
+- 决策执行：MobileNav active 态前缀匹配（第二百零六轮候选清单第 3 项，真实 UX 逻辑
+  bug：访问 `/reports/[id]` 详情页时底部导航「报表」不高亮；与上轮同文件 cohesion 高、
+  有现成测试文件、风险低）。
+
+### 改动
+
+1. `src/components/layout/MobileNav.tsx`（+3 / -1）：
+   - `isActive` 由 `pathname === item.path` 改为
+     `pathname === item.path || pathname.startsWith(item.path + "/")`。
+   - 以 `item.path + "/"` 作前缀边界，避免 `/files-extra` 误命中 `/files`；
+     当前 6 个 path（/dashboard /files /favorites /search /reports /profile）
+     互不为前缀，至多一项 active。
+   - 效果：`/reports/[id]`、`/files/[id]` 等详情页高亮其所属导航项。
+
+2. `src/__tests__/components/MobileNav.test.tsx`（+49 / 0）：
+   - 新增 `active 态前缀匹配（本轮新增）` describe，4 用例：
+     · `/reports/abc-123` → 「报表」高亮、其余 5 项 inactive（核心 bug 修复断言）
+     · `/files/some-file-id` → 「文件」高亮、其余 inactive
+     · `/files-extra` → 全部 inactive（`path + "/"` 边界守卫，防裸 startsWith 误命中）
+     · `/favorites` → 仅「收藏」高亮、「文件」不误高亮（/f 共享首段不串扰）
+
+### 验证
+
+- 环境：沙箱无 node_modules，无 pnpm-lock.yaml（仓库用 package-lock.json + bun.lock），
+  故用 `npm ci`（严格读 package-lock、不 mutate lockfile）装 986 包 / 50s；
+  `git status` 确认仅 2 目标文件改动，package-lock.json 未变。
+- `npx vitest run src/__tests__/components/MobileNav.test.tsx`：✅ 15/15 通过
+  （第二百零六轮 11 → 本轮 15，+4 用例）。
+- `npx tsc --noEmit`：✅ EXIT=0 零类型错误。
+- `npx vitest run`（全量）：✅ **5627 passed / 214 files**，零回归
+  （第二百零六轮 5623/214 → 本轮 5627/214，+4 用例）。
+  （pdf-parse 测试输出一段 stderr 为其内部 console 警告，该文件 9/9 通过，非失败。）
+
+### 改动量
+
+1 commit，2 文件，+52 / -1：
+- `src/components/layout/MobileNav.tsx`（+3 / -1）
+- `src/__tests__/components/MobileNav.test.tsx`（+49 / 0）
+
+### Commit
+
+- `7719421` fix(mobile-nav): 详情页路径前缀匹配高亮所属导航项
+
+### 推送
+
+- origin (Gitee)：✅ 已推送（`6a976c3..7719421`）
+- github (GitHub)：✅ 已推送（`6a976c3..7719421`）
+- 三端对齐：local / origin / github 均在 `7719421`，正常 push 未 force。
+
+### 下一轮候选
+
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格窄屏缩窄
+  但不破坏，可加 CSS media query 切 mobile=1 / tablet=12 / desktop=24 列。jsdom
+  不模拟媒体查询，需以 className/断点标记断言而非实际布局。
+- **日期范围筛选器增强**（小改动，低优先级）：当前预设仅近 7 天/近 30 天，可加
+  "本月/上月/本季度"；或把"应用"按钮改为输入即应用（debounce）。
+- **MobileNav 收藏角标与详情页共存验证**（极小，低优先级）：前缀匹配已落地，可补
+  `/favorites/[id]` 时「收藏」高亮 + 角标同时渲染的复合断言（当前用例分别覆盖）。
+- **faces/detect 纵深防御收口**（小改动，低优先级）：`db.file.findUnique({ where: { id } })`
+  取回后再 `file.tenantId !== tenantId` 拒绝，可改 `findFirst({ where: { id, tenantId } })`
+  使 DB 层即不返回跨租户行（非可利用泄露，纯防御收紧）。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
+
