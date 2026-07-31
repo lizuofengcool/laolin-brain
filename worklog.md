@@ -22150,3 +22150,110 @@ TenantDb 隔离层，缺一道防御）。本轮专注 backups 路由的 TenantD
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
 
+## 2026-08-01 01:00 自动迭代
+
+### 背景
+
+第二百零三轮已完成 `/reports` 列表页 filter bar（搜索 + 分类筛选）。本轮继续
+报表中心主线，执行上一轮候选中的"/reports 列表页搜索结果高亮"——在前端纯过滤
+基础上对命中关键词做 `<mark>` 高亮，提升可读性。属小改动、有现成测试可扩展、
+与上轮改动同文件，cohesion 高。
+
+### 评估
+
+- 仓库为全新 clone（沙箱无 `/workspace/laolin-brain`），clone 自 origin 后补加
+  github remote。fetch origin / github 后 local / origin / github 三端均在
+  `51ae1e7`，无远端更新需 rebase，工作树干净。
+- 优先级 1 清单（user 输入的 5 项）经核查 **全部已在历史轮次解决**：
+  · tenant-db.ts raw 后门 → `raw` getter / `transaction` 均带调用方堆栈软审计，
+    rawDb 无审计导出已移除
+  · alipay/wechat RSA2 验签 → alipay `verifyRSA2Sign` 走 RSA-SHA256 + PEM 规整；
+    wechat `verifyWechatSign` 走 APIv3 HMAC-SHA256 + timingSafeEqual，resource
+    走 AES-256-GCM 解密；mock 默认仅 `!isPaymentConfigured` 时启用，已配置未接
+    SDK 时显式失败
+  · files 路由走 TenantDb → GET / dedup / auto-summary 写回均经 createTenantDb，
+    仅 quota $queryRaw 保留手动 tenantId where（事务内 raw tx 经审计）
+  · sync-engine keep_both → `resolveConflict` 前置归属校验 + 重命名本地为
+    `[冲突副本]` + create 新文件落地云端版本，不再直接覆盖
+  · api-auth.test.ts → 已重写为匹配 4 字段 / async / 拒绝 query param 的实现
+- 源码剩余 TODO 与上轮一致（model-manager 4 处 + document-qna 1 处模型 API 桩），
+  均需外部 SDK，属低优先级延伸项，本轮不动。
+- 决定执行：`/reports` 列表页搜索结果高亮（mark 标签）。
+
+### 改动
+
+1. **`src/app/(dashboard)/reports/page.tsx`（+53 / -5）**：
+   - 新增 `escapeRegExp(s)`：转义正则元字符，避免关键词被当正则解释（如 "a.b"
+     匹配字面量"."而非任意字符）。
+   - 新增 `highlightMatch(text, keyword): ReactNode`：
+     · 关键词先 `trim`；trim 后为空（无搜索）直接返回原字符串，不渲染任何
+       `<mark>`，保证默认态既有 `getByText(name)` 断言不破坏
+     · 大小写无关匹配（正则 `gi`），与列表页过滤逻辑（`toLowerCase` includes）
+       完全一致
+     · 用 `split(re)` + 捕获组保留分隔段，命中段渲染 `<mark>`，非命中段渲染
+       `<span>`；多次命中全部高亮
+     · 无命中时 `parts.length === 1` 提前返回原文本，避免无谓 `<span>` 包裹
+   - `TemplateCard` 新增 `keyword` prop，对 name（`<span className="truncate">`）
+     与 description 套用 `highlightMatch`；`ReportsListPage` 把 `search` state
+     透传给每张卡片。
+   - `<mark>` 带 `data-testid="report-highlight"`（便于测试）+ `bg-yellow-200
+     dark:bg-yellow-900/50 rounded px-0.5`（明暗主题适配）。
+
+2. **`src/__tests__/components/reports-list-page.test.tsx`（+100 / 0）**：
+   - 新增 9 用例（"搜索结果高亮"段）：
+     · 无搜索关键词时不渲染任何 `<mark>`
+     · 命中 name 高亮（存储 → storage-overview）
+     · 命中 description 高亮（登录 → user-activity）
+     · 大小写无关（输入 ai 命中 AI，保留原大小写）
+     · 单卡片 name + description 同时命中渲染多 mark（存储 → ≥2，不绑定 description
+       精确出现次数——"存储使用情况总览，包含存储趋势..."中"存储"出现 2 次）
+     · 每个通过过滤的卡片至少 1 个高亮（活跃 → file/user-activity 各 1）
+     · 正则元字符字面量匹配（"使用." → 0 命中空态，证明 "." 未当通配符）
+     · 高亮不破坏 textContent 完整性（card.textContent 仍含完整 name "存储概览"）
+     · 清空搜索框后高亮消失
+   - 单测总计 30 用例（原 21 + 新 9）。
+
+### 验证
+
+- 沙箱无 node_modules，执行 `pnpm install --no-frozen-lockfile`（1m 6.9s，
+  pnpm-lock.yaml 被 .gitignore 忽略未提交）+ `npx prisma generate`（tsc 前置）。
+- `npx vitest run src/__tests__/components/reports-list-page.test.tsx`：
+  ✅ 30/30 通过（首轮 1 处断言过严：storage-overview description 含"存储"2 次 →
+  期望 2 实际 3，改为 `>=2` 后通过，高亮行为本身正确）。
+- `npx vitest run src/__tests__/components/reports`（7 文件）：✅ 156/156 通过，
+  无回归。
+- `npx tsc --noEmit`：✅ 零类型错误（prisma generate 后）。
+- `npx vitest run`（全量）：✅ **5602 passed / 213 files**，零回归
+  （第二百零三轮 5593/213 → 本轮 5602/213，+9 用例）。
+
+### 改动量
+
+1 commit，2 文件，+153 / -5：
+- `src/app/(dashboard)/reports/page.tsx`（+53 / -5，highlightMatch + keyword 透传）
+- `src/__tests__/components/reports-list-page.test.tsx`（+100 / 0，9 新用例）
+
+### Commit
+
+- `10a9ffc` feat(reports): /reports 列表页搜索结果高亮命中的关键词
+
+### 推送
+
+- origin (Gitee)：✅ 已推送（`51ae1e7..10a9ffc`）
+- github (GitHub)：✅ 已推送（`51ae1e7..10a9ffc`）
+- 三端对齐：local / origin / github 均在 `10a9ffc`。
+
+### 下一轮候选
+
+- **MobileNav 添加报表中心入口**（小改动，低优先级）：当前 MobileNav 仅 5 图标
+  精简栏（首页/文件/收藏/搜索/我的），未挂载 reports。可考虑替换"搜索"为
+  "报表"或新增第 6 图标（需评估 5→6 图标对移动端布局的影响）。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格在
+  窄屏会缩窄但不破坏，可加 CSS media query 切到 mobile=1 列 / tablet=12 列 /
+  desktop=24 列。
+- **日期范围筛选 UI**（中改动，低优先级）：`/api/reports/[id]/data` 已支持
+  `dateFrom`/`dateTo` query，详情页可加 daterange picker 让用户筛选趋势数据
+  的时间范围。需评估与 stats-service 的 dateFrom/dateTo 解析格式对齐。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
+
