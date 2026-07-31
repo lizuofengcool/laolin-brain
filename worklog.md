@@ -22257,3 +22257,113 @@ TenantDb 隔离层，缺一道防御）。本轮专注 backups 路由的 TenantD
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
 
+## 2026-08-01 02:00 自动迭代
+
+### 背景
+
+第二百零四轮完成 `/reports` 列表页搜索结果高亮。本轮继续报表中心主线，执行上一轮
+候选中的"日期范围筛选 UI"——`/api/reports/[id]/data` 路由早在 198 轮就支持
+`dateFrom`/`dateTo` query（透传给 stats-service 的 getTrendStats /
+getActivityStats 缩小统计窗口），但详情页一直未接入筛选器，用户无法在 UI 上
+调整趋势数据的时间范围。属中等改动、API 已就绪、有现成详情页测试可扩展，cohesion 高。
+
+### 评估
+
+- 仓库为全新 clone（沙箱无 `/workspace/laolin-brain`），clone 自 origin 后补加
+  github remote。fetch origin / github 后 local / origin / github 三端均在
+  `484f9fe`（204 轮 worklog commit），无远端更新需 rebase，工作树干净。
+- 优先级 1 清单（user 输入的 5 项）经逐一核查源码 **全部已在历史轮次解决**（与
+  204 轮 worklog 记录一致）：
+  · tenant-db.ts raw 后门 → `raw` getter / `transaction` 均带调用方堆栈软审计，
+    rawDb 无审计导出已移除
+  · alipay/wechat RSA2 验签 → alipay `verifyRSA2Sign` 走 RSA-SHA256 + PEM 规整；
+    wechat `verifyWechatSign` 走 APIv3 HMAC-SHA256 + timingSafeEqual，resource
+    走 AES-256-GCM 解密；mock 默认仅 `!isPaymentConfigured` 时启用
+  · files 路由走 TenantDb → GET / dedup / auto-summary 写回均经 createTenantDb
+  · sync-engine keep_both → `resolveConflict` 前置归属校验 + 重命名本地为
+    `[冲突副本]` + create 新文件落地云端版本
+  · api-auth.test.ts → 已重写为匹配 4 字段 / async / 拒绝 query param 的实现
+- 源码剩余 TODO 仍为 6 处（model-manager 4 + document-qna 1 + 其测试注释 1），
+  均需外部 SDK，属低优先级延伸项，本轮不动。
+- 决定执行：报表详情页日期范围筛选 UI。
+
+### 改动
+
+1. **`src/app/(dashboard)/reports/[id]/page.tsx`（+180 / -6）**：
+   - 新增 `DATE_SENSITIVE_DATA_SOURCES = new Set(['stats:trend','stats:activity'])`
+     与 `hasDateSensitiveWidget(layout)`：仅当报表含日期敏感 widget 时才渲染
+     筛选器，避免在纯 overview/ai 报表（如 ai-usage）上展示无效控件。
+   - 新增 `toDateInputValue(date)`：本地日历日 → YYYY-MM-DD，避免 toISOString
+     的 UTC 偏移把当天错算成前一天。
+   - 状态：输入态 `fromInput`/`toInput` 与已应用态 `dateRange`（{from,to}）分离，
+     + `dateError`。仅在点击"应用"/预设时更新 `dateRange`，触发 effect 重新拉取，
+     避免每次按键打后端。
+   - 处理器：`handleApplyDateRange`（from>to 内联报错且不应用）、`handleResetDateRange`
+     （清空输入+应用态）、`applyPreset(days)`（近 N 天，同时填输入态与已应用态；
+     days=null 表示"全部"）。
+   - fetch effect 改造：deps 由 `[id]` → `[id, dateRange.from, dateRange.to]`；
+     URL 用 URLSearchParams 拼接，仅非空时附加 `?dateFrom=&dateTo=`。空时 URL
+     与无筛选器时完全一致（`/api/reports/{id}/data`，无 query）。
+   - UI：标题区下方、ReportGrid 上方渲染筛选条（Calendar 图标 + 两个原生
+     `<input type="date">` + 应用/重置 + 近 7 天/近 30 天 + 内联错误），全部带
+     `data-testid` 便于测试。
+   - 切换报表时 dateRange 保持不变（用户已选时间窗口跨报表复用），需清除点"重置"。
+
+2. **`src/__tests__/components/reports-id-page.test.tsx`（+185 / 0）**：
+   - lucide-react 桩补 `Calendar` 图标。
+   - 新增"日期范围筛选"段 10 用例：
+     · 含日期敏感 widget（storage-overview w5 stats:trend）→ 渲染筛选器 + 控件齐全
+     · 含日期敏感 widget（file-activity w1 stats:trend）→ 渲染筛选器
+     · 无日期敏感 widget（ai-usage 仅 stats:ai）→ 不渲染筛选器
+     · not-found → 不渲染筛选器
+     · 初始挂载（dateRange 空）→ fetch URL 不带 query（保持向后兼容）
+     · 输入 from/to + 点应用 → 第二次 fetch URL 带 `?dateFrom=2026-07-01&dateTo=2026-07-31`
+     · from > to → 内联报错 + fetch 调用次数不增加（不应用 dateRange）
+     · 点重置 → 清空输入 + dateRange，fetch URL 回到无 query（第三次请求）
+     · 点近 7 天 → 输入框填充 YYYY-MM-DD + fetch URL 含 dateFrom/dateTo
+     · 仅输入未点应用 → 不触发 re-fetch（输入态与已应用态分离）
+   - 单测总计 44 用例（原 34 + 新 10）。
+
+### 验证
+
+- 沙箱无 node_modules，执行 `pnpm install --no-frozen-lockfile`（1m 6.6s，
+  pnpm-lock.yaml 被 .gitignore 忽略未提交）+ `npx prisma generate`（tsc 前置）。
+- `npx vitest run src/__tests__/components/reports-id-page.test.tsx`：
+  ✅ 44/44 通过（首轮无断言修正，一次通过）。
+- `npx vitest run`（reports 相关 5 文件：id-page / list-page / id-data-route /
+  data-fetcher / report-manager）：✅ 154/154 通过，无回归。
+- `npx tsc --noEmit`：✅ 零类型错误（prisma generate 后）。
+- `npx vitest run`（全量）：✅ **5612 passed / 213 files**，零回归
+  （第二百零四轮 5602/213 → 本轮 5612/213，+10 用例）。
+
+### 改动量
+
+1 commit，2 文件，+359 / -6：
+- `src/app/(dashboard)/reports/[id]/page.tsx`（+180 / -6，筛选器 + dateRange 状态 + URL 拼接）
+- `src/__tests__/components/reports-id-page.test.tsx`（+185 / 0，10 新用例 + Calendar 桩）
+
+### Commit
+
+- `601db67` feat(reports): 报表详情页接入日期范围筛选器
+
+### 推送
+
+- origin (Gitee)：✅ 已推送（`484f9fe..601db67`）
+- github (GitHub)：✅ 已推送（`484f9fe..601db67`）
+- 三端对齐：local / origin / github 均在 `601db67`。
+
+### 下一轮候选
+
+- **MobileNav 添加报表中心入口**（小改动，低优先级）：当前 MobileNav 仅 5 图标
+  精简栏（首页/文件/收藏/搜索/我的），未挂载 reports。可考虑替换"搜索"为
+  "报表"或新增第 6 图标（需评估 5→6 图标对移动端布局的影响）。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格在
+  窄屏会缩窄但不破坏，可加 CSS media query 切到 mobile=1 列 / tablet=12 列 /
+  desktop=24 列。注意 jsdom 不模拟媒体查询，需以 className/断点标记断言而非
+  实际布局。
+- **日期范围筛选器增强**（小改动，低优先级）：当前预设仅近 7 天/近 30 天，可加
+  "本月/上月/本季度"等预设；或把"应用"按钮改为输入即应用（debounce）。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
+
