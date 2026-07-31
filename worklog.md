@@ -22531,3 +22531,95 @@ origin/github 均在 484f9fe、local 在 601db67（领先 1 commit、worklog 改
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
 
+## 2026-08-01 04:00 自动迭代
+
+### 背景
+
+- 仓库本地缺失，从 origin（Gitee）重新 clone；新增 github remote。
+- `git fetch origin/github` 后两端均在 `7bcb38a`，与本地一致，无远端新提交、无未提交
+  改动、无遗留未推送 commit，直接进入新开发。
+- 上轮（第二百零七轮）已收口首轮全部优先级 1 问题（tenant-db raw 审计 / alipay+wechat
+  真实验签 / files 路由走 TenantDb / sync-engine keep_both / api-auth 测试对齐）。
+- 决策执行：`faces/detect 纵深防御收口`（上轮候选清单第 4 项，真实防御收紧：原
+  `db.file.findUnique({ where: { id } })` 仅按 id 取回文件行再 JS 层逐字段比对，DB 层
+  未作用域化；与 faces/groups/[id] 路由 createTenantDb 收口同向，有现成 faces 测试范式、
+  风险低）。
+
+### 改动
+
+1. `src/app/api/faces/detect/route.ts`（+8 / -3）：
+   - `db.file.findUnique({ where: { id: fileId } })` + JS 层
+     `file.userId !== userId || file.tenantId !== tenantId` 比对 →
+     `db.file.findFirst({ where: { id: fileId, tenantId, userId } })` + 仅 null 检查。
+   - DB 层即按 id+tenantId+userId 三键过滤，跨租户/跨用户 fileId 直接返回 null，不将
+     他人文件行载入内存。`userId` 一并下推以严格保留原访问控制语义（同租户不同用户
+     的文件仍不可检测，非可利用越权——原 post-check 仍 403，本次纯 DB 层作用域化收紧）。
+
+2. `src/__tests__/api/faces-detect-route.test.ts`（新增 +379）：
+   - 新增 11 用例 handler 级集成测试，复用 faces-groups-merge-route.test.ts 的
+     vi.hoisted 共享 MockNextResponse 范式，mock `@/lib/db` / `@/lib/ai/face-detection`
+     （detectFaces）/ `@/lib/face-cluster`（cosineSimilarity 经 mockReturnValue 控制
+     match/no-match 分支）：
+     · 未认证 → 401 透传、不触达 DB。
+     · 缺 fileId / 缺 imageBase64 → 400 '缺少必要参数'。
+     · imageBase64 非字符串 / 超 26_600_000 字符 → 400 'imageBase64 无效或超过大小限制(20MB)'。
+     · **核心契约**：file.findFirst 返回 null（跨租户/跨用户 fileId）→ 403，断言
+       findFirst 以 `{ where: { id, tenantId, userId } }` 三键调用、且不触达
+       faceInstance.findMany / faceGroup.* / detectFaces（DB 层即拦截）。
+     · 已有检测结果（existingFaces.length > 0）→ 200 '该图片已检测过人脸'，
+       faceGroup.findMany 以 `{ userId, tenantId, faces: { some: { fileId } } }` 作用域。
+     · detectFaces 返回空 → 200 '未检测到人脸'，faces/groups 为空、不新建分组。
+     · cosineSimilarity=0.9（>=0.75）→ faceInstance.create 写入已有 groupId、不新建分组、
+       响应 face.groupId 指向已匹配分组。
+     · existingGroups 为空 → faceGroup.create 新建分组（含 tenantId/userId/thumbnail=fileId）、
+       message 含 '新建 1 个分组'。
+     · faceInstance.findMany reject → 500 '人脸检测失败'。
+
+### 验证
+
+- 环境：沙箱无 node_modules，仓库用 package-lock.json + bun.lock；以 `npm ci`
+  （严格读 package-lock、不 mutate lockfile）装 986 包 / 29s。`git status` 确认仅 2 目标
+  文件改动，package-lock.json 未变。
+- `npx vitest run src/__tests__/api/faces-detect-route.test.ts`：✅ 11/11 通过
+  （500 用例的 stderr 为路由 catch 内 console.error，非失败）。
+- `npx tsc --noEmit`：✅ EXIT=0 零类型错误。
+- `npx vitest run`（全量）：✅ **5638 passed / 215 files**，零回归
+  （第二百零七轮 5627/214 → 本轮 5638/215，+11 用例 / +1 文件）。
+
+### 改动量
+
+1 commit，2 文件，+387 / -3：
+- `src/app/api/faces/detect/route.ts`（+8 / -3）
+- `src/__tests__/api/faces-detect-route.test.ts`（新增 +379）
+
+### Commit
+
+- `9c621b4` fix(faces-detect): file 查询收紧为 DB 层 tenantId+userId 作用域
+
+### 推送
+
+- origin (Gitee)：✅ 已推送（`7bcb38a..9c621b4`）
+- github (GitHub)：✅ 已推送（`7bcb38a..9c621b4`）
+- 三端对齐：local / origin / github 均在 `9c621b4`，正常 push 未 force。
+
+### 下一轮候选
+
+- **faces/groups/merge 同模式收口**（小改动，低优先级）：`db.faceGroup.findUnique({ where: { id: targetGroupId } })`
+  + JS 层 `targetGroup.userId !== userId || targetGroup.tenantId !== tenantId` 与本轮
+  faces/detect 同模式；可改 `findFirst({ where: { id, tenantId, userId }, include: { faces: true } })`，
+  需同步 faces-groups-merge-route.test.ts 中 findUnique→findFirst 断言（line 226-229）。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格窄屏缩窄
+  但不破坏，可加 CSS media query 切 mobile=1 / tablet=12 / desktop=24 列。jsdom
+  不模拟媒体查询，需以 className/断点标记断言而非实际布局。
+- **日期范围筛选器增强**（小改动，低优先级）：当前预设仅近 7 天/近 30 天，可加
+  "本月/上月/本季度"；或把"应用"按钮改为输入即应用（debounce）。
+- **MobileNav 收藏角标与详情页共存验证**（极小，低优先级）：前缀匹配已落地，可补
+  `/favorites/[id]` 时「收藏」高亮 + 角标同时渲染的复合断言（当前用例分别覆盖）。
+- **comments/trash/files-batch 同模式收口**（小改动，低优先级）：`trash/route.ts` /
+  `files/batch/route.ts` 的 `targetFolder` 取回后再 `userId/tenantId` 比对、
+  `saas/orders/route.ts` 的 `order.tenantId !== tenantId` 同属 findUnique+post-check 范式，
+  可逐个下推到 where 使 DB 层作用域化（纯防御收紧，非可利用越权）。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
+
