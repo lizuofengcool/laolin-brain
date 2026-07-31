@@ -30,9 +30,18 @@
  * - 导出失败（downloadFile 抛错或 SSR 环境 typeof document === 'undefined'）→ 顶部
  *   错误提示；成功 → 顶部成功提示（3s 自动消失）。
  *
+ * 日期范围筛选（本轮接入）：
+ * - 仅当报表含日期敏感 widget（dataSource 为 stats:trend / stats:activity）时渲染筛选器，
+ *   避免在纯 overview/ai 报表上展示无效控件。
+ * - 两个原生 <input type="date">（开始/结束）+ "应用" / "重置" 按钮 + "近 7 天" / "近 30 天"
+ *   预设。应用后把 dateFrom/dateTo 作为 query 附加到 /api/reports/[id]/data 重新拉取，
+ *   stats-service 的 getTrendStats / getActivityStats 据此缩小统计窗口。
+ * - 输入态（fromInput/toInput）与已应用态（dateRange）分离：仅在点击"应用"/预设时
+ *   才触发 re-fetch，避免每次按键都打后端。from > to 时内联报错且不应用。
+ * - 未选日期时 fetch URL 不带 query（保持与无筛选器时完全一致，stats-service 走默认窗口）。
+ *
  * 不负责：
  * - 用户自定义报表的拉取（依赖 /api/reports/[id] 路由 + tenantId 上下文，留待后续轮）
- * - 日期范围筛选 UI（API 已支持 dateFrom/dateTo query，但本轮不接入筛选器）
  * - 响应式断点适配（栅格在小屏会缩窄但不会破坏，由后续轮处理）
  */
 import { useCallback, useEffect, useState } from "react";
@@ -45,8 +54,10 @@ import {
   Download,
   ChevronDown,
   CheckCircle2,
+  Calendar,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -212,6 +223,30 @@ function clampWidth(width: number | undefined, columns: number): number {
   return Math.min(Math.max(1, Math.floor(width)), columns);
 }
 
+/**
+ * 日期敏感的数据源：data-fetcher 会把 dateFrom/dateTo 透传给 stats-service 的
+ * getTrendStats / getActivityStats 缩小统计窗口。其余数据源（overview/by-type/ai）
+ * 不读取日期参数，故日期筛选器对它们无效——仅在报表含下列 dataSource 时才渲染。
+ */
+const DATE_SENSITIVE_DATA_SOURCES = new Set(["stats:trend", "stats:activity"]);
+
+/** 报表是否含至少一个日期敏感 widget（决定是否渲染日期范围筛选器）。 */
+function hasDateSensitiveWidget(layout: ReportLayout): boolean {
+  return layout.widgets.some(
+    (w) =>
+      !!w.dataConfig &&
+      DATE_SENSITIVE_DATA_SOURCES.has(w.dataConfig.dataSource),
+  );
+}
+
+/** 把 Date 格式化为 <input type="date"> 所需的 YYYY-MM-DD（本地日历日，避免 UTC 偏移）。 */
+function toDateInputValue(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 function ReportGrid({
   layout,
   widgetData,
@@ -297,6 +332,17 @@ export default function ReportDetailPage() {
     | null
   >(null);
 
+  // 日期范围筛选：输入态（fromInput/toInput）与已应用态（dateRange）分离。
+  // 仅在点击"应用"/预设时才更新 dateRange，触发 effect 重新拉取数据，
+  // 避免每次按键都打后端。空字符串表示未选日期（fetch URL 不带 query）。
+  const [fromInput, setFromInput] = useState("");
+  const [toInput, setToInput] = useState("");
+  const [dateRange, setDateRange] = useState<{ from: string; to: string }>({
+    from: "",
+    to: "",
+  });
+  const [dateError, setDateError] = useState<string | null>(null);
+
   useEffect(() => {
     if (!id) {
       setReport(null);
@@ -328,14 +374,18 @@ export default function ReportDetailPage() {
       ? { Authorization: `Bearer ${token}` }
       : {};
 
+    // 仅在已应用日期非空时附加 dateFrom/dateTo query；空时 URL 与无筛选器时一致
+    const params = new URLSearchParams();
+    if (dateRange.from) params.set("dateFrom", dateRange.from);
+    if (dateRange.to) params.set("dateTo", dateRange.to);
+    const qs = params.toString();
+    const dataUrl = `/api/reports/${encodeURIComponent(id)}/data${qs ? `?${qs}` : ""}`;
+
     setDataState("loading");
 
     const runFetch = async () => {
       try {
-        const res = await fetch(
-          `/api/reports/${encodeURIComponent(id)}/data`,
-          { headers, signal: controller.signal },
-        );
+        const res = await fetch(dataUrl, { headers, signal: controller.signal });
         if (cancelled) return;
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
@@ -377,7 +427,10 @@ export default function ReportDetailPage() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [id]);
+    // dateRange.from/to 变化时重新拉取（用户点击"应用"/预设后触发）。
+    // 切换报表时 dateRange 保持不变——用户已选的时间窗口跨报表复用，避免重复设置；
+    // 需清除时点"重置"。id 变化时旧请求被 abort（既有行为），不会产生重复成功请求。
+  }, [id, dateRange.from, dateRange.to]);
 
   // 导出反馈 3s 自动消失：每次 feedback 变化时启一个 timer，到点清空。
   // 切换 id / 卸载组件时也清空，避免上一张报表的提示残留到下一张。
@@ -435,6 +488,53 @@ export default function ReportDetailPage() {
     },
     [report],
   );
+
+  /**
+   * 应用日期范围：把输入态同步到 dateRange，触发 effect 重新拉取。
+   * from > to（均非空）时内联报错且不应用，避免给后端传倒序区间。
+   */
+  const handleApplyDateRange = useCallback(() => {
+    const from = fromInput.trim();
+    const to = toInput.trim();
+    if (from && to && from > to) {
+      setDateError("开始日期不能晚于结束日期");
+      return;
+    }
+    setDateError(null);
+    setDateRange({ from, to });
+  }, [fromInput, toInput]);
+
+  /** 重置日期范围：清空输入态与已应用态，恢复 stats-service 默认时间窗口。 */
+  const handleResetDateRange = useCallback(() => {
+    setFromInput("");
+    setToInput("");
+    setDateError(null);
+    setDateRange({ from: "", to: "" });
+  }, []);
+
+  /**
+   * 应用预设时间窗口（近 N 天）。
+   * 同时更新输入态与已应用态，让控件显示与实际生效的区间一致。
+   * days=null 表示"全部"（清空区间，走默认窗口）。
+   */
+  const applyPreset = useCallback((days: number | null) => {
+    if (days === null) {
+      setFromInput("");
+      setToInput("");
+      setDateError(null);
+      setDateRange({ from: "", to: "" });
+      return;
+    }
+    const to = new Date();
+    const from = new Date();
+    from.setDate(from.getDate() - days);
+    const fromStr = toDateInputValue(from);
+    const toStr = toDateInputValue(to);
+    setFromInput(fromStr);
+    setToInput(toStr);
+    setDateError(null);
+    setDateRange({ from: fromStr, to: toStr });
+  }, []);
 
   if (report === undefined) {
     return (
@@ -555,6 +655,74 @@ export default function ReportDetailPage() {
           </p>
         ) : null}
       </div>
+      {hasDateSensitiveWidget(report.layout) ? (
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-md border bg-background/50 p-2"
+          data-testid="report-date-filter"
+        >
+          <Calendar className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+          <span className="text-xs text-muted-foreground">时间范围</span>
+          <Input
+            type="date"
+            value={fromInput}
+            onChange={(e) => setFromInput(e.target.value)}
+            aria-label="开始日期"
+            data-testid="report-date-from"
+            className="h-8 w-auto text-xs"
+          />
+          <span className="text-xs text-muted-foreground">至</span>
+          <Input
+            type="date"
+            value={toInput}
+            onChange={(e) => setToInput(e.target.value)}
+            aria-label="结束日期"
+            data-testid="report-date-to"
+            className="h-8 w-auto text-xs"
+          />
+          <Button
+            variant="default"
+            size="sm"
+            onClick={handleApplyDateRange}
+            data-testid="report-date-apply"
+          >
+            应用
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleResetDateRange}
+            data-testid="report-date-reset"
+          >
+            重置
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => applyPreset(7)}
+            data-testid="report-date-preset-7"
+          >
+            近 7 天
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => applyPreset(30)}
+            data-testid="report-date-preset-30"
+          >
+            近 30 天
+          </Button>
+          {dateError ? (
+            <p
+              className="flex items-center gap-1.5 text-xs text-destructive"
+              data-testid="report-date-error"
+              role="alert"
+            >
+              <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{dateError}</span>
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       <ReportGrid layout={report.layout} widgetData={widgetData} />
     </div>
   );

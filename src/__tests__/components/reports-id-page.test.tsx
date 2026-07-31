@@ -31,6 +31,17 @@
  * - exportReport 返回 success:false → error 反馈展示后端 error 文案
  * - 反馈 3s 后自动消失（useEffect timer 控制）
  *
+ * 日期范围筛选轮（本轮新增）：
+ * - 仅含日期敏感 widget（stats:trend / stats:activity）的报表渲染筛选器：
+ *   storage-overview（w5 stats:trend）→ 渲染；file-activity（w1 stats:trend）→ 渲染
+ * - 无日期敏感 widget 的报表不渲染：ai-usage（仅 stats:ai）→ 不渲染
+ * - not-found / 加载中分支不渲染筛选器
+ * - 初始挂载（dateRange 为空）→ fetch URL 不带 query（保持与无筛选器时一致）
+ * - 输入 from/to + 点"应用" → fetch URL 带 ?dateFrom=&dateTo=，触发第二次请求
+ * - from > to → 内联报错 + 不触发 re-fetch（mockFetch 调用次数不增加）
+ * - 点"重置" → 清空输入与 dateRange，fetch URL 回到无 query
+ * - 点"近 7 天" → 输入框填充 + dateRange 生效，fetch URL 带 dateFrom/dateTo
+ *
  * 桩化 ReportRenderer：避免在 jsdom 中触发 recharts 的 ResponsiveContainer（依赖
  * ResizeObserver）。透出 `data-widget-id` / `data-chart-type` / `data-chart-data-len`
  * / `data-chart-has-data` / `data-metric-value` 让单测可以断言分发、mock 注入与真实
@@ -98,6 +109,7 @@ vi.mock("lucide-react", () => ({
   Download: () => <span data-testid="icon-download" />,
   ChevronDown: () => <span data-testid="icon-chevron-down" />,
   CheckCircle2: () => <span data-testid="icon-check-circle" />,
+  Calendar: () => <span data-testid="icon-calendar" />,
 }));
 
 // ---- 桩化 DropdownMenu：Radix 在 jsdom 下走 Portal + pointer 事件，难以稳定
@@ -767,6 +779,179 @@ describe("报表详情页 /reports/[id]", () => {
       render(<ReportDetailPage />);
       await screen.findByText("报表不存在或已被删除");
       expect(screen.queryByTestId("report-export-feedback")).toBeNull();
+    });
+  });
+
+  // ─── 日期范围筛选（本轮新增）─────────────────────────────
+  describe("日期范围筛选", () => {
+    it("含日期敏感 widget（storage-overview，w5 stats:trend）→ 渲染筛选器", async () => {
+      mockUseParams.mockReturnValue({ id: "storage-overview" });
+      render(<ReportDetailPage />);
+      await screen.findByText("存储概览");
+      expect(screen.getByTestId("report-date-filter")).toBeInTheDocument();
+      // 控件齐全：两个日期输入 + 应用/重置 + 两个预设
+      expect(screen.getByTestId("report-date-from")).toBeInTheDocument();
+      expect(screen.getByTestId("report-date-to")).toBeInTheDocument();
+      expect(screen.getByTestId("report-date-apply")).toBeInTheDocument();
+      expect(screen.getByTestId("report-date-reset")).toBeInTheDocument();
+      expect(screen.getByTestId("report-date-preset-7")).toBeInTheDocument();
+      expect(screen.getByTestId("report-date-preset-30")).toBeInTheDocument();
+    });
+
+    it("含日期敏感 widget（file-activity，w1 stats:trend）→ 渲染筛选器", async () => {
+      mockUseParams.mockReturnValue({ id: "file-activity" });
+      render(<ReportDetailPage />);
+      await screen.findByText("文件活跃度");
+      expect(screen.getByTestId("report-date-filter")).toBeInTheDocument();
+    });
+
+    it("无日期敏感 widget（ai-usage，仅 stats:ai）→ 不渲染筛选器", async () => {
+      mockUseParams.mockReturnValue({ id: "ai-usage" });
+      render(<ReportDetailPage />);
+      await screen.findByText("AI使用分析");
+      expect(screen.queryByTestId("report-date-filter")).toBeNull();
+    });
+
+    it("not-found → 不渲染筛选器", async () => {
+      mockUseParams.mockReturnValue({ id: "no-such-report" });
+      render(<ReportDetailPage />);
+      await screen.findByText("报表不存在或已被删除");
+      expect(screen.queryByTestId("report-date-filter")).toBeNull();
+    });
+
+    it("初始挂载（dateRange 为空）→ fetch URL 不带 query（与无筛选器时一致）", async () => {
+      mockUseParams.mockReturnValue({ id: "storage-overview" });
+      render(<ReportDetailPage />);
+      await screen.findByText("存储概览");
+      const [url] = await waitForFetchCall();
+      expect(url).toBe("/api/reports/storage-overview/data");
+    });
+
+    it("输入 from/to + 点应用 → fetch URL 带 ?dateFrom=&dateTo=（第二次请求）", async () => {
+      mockUseParams.mockReturnValue({ id: "storage-overview" });
+      render(<ReportDetailPage />);
+      await screen.findByText("存储概览");
+      // 等首次 fetch 落地
+      await waitForFetchCall();
+
+      fireEvent.change(screen.getByTestId("report-date-from"), {
+        target: { value: "2026-07-01" },
+      });
+      fireEvent.change(screen.getByTestId("report-date-to"), {
+        target: { value: "2026-07-31" },
+      });
+      fireEvent.click(screen.getByTestId("report-date-apply"));
+
+      // 等第二次 fetch（应用后 dateRange 变更触发 effect）
+      await waitFor(() => {
+        expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
+      });
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      expect(lastCall[0]).toBe(
+        "/api/reports/storage-overview/data?dateFrom=2026-07-01&dateTo=2026-07-31",
+      );
+    });
+
+    it("from > to → 内联报错 + 不触发 re-fetch（fetch 调用次数不增加）", async () => {
+      mockUseParams.mockReturnValue({ id: "storage-overview" });
+      render(<ReportDetailPage />);
+      await screen.findByText("存储概览");
+      await waitForFetchCall();
+      const callsBefore = mockFetch.mock.calls.length;
+
+      fireEvent.change(screen.getByTestId("report-date-from"), {
+        target: { value: "2026-07-31" },
+      });
+      fireEvent.change(screen.getByTestId("report-date-to"), {
+        target: { value: "2026-07-01" },
+      });
+      fireEvent.click(screen.getByTestId("report-date-apply"));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("report-date-error")).toBeInTheDocument();
+      });
+      expect(screen.getByTestId("report-date-error").textContent).toContain(
+        "开始日期不能晚于结束日期",
+      );
+      // 报错时不应用 dateRange，effect 不重跑 → fetch 调用次数不变
+      // 给一个微任务窗口确保没有异步 effect 触发
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(mockFetch.mock.calls.length).toBe(callsBefore);
+    });
+
+    it("点重置 → 清空输入与 dateRange，fetch URL 回到无 query", async () => {
+      mockUseParams.mockReturnValue({ id: "storage-overview" });
+      render(<ReportDetailPage />);
+      await screen.findByText("存储概览");
+      await waitForFetchCall();
+
+      // 先应用一个区间
+      fireEvent.change(screen.getByTestId("report-date-from"), {
+        target: { value: "2026-07-01" },
+      });
+      fireEvent.change(screen.getByTestId("report-date-to"), {
+        target: { value: "2026-07-31" },
+      });
+      fireEvent.click(screen.getByTestId("report-date-apply"));
+      await waitFor(() => {
+        expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
+      });
+
+      // 再重置
+      fireEvent.click(screen.getByTestId("report-date-reset"));
+      await waitFor(() => {
+        expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(3);
+      });
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      expect(lastCall[0]).toBe("/api/reports/storage-overview/data");
+      // 输入框被清空
+      expect(
+        (screen.getByTestId("report-date-from") as HTMLInputElement).value,
+      ).toBe("");
+      expect(
+        (screen.getByTestId("report-date-to") as HTMLInputElement).value,
+      ).toBe("");
+    });
+
+    it("点近 7 天预设 → 输入框填充 + fetch URL 带 dateFrom/dateTo", async () => {
+      mockUseParams.mockReturnValue({ id: "storage-overview" });
+      render(<ReportDetailPage />);
+      await screen.findByText("存储概览");
+      await waitForFetchCall();
+
+      fireEvent.click(screen.getByTestId("report-date-preset-7"));
+
+      await waitFor(() => {
+        expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
+      });
+      // 输入框被填充为 YYYY-MM-DD
+      const fromVal = (screen.getByTestId("report-date-from") as HTMLInputElement).value;
+      const toVal = (screen.getByTestId("report-date-to") as HTMLInputElement).value;
+      expect(fromVal).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(toVal).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      const lastUrl = String(lastCall[0]);
+      expect(lastUrl).toContain(`dateFrom=${fromVal}`);
+      expect(lastUrl).toContain(`dateTo=${toVal}`);
+    });
+
+    it("仅输入未点应用 → 不触发 re-fetch（输入态与已应用态分离）", async () => {
+      mockUseParams.mockReturnValue({ id: "storage-overview" });
+      render(<ReportDetailPage />);
+      await screen.findByText("存储概览");
+      await waitForFetchCall();
+      const callsBefore = mockFetch.mock.calls.length;
+
+      fireEvent.change(screen.getByTestId("report-date-from"), {
+        target: { value: "2026-07-01" },
+      });
+      fireEvent.change(screen.getByTestId("report-date-to"), {
+        target: { value: "2026-07-31" },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      // 仅改输入态未应用 → dateRange 未变 → effect 不重跑
+      expect(mockFetch.mock.calls.length).toBe(callsBefore);
     });
   });
 });
