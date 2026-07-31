@@ -28,9 +28,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify file belongs to authenticated user
-    const file = await db.file.findUnique({ where: { id: fileId } });
-    if (!file || file.userId !== userId || file.tenantId !== tenantId) {
+    // Verify file belongs to authenticated user（DB 层即按 id+tenantId+userId 过滤，
+    // 跨租户/跨用户 fileId 直接返回 null，不将他人文件行载入内存；纵深防御收紧，
+    // 与 faces/groups/[id] 路由 createTenantDb 收口同向，原 findUnique 仅按 id 取回后再
+    // 逐字段比对，DB 层未作用域化）
+    const file = await db.file.findFirst({
+      where: { id: fileId, tenantId, userId },
+    });
+    if (!file) {
       return NextResponse.json(
         { error: '文件不存在或无权访问' },
         { status: 403 }
