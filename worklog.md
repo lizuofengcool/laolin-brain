@@ -22041,3 +22041,112 @@ TenantDb 隔离层，缺一道防御）。本轮专注 backups 路由的 TenantD
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
 
+## 2026-08-01 16:00 自动迭代
+
+### 背景
+
+第二百零二轮已完成 backup 模型 tenantId 注入断言（test-only）。本轮转向
+优先级 2/3：worklog 下一轮候选中"/reports 列表页支持搜索/筛选"是最高 ROI 项
+（前端纯过滤、无 API 改动、有现成测试可扩展、与既定 UI 组件范式一致），决定
+本次执行。
+
+### 评估
+
+- fetch origin / github 后 local / origin / github 三端均在 `ab57c15`，无远端
+  更新需 rebase。
+- 工作树干净，无遗留未提交改动或未推送 commit。
+- 优先级 1 清单（user 输入的 5 项）经 **spot-check 核查全部已在历史轮次解决**：
+  · tenant-db.ts raw 后门 → `raw` getter（L56-62）与 `transaction`（L41-47）均
+    带 `console.warn` + `new Error().stack` 调用方堆栈软审计
+  · sync-engine.ts keep_both bug → `resolveConflict` L669-672 前置
+    `db.file.findUnique({ where: { id, tenantId } })` 归属校验（跨租户 fileId
+    直接抛错）；keep_both L687-728 已重写为"先取云端数据 → 重命名本地为
+    `[冲突副本]` → create 新文件落地云端版本"，不再直接覆盖
+  · alipay/wechat RSA2 验签 / mock 默认 / files 走 TenantDb / api-auth.test 匹配
+    → 历史轮次已处理（见第二百零一轮 worklog 评估段）
+- 源码剩余 TODO 仅 5 处（`src/lib/ai/model-manager.ts` 4 处"实际调用模型API" +
+  `src/lib/ai/document-qna.ts` 1 处"实际调用AI模型"），均需外部模型 SDK 接入，
+  属低优先级延伸项，本轮不动。
+- 决定执行：`/reports` 列表页搜索框 + 分类下拉（前端纯过滤）。
+
+### 改动
+
+1. **`src/app/(dashboard)/reports/page.tsx`（+92 / -6）**：
+   - 顶部新增 filter bar（`data-testid="reports-filter-bar"`）：
+     · 搜索 `Input`（`data-testid="reports-search-input"`，placeholder "搜索报表
+       名称或描述"，左侧 Search 图标）→ `useState search`
+     · 分类 `Select`（`data-testid="reports-category-select"`）→ `useState category`
+   - 新增哨兵常量 `ALL_CATEGORY = "__all__"`（"全部分类"选项，不与真实 category
+     key 冲突）。
+   - `useMemo categoryOptions`：取模板中实际出现的分类（`Set` 去重 + 保持模板
+     出现顺序），避免列出 `REPORT_CATEGORIES` 中无模板的空分类。
+   - `useMemo filtered`：关键词 `trim().toLowerCase()` 后按 `name` / `description`
+     匹配（大小写、首尾空格无关）+ 分类精确匹配；二者 AND 组合。
+   - `filtered.length === 0` 时渲染空态（`data-testid="reports-empty"`），
+     `hasFilter` 区分文案"未匹配到报表模板"（有过滤）/ "暂无报表模板"（无模板）。
+   - 初始状态（search="" + category=ALL）行为与改动前完全一致：渲染全部 4 模板。
+
+2. **`src/__tests__/components/reports-list-page.test.tsx`（+158 / 0）**：
+   - 桩化 `@/components/ui/select`（沿用项目既定范式：`Select` 透传 children 并
+     捕获 `onValueChange` 到共享 `selectHandler`；`SelectItem` 渲染为带
+     `data-testid="category-option-{value}"` 的 button，点击触发 onValueChange；
+     `SelectTrigger` 透传 `data-testid`）。
+   - `lucide-react` 桩补 `Search` 图标（页面新增 import）。
+   - 既有"显示分类徽章（中文标签）"用例：`getByText` → `getAllByText` + `>=1`
+     （分类标签现同时在卡片徽章与分类下拉选项中出现，单值断言会冲突）。
+   - 新增 10 用例：filter bar 渲染 / 分类下拉选项（全部 + 4 模板分类去重）/
+     搜索按 name 过滤 / 搜索按 description 过滤 / 关键词大小写与首尾空格无关 /
+     无匹配显示空态并隐藏网格 / 清空搜索框恢复全部 / 选择分类过滤 / 切回全部
+     恢复 / 搜索+分类组合过滤。
+   - 单测总计 21 用例（原 11 + 新 10）。
+
+### 验证
+
+- 沙箱初始无 node_modules 且仓库不跟踪 lockfile。为跑测试执行：
+  `pnpm install --no-frozen-lockfile`（59.5s，生成 pnpm-lock.yaml 但被
+  .gitignore 忽略，未提交）+ `npx prisma generate`（install 跳过了 prisma
+  build scripts，需手动 generate 才能让 `@prisma/client` 导出 PrismaClient）。
+- `npx vitest run src/__tests__/components/reports-list-page.test.tsx`：
+  ✅ 21/21 通过（11 原 + 10 新）。
+- `npx vitest run` reports 4 文件（list / id / renderer / metric-card）：
+  ✅ 84/84 通过，无回归。
+- `npx tsc --noEmit`：✅ 零类型错误（prisma generate 后；generate 前 tsc 报
+  `PrismaClient` 未导出等错误为环境产物，非真实代码问题，且全部位于本轮未触碰
+  的文件）。
+- `npx vitest run`（全量）：✅ **5593 passed / 213 files**，零回归
+  （第二百零二轮 5583/213 → 本轮 5593/213，+10 用例）。
+
+### 改动量
+
+1 commit，2 文件，+244 / -6：
+- `src/app/(dashboard)/reports/page.tsx`（+92 / -6，filter bar + useMemo 过滤）
+- `src/__tests__/components/reports-list-page.test.tsx`（+158 / 0，select 桩 +
+  10 新用例 + 1 处既有断言适配）
+
+### Commit
+
+- `310e185` feat(reports): /reports 列表页支持搜索与分类筛选
+
+### 推送
+
+- origin (Gitee)：✅ 已推送（`ab57c15..310e185`）
+- github (GitHub)：✅ 已推送（`ab57c15..310e185`）
+- 三端对齐：local / origin / github 均在 `310e185`。
+
+### 下一轮候选
+
+- **MobileNav 添加报表中心入口**（小改动，低优先级）：当前 MobileNav 仅 5 图标
+  精简栏（首页/文件/收藏/搜索/我的），未挂载 reports。可考虑替换"搜索"为
+  "报表"或新增第 6 图标（需评估 5→6 图标对移动端布局的影响）。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格在
+  窄屏会缩窄但不破坏，可加 CSS media query 切到 mobile=1 列 / tablet=12 列 /
+  desktop=24 列。
+- **/reports 列表页搜索结果高亮**（小改动，低优先级）：本轮 filter 已就位，可
+  进一步对卡片 name/description 命中的关键词做高亮（mark 标签），提升可读性。
+- **日期范围筛选 UI**（中改动，低优先级）：`/api/reports/[id]/data` 已支持
+  `dateFrom`/`dateTo` query，详情页可加 daterange picker 让用户筛选趋势数据
+  的时间范围。需评估与 stats-service 的 dateFrom/dateTo 解析格式对齐。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
+
