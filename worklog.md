@@ -23030,3 +23030,99 @@ origin/github 均在 484f9fe、local 在 601db67（领先 1 commit、worklog 改
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
 
+## 2026-08-01 09:00 自动迭代
+
+### 本轮目标
+
+执行第二百一十三轮自动迭代。fetch 双端均无远端更新（origin/github 与本地均在
+`7450405`，0/0 diff），工作树干净、无未推送 commit。进入评估阶段。
+
+### 评估
+
+1. **审计上轮候选第 1 项「findUnique 路由作用域化审计（续）」**：逐个复核
+   `files/[id]/download`、`files/[id]/preview`、`invitations/accept`、`storage`
+   等按 path param / token 查单资源的路由：
+   - `files/[id]/download`、`files/[id]/preview`：分享分支 `db.fileShare.findUnique
+     ({ where:{ token } })` 按 token 唯一键查（不可枚举，安全）；认证分支已走
+     `tenantDb.file.findFirst({ where:{ id } })` + userId 归属校验。✅ 无误用。
+   - `invitations/accept`：`db.invitation.findUnique({ where:{ token } })` 按 token
+     唯一键查（邀请令牌不可枚举）；`db.tenant.findUnique({ where:{ id:tenantId } })`
+     id 即认证 tenantId。✅ 无误用。
+   - `storage`：**发现 priority-1 遗留项** —— `storage/route.ts` 全程以 raw `db` +
+     手动 `where:{userId,tenantId}` 过滤（file.aggregate / folder.count / file.count /
+     file.findMany / tenant.findUnique），绕过 TenantDb 隔离层，与 files 路由第四十一轮
+     收口前的同类问题一致。`tenant.findUnique({ where:{ id:tenantId } })` 的 where.id
+     虽来自认证 tenantId，但未由隔离层钉死。本轮修复。
+
+2. **复核任务清单剩余 priority-1 项**：均已在历史轮次修复（清单已过期，详见 212 轮），
+   唯一未触达的 storage 路由即本轮目标。
+
+### 改动
+
+1. `src/app/api/storage/route.ts`（+39 / -27）：
+   - `import { db }` → `import { createTenantDb, type TenantDb }`；GET 内
+     `const tenantDb = createTenantDb(tenantId)`，三 helper 签名 `(userId, tenantId)`
+     → `(userId, tenantDb: TenantDb)`。
+   - `db.file.aggregate/count/findMany` / `db.folder.count` → `tenantDb.file.*` /
+     `tenantDb.folder.count`，where 移除手动 `tenantId`（由隔离层自动注入）。
+   - `db.tenant.findUnique({ where:{ id:tenantId } })` → `tenantDb.tenant.findUnique
+     ({ select })`，where.id 由隔离层以 `id:tenantId` 钉死，防 where.id 被替换。
+   - `tenantDb.file.aggregate` 因 TenantDb 访问器 `args:any` 退化返回类型
+     （_count/_sum 可选联合），按请求形状 `as { _count:{id:number}; _sum:{fileSize:number|null} }`
+     断言收窄，与 raw db Prisma 精确推断等价。
+
+2. `src/__tests__/api/storage-route.test.ts`（+77 / -16）：
+   - `vi.mock('@/lib/db')` 由 flat `db` 直接 mock 改为 hand-written `createTenantDb`
+     wrapper（file/folder where 末尾追加 tenantId；tenant where 追加 id:tenantId），
+     与 files-route 第五十轮同范式。
+   - 新增 raw `db` 负向 mock（mockRawFileAggregate 等 5 个）+ 断言"路由不绕过
+     tenantDb 隔离层"（401 与 overview happy path 双重锁定）。
+   - 新增 `mockCreateTenantDb` 调用契约断言（calledWith 'tenant-1'）。
+   - 原 where 形状断言全部保留（wrapper 注入 tenantId 后承接 mock 仍见双键 where）。
+   - 用例数：25（不变）。
+
+### 验证
+
+- 环境：沙箱无 node_modules，以 `npm ci`（严格读 package-lock、不 mutate lockfile）
+  装 986 包 / 48s。`git status` 确认仅 2 目标文件改动，package-lock.json / bun.lock 未变。
+- `npx tsc --noEmit`：✅ EXIT=0 零类型错误（首跑发现 aggregate 返回类型退化 3 处错误，
+  以类型断言收窄后清零）。
+- `npx vitest run storage-route / tenant-security / files-route`：✅ 53/53 通过。
+- `npx vitest run`（全量）：✅ **5635 passed / 215 files**，零回归
+  （与第二百一十二轮 5635/215 持平，文件数 / 用例数均不变）。
+
+### 改动量
+
+1 commit，2 文件，+116 / -43：
+- `src/app/api/storage/route.ts`（+39 / -27）
+- `src/__tests__/api/storage-route.test.ts`（+77 / -16）
+
+### Commit
+
+- `3a16990` fix(storage): 存储分析路由收口至 TenantDb 租户隔离层
+
+### 推送
+
+- origin (Gitee)：✅ 已推送（`7450405..3a16990`）
+- github (GitHub)：✅ 已推送（`7450405..3a16990`）
+- 三端对齐：local / origin / github 均在 `3a16990`，正常 push 未 force。
+
+### 下一轮候选
+
+- **TenantDb.aggregate 类型增强**（小改动，中优先级）：本轮以调用点 `as` 断言绕过
+  TenantDb 访问器 `args:any` 导致的 aggregate 返回类型退化。可给 tenant-db.ts 的
+  `file.aggregate` / `folder.aggregate` 等加泛型签名使返回类型由 Prisma 自动推断，
+  消除调用点断言（stats-service / trash / executor 等 raw db.aggregate 用法亦可
+  顺带迁移至 tenantDb）。
+- **findUnique 路由作用域化审计（续）**（小改动，低优先级）：本轮复核 download/preview/
+  invitations/storage 均无误用后，仍剩 ~15 个 findUnique 路由文件未逐一复核
+  （user/profile、user/security、user/notifications、backup、auth/login 等），多为
+  按 email/userId/认证 token 查自身记录，预计无误用，留作系统审计收尾。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格窄屏缩窄
+  但不破坏，可加 CSS media query 切 mobile=1 / tablet=12 / desktop=24 列。
+- **日期范围筛选器增强**（小改动，低优先级）：当前预设仅近 7 天/近 30 天，可加
+  "本月/上月/本季度"；或把"应用"按钮改为输入即应用（debounce）。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
+
