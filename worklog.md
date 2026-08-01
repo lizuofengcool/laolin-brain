@@ -22921,3 +22921,112 @@ origin/github 均在 484f9fe、local 在 601db67（领先 1 commit、worklog 改
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
 
+## 2026-08-01 08:00 自动迭代
+
+### 本轮目标
+
+执行第二百一十二轮自动迭代。fetch 双端均无远端更新（origin/github 与本地均
+在 `65d1e25`，0/0 diff），工作树干净、无未推送 commit。进入评估阶段。
+
+### 评估
+
+1. **审计 worklog 上轮候选第 4 项「saas/subscription 路由查询作用域化审计」**：
+   - `src/app/api/saas/subscription/route.ts` 三个 handler（GET/DELETE/POST resume）
+     均调用 tenant 作用域化的服务函数（`getCurrentSubscription(tenantId)` /
+     `cancelSubscription(tenantId)` / `reactivateSubscription(tenantId)`），
+     `getCurrentSubscription` 内部 `findFirst({ where: { tenantId, status:'active' } })`，
+     cancel/reactivate 的 update 按 id 操作但 id 来自 tenant 作用域查询结果，安全。
+   - `src/app/api/billing/subscription/route.ts` GET 用 `getCurrentSubscription(tenantId)`
+     + `db.tenant.findUnique({ where: { id: tenantId } })`（id 即认证 tenantId）；
+     `src/app/api/billing/orders/route.ts` GET 用 `db.order.findMany({ where: { tenantId } })`。
+   - 结论：subscription 相关路由已全部 tenant 作用域化，**无需修复**，候选关闭。
+
+2. **复核任务清单剩余 priority-1 项**（均已在历史轮次修复，清单已过期）：
+   - `tenant-db.ts` raw 后门 → `raw` getter 与 `transaction` 均已加调用堆栈
+     `console.warn` 软审计，底部注释说明 rawDb 不再无审计导出。✅
+   - `payment/alipay.ts` & `wechat.ts` RSA2 验签占位 → alipay 已用 `createVerify`
+     真 RSA-SHA256 验签 + PEM 规整；wechat 已用 `timingSafeEqual` HMAC-SHA256 +
+     AES-256-GCM resource 解密，注释明示「不再非空即通过」。createPayment 在
+     已配置未接 SDK 时显式失败不回退 mock。✅
+   - `files/route.ts` 绕过 TenantDb → GET / POST dedup / summary 写回均走
+     `createTenantDb`，raw quota 查询 SQL 含 `tenantId`。✅
+   - `cloud-sync/sync-engine.ts` keep_both → 已改为重命名本地为 `[冲突副本]` +
+     新建云端版本文件，前置 tenant 归属校验。✅
+   - `api-auth.test.ts` 与实现不符 → 测试已对齐（4 字段 / async / 拒绝 query param）。✅
+
+3. **系统扫描 findUnique + tenantId post-check 反模式**（209-211 轮持续消除中）：
+   - grep `.tenantId !== tenantId` 全仓仅剩 saas/orders 注释引用，post-check 已清零。
+   - 20 个仍用 findUnique 的路由文件中，逐个审计未触达项，发现
+     `src/app/api/payment/status/[orderId]/route.ts` 仍存在该反模式：
+     `db.order.findUnique({ where: { id: orderId } })`（orderId 来自不可信 path param）
+     + `order.tenant.users.find(u => u.userId === userId)` JS post-check。会先以裸 id
+     命中他租户订单并 eager-load 整个 tenant.users 成员表再 JS 比对，跨租户越权读取
+     + 租户成员信息泄露，与 211 轮 saas/orders 收口前同类问题一致。
+   - 其余 findUnique 路由（files/[id]/* 、share、invitations/accept、user/* 等）经
+     抽查均按 token / 认证 userId / tenant 作用域查询，无误用。
+
+### 改动
+
+1. `src/app/api/payment/status/[orderId]/route.ts`（+10 / -25）：
+   - 移除 `import { db } from '@/lib/db'`，改 `import { getOrderForTenant } from '@/lib/saas/billing.service'`。
+   - `db.order.findUnique({ where:{ id:orderId }, include:{ tenant:{ include:{ users:true } } } })`
+     + `order.tenant.users.find` post-check（403 分支）→ `getOrderForTenant(orderId, tenantId)`
+     （DB 层 `findFirst({ where:{ id, tenantId } })`），不存在/跨租户统一收敛 null → 404。
+   - 解构 `{ userId, tenantId, role }` → `{ tenantId }`（userId/role 不再使用）。
+   - 消除 tenant.users 的无谓 eager-load 与 403 分支，与 saas/orders（211 轮）契约一致。
+
+2. `src/__tests__/api/payment-status-route.test.ts`（+41 / -66）：
+   - hoisted mock `mockOrderFindUnique` → `mockGetOrderForTenant`；`vi.mock('@/lib/db')`
+     → `vi.mock('@/lib/saas/billing.service', { getOrderForTenant })`。
+   - 原「订单不存在 → 404」+「tenant.users 不含 userId → 403」两例合并为单例
+     `getOrderForTenant 返回 null → 404`，断言 `mockGetOrderForTenant('ord-missing','tenant-1')`。
+   - `makeOrder` 去掉路由不再读取的 `tenant`/`users` 字段，仅留扁平订单字段。
+   - 新增查询契约断言 `getOrderForTenant('ord-xyz', 'tenant-1')`。
+   - 用例数：13 → 12（-1，纯合并非删覆盖）。
+
+### 验证
+
+- 环境：沙箱无 node_modules，仓库用 package-lock.json + bun.lock；以 `npm ci`
+  （严格读 package-lock、不 mutate lockfile）装 986 包 / 35s。`git status` 确认仅 2 目标
+  文件改动，package-lock.json / bun.lock 未变。
+- `npx tsc --noEmit`：✅ EXIT=0 零类型错误。
+- `npx vitest run src/__tests__/api/payment-status-route.test.ts
+  src/__tests__/lib/saas-billing-service.test.ts src/__tests__/api/saas-orders-route.test.ts`：
+  ✅ 82/82 通过（stderr 为路由 catch 内 console.error，非失败）。
+- `npx vitest run`（全量）：✅ **5635 passed / 215 files**，零回归
+  （第二百一十一轮 5636/215 → 本轮 5635/215，-1 为 404/403 合并；文件数不变）。
+
+### 改动量
+
+1 commit，2 文件，+51 / -91：
+- `src/app/api/payment/status/[orderId]/route.ts`（+10 / -25）
+- `src/__tests__/api/payment-status-route.test.ts`（+41 / -66）
+
+### Commit
+
+- `e4ca7bb` fix(payment-status): 单订单查询收紧为 DB 层 tenantId 作用域
+
+### 推送
+
+- origin (Gitee)：✅ 已推送（`65d1e25..e4ca7bb`）
+- github (GitHub)：✅ 已推送（`65d1e25..e4ca7bb`）
+- 三端对齐：local / origin / github 均在 `e4ca7bb`，正常 push 未 force。
+
+### 下一轮候选
+
+- **findUnique 路由作用域化审计（续）**（小改动，低优先级）：本轮清零 post-check
+  反模式后，仍剩 ~19 个 findUnique 路由文件未逐一复核。可优先审
+  `files/[id]/download`、`files/[id]/preview`、`invitations/accept`、`storage` 等
+  按 path param 查单资源的路由，确认是否存在裸 id findUnique（token 类唯一键查询
+  无需改）。本轮仅抽查明无问题，留作系统审计。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格窄屏缩窄
+  但不破坏，可加 CSS media query 切 mobile=1 / tablet=12 / desktop=24 列。jsdom
+  不模拟媒体查询，需以 className/断点标记断言而非实际布局。
+- **日期范围筛选器增强**（小改动，低优先级）：当前预设仅近 7 天/近 30 天，可加
+  "本月/上月/本季度"；或把"应用"按钮改为输入即应用（debounce）。
+- **MobileNav 收藏角标与详情页共存验证**（极小，低优先级）：前缀匹配已落地，可补
+  `/favorites/[id]` 时「收藏」高亮 + 角标同时渲染的复合断言。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
+
