@@ -7,33 +7,38 @@
  *
  * 复用此模块而非 HTTP 自调用，避免运行时端口依赖与重复鉴权开销。
  */
-import { db } from '@/lib/db';
+import { db, createTenantDb } from '@/lib/db';
+
+// 数据访问约定：file / folder 查询经 TenantDb 隔离层（访问器自动注入 tenantId，
+// 不再在 where 手动拼接），与 storage 路由（第二百一十四轮）保持一致的租户隔离契约。
+// tenantUser / accessHistory / user / aiUsageLog / tenant（getAiStats）等 TenantDb
+// 未覆盖的模型仍走 db，由调用方自行以 tenantId 作用域（这些表无 TenantDb 访问器）。
 
 // ─── 概览统计 ─────────────
 export async function getOverviewStats(tenantId: string) {
-  // 总文件数
-  const totalFiles = await db.file.count({
-    where: { tenantId, isDeleted: false },
+  const tenantDb = createTenantDb(tenantId);
+
+  // 总文件数（tenantDb.file.count 自动注入 tenantId）
+  const totalFiles = await tenantDb.file.count({
+    where: { isDeleted: false },
   });
 
-  // 总文件夹数
-  const totalFolders = await db.folder.count({
-    where: { tenantId },
-  });
+  // 总文件夹数（tenantDb.folder.count 自动注入 tenantId，无业务过滤）
+  const totalFolders = await tenantDb.folder.count();
 
-  // 总存储使用量
-  const storageResult = await db.file.aggregate({
-    where: { tenantId, isDeleted: false },
+  // 总存储使用量（tenantDb.file.aggregate 泛型透传，_sum.fileSize 精确推断）
+  const storageResult = await tenantDb.file.aggregate({
+    where: { isDeleted: false },
     _sum: { fileSize: true },
   });
   const totalStorage = storageResult._sum.fileSize || 0;
 
   // 回收站文件数
-  const trashFiles = await db.file.count({
-    where: { tenantId, isDeleted: true },
+  const trashFiles = await tenantDb.file.count({
+    where: { isDeleted: true },
   });
 
-  // 用户数
+  // 用户数（TenantDb 无 tenantUser 访问器，走 db 并以 tenantId 作用域）
   const totalUsers = await db.tenantUser.count({
     where: { tenantId },
   });
@@ -41,9 +46,8 @@ export async function getOverviewStats(tenantId: string) {
   // 今日上传数
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const todayUploads = await db.file.count({
+  const todayUploads = await tenantDb.file.count({
     where: {
-      tenantId,
       isDeleted: false,
       createdAt: { gte: today },
     },
@@ -68,9 +72,11 @@ export async function getOverviewStats(tenantId: string) {
 
 // ─── 按文件类型统计 ─────────────
 export async function getStatsByType(tenantId: string) {
-  // 获取所有文件
-  const files = await db.file.findMany({
-    where: { tenantId, isDeleted: false },
+  const tenantDb = createTenantDb(tenantId);
+
+  // 获取所有文件（tenantDb.file.findMany 自动注入 tenantId）
+  const files = await tenantDb.file.findMany({
+    where: { isDeleted: false },
     select: { fileType: true, fileSize: true },
   });
 
@@ -105,6 +111,8 @@ export async function getStatsByType(tenantId: string) {
 
 // ─── 趋势统计 ─────────────
 export async function getTrendStats(tenantId: string, dateFrom?: string | null, dateTo?: string | null) {
+  const tenantDb = createTenantDb(tenantId);
+
   // 默认最近30天
   const endDate = dateTo ? new Date(dateTo) : new Date();
   const startDate = dateFrom ? new Date(dateFrom) : new Date(endDate.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -117,7 +125,7 @@ export async function getTrendStats(tenantId: string, dateFrom?: string | null, 
     currentDate.setDate(currentDate.getDate() + 1);
   }
 
-  // 查询每天的文件数和存储量
+  // 查询每天的文件数和存储量（tenantDb.file.* 自动注入 tenantId）
   const dailyStats: any[] = [];
 
   for (const date of dates) {
@@ -125,9 +133,8 @@ export async function getTrendStats(tenantId: string, dateFrom?: string | null, 
     const dayEnd = new Date(date + 'T23:59:59Z');
 
     // 当天新增文件数
-    const newFiles = await db.file.count({
+    const newFiles = await tenantDb.file.count({
       where: {
-        tenantId,
         createdAt: {
           gte: dayStart,
           lte: dayEnd,
@@ -136,9 +143,8 @@ export async function getTrendStats(tenantId: string, dateFrom?: string | null, 
     });
 
     // 当天新增存储量
-    const newStorageResult = await db.file.aggregate({
+    const newStorageResult = await tenantDb.file.aggregate({
       where: {
-        tenantId,
         createdAt: {
           gte: dayStart,
           lte: dayEnd,
@@ -149,17 +155,15 @@ export async function getTrendStats(tenantId: string, dateFrom?: string | null, 
     const newStorage = newStorageResult._sum.fileSize || 0;
 
     // 累计文件数（截止到当天）
-    const totalFiles = await db.file.count({
+    const totalFiles = await tenantDb.file.count({
       where: {
-        tenantId,
         createdAt: { lte: dayEnd },
       },
     });
 
     // 累计存储量（截止到当天）
-    const totalStorageResult = await db.file.aggregate({
+    const totalStorageResult = await tenantDb.file.aggregate({
       where: {
-        tenantId,
         createdAt: { lte: dayEnd },
       },
       _sum: { fileSize: true },
@@ -184,14 +188,15 @@ export async function getTrendStats(tenantId: string, dateFrom?: string | null, 
 
 // ─── 活动统计 ─────────────
 export async function getActivityStats(tenantId: string, dateFrom?: string | null, dateTo?: string | null) {
+  const tenantDb = createTenantDb(tenantId);
+
   // 默认最近7天
   const endDate = dateTo ? new Date(dateTo) : new Date();
   const startDate = dateFrom ? new Date(dateFrom) : new Date(endDate.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-  // 上传次数
-  const uploadCount = await db.file.count({
+  // 上传次数（tenantDb.file.count 自动注入 tenantId）
+  const uploadCount = await tenantDb.file.count({
     where: {
-      tenantId,
       createdAt: {
         gte: startDate,
         lte: endDate,
@@ -200,9 +205,8 @@ export async function getActivityStats(tenantId: string, dateFrom?: string | nul
   });
 
   // 删除次数（软删除）
-  const deleteCount = await db.file.count({
+  const deleteCount = await tenantDb.file.count({
     where: {
-      tenantId,
       deletedAt: {
         gte: startDate,
         lte: endDate,
@@ -210,7 +214,7 @@ export async function getActivityStats(tenantId: string, dateFrom?: string | nul
     },
   });
 
-  // 访问次数
+  // 访问次数（TenantDb 无 accessHistory 访问器，走 db 并以 tenantId 作用域）
   const accessCount = await db.accessHistory.count({
     where: {
       tenantId,
