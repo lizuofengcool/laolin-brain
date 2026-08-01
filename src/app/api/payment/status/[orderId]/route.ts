@@ -5,7 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateRequest } from '@/lib/api-auth';
 import { queryPayment } from '@/lib/payment';
-import { db } from '@/lib/db';
+import { getOrderForTenant } from '@/lib/saas/billing.service';
 
 export async function GET(
   request: NextRequest,
@@ -17,7 +17,7 @@ export async function GET(
     if (authResult instanceof NextResponse) {
       return authResult;
     }
-    const { userId, tenantId, role } = authResult;
+    const { tenantId } = authResult;
 
     if (!orderId) {
       return NextResponse.json(
@@ -26,34 +26,19 @@ export async function GET(
       );
     }
 
-    // 查询订单
-    const order = await db.order.findUnique({
-      where: { id: orderId },
-      include: {
-        tenant: {
-          include: {
-            users: true,
-          },
-        },
-      },
-    });
+    // 查询订单（DB 层租户作用域化）
+    // query 的 orderId 不可信，原 findUnique where.id + order.tenant.users.find
+    // 的 post-check 范式会先以裸 id 命中他租户订单并 eager-load 整个 tenant.users
+    // 成员表再 JS 比对，存在跨租户越权读取与成员信息泄露风险。此处改为
+    // getOrderForTenant(orderId, tenantId) 在 DB 层以 { id, tenantId } findFirst
+    // 收紧：不存在 / 跨租户统一收敛为 null → 404，与 saas/orders（第二百一十一轮）
+    // 保持一致的租户隔离契约，同时消除 tenant.users 的无谓 eager-load。
+    const order = await getOrderForTenant(orderId, tenantId);
 
     if (!order) {
       return NextResponse.json(
         { success: false, error: '订单不存在' },
         { status: 404 }
-      );
-    }
-
-    // 验证用户是否有权限查看该订单
-    const tenantUser = order.tenant.users.find(
-      (u) => u.userId === userId
-    );
-
-    if (!tenantUser) {
-      return NextResponse.json(
-        { success: false, error: '无权查看该订单' },
-        { status: 403 }
       );
     }
 
