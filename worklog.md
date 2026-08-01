@@ -23126,3 +23126,110 @@ origin/github 均在 484f9fe、local 在 601db67（领先 1 commit、worklog 改
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
 
+## 2026-08-01 10:00 自动迭代
+
+### 本轮目标
+
+执行第二百一十四轮自动迭代。fetch：github main 正常（origin/gitee 命中 429 限流，
+但本工作目录为本次新 clone，origin/main 与 github/main 均在 `57ddcf0`，0 diff），
+工作树干净、无未推送 commit。进入评估阶段。
+
+### 评估
+
+1. **逐项复核任务清单 priority-1 项的实际代码状态**（清单标注"剩余"，但 213 轮
+   worklog 称"均已修复、清单已过期"，存在表述冲突，本轮以代码实况为准逐一验证）：
+   - `tenant-db.ts` raw 后门：`raw` getter / `transaction` 已加 `console.warn` +
+     `new Error().stack` 调用方软审计，文件尾注释明确 rawDb 不再无审计导出。✅ 已处理。
+   - `payment/alipay.ts` RSA2 验签：`verifyRSA2Sign` 已用 `crypto.createVerify
+     ('RSA-SHA256')` + `normalizePublicKey`（单行 base64 自动补 PEM 头尾/换行）做真实验签，
+     sign/publicKey 缺失即 `return false`；createPayment/queryPayment/refund 在已配置但
+     未接 SDK 时显式失败，不再静默回 mock。✅ 已修复。
+   - `payment/wechat.ts` 验签：`verifyWechatSign` 已用 HMAC-SHA256 +
+     `timingSafeEqual` 恒定时间比较，缺 timestamp/nonce/body/signature/apiKey 即拒绝
+     （不再"非空即通过"）；`decryptResource` 做 AES-256-GCM 解密（key 长≠32 / 解密失败
+     返回 null）。✅ 已修复。
+   - `files/route.ts` 等：已 `import { createTenantDb }` 走 TenantDb 隔离层。✅ 已修复。
+   - `cloud-sync/sync-engine.ts` keep_both：已抽 `fetchCloudFileData`（先取云端数据，
+     与重命名解耦），keep_both 分支将本地 rename 为 `[冲突副本]` 并以云端数据 create
+     新 id 文件，不再"直接覆盖"丢本地版本。✅ 已修复。
+   - `__tests__/lib/api-auth.test.ts`：已与 `api-auth.ts` 实现对齐——期望 4 字段
+     （userId/email/tenantId/role）、`async`、`verifyToken` 同步、断言拒绝 query param
+     令牌、`requirePlatformAdmin` fail-closed（ADMIN_EMAILS 未配置/空/仅逗号 → 403）。
+     ✅ 已修复。
+
+   结论：priority-1 清单确已全部落地，本轮无遗留安全问题待修。
+
+2. **采纳 213 轮「下一轮候选」第 1 项「TenantDb.aggregate 类型增强」**（中优先级、
+   小改动、纯类型安全）：213 轮因 `tenant-db.ts` 访问器 `args:any` 导致 aggregate 返回
+   类型退化为 `_count/_sum` 全可选的宽联合，在 `storage/route.ts` 调用点以
+   `as { _count:{id:number}; _sum:{fileSize:number|null} }` 断言收窄。本轮给访问器加泛型
+   签名使返回类型由 Prisma 自动精确推断，消除该调用点断言。
+
+### 改动
+
+1. `src/lib/db/tenant-db.ts`（+9 / -4）：
+   - `import { PrismaClient }` → `import { PrismaClient, Prisma }`。
+   - `file.aggregate`：`(args: any)` → `<T extends Prisma.FileAggregateArgs>(args: T)`，
+     返回 `prisma.file.aggregate({...args, where:{...args.where, tenantId}})` 以
+     `as unknown as Promise<Prisma.GetFileAggregateType<T>>` 桥接 Prisma 复杂泛型推断，
+     透传调用点选择器字面量（`_count:{id:true}` / `_sum:{fileSize:true}`），返回类型按
+     `GetFileAggregateType<T>` 精确收窄。访问器内部仅注入 `where.tenantId`（不影响聚合
+     返回形状），故该局部断言安全且合理——优于在路由层散布 `as`。
+   - `backup.aggregate`：同范式改为 `<T extends Prisma.BackupAggregateArgs>(args: T)`，
+     返回 `Prisma.GetBackupAggregateType<T>`（当前无调用点，前置收口保持一致契约）。
+   - 加中文注释说明泛型意图与 `as unknown as` 的合理性。
+
+2. `src/app/api/storage/route.ts`（+2 / -3）：
+   - 移除 `tenantDb.file.aggregate({...}) as { _count:{id:number}; _sum:{fileSize:number|null} }`
+     调用点断言（现由访问器泛型自动推断）。
+   - 更新注释：从"args:any 退化、需断言收窄"改为"泛型透传、精确推断、无需断言"。
+
+### 验证
+
+- 环境：沙箱无 node_modules，`npm ci`（读 package-lock、不 mutate lockfile）装 986 包
+  / 34s。`git status` 确认仅 2 目标文件改动，package-lock.json / bun.lock 未变。
+- 确认 Prisma 6.11.1 生成类型：`Prisma.FileAggregateArgs` / `Prisma.GetFileAggregateType<T>`
+  / `Prisma.BackupAggregateArgs` / `Prisma.GetBackupAggregateType<T>` 均存在于
+  `.prisma/client/index.d.ts`，且 `aggregate<T extends FileAggregateArgs>` 本身为泛型方法。
+- `npx tsc --noEmit`：✅ EXIT=0 零类型错误（验证 `_count.id` / `_sum.fileSize` 在移除断言
+  后仍可精确访问，无 TS 报错）。
+- `npx vitest run storage-route tenant-security files-route`：✅ 90/90 通过
+  （10 文件）。
+- `npx vitest run`（全量）：✅ **5635 passed / 215 files**，零回归
+  （与第二百一十三轮 5635/215 持平，文件数 / 用例数均不变）。改动为纯类型变更
+  （泛型 / `as` 在运行时擦除），运行时行为不变，与全绿结果一致。
+
+### 改动量
+
+1 commit，2 文件，+11 / -9：
+- `src/lib/db/tenant-db.ts`（+9 / -4）
+- `src/app/api/storage/route.ts`（+2 / -3）
+
+### Commit
+
+- `e36210d` refactor(db): TenantDb.aggregate 泛型化以精确推断返回类型，消除调用点断言
+
+### 推送
+
+- origin (Gitee)：✅ 已推送（`57ddcf0..e36210d`，含本轮 worklog commit）
+- github (GitHub)：✅ 已推送（`57ddcf0..e36210d`，含本轮 worklog commit）
+- 三端对齐：local / origin / github 均含 `e36210d` 及本轮 worklog commit，正常 push 未 force。
+
+### 下一轮候选
+
+- **raw db.aggregate 迁移至 tenantDb**（小改动，中优先级）：本轮完成 tenant-db.ts
+  访问器泛型化后，`stats-service.ts`（3 处）、`trash/route.ts`、`ai/tools/executor.ts`
+  仍以 raw `db.file.aggregate` + 手动 `where:{userId,tenantId}` 过滤，与 storage 路由
+  收口前的同类问题一致。可顺带迁移至 `tenantDb.file.aggregate`（现已支持精确返回类型），
+  统一隔离契约并消除手动 tenantId 拼接。需同步迁移对应单测的 mock 范式。
+- **findUnique 路由作用域化审计（续）**（小改动，低优先级）：仍剩 ~15 个 findUnique
+  路由文件未逐一复核（user/profile、user/security、user/notifications、backup、
+  auth/login 等），多为按 email/userId/认证 token 查自身记录，预计无误用，留作系统审计收尾。
+- **响应式栅格断点适配（详情页）**（小改动，低优先级）：详情页 24 列栅格窄屏缩窄
+  但不破坏，可加 CSS media query 切 mobile=1 / tablet=12 / desktop=24 列。
+- **日期范围筛选器增强**（小改动，低优先级）：当前预设仅近 7 天/近 30 天，可加
+  "本月/上月/本季度"；或把"应用"按钮改为输入即应用（debounce）。
+- 延伸项（低优先级，未变动）：AiProviderConfig.config 字段加密 / document-qna
+  askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
+  ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
+
