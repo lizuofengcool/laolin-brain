@@ -3,14 +3,23 @@
  *
  * 锁定 /api/storage 路由层（GET）的安全与计算契约：
  *
- * 核心安全契约：存储分析是个人级数据，所有 db.file / db.folder 调用的 where 恒以
- * (userId, tenantId) 双键作用域（与 access-history 一致、与 system-logs 的单键 + role
- * 门控对照）。路由 `const { userId, tenantId, role } = auth` 解构 role 但全文未引用，
- * 故 member 亦可读自己的存储分析——这是有意设计（存储配额按用户消费归属，admin 也不
- * 应看他人占用），测试通过"member 仍可读"用例显式锁定，防止后续误加 role 门控。
+ * 核心安全契约（双重锁定，与 files-route 第五十轮同范式）：
+ *   1. **路由不绕过 tenantDb**：mockRawFileAggregate / mockRawFileCount / mockRawFileFindMany
+ *      / mockRawFolderCount / mockRawTenantFindUnique 恒不被调用（负向断言），mockFile*
+ *      / mockFolderCount / mockTenantFindUnique 承接路由的所有数据访问（正向断言）。
+ *      若未来重构回 raw db 手动 where，负向断言立即失败。
+ *   2. **tenantId 经 wrapper 强制注入**：hand-written createTenantDb mock 模拟真实
+ *      TenantDb 的注入行为（file/folder where 末尾追加 tenantId；tenant where 追加
+ *      id:tenantId 钉死自身）。真实 TenantDb 的注入行为由 tenant-isolation.test.ts 单独
+ *      覆盖；本测试只锁"路由层契约 + wrapper 注入路径"组合后 tenantId 必现于 where。
+ *
+ * 存储分析是个人级数据，where 恒以 (userId, tenantId) 双键作用域（tenantId 由 wrapper
+ * 注入，userId 由路由传）。路由 `const { userId, tenantId, role } = auth` 解构 role 但
+ * 全文未引用，故 member 亦可读自己的存储分析——这是有意设计（存储配额按用户消费归属，
+ * admin 也不应看他人占用），测试通过"member 仍可读"用例显式锁定，防止后续误加 role 门控。
  *
  *   - GET type=overview（默认）：
- *     · 未认证 401 透传，不触达 DB。
+ *     · 未认证 401 透传，不触达 DB（含 createTenantDb 不被调用）。
  *     · file.aggregate where {userId,tenantId,isDeleted:false}（_count.id/_sum.fileSize）；
  *       folder.count where {userId,tenantId}（无 isDeleted，folder 无删除标记）；
  *       file.count where {userId,tenantId,isDeleted:true}（回收站，isDeleted 取反）；
@@ -30,8 +39,9 @@
  *       hasMore=page*pageSize<total。
  *     · page/pageSize 默认 20；pageSize 上限 100 截断（limit 历史为 dead code，已删除）。
  *
- * 仅隔离 next/server / @/lib/api-auth / @/lib/db，复用第三十轮 cloud-sync-config-route 的
- * vi.hoisted 共享 MockNextResponse 范式（使路由 `auth instanceof NextResponse` 命中）。
+ * 仅隔离 next/server / @/lib/api-auth / @/lib/db（含 createTenantDb wrapper），复用第三十轮
+ * cloud-sync-config-route 的 vi.hoisted 共享 MockNextResponse 范式（使路由
+ * `auth instanceof NextResponse` 命中）。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { NextRequest } from "next/server";
@@ -39,6 +49,14 @@ import type { NextRequest } from "next/server";
 const {
   MockNextResponse,
   mockAuthenticate,
+  mockCreateTenantDb,
+  // raw db（供"路由不绕过 tenantDb"负向断言：所有数据访问不应触达 raw db）
+  mockRawFileAggregate,
+  mockRawFileCount,
+  mockRawFileFindMany,
+  mockRawFolderCount,
+  mockRawTenantFindUnique,
+  // tenantDb wrapper 注入 tenantId 后的实际承接方
   mockFileAggregate,
   mockFileCount,
   mockFileFindMany,
@@ -59,6 +77,12 @@ const {
   return {
     MockNextResponse,
     mockAuthenticate: vi.fn(),
+    mockCreateTenantDb: vi.fn(),
+    mockRawFileAggregate: vi.fn(),
+    mockRawFileCount: vi.fn(),
+    mockRawFileFindMany: vi.fn(),
+    mockRawFolderCount: vi.fn(),
+    mockRawTenantFindUnique: vi.fn(),
     mockFileAggregate: vi.fn(),
     mockFileCount: vi.fn(),
     mockFileFindMany: vi.fn(),
@@ -72,18 +96,45 @@ vi.mock("@/lib/api-auth", () => ({
   authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
 }));
 vi.mock("@/lib/db", () => ({
+  // raw db：路由不应触达（负向断言，锁定"不绕过 tenantDb 隔离层"）。
+  // 若未来重构回 raw db 手动 where，对应 raw mock 被调用 → 负向断言立即失败。
   db: {
     file: {
-      aggregate: (...args: unknown[]) => mockFileAggregate(...args),
-      count: (...args: unknown[]) => mockFileCount(...args),
-      findMany: (...args: unknown[]) => mockFileFindMany(...args),
+      aggregate: (...args: unknown[]) => mockRawFileAggregate(...args),
+      count: (...args: unknown[]) => mockRawFileCount(...args),
+      findMany: (...args: unknown[]) => mockRawFileFindMany(...args),
     },
     folder: {
-      count: (...args: unknown[]) => mockFolderCount(...args),
+      count: (...args: unknown[]) => mockRawFolderCount(...args),
     },
     tenant: {
-      findUnique: (...args: unknown[]) => mockTenantFindUnique(...args),
+      findUnique: (...args: unknown[]) => mockRawTenantFindUnique(...args),
     },
+  },
+  // createTenantDb：hand-written wrapper 模拟真实 TenantDb 的 tenantId 注入行为
+  // （file/folder where 末尾追加 tenantId；tenant where 追加 id:tenantId 钉死自身）。
+  // 真实 TenantDb 的注入行为由 tenant-isolation.test.ts 单独覆盖；本测试只锁
+  // "路由层契约 + wrapper 注入路径"组合后 tenantId 必现于 where。
+  createTenantDb: (tenantId: string) => {
+    mockCreateTenantDb(tenantId);
+    return {
+      file: {
+        aggregate: (args: { where?: Record<string, unknown> }) =>
+          mockFileAggregate({ ...args, where: { ...(args.where || {}), tenantId } }),
+        count: (args: { where?: Record<string, unknown> }) =>
+          mockFileCount({ ...args, where: { ...(args.where || {}), tenantId } }),
+        findMany: (args: { where?: Record<string, unknown> }) =>
+          mockFileFindMany({ ...args, where: { ...(args.where || {}), tenantId } }),
+      },
+      folder: {
+        count: (args: { where?: Record<string, unknown> }) =>
+          mockFolderCount({ ...args, where: { ...(args.where || {}), tenantId } }),
+      },
+      tenant: {
+        findUnique: (args: { where?: Record<string, unknown> }) =>
+          mockTenantFindUnique({ ...args, where: { ...(args.where || {}), id: tenantId } }),
+      },
+    };
   },
 }));
 
@@ -122,6 +173,14 @@ describe("/api/storage 路由", () => {
 
       expect(res.status).toBe(401);
       expect(res.body).toEqual({ error: "未提供身份认证令牌" });
+      // 401 早返回：createTenantDb 不被调用（隔离层未实例化）
+      expect(mockCreateTenantDb).not.toHaveBeenCalled();
+      // 负向断言：raw db 不被触达
+      expect(mockRawFileAggregate).not.toHaveBeenCalled();
+      expect(mockRawFolderCount).not.toHaveBeenCalled();
+      expect(mockRawFileCount).not.toHaveBeenCalled();
+      expect(mockRawTenantFindUnique).not.toHaveBeenCalled();
+      // 正向断言：tenantDb wrapper 承接方亦不被调用
       expect(mockFileAggregate).not.toHaveBeenCalled();
       expect(mockFolderCount).not.toHaveBeenCalled();
       expect(mockFileCount).not.toHaveBeenCalled();
@@ -143,6 +202,14 @@ describe("/api/storage 路由", () => {
       const res = (await GET(makeGetRequest())) as MockRes;
 
       expect(res.status).toBe(200);
+      // 核心契约：路由经 createTenantDb(tenantId) 实例化隔离层（wrapper 注入 tenantId）
+      expect(mockCreateTenantDb).toHaveBeenCalledTimes(1);
+      expect(mockCreateTenantDb).toHaveBeenCalledWith("tenant-1");
+      // 负向断言：四个 DB 调用均走 tenantDb wrapper，不触达 raw db
+      expect(mockRawFileAggregate).not.toHaveBeenCalled();
+      expect(mockRawFolderCount).not.toHaveBeenCalled();
+      expect(mockRawFileCount).not.toHaveBeenCalled();
+      expect(mockRawTenantFindUnique).not.toHaveBeenCalled();
       // 核心契约：file.aggregate where 双键 + isDeleted:false
       expect(mockFileAggregate.mock.calls[0][0]).toEqual({
         where: { userId: "user-1", tenantId: "tenant-1", isDeleted: false },
