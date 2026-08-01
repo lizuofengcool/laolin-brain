@@ -50,9 +50,8 @@ export async function GET(request: NextRequest) {
 // ─── 存储概览 ─────────────
 async function getStorageOverview(userId: string, tenantDb: TenantDb) {
   // 统计文件数量和总大小（tenantDb.file.aggregate 自动注入 tenantId）。
-  // 注：TenantDb 访问器以 `args: any` 声明（与全类一致），aggregate 返回类型因此
-  // 退化为 _count/_sum 可选的宽联合；此处按请求形状断言收窄，与 raw db.file.aggregate
-  // 的精确推断等价（trash / stats-service 等用 raw db 时由 Prisma 自动推断）。
+  // 访问器以泛型签名透传 Prisma 的 FileAggregateArgs，返回类型由 GetFileAggregateType
+  // 精确推断（_count.id / _sum.fileSize 按选择器收窄），无需调用点断言。
   const fileStats = await tenantDb.file.aggregate({
     where: {
       userId,
@@ -64,7 +63,7 @@ async function getStorageOverview(userId: string, tenantDb: TenantDb) {
     _sum: {
       fileSize: true,
     },
-  }) as { _count: { id: number }; _sum: { fileSize: number | null } };
+  });
 
   // 统计文件夹数量（tenantDb.folder.count 自动注入 tenantId）
   const folderCount = await tenantDb.folder.count({

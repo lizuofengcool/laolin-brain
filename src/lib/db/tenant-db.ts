@@ -9,7 +9,7 @@
  *   const files = await tenantDb.file.findMany({ where: { folderId } });
  *   // 自动添加 tenantId: tenantId 过滤条件
  */
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import { db } from './index';
 
 /**
@@ -168,14 +168,17 @@ export class TenantDb {
         });
       },
 
-      aggregate: (args: any) => {
+      // 泛型签名：透传 Prisma 的 FileAggregateArgs 字面量类型，使返回类型由
+      // GetFileAggregateType<T> 精确推断（_count/_sum 等按调用点选择器收窄），
+      // 消除调用点 `as` 断言。访问器内部仅注入 where.tenantId（不影响聚合返回形状）。
+      aggregate: <T extends Prisma.FileAggregateArgs>(args: T) => {
         return prisma.file.aggregate({
           ...args,
           where: {
             ...args.where,
             tenantId,
           },
-        });
+        }) as unknown as Promise<Prisma.GetFileAggregateType<T>>;
       },
     };
   }
@@ -1089,14 +1092,14 @@ export class TenantDb {
         });
       },
 
-      aggregate: (args: any) => {
+      aggregate: <T extends Prisma.BackupAggregateArgs>(args: T) => {
         return prisma.backup.aggregate({
           ...args,
           where: {
             ...args.where,
             tenantId,
           },
-        });
+        }) as unknown as Promise<Prisma.GetBackupAggregateType<T>>;
       },
     };
   }
