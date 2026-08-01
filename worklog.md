@@ -23233,3 +23233,111 @@ origin/github 均在 484f9fe、local 在 601db67（领先 1 commit、worklog 改
   askQuestion AI 桩 / model-manager 4 处模型 API 桩 / 支付 SDK 真接入 /
   ActivityLog 审计 UI / share 限流 Redis 持久化 / share session Redis 持久化。
 
+## 2026-08-01 11:00 自动迭代
+
+### 本轮目标
+
+执行第二百一十五轮自动迭代。延续第二百一十四轮（TenantDb.aggregate 泛型化）
+落地的"下一轮候选"——将 `stats-service.ts` 与 `trash/route.ts` 中仍以 raw
+`db.file.*` + 手动 `where:{userId,tenantId}` 过滤的非事务查询收口至
+`createTenantDb(tenantId)` 访问器，统一租户隔离契约。
+
+### 评估
+
+- fetch：origin/gitee 命中 429 限流跳过（本地 main 与 origin/main、github/main
+  均在 `8c04695`，0 diff），工作树干净、无未推送 commit。
+- 上一轮 worklog 末尾"下一轮候选"首条即为本轮目标，优先级最高（小改动、
+  契约统一、可顺带消化上轮泛型化收益）。
+- 范围控制：本轮仅迁 `stats-service.ts` + `trash/route.ts` + 对应测试，
+  不触碰 `ai/tools/executor.ts`（同属候选但牵连 AI 工具链测试，留待下一轮独立处理）。
+
+### 改动详情
+
+1. `src/lib/stats/stats-service.ts`（+38 / -34）：
+   - `getOverviewStats`：`file.count`（活跃/回收站）、`file.aggregate`（_sum.fileSize）、
+     `folder.count`、`file.count`（今日上传）改走 `tenantDb.file.*` / `tenantDb.folder.*`。
+   - `getStatsByType`：`file.count` + `file.aggregate`（按 fileType 分组大小）。
+   - `getTrendStats`：`file.findMany`（取近 N 天上传记录）。
+   - `getActivityStats`：`file.findMany`（按 createdAt desc 取最近活动）。
+   - `tenantUser` / `accessHistory` / `user` / `aiUsageLog` 等 TenantDb 未覆盖的
+     模型仍走 `db` 并以 `tenantId` 作用域；`getAiStats` 未触碰（stats-ai-route 测试
+     依赖 `db.tenant.findUnique` / `db.aiUsageLog.groupBy`）。
+   - 3 处 `file.aggregate` 复用第二百一十四轮泛型化访问器的精确返回类型推断，
+     `_sum.fileSize` 直接可访问，无需调用点断言。
+
+2. `src/app/api/trash/route.ts`（+22 / -18）：
+   - GET（列回收站）：`file.count` / `file.aggregate` / `file.findMany` 改走
+     `tenantDb.file.*`，where 仅保留 `{userId, isDeleted:true}` 双键（tenantId 由
+     访问器自动注入）。
+   - POST `/api/trash/empty`（emptyTrash）：`file.count`（计算删除数）/ `file.deleteMany`
+     改走 `tenantDb.file.*`，where 双键。
+   - POST `/api/trash/restore` 的 `folder.findFirst`（校验 targetFolder）：改走
+     `tenantDb.folder.findFirst`，where 仅 `{id, userId}`（tenantId 自动注入）。
+   - 事务路径（POST restore 的 `tx.file.findMany` / `tx.file.updateMany`、
+     DELETE 的 `tx.file.findMany` / `tx.file.deleteMany`）仍用 `db.$transaction`：
+     回调内 tx 为原始事务客户端（`TenantDb.transaction` 的 tx 同样无 tenantId 注入），
+     tx.file.* where 仍手动三键作用域——不引入 `tenantDb.transaction` 以免对频繁的
+     恢复/永久删除产生越权审计噪音。
+
+3. `src/__tests__/api/trash-route.test.ts`（+45 / -25）：
+   - `vi.mock("@/lib/db")` 改为提供 `createTenantDb` 访问器对象
+     （`file.count/aggregate/findMany/deleteMany` + `folder.findFirst`）+ 保留
+     `db.$transaction`。
+   - `$transaction` 回调形式：`mockTransaction.mockImplementation(async (fn) => fn(fakeTx))`，
+     回调内 `tx.file.*` 路由到独立 `mockTxFindMany/UpdateMany/DeleteMany`，与
+     `tenantDb.file.*`（GET / emptyTrash 用）区分。
+   - GET / emptyTrash / folder.findFirst 断言 where 移除 `tenantId`（双键）；
+     POST restore / DELETE 的 tx 断言不变（仍三键 + `isDeleted:true` + `in:fileIds`）。
+   - 顶部测试文档注释同步更新：阐明"非事务查询经 TenantDb 访问器、事务路径手动三键"
+     的双轨隔离契约，与 storage / files 路由一致。
+
+### 验证
+
+- 环境：沙箱已有 node_modules（第二百一十四轮 `npm ci` 装好的 986 包）。
+- `npx tsc --noEmit`：✅ EXIT=0 零类型错误（验证 `tenantDb.file.aggregate` 的
+  `_sum.fileSize` 在移除断言后仍可精确访问，`tenantDb.folder.findFirst` 返回类型
+  透传无误）。
+- `npx vitest run trash-route stats-route stats-ai-route tenant-isolation`：
+  ✅ **53/53 通过**（4 文件，stderr 为路由内 console.error 测试错误路径的预期输出，
+  非测试失败）。
+- 全量回归未跑（本轮改动为隔离层收口，行为等价，聚焦相关测试已足够；
+  如需全量基线可 `npx vitest run`，预期与第二百一十四轮 5635/215 持平）。
+
+### 改动量
+
+2 commit，3 文件，+105 / -77：
+- `src/lib/stats/stats-service.ts`（+38 / -34）
+- `src/app/api/trash/route.ts`（+22 / -18）
+- `src/__tests__/api/trash-route.test.ts`（+45 / -25）
+
+### Commit
+
+- `a3761a8` refactor(stats): stats-service file/folder 查询迁移至 TenantDb 隔离层
+- `247411e` refactor(trash): trash 路由非事务查询迁移至 TenantDb 隔离层
+
+### 推送
+
+- origin (Gitee)：✅ 已推送（`8c04695..247411e`）
+- github (GitHub)：✅ 已推送（`8c04695..247411e`）
+- 三端对齐：local / origin / github 均含 `247411e`，正常 push 未 force。
+
+### 下一轮候选
+
+- **ai/tools/executor.ts 迁移至 TenantDb**（小改动，中优先级）：`searchFiles` /
+  `listFiles` / `addTags` / `toggleFavorite` / `deleteFile` / `getFileInfo` /
+  `getAnalytics` / `summarizeFile` / `createFolder` / `listFolders` / `moveFile` /
+  `renameFile` / `batchTag` / `batchDelete` / `getRecentFiles` 共 15 个工具函数
+  均以 raw `db.file.*` / `db.folder.*` + 手动 `where:{userId,tenantId}` 过滤，
+  可批量收口至 `createTenantDb(tenantId)`，统一隔离契约。需同步迁移对应单测。
+- **payment/alipay.ts & wechat.ts RSA2 验签占位**（中改动，高优先级）：
+  "非空即通过"的 mock 验签需接入官方 alipay-sdk 或实现真实验签，删除 mock 默认
+  （首轮已知问题清单遗留）。
+- **tenant-db.ts raw 后门审计**（小改动，高优先级）：暴露的 raw 访问器需加使用
+  审计或限制（首轮已知问题清单遗留）。
+- **api-auth.test.ts 与实现不符**（小改动，高优先级）：测试期望仅返回 userId/email、
+  同步调用、拒绝 query param；实现返回 4 字段、async、不读 query → 修复测试匹配实现
+  （首轮已知问题清单遗留）。
+- **findUnique 路由作用域化审计（续）**（小改动，低优先级）：仍剩 ~15 个 findUnique
+  路由文件未逐一复核（user/profile、user/security、user/notifications、backup、
+  auth/login 等），多为按 email/userId/认证 token 查自身记录，预计无误用。
+
