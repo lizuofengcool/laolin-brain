@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, createTenantDb } from "@/lib/db";
 import { authenticateRequest } from "@/lib/api-auth";
 
 /**
@@ -8,6 +8,14 @@ import { authenticateRequest } from "@/lib/api-auth";
  * POST /api/trash/restore - 批量恢复文件
  * DELETE /api/trash - 永久删除文件
  * POST /api/trash/empty - 清空回收站
+ *
+ * 数据访问层：file / folder 的非事务查询走 TenantDb 隔离层（访问器自动注入
+ * tenantId，where 仅保留 userId 归属 + 软删除标记），与 storage / files 路由
+ * 保持一致的租户隔离契约。事务路径（POST restore / DELETE）仍用 db.$transaction：
+ * 回调内 tx 为原始事务客户端（TenantDb.transaction 的 tx 同样无 tenantId 注入），
+ * 故 tx.file.* 的 where 仍手动三键作用域（userId + tenantId + isDeleted），与
+ * 收口前一致——事务隔离由调用方保证，此处不引入 tenantDb.transaction 以免对
+ * 频繁的恢复/永久删除产生越权审计噪音。
  */
 
 // ─── GET /api/trash — 获取回收站列表 ─────────────
@@ -36,10 +44,13 @@ export async function GET(request: NextRequest) {
     const fileType = searchParams.get('fileType');
     const search = searchParams.get('search') || '';
 
+    // 走 TenantDb：file.count / aggregate / findMany 访问器自动注入 tenantId，
+    // where 仅保留业务级过滤（userId 归属 + isDeleted 软删除标记）。
+    const tenantDb = createTenantDb(tenantId);
+
     // 构建查询条件
     const where: any = {
       userId,
-      tenantId,
       isDeleted: true,
     };
 
@@ -54,10 +65,10 @@ export async function GET(request: NextRequest) {
     }
 
     // 计算总数
-    const total = await db.file.count({ where });
+    const total = await tenantDb.file.count({ where });
 
     // 计算总大小
-    const sizeResult = await db.file.aggregate({
+    const sizeResult = await tenantDb.file.aggregate({
       where,
       _sum: {
         fileSize: true,
@@ -65,7 +76,7 @@ export async function GET(request: NextRequest) {
     });
 
     // 分页查询回收站文件
-    const files = await db.file.findMany({
+    const files = await tenantDb.file.findMany({
       where,
       orderBy: { deletedAt: 'desc' },
       skip: (page - 1) * pageSize,
@@ -128,13 +139,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 走 TenantDb：folder.findFirst 访问器自动注入 tenantId。
+    const tenantDb = createTenantDb(tenantId);
+
     // 如果指定了目标文件夹，验证目标文件夹存在且属于当前用户/租户
-    // 走 DB 层三键作用域化：findFirst 以 {id, userId, tenantId} 过滤，跨用户/跨租户
+    // 走 DB 层作用域化：findFirst 以 {id, userId} + tenantId(自动注入) 过滤，跨用户/跨租户
     // targetFolderId 直接返回 null → 404，不将他人/他租户文件夹行载入内存。
     // 与 files/batch move、faces/groups/merge 同模式（findUnique+post-check → findFirst）。
     if (targetFolderId) {
-      const targetFolder = await db.folder.findFirst({
-        where: { id: targetFolderId, userId, tenantId },
+      const targetFolder = await tenantDb.folder.findFirst({
+        where: { id: targetFolderId, userId },
         select: { id: true },
       });
 
@@ -264,20 +278,21 @@ export async function DELETE(request: NextRequest) {
 // ─── 清空回收站 ─────────────
 async function emptyTrash(userId: string, tenantId: string) {
   try {
+    // 走 TenantDb：file.count / deleteMany 访问器自动注入 tenantId。
+    const tenantDb = createTenantDb(tenantId);
+
     // 统计要删除的文件数量
-    const count = await db.file.count({
+    const count = await tenantDb.file.count({
       where: {
         userId,
-        tenantId,
         isDeleted: true,
       },
     });
 
     // 永久删除所有回收站文件
-    await db.file.deleteMany({
+    await tenantDb.file.deleteMany({
       where: {
         userId,
-        tenantId,
         isDeleted: true,
       },
     });

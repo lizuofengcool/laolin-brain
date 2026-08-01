@@ -3,19 +3,23 @@
  *
  * 锁定 /api/trash 路由层（GET / POST / DELETE）的安全与控制流契约：
  *
- * 核心安全契约：回收站是个人级软删数据，所有 db.file / tx.file 调用的 where 恒以
- * (userId, tenantId, isDeleted:true) 三键作用域——双租户键防跨用户/跨租户越权，
- * isDeleted:true 维度锁定"仅回收站文件可被列/恢复/永久删"语义（活跃文件 isDeleted:false
- * 不可被本路由触达）。folder.findFirst 的 targetFolder 校验以 {id, userId, tenantId}
- * 三键 DB 层作用域化（第二百一十轮由 findUnique+post-check 收口），跨用户/跨租户
- * targetFolderId 直接返回 null → 404，不将他人/他租户文件夹行载入内存。路由
+ * 核心安全契约：回收站是个人级软删数据，非事务查询经 TenantDb 访问器（file/folder），
+ * tenantId 由访问器自动注入，调用方 where 仅含 (userId, isDeleted:true) 双键；
+ * 事务路径（POST restore / DELETE）的 tx.file.* where 仍手动三键 (userId, tenantId,
+ * isDeleted:true)——tx 为原始事务客户端无 tenantId 注入，隔离由调用方保证。双租户键
+ * 防跨用户/跨租户越权，isDeleted:true 维度锁定"仅回收站文件可被列/恢复/永久删"语义
+ * （活跃文件 isDeleted:false 不可被本路由触达）。folder.findFirst 的 targetFolder
+ * 校验以 {id, userId} + tenantId(自动注入) DB 层作用域化（第二百一十轮由
+ * findUnique+post-check 收口），跨用户/跨租户 targetFolderId 直接返回 null → 404，
+ * 不将他人/他租户文件夹行载入内存。路由
  * `const { userId, tenantId, role } = auth` 解构 role 但全文未引用，故 member 亦可操作
  * 自己的回收站——与 storage 一致（个人数据按用户归属，admin 也不应恢复/删除他人回收站），
  * 测试通过"member 仍可恢复"用例显式锁定。
  *
  *   - GET（列回收站）：
  *     · 未认证 401 透传，不触达 DB。
- *     · count + aggregate + findMany 三调用收到同一 where（三键）。
+ *     · count + aggregate + findMany 三调用收到同一 where（双键 userId+isDeleted，
+ *       tenantId 由 TenantDb 访问器自动注入，调用方 where 不含 tenantId）。
  *     · aggregate _sum.fileSize 为 null → totalSize=0（`|| 0` 锁定）。
  *     · orderBy deletedAt desc；select 8 字段；返回 7 字段含 totalPages/hasMore。
  *     · pageSize 上限 100 截断；分页 skip=(page-1)*pageSize。
@@ -23,17 +27,17 @@
  *     · pathname 不含 '/restore' → action='empty' → emptyTrash（不读 body、不触达
  *       folder.findFirst / $transaction restore 路径）。**核心契约：URL 路径分发**。
  *     · pathname 含 '/restore' → restore：fileIds 必填非空数组（400）；targetFolderId
- *       存在时 folder.findFirst 以三键作用域化查询，不存在/跨租户/跨用户 → null → 404；
+ *       存在时 folder.findFirst 以 {id, userId}+tenantId(自动) 作用域化查询，不存在/跨租户/跨用户 → null → 404；
  *       $transaction 内 tx.file.findMany 验证 id∈fileIds 且三键+isDeleted:true，数量不匹配
  *       抛错→500；tx.file.updateMany where 三键+in、data {isDeleted:false,deletedAt:null}
  *       （+folderId 当指定目标）。
- *     · emptyTrash：db.file.count where 三键；db.file.deleteMany where 三键；返回 deletedCount=count。
+ *     · emptyTrash：tenantDb.file.count where 双键；tenantDb.file.deleteMany where 双键；返回 deletedCount=count。
  *   - DELETE（永久删除）：
  *     · fileIds 必填非空数组（400）；$transaction 内 tx.file.findMany 验证三键+in+isDeleted:true，
  *       数量不匹配抛错→500；tx.file.deleteMany where 三键+in 硬删。
  *
  * $transaction 回调形式：mockTransaction 以 `async (fn) => fn(fakeTx)` 实现，使回调内的
- * tx.file.findMany/updateMany/deleteMany 路由到独立 mock，与 db.file.*（emptyTrash 用）区分。
+ * tx.file.findMany/updateMany/deleteMany 路由到独立 mock，与 tenantDb.file.*（GET / emptyTrash 用）区分。
  * 复用第三十轮 cloud-sync-config-route 的 vi.hoisted 共享 MockNextResponse 范式。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -82,8 +86,14 @@ vi.mock("next/server", () => ({ NextResponse: MockNextResponse }));
 vi.mock("@/lib/api-auth", () => ({
   authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
 }));
+// 路由已收口至 TenantDb：file/folder 的非事务查询经 createTenantDb 访问器
+// （自动注入 tenantId，调用方 where 不再含 tenantId）；事务路径仍用 db.$transaction，
+// 回调内 tx.file.* 的 where 仍手动三键作用域（含 tenantId）。
 vi.mock("@/lib/db", () => ({
   db: {
+    $transaction: (...args: unknown[]) => mockTransaction(...args),
+  },
+  createTenantDb: () => ({
     file: {
       count: (...args: unknown[]) => mockFileCount(...args),
       aggregate: (...args: unknown[]) => mockFileAggregate(...args),
@@ -93,8 +103,7 @@ vi.mock("@/lib/db", () => ({
     folder: {
       findFirst: (...args: unknown[]) => mockFolderFindFirst(...args),
     },
-    $transaction: (...args: unknown[]) => mockTransaction(...args),
-  },
+  }),
 }));
 
 import { GET, POST, DELETE } from "@/app/api/trash/route";
@@ -166,7 +175,7 @@ describe("/api/trash 路由", () => {
       expect(mockFileFindMany).not.toHaveBeenCalled();
     });
 
-    it("默认 → count + aggregate + findMany 收到同一 where 三键 {userId,tenantId,isDeleted:true}；orderBy deletedAt desc；select 8 字段；返回 7 字段", async () => {
+    it("默认 → count + aggregate + findMany 收到同一 where 双键 {userId,isDeleted:true}（tenantId 由 TenantDb 访问器自动注入）；orderBy deletedAt desc；select 8 字段；返回 7 字段", async () => {
       mockFileCount.mockResolvedValue(5);
       mockFileAggregate.mockResolvedValue({ _sum: { fileSize: 2048 } });
       mockFileFindMany.mockResolvedValue([
@@ -178,10 +187,9 @@ describe("/api/trash 路由", () => {
       expect(res.status).toBe(200);
       const expectedWhere = {
         userId: "user-1",
-        tenantId: "tenant-1",
         isDeleted: true,
       };
-      // 核心契约：三调用同一 where 三键
+      // 核心契约：三调用同一 where 双键（tenantId 由 TenantDb 访问器自动注入）
       expect(mockFileCount.mock.calls[0][0]).toEqual({ where: expectedWhere });
       expect(mockFileAggregate.mock.calls[0][0]).toEqual({
         where: expectedWhere,
@@ -227,7 +235,6 @@ describe("/api/trash 路由", () => {
       expect(mockFileCount.mock.calls[0][0]).toEqual({
         where: {
           userId: "user-1",
-          tenantId: "tenant-1",
           isDeleted: true,
           fileType: "image",
         },
@@ -244,7 +251,6 @@ describe("/api/trash 路由", () => {
       expect(mockFileCount.mock.calls[0][0]).toEqual({
         where: {
           userId: "user-1",
-          tenantId: "tenant-1",
           isDeleted: true,
           fileName: { contains: "report" },
         },
@@ -261,7 +267,6 @@ describe("/api/trash 路由", () => {
       expect(mockFileCount.mock.calls[0][0]).toEqual({
         where: {
           userId: "user-1",
-          tenantId: "tenant-1",
           isDeleted: true,
           fileType: "pdf",
           fileName: { contains: "draft" },
@@ -372,13 +377,13 @@ describe("/api/trash 路由", () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ success: true, deletedCount: 3 });
-      // emptyTrash 用 db.file.count where 三键
+      // emptyTrash 用 tenantDb.file.count where 双键（tenantId 自动注入）
       expect(mockFileCount.mock.calls[0][0]).toEqual({
-        where: { userId: "user-1", tenantId: "tenant-1", isDeleted: true },
+        where: { userId: "user-1", isDeleted: true },
       });
-      // emptyTrash 用 db.file.deleteMany where 三键（非 tx.file.deleteMany）
+      // emptyTrash 用 tenantDb.file.deleteMany where 双键（非 tx.file.deleteMany）
       expect(mockFileDeleteMany.mock.calls[0][0]).toEqual({
-        where: { userId: "user-1", tenantId: "tenant-1", isDeleted: true },
+        where: { userId: "user-1", isDeleted: true },
       });
       // restore 路径不应触达
       expect(mockFolderFindFirst).not.toHaveBeenCalled();
@@ -435,9 +440,9 @@ describe("/api/trash 路由", () => {
 
       expect(res.status).toBe(404);
       expect(res.body).toEqual({ error: "目标文件夹不存在或无权访问" });
-      // folder.findFirst where 三键 {id, userId, tenantId} + select {id}
+      // folder.findFirst where {id, userId} + tenantId(自动注入) + select {id}
       expect(mockFolderFindFirst.mock.calls[0][0]).toEqual({
-        where: { id: "folder-missing", userId: "user-1", tenantId: "tenant-1" },
+        where: { id: "folder-missing", userId: "user-1" },
         select: { id: true },
       });
       expect(mockTransaction).not.toHaveBeenCalled();
@@ -546,7 +551,6 @@ describe("/api/trash 路由", () => {
       expect(res.body).toEqual({ success: true, deletedCount: 4 });
       const expectedWhere = {
         userId: "user-1",
-        tenantId: "tenant-1",
         isDeleted: true,
       };
       expect(mockFileCount.mock.calls[0][0]).toEqual({ where: expectedWhere });
